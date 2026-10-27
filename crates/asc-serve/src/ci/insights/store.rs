@@ -1199,6 +1199,38 @@ pub struct BlockingFailure {
     pub group: i64,
 }
 
+/// Whether a failed `run` failed only on quarantined failures, so a landing check may let it
+/// pass: it has failing test cases, none of them still blocks, and every failed job is explained
+/// by failing test cases (a job that failed without reporting one, such as a build error, is a
+/// failure nobody quarantined).
+pub async fn failed_only_on_quarantined(
+    conn: &mut AnyConnection,
+    ns: Ns,
+    run: i64,
+) -> Result<bool, sqlx::Error> {
+    let failing: i64 = sqlx::query_scalar(
+        "SELECT CAST(COUNT(*) AS BIGINT) FROM test_cases WHERE ns = $1 AND run_id = $2 AND outcome IN (2, 4)",
+    )
+    .bind(ns_bytes(ns))
+    .bind(run)
+    .fetch_one(&mut *conn)
+    .await?;
+    if failing == 0 {
+        return Ok(false);
+    }
+    let unexplained: i64 = sqlx::query_scalar(
+        "SELECT CAST(COUNT(*) AS BIGINT) FROM check_jobs j WHERE j.ns = $1 AND j.run = $2 AND j.status = 4          AND NOT EXISTS (SELECT 1 FROM test_cases c WHERE c.ns = j.ns AND c.run_id = j.run                          AND c.job_id = j.id AND c.outcome IN (2, 4))",
+    )
+    .bind(ns_bytes(ns))
+    .bind(run)
+    .fetch_one(&mut *conn)
+    .await?;
+    if unexplained > 0 {
+        return Ok(false);
+    }
+    Ok(blocking_failures(conn, ns, run).await?.is_empty())
+}
+
 /// The failed or errored cases of `run` that still block: those whose group is not quarantined.
 /// A run for an older version of its change (stale) is the caller's to ignore; this reports what
 /// the run says. A case of the last attempt that passed does not count.

@@ -40,6 +40,12 @@ It quarantines one **signature**: a different failure of the same test still blo
 whose group is not quarantined and that did not pass on a later attempt. Every state change is audited
 (`ci.failure_group.state`) and is idempotent per `x-asc-op-id`.
 
+The landing gate (`[trunk] require_checks`) uses the list: a required check whose latest run for the landing version failed
+still passes when the policy has `allow_quarantine = true` at that moment, the run has failing test cases, every failed job
+reported at least one, and `store::failed_only_on_quarantined` finds none that still blocks. A failed job with no failing test
+case (a build error), a failure outside the list, a run that is not finished, and a policy that no longer allows quarantine
+all refuse the landing as before.
+
 ```toml
 # repository policy, .asc/policy.toml
 [ci]

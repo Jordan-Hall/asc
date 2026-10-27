@@ -1107,6 +1107,98 @@ async fn a_check_can_be_named_by_its_job() {
     f.land(ALICE, b).await.unwrap();
 }
 
+impl Fx {
+    /// A failed test case in group `group` (state 3 is quarantined) of job `job` of `run`.
+    async fn failing_case(&self, run: i64, job: i64, seq: i64, group: i64, quarantined: bool) {
+        let ns = self.e.ns.as_bytes().to_vec();
+        sqlx::query(
+            "INSERT INTO failure_groups (ns, id, signature, title, test_name, job_name, state, first_seen, last_seen) \
+             VALUES ($1, $2, $3, 't', $4, 'unit', $5, 1, 1) ON CONFLICT (ns, id) DO NOTHING",
+        )
+        .bind(ns.clone())
+        .bind(group)
+        .bind(format!("sig-{group}"))
+        .bind(format!("t{group}"))
+        .bind(if quarantined { 3_i64 } else { 1_i64 })
+        .execute(self.reg.pool())
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO test_cases (ns, run_id, job_id, seq, job_name, name, outcome, attempt, group_id, change, version, head, at) \
+             VALUES ($1, $2, $3, $4, 'unit', $5, 2, 1, $6, $7, 1, $8, 1)",
+        )
+        .bind(ns)
+        .bind(run)
+        .bind(job)
+        .bind(seq)
+        .bind(format!("t{group}"))
+        .bind(group)
+        .bind(cid(1).as_bytes().to_vec())
+        .bind(vec![0u8; 32])
+        .execute(self.reg.pool())
+        .await
+        .unwrap();
+    }
+}
+
+async fn quarantine_fixture(policy: &str) -> (Fx, ChangesetId, i64) {
+    let f = fx().await;
+    let a = commit(
+        &f.e,
+        &[],
+        &[(POLICY_PATH, policy_text(policy).as_bytes()), ("x", b"1")],
+    )
+    .await;
+    f.set_master(a).await;
+    let b = commit(&f.e, &[a], &[("y", b"2")]).await;
+    f.register(b, 1, 1, ALICE).await;
+    f.check_run(1, 1, "test", 4).await; // failure
+    let run: i64 = f.rows("SELECT MAX(id) FROM check_runs").await;
+    sqlx::query("INSERT INTO check_jobs (ns, id, run, name, status) VALUES ($1, 1, $2, 'unit', 4)")
+        .bind(f.e.ns.as_bytes().to_vec())
+        .bind(run)
+        .execute(f.reg.pool())
+        .await
+        .unwrap();
+    (f, b, run)
+}
+
+const QUARANTINE_ON: &str = "[trunk]\nrequire_checks = [\"test\"]\n[ci]\nallow_quarantine = true\n";
+
+#[tokio::test]
+async fn a_check_that_failed_only_on_quarantined_failures_lets_the_change_land() {
+    let (f, b, run) = quarantine_fixture(QUARANTINE_ON).await;
+    // A failed job that reported no failing test is a failure nobody quarantined.
+    assert_eq!(code(&f.land(ALICE, b).await.unwrap_err()), "POLICY_DENIED");
+    // Its one failing test is in a quarantined group: the check no longer blocks.
+    f.failing_case(run, 1, 1, 1, true).await;
+    f.land(ALICE, b).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_failure_that_is_not_quarantined_still_refuses_the_landing() {
+    let (f, b, run) = quarantine_fixture(QUARANTINE_ON).await;
+    f.failing_case(run, 1, 1, 1, true).await;
+    f.failing_case(run, 1, 2, 2, false).await;
+    let err = f.land(ALICE, b).await.unwrap_err();
+    assert_eq!(code(&err), "POLICY_DENIED");
+    assert!(
+        paths(&err).iter().any(|p| p.contains("\"test\"")),
+        "{:?}",
+        paths(&err)
+    );
+}
+
+#[tokio::test]
+async fn quarantine_counts_only_while_the_policy_allows_it() {
+    let (f, b, run) = quarantine_fixture(
+        "[trunk]\nrequire_checks = [\"test\"]\n[ci]\nallow_quarantine = false\n",
+    )
+    .await;
+    f.failing_case(run, 1, 1, 1, true).await;
+    assert_eq!(code(&f.land(ALICE, b).await.unwrap_err()), "POLICY_DENIED");
+}
+
 // ------------------------------------------------------------------------------ agents
 
 fn gate_req<'a>(
