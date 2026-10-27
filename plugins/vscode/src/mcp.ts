@@ -5,6 +5,8 @@
 // the server's `/mcp` for one repo: roots win, and the remote definition exists only without roots.
 // Editor APIs come through `McpApi`, so the logic runs under Bun; `vscodeMcpApi` is the only adapter.
 import { execFile } from "node:child_process";
+import { dirname } from "node:path";
+import { isAbsoluteExe } from "./bridge";
 import type * as vscodeTypes from "vscode";
 
 export interface Disposable {
@@ -58,17 +60,20 @@ export function definitions(
   roots: readonly string[],
   serverUrl: string,
 ): McpStdio[] {
-  if (ascPath === null) return [];
+  // Only an absolute executable is offered, and it runs from its own directory: a bare name would be
+  // looked up in the working directory first on Windows, and the root travels as `-C <root>`.
+  if (ascPath === null || !isAbsoluteExe(ascPath, process.platform)) return [];
+  const cwd = dirname(ascPath);
   if (roots.length > 0) {
     return roots.map((root, i) => ({
       label: roots.length === 1 ? "asc" : `asc (${i + 1})`,
       command: ascPath,
-      args: ["mcp"],
-      cwd: root,
+      args: ["-C", root, "mcp"],
+      cwd,
     }));
   }
   if (!isSafeServerUrl(serverUrl)) return [];
-  return [{ label: "asc-remote", command: ascPath, args: ["mcp", "--remote", serverUrl] }];
+  return [{ label: "asc-remote", command: ascPath, args: ["mcp", "--remote", serverUrl], cwd }];
 }
 
 export interface McpRegistration extends Disposable {
@@ -113,9 +118,9 @@ export function registerMcp(opts: McpOptions): McpRegistration {
   return { mode: "none", refresh() {}, dispose() {} };
 }
 
-/** The command line for "Configure agents": `asc mcp install --scope project`, run in the root. */
-export function installArgs(): string[] {
-  return ["mcp", "install", "--scope", "project"];
+/** The command line for "Configure agents": `asc -C <root> mcp install --scope project`. */
+export function installArgs(root: string): string[] {
+  return ["-C", root, "mcp", "install", "--scope", "project"];
 }
 
 export type RunAsc = (ascPath: string, args: string[], cwd: string) => Promise<void>;
@@ -134,10 +139,12 @@ export async function configureAgents(
   run: RunAsc = nodeRunAsc,
 ): Promise<string> {
   const root = roots[0];
-  if (ascPath === null) return "asc was not found; set asc.path.";
+  if (ascPath === null || !isAbsoluteExe(ascPath, process.platform)) {
+    return "asc was not found; set asc.path.";
+  }
   if (root === undefined) return "Open an ASC workspace to configure agents.";
   try {
-    await run(ascPath, installArgs(), root);
+    await run(ascPath, installArgs(root), dirname(ascPath));
     return "Agents configured for this project (asc mcp install --scope project).";
   } catch {
     return "asc mcp install failed; run it in a terminal to see why.";

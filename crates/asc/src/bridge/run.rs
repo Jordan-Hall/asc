@@ -73,6 +73,7 @@ const KEEP: &[&str] = &[
     "ASC_SERVER",
     "ASC_SERVER_URL",
     "ASC_TOKEN",
+    "ASC_TOKEN_HOST",
     "ASC_NO_DAEMON",
     "ASC_DAEMON_ENDPOINT",
     "ASC_HOST_CACHE",

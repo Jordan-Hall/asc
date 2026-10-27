@@ -1,6 +1,6 @@
 package asc.asc.bridge
 
-import asc.v1.Bridge.BridgeFrame
+import asc.v1.BridgeOuterClass.BridgeFrame
 import java.io.EOFException
 import java.io.InputStream
 import java.io.OutputStream

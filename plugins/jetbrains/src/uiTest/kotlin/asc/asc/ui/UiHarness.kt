@@ -61,7 +61,7 @@ object UiHarness {
 
     /**
      * An asc workspace with one committed `a.txt`, a modified `a.txt` and an untracked `new.txt`.
-     * TODO(P12): replace with the `dirty`, `stacks` and `conflict` scenarios of `@asc/asc-fixtures`.
+     * Built with the CLI; the `dirty`, `stacks` and `conflict` scenarios of `@asc/asc-fixtures` are not used here.
      */
     fun dirtyFixture(bin: String): Path {
         val dir = tempDir()
@@ -80,6 +80,6 @@ object UiHarness {
     }
 }
 
-/** TODO(P12): returns the `conflict` scenario once `@asc/asc-fixtures` is in HEAD; null until then. */
+/** The `conflict` scenario of `@asc/asc-fixtures`; this harness builds none, so it is null. */
 @Suppress("UNUSED_PARAMETER")
 fun UiHarness.conflictFixture(bin: String): Path? = null

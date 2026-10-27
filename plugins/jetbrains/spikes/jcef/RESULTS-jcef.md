@@ -4,7 +4,7 @@ Status: scaffold only. NOT YET RUN. This machine has JDK 17 only and no Gradle w
 `verifyPlugin` could not run against 2026.1 and 2026.2. Do not treat the decision below as a finding.
 
 Run: `./gradlew verifyPlugin` and `./gradlew verifyPlugin -Pjcef=required` in this folder
-(or `:spikes:jcef:verifyPlugin` once the root settings include it; TODO(P54)).
+(the root settings do not include this build, so it is not run as `:spikes:jcef:verifyPlugin`).
 
 | Question | 2026.1 | 2026.2 |
 |---|---|---|

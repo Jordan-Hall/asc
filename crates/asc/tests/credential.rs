@@ -1345,3 +1345,60 @@ fn planted_repo_inner() {
         assert!(got.is_anonymous(), "{prompt:?}: {got:?}");
     }
 }
+
+#[test]
+fn asc_token_host_pins_the_token_to_one_host() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = cfg("");
+    let remote = url("https://asc.example.com/api");
+    let other = url("https://other.example.net/");
+    let both = |pin: &str| {
+        resolver(
+            &config,
+            &[("ASC_TOKEN", "tok"), ("ASC_TOKEN_HOST", pin)],
+            dir.path(),
+        )
+        .allow_asc_token(&remote)
+        .allow_asc_token(&other)
+    };
+    // Pinned to the remote: it gets the token, the other listed origin does not.
+    let r = both("asc.example.com");
+    assert_eq!(
+        r.resolve(&remote, Prompt::Never).unwrap().source(),
+        "ASC_TOKEN"
+    );
+    assert!(r.resolve(&other, Prompt::Never).unwrap().is_anonymous());
+    // Case does not matter; the https default port is 443.
+    let r = both("ASC.Example.COM:443");
+    assert_eq!(
+        r.resolve(&remote, Prompt::Never).unwrap().source(),
+        "ASC_TOKEN"
+    );
+    // A pin on another host or port, or one that does not parse, sends it nowhere.
+    for pin in [
+        "other.example.net:8443",
+        "asc.example.com:8443",
+        "https://asc.example.com",
+        "u@asc.example.com",
+        "asc.example.com/x",
+        "a b",
+        "[",
+    ] {
+        let r = both(pin);
+        assert!(
+            r.resolve(&remote, Prompt::Never).unwrap().is_anonymous(),
+            "pin {pin:?}"
+        );
+    }
+    // Unset or empty: the token answers for the listed origins, as before.
+    let r = resolver(&config, &[("ASC_TOKEN", "tok")], dir.path()).allow_asc_token(&remote);
+    assert_eq!(
+        r.resolve(&remote, Prompt::Never).unwrap().source(),
+        "ASC_TOKEN"
+    );
+    let r = both("");
+    assert_eq!(
+        r.resolve(&remote, Prompt::Never).unwrap().source(),
+        "ASC_TOKEN"
+    );
+}

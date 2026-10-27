@@ -53,8 +53,8 @@ class AscMappingActivity : ProjectActivity {
         val current = vcsManager.directoryMappings.map { MappingPlan.Mapping(it.directory, it.vcs) }
         val plan = MappingPlan.plan(current, roots)
 
-        // TODO(P52): the spike has not run. Mapping the root to `asc` registers it, which Git4Idea's
-        // unregistered-root notice skips; ignoring the root as well is the fallback until P52 picks a fix.
+        // Mapping the root to `asc` registers it, which Git4Idea's unregistered-root notice skips; ignoring the
+        // root as well is the fallback (spikes/git4idea-root/RESULTS.md: not yet run in a live IDE).
         val config = VcsConfiguration.getInstance(project)
         val ignored = config.ignoredUnregisteredRoots.map { it.replace('\\', '/') }
         val toIgnore = roots.map { it.replace('\\', '/') }.filter { it !in ignored }

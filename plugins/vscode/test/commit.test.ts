@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { cidText, opBytes } from "./helpers/op";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -174,9 +175,7 @@ describe("commit: absorb", () => {
     f.outcomes.push({
       exit: 0,
       stderr: [],
-      opResult: enc.encode(
-        JSON.stringify({ status: "ok", rewritten: [{ change: "abc", subject: "fix" }] }),
-      ),
+      opResult: opBytes({ rewritten: [1, 2] }),
     });
     const c = new CommitCommands(f.api, fakeUi(true, true).ui);
     expect(await c.absorb(ROOT)).toEqual({ ok: true });
@@ -190,15 +189,32 @@ describe("commit: absorb", () => {
   });
   test("nothing to absorb stops after the preview", async () => {
     const f = fake();
-    f.outcomes.push({ exit: 0, stderr: [], opResult: enc.encode('{"status":"nothing"}') });
+    f.outcomes.push({ exit: 0, stderr: [], opResult: opBytes({ status: "nothing" }) });
     const u = fakeUi();
     expect(await new CommitCommands(f.api, u.ui).absorb(ROOT)).toEqual({ ok: true, nothing: true });
     expect(f.runs.length).toBe(1);
     expect(u.log.info.length).toBe(1);
   });
-  test("an op result that is not JSON reads as absent", () => {
+  test("an op result that does not decode reads as absent", () => {
     expect(summariseOpResult(new Uint8Array([0xff, 0x00]))).toBeNull();
+    expect(summariseOpResult(enc.encode('{"status":"nothing"}'))).toBeNull();
     expect(summariseOpResult(null)).toBeNull();
+  });
+  test("the summary lists rewritten changes, conflicts and hints", () => {
+    const s = summariseOpResult(
+      opBytes({
+        status: "paused",
+        rewritten: [1],
+        conflicts: [{ n: 2, paths: ["a.txt", "b.txt"] }],
+        hints: ["run asc continue"],
+      }),
+    );
+    expect(s?.status).toBe("paused");
+    expect(s?.lines).toEqual([
+      { label: cidText(1).slice(0, 12) },
+      { label: `${cidText(2).slice(0, 12)} (conflict)`, detail: "a.txt, b.txt" },
+      { label: "run asc continue" },
+    ]);
   });
 });
 

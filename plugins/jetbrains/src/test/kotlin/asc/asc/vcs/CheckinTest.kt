@@ -1,6 +1,6 @@
 package asc.asc.vcs
 
-import asc.v1.Bridge.RunEvent
+import asc.v1.BridgeOuterClass.RunEvent
 import java.nio.file.Paths
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse

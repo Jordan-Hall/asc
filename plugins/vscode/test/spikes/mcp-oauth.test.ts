@@ -3,11 +3,12 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { definitions, isSafeServerUrl } from "../../src/mcp";
 
+const ASC = process.platform === "win32" ? "C:\\bin\\asc.exe" : "/bin/asc";
 const doc = readFileSync(join(import.meta.dir, "../../spikes/mcp-oauth.md"), "utf8");
 
 describe("spike-mcp-oauth decision", () => {
   test("the extension offers stdio only and carries no credential", () => {
-    const defs = definitions("/bin/asc", [], "https://asc.example.org");
+    const defs = definitions(ASC, [], "https://asc.example.org");
     expect(defs).toHaveLength(1);
     const text = JSON.stringify(defs);
     expect(text).not.toMatch(/authorization|bearer|token|headers/i);
@@ -17,7 +18,7 @@ describe("spike-mcp-oauth decision", () => {
   test("plain http and URL credentials are refused", () => {
     expect(isSafeServerUrl("http://asc.example.org")).toBe(false);
     expect(isSafeServerUrl("https://user:pw@asc.example.org")).toBe(false);
-    expect(definitions("/bin/asc", [], "http://asc.example.org")).toEqual([]);
+    expect(definitions(ASC, [], "http://asc.example.org")).toEqual([]);
   });
 
   test("the fallback snippet is https, password-prompted and bearer-only", () => {

@@ -155,6 +155,19 @@ describe("scm: model", () => {
     expect(invalidated.at(-1)).toEqual(["d.ts"]);
   });
 
+  test("ready after the first reply, and counts per group (a file can be in two)", async () => {
+    const { a } = api([
+      { path: "a.ts", xy: "MM" },
+      { path: "b.ts", xy: "UU" },
+      { path: "c.ts", xy: "??" },
+    ]);
+    const m = new ScmModel({ root: "r", api: a });
+    expect(m.ready).toBe(false);
+    await m.refresh();
+    expect(m.ready).toBe(true);
+    expect(m.counts()).toEqual({ conflicts: 1, staged: 1, changes: 1, untracked: 1 });
+  });
+
   test("caps resources at 10,000 and reports the rest", async () => {
     const files = Array.from({ length: RESOURCE_CAP + 5 }, (_, i) => ({
       path: `f${String(i).padStart(6, "0")}`,

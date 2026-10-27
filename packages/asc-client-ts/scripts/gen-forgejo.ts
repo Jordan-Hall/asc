@@ -4,8 +4,8 @@
 //
 //   bun scripts/gen-forgejo.ts [--swagger <swagger.v1.json|v1_json.tmpl>] [--check]
 //
-// Default source is the fork's template at D:/dev/forgejo/templates/swagger/v1_json.tmpl (its
-// `{{...}}` placeholders are blanked). Path parameters are renamed to the allowlist's {o} {r} {n} {id}.
+// The source is `--swagger`, else `ASC_SWAGGER`, else the hub's template at
+// D:/dev/asc-hub/templates/swagger/v1_json.tmpl (its `{{...}}` placeholders are blanked). Path parameters are renamed to the allowlist's {o} {r} {n} {id}.
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -39,13 +39,15 @@ export interface Pair {
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "..");
-const DEFAULT_SWAGGER = "D:/dev/forgejo/templates/swagger/v1_json.tmpl";
+const DEFAULT_SWAGGER = "D:/dev/asc-hub/templates/swagger/v1_json.tmpl";
 
 const norm = (p: string): string => p.replace(/\{[^}]*\}/g, "{}");
 const paramNames = (p: string): string[] => [...p.matchAll(/\{([^}]*)\}/g)].map((m) => m[1] ?? "");
 
-// TODO(C41b): the inbox endpoints are not in the fork's swagger yet; this hand-written fragment
-// stands in until the fork emits them. TODO(P05): same for the run rerun endpoint.
+// Operations on the allowlist that the hub's swagger does not describe (inbox update, run rerun) take
+// these hand-written fragments, so the client can type them. An entry is used only when the swagger
+// lacks the operation, and every use is reported on stderr, so a hub that gains one drops it silently
+// from the report.
 const inboxItem = {
   type: "object",
   properties: {
@@ -298,7 +300,7 @@ async function main(): Promise<void> {
     allowlist.hostApi.providers.forgejo.pairs,
   );
   for (const o of overlaid)
-    process.stderr.write(`gen-forgejo: overlay for ${o} (TODO(C41b)/TODO(P05))\n`);
+    process.stderr.write(`gen-forgejo: ${o} is not in the swagger; typed from the overlay\n`);
   const ast = await openapiTS(toOpenApi3(swagger) as unknown as Parameters<typeof openapiTS>[0], {
     alphabetize: true,
   });

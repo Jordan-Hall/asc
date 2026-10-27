@@ -1,14 +1,19 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { create, toBinary } from "@bufbuild/protobuf";
 import { type BridgeNode, bridge } from "@asc/asc-client";
-import { checkFeatures, resolveAsc } from "../src/bridge";
+import { checkFeatures, createBridgeManager, resolveAsc } from "../src/bridge";
 import { activateWith, GIT_PROMPT_BUTTON, type Host } from "../src/extension";
 import { detectAscFolders, nodeDetectFs, resolveGitDir } from "../src/repo";
 
 const dirs: string[] = [];
+// The bridge starts only from an absolute executable, so `asc.path` names a real (empty) file.
+const exeDir = mkdtempSync(join(tmpdir(), "asc-vsc-exe-"));
+const FAKE_EXE = join(exeDir, process.platform === "win32" ? "asc.exe" : "asc");
+writeFileSync(FAKE_EXE, "");
+afterAll(() => rmSync(exeDir, { recursive: true, force: true }));
 function tmp(): string {
   const d = mkdtempSync(join(tmpdir(), "asc-vsc-"));
   dirs.push(d);
@@ -44,7 +49,7 @@ function fakeHost(folders: string[], pick?: string): Fake {
   };
   f.host = {
     workspaceFolders: () => folders,
-    ascPathSetting: () => "",
+    ascPathSetting: () => FAKE_EXE,
     gitEnabled: () => true,
     disableBuiltinGit: async () => {
       f.gitDisabled += 1;
@@ -208,6 +213,98 @@ describe("asc binary resolution", () => {
     expect(
       resolveAsc({ ...base, setting: "", path: "/a", ascHome: "/c", isFile: has(["/c/bin/asc"]) }),
     ).toBe("/c/bin/asc");
-    expect(resolveAsc({ ...base, setting: "", path: "/a", isFile: () => false })).toBe("asc");
+  });
+
+  test("none found is null, never a bare name", () => {
+    expect(resolveAsc({ ...base, setting: "", path: "/a", isFile: () => false })).toBeNull();
+    expect(resolveAsc({ ...base, setting: "/x/asc", path: "/a", isFile: () => false })).toBeNull();
+    const win = { ...base, platform: "win32" as const, home: "C:\\Users\\u" };
+    expect(resolveAsc({ ...win, setting: "", path: "C:\\bin", isFile: () => false })).toBeNull();
+  });
+
+  test("relative settings and PATH entries are never searched", () => {
+    const anyFile = () => true;
+    expect(resolveAsc({ ...base, setting: "./asc", path: "/a", isFile: anyFile })).toBeNull();
+    expect(resolveAsc({ ...base, setting: "bin/asc", path: "/a", isFile: anyFile })).toBeNull();
+    // "." and an empty entry are the current directory; they are skipped, absolute ones are kept.
+    expect(
+      resolveAsc({ ...base, setting: "", path: ".::rel/bin", home: "", isFile: anyFile }),
+    ).toBeNull();
+    expect(resolveAsc({ ...base, setting: "", path: ".:/ok", isFile: has(["/ok/asc"]) })).toBe(
+      "/ok/asc",
+    );
+    const win = { ...base, platform: "win32" as const, home: "" };
+    const winFile = (p: string) => /asc\.exe$/i.test(p);
+    for (const setting of [".\\asc.exe", "..\\asc.exe", "\\asc.exe", "C:asc.exe", "sub\\asc.exe"]) {
+      expect(resolveAsc({ ...win, setting, path: "C:\\ok", isFile: winFile })).toBeNull();
+    }
+    expect(resolveAsc({ ...win, setting: "", path: ".;;rel;C:\\ok", isFile: winFile })).toBe(
+      "C:\\ok\\asc.exe",
+    );
+    expect(resolveAsc({ ...win, setting: "asc", path: "C:\\ok", isFile: winFile })).toBe(
+      "C:\\ok\\asc.exe",
+    );
+  });
+
+  test("a planted asc in the workspace is never chosen, even on PATH or as the setting", () => {
+    const ws = "C:\\work\\repo";
+    const win = { ...base, platform: "win32" as const, home: "", workspaceRoots: [ws] };
+    const files = (p: string) =>
+      p.toLowerCase().startsWith("c:\\work\\repo\\") || p === "C:\\ok\\asc.exe";
+    // PATH lists the workspace (and a sub-folder of it, in another case) ahead of a real install.
+    expect(
+      resolveAsc({ ...win, setting: "", path: `${ws};C:\\WORK\\Repo\\bin;C:\\ok`, isFile: files }),
+    ).toBe("C:\\ok\\asc.exe");
+    expect(
+      resolveAsc({ ...win, setting: `${ws}\\asc.exe`, path: "C:\\ok", isFile: files }),
+    ).toBeNull();
+    expect(resolveAsc({ ...win, setting: "", path: ws, isFile: files })).toBeNull();
+    const nix = { ...base, home: "", workspaceRoots: ["/w/repo"] };
+    expect(
+      resolveAsc({ ...nix, setting: "", path: "/w/repo:/w/repo/bin", isFile: () => true }),
+    ).toBeNull();
+    // A sibling folder that shares the prefix is not inside it.
+    expect(resolveAsc({ ...nix, setting: "", path: "/w/repo2", isFile: () => true })).toBe(
+      "/w/repo2/asc",
+    );
+  });
+});
+
+describe("a bare or planted asc is never spawned", () => {
+  test("the bridge manager refuses a bare name and starts nothing", () => {
+    let spawned = 0;
+    for (const command of [
+      null,
+      "asc",
+      "asc.exe",
+      "./asc",
+      "..\\asc.exe",
+      "\\asc.exe",
+      "C:asc.exe",
+    ]) {
+      const m = createBridgeManager({
+        command: () => command,
+        create: () => {
+          spawned += 1;
+          throw new Error("must not spawn");
+        },
+      });
+      expect(() => m.node()).toThrow("asc was not found");
+      expect(m.started).toBe(false);
+    }
+    expect(spawned).toBe(0);
+  });
+
+  test("an activation whose asc is missing reports it and never reaches the transport", async () => {
+    const f = fakeHost([ascFolder()]);
+    f.host.ascPathSetting = () => "asc";
+    f.host.env = { PATH: "", ASC_HOME: join(tmp(), "none") };
+    let spawned = 0;
+    const a = await activateWith(
+      f.host,
+      fakeNode(FULL, () => void (spawned += 1)),
+    );
+    expect(await a.started).toBeNull();
+    expect(spawned).toBe(0);
   });
 });

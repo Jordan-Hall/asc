@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { opBytes } from "./helpers/op";
 import type { CommandsUi, RunOutcome } from "../src/scm/commands";
 import { planIgnore } from "../src/scm/ignore";
 import { RemoteCommands, type RemoteApi } from "../src/scm/remote";
@@ -206,18 +207,27 @@ describe("scm-extra: stash", () => {
     expect(await c.drop("/w")).toEqual({ ok: false, reason: "cancelled" });
     expect(f.runs.map((r) => r.verb)).toEqual(["stash pop", "stash apply"]);
   });
-  test("list parses the JSON forms and tolerates junk", async () => {
+  test("list reads the typed stash result and tolerates junk", async () => {
     const enc = new TextEncoder();
     expect(
-      parseStashList(enc.encode('{"stashes":[{"index":0,"message":"a"},{"message":"b"}]}')),
+      parseStashList(
+        opBytes({
+          stash: [
+            { index: 0, message: "a" },
+            { index: 1, message: "b" },
+          ],
+        }),
+      ),
     ).toEqual([
       { index: 0, message: "a" },
       { index: 1, message: "b" },
     ]);
+    expect(parseStashList(opBytes())).toEqual([]);
+    expect(parseStashList(enc.encode('{"stashes":[]}'))).toEqual([]);
     expect(parseStashList(enc.encode("not json"))).toEqual([]);
     expect(parseStashList(null)).toEqual([]);
     const f = fake();
-    f.outcomes.push({ exit: 0, stderr: [], opResult: enc.encode('[{"index":2,"message":"x"}]') });
+    f.outcomes.push({ exit: 0, stderr: [], opResult: opBytes({ stash: [{ index: 2, message: "x" }] }) });
     expect(await new StashCommands(f.api, fakeUi().ui).list("/w")).toEqual([
       { index: 2, message: "x" },
     ]);

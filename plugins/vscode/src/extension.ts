@@ -17,6 +17,17 @@ import {
   serverFeatures,
   serverTargets,
 } from "./bridge";
+import {
+  AuthService,
+  bridgeAuth,
+  cliForget,
+  hostOfRemote,
+  hostsFromSetting,
+  registerAuth,
+  secretTokenStore,
+} from "./auth";
+import { createCliDirect } from "./cli-direct";
+import { bridgeConnectivity, followConnectivity } from "./connectivity";
 import { detectAscFolders } from "./repo";
 import { registerBlame } from "./blame/register";
 import { registerConflicts } from "./conflicts";
@@ -34,6 +45,8 @@ import { registerStashCommands } from "./scm/stash";
 import { bridgeStatusApi, registerStackEditCommands, registerStatusBar } from "./scm/statusbar";
 import { registerSearch } from "./search";
 import { registerStackActions } from "./stack/actions";
+import { cliCloudApi, CloudStatusModel, registerCloud } from "./stack/cloud";
+import { cliLiveApi, LiveModel, registerLive } from "./stack/live";
 import { registerStackNav } from "./stack/nav";
 import { registerShare } from "./stack/share";
 import { registerTasks } from "./tasks";
@@ -41,8 +54,8 @@ import { bridgeActionsApi, currentChange, registerActions, splitRepo } from "./v
 import { AffectedModel, bridgeAffectedApi, registerAffected } from "./views/affected";
 import { bridgeHistoryApi, registerFileHistory } from "./views/file-history";
 import { bridgeInboxApi, InboxModel, registerInbox } from "./views/inbox";
-import { registerOpLog } from "./views/oplog";
-import { bridgeViewApi, pump, registerWorktrees, wsIdFor } from "./views/worktrees";
+import { cliOpLogApi, registerOpLog } from "./views/oplog";
+import { bridgeViewApi, pump, registerWorktrees, runVerb, wsIdFor } from "./views/worktrees";
 import type { WebviewHost } from "./webview/host";
 import { vscodeWebviews } from "./webview/vscode-adapter";
 
@@ -71,6 +84,16 @@ export interface Host {
   };
   env: Record<string, string | undefined>;
   platform: NodeJS.Platform;
+  /** Variables for the bridge process, such as a fallback token the host holds (read on every spawn). */
+  bridgeEnv?(): Record<string, string | undefined>;
+  /**
+   * After every `Hello`: checks the roots and loads the fallback tokens of the host they all use, so
+   * `bridgeEnv()` is current. The bridge starts again when, and only when, `bridgeEnv()` then differs from
+   * the environment the running child was started with.
+   */
+  reconcileAuth?(hello: HelloInfo): Promise<void>;
+  /** Drops the injected token, for when the roots' hosts cannot be checked; `bridgeEnv()` is then empty. */
+  clearAuth?(): void;
   /** Registers the SCM provider, `asc:` file system and decorations (P25). Absent under tests. */
   registerScm?(bridge: BridgeManager, folders: readonly string[]): Disposable;
   /** Registers inline blame, hover, CodeLens and the heatmap (P27). Absent under tests. */
@@ -120,6 +143,7 @@ export async function activateWith(
   if (ascFolders.length === 0) return NOT_ASC;
 
   const subs: Disposable[] = [];
+  let spawnedWith = envKey({});
   const bridge = createBridgeManager({
     command: () =>
       resolveAsc({
@@ -129,8 +153,19 @@ export async function activateWith(
         home: host.env.HOME ?? homedir(),
         platform: host.platform,
         isFile: nodeIsFile,
+        workspaceRoots: host.workspaceFolders(),
       }),
     onStderr: (line) => host.log(line),
+    ...(host.bridgeEnv === undefined
+      ? {}
+      : {
+          env: () => {
+            // The injected part the child is started with, to compare with what a later `Hello` wants.
+            const injected = host.bridgeEnv?.() ?? {};
+            spawnedWith = envKey(injected);
+            return { ...host.env, ...injected };
+          },
+        }),
     ...(create === undefined ? {} : { create }),
   });
 
@@ -149,9 +184,36 @@ export async function activateWith(
   let scmReg: Disposable | null = null;
   let blameReg: Disposable | null = null;
   let registering = false;
-  const start = async (): Promise<Compat | null> => {
+  // Restarts one `start` may make before it gives up on the token and runs without one.
+  const MAX_AUTH_RESTARTS = 2;
+  const start = async (restarts = 0): Promise<Compat | null> => {
+    let hello: HelloInfo;
     try {
-      const hello = await bridge.hello();
+      hello = await bridge.hello();
+    } catch (e) {
+      host.log(`the asc bridge did not start; check asc.path: ${String(e)}`);
+      // The roots' hosts cannot be re-checked, so a token the child holds is no longer vouched for.
+      host.clearAuth?.();
+      if (envKey(host.bridgeEnv?.() ?? {}) !== spawnedWith) bridge.restart();
+      return null;
+    }
+    try {
+      if (host.reconcileAuth !== undefined && restarts <= MAX_AUTH_RESTARTS) {
+        try {
+          await host.reconcileAuth(hello);
+        } catch (e) {
+          // The hosts could not be checked: no token may stay in the child.
+          host.log(`asc: the token hosts could not be checked; no token is passed: ${String(e)}`);
+          host.clearAuth?.();
+        }
+        // A token (or its host) the child was not started with: start it again with the right one. Not
+        // otherwise, so an unchanged environment never costs a restart.
+        if (envKey(host.bridgeEnv?.() ?? {}) !== spawnedWith) {
+          if (restarts >= MAX_AUTH_RESTARTS) host.clearAuth?.();
+          bridge.restart();
+          return await start(restarts + 1);
+        }
+      }
       await host.setContext("asc.mutating", hello.compat.level === "full");
       updateNotice(hello.compat, host, hello.ascVersion);
       // The server services contribute on the same condition the code registers on (Hello.features).
@@ -176,7 +238,7 @@ export async function activateWith(
       return hello.compat;
     } catch (e) {
       host.log(
-        `the asc bridge did not start or a feature failed to register; check asc.path: ${String(e)}`,
+        `a feature failed to register or the asc bridge stopped; check asc.path: ${String(e)}`,
       );
       return null;
     }
@@ -194,6 +256,15 @@ export async function activateWith(
       bridge.dispose();
     },
   };
+}
+
+/** A comparable form of the injected variables (order and undefined values do not matter). */
+function envKey(env: Record<string, string | undefined>): string {
+  return JSON.stringify(
+    Object.entries(env)
+      .filter((kv): kv is [string, string] => kv[1] !== undefined)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+  );
 }
 
 /** One notification per workspace when the built-in git is still on for an asc folder. */
@@ -219,7 +290,10 @@ interface FeatureEnv {
   roots: readonly string[];
   hello: HelloInfo;
   log(line: string): void;
-  ascPath(): string;
+  ascPath(): string | null;
+  auth: AuthService;
+  /** Variables for the asc children the extension starts itself, such as a token the host holds. */
+  extraEnv?(): Record<string, string | undefined>;
 }
 
 function disposeAll(subs: Sub[]): void {
@@ -239,6 +313,11 @@ export function registerAll(e: FeatureEnv): Disposable {
   const viewApi = bridgeViewApi(mgr);
   const historyApi = bridgeHistoryApi(mgr);
   const onWatchError = (err: unknown) => log(`asc watch: ${String(err)}`);
+  // Read-mostly verbs the bridge allowlist does not carry (op log, cloud status, live).
+  const cli = createCliDirect({
+    command: e.ascPath,
+    ...(e.extraEnv === undefined ? {} : { extraEnv: e.extraEnv }),
+  });
 
   // P31a: stack checkout through `asc stack get`; the asc server decides what a remote supports.
   const checkout = new StackCheckout(statusApi, { info: ui.info, error: ui.error });
@@ -258,7 +337,16 @@ export function registerAll(e: FeatureEnv): Disposable {
         root,
         ac.signal,
         (k) => {
-          if (k === "head" || k === "ref" || k === "op-finished") cb(root);
+          if (
+            k === "head" ||
+            k === "ref" ||
+            k === "op-finished" ||
+            k === "switch-done" ||
+            k === "resync" ||
+            k === "stack"
+          ) {
+            cb(root);
+          }
         },
         onWatchError,
       );
@@ -279,7 +367,7 @@ export function registerAll(e: FeatureEnv): Disposable {
     registerConflicts(vscode, mgr, roots, log),
     // P29: trees and revision navigation.
     registerWorktrees(vscode, viewApi, roots, log),
-    registerOpLog(vscode, viewApi, roots, log),
+    registerOpLog(vscode, viewApi, cliOpLogApi(cli), roots, log),
     registerFileHistory(vscode, historyApi, roots, log),
     registerRevNav(vscode, historyApi, roots, log),
     // P34: "ASC: Search code".
@@ -299,6 +387,74 @@ export function registerAll(e: FeatureEnv): Disposable {
     registerAffected(vscode, affected, viewApi, pump, log),
     registerTasks(vscode, affected, log),
   );
+
+  // P47b and P59: cloud upload state and live updates, for the first root. Both refresh on events only:
+  // the `Watch` stream, `Bridge.Events` connectivity and a finished op; there is no timer.
+  const first = roots[0];
+  if (first !== undefined) {
+    const ac = new AbortController();
+    const cloud = new CloudStatusModel({
+      api: cliCloudApi(cli),
+      root: first,
+      onError: (err) => log(`asc cloud: ${String(err)}`),
+    });
+    const live = new LiveModel({
+      api: cliLiveApi(cli, async (root) => ({
+        exit: (await runVerb(mgr.node(), root, "restack", [])).exit,
+      })),
+      root: first,
+      onError: (err) => log(`asc live: ${String(err)}`),
+    });
+    const behind = async (): Promise<void> => {
+      try {
+        live.setBehind((await statusApi.stack(first))?.behind ?? 0);
+      } catch (err) {
+        log(`asc live: ${String(err)}`);
+      }
+    };
+    void pump(
+      viewApi,
+      first,
+      ac.signal,
+      (k) => {
+        if (k === "cloud" || k === "op-finished" || k === "resync") void cloud.onEvent("cloud");
+        if (k === "head" || k === "ref" || k === "op-finished" || k === "resync") {
+          void live.refresh();
+          void behind();
+        }
+      },
+      onWatchError,
+    );
+    void followConnectivity(
+      bridgeConnectivity(mgr),
+      ac.signal,
+      (ev) => {
+        if (ev.root === first) void cloud.onEvent("connectivity", ev.server === "up");
+      },
+      onWatchError,
+    );
+    void cloud.refresh();
+    void live.refresh();
+    void behind();
+    subs.push(
+      { dispose: () => ac.abort() },
+      registerCloud(vscode, cloud),
+      registerLive(vscode, live),
+    );
+  }
+
+  // Sign-in to any host named in `asc.hosts` or used by a root's remote (SPEC 24.6).
+  const rootHosts = () =>
+    hello.roots.flatMap((r) => {
+      const h = r.wsId === "" ? null : hostOfRemote(r.remoteUrl);
+      return h === null ? [] : [h];
+    });
+  subs.push(registerAuth(vscode, e.auth, rootHosts, log));
+  if (e.auth.withheld) {
+    log(
+      "asc: a stored token is not passed to asc because the open folders use different hosts; open one host per window or set credential.helper.",
+    );
+  }
 
   // P33b: MCP registration and "Configure agents".
   const mcp = registerMcp({
@@ -453,8 +609,37 @@ export function vscodeHost(vscode: typeof vscodeTypes, ctx: vscodeTypes.Extensio
       home: process.env.HOME ?? homedir(),
       platform: process.platform,
       isFile: nodeIsFile,
+      workspaceRoots: (vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath),
     });
+  let mgrRef: BridgeManager | null = null;
+  const firstFolder = () =>
+    (vscode.workspace.workspaceFolders ?? []).find((f) => f.uri.scheme === "file")?.uri.fsPath;
+  const auth = new AuthService({
+    bridge: {
+      token: async (h) => (mgrRef === null ? null : bridgeAuth(mgrRef).token(h)),
+      storeToken: async (h, t) => {
+        if (mgrRef === null) throw new Error("asc is not running");
+        await bridgeAuth(mgrRef).storeToken(h, t);
+      },
+    },
+    store: secretTokenStore(ctx.secrets),
+    forget: async (host) => {
+      const root = firstFolder();
+      if (root === undefined) return;
+      await cliForget(createCliDirect({ command: ascPath }), root)(host);
+    },
+    // The bridge reads its token at spawn; start it again so the new one takes effect.
+    onFallbackChanged: () => void vscode.commands.executeCommand("asc.restartBridge"),
+  });
   return {
+    bridgeEnv: () => auth.env(),
+    async reconcileAuth(hello) {
+      await auth.reconcile(
+        hostsFromSetting(vscode.workspace.getConfiguration("asc").get("hosts", [])),
+        hello.roots,
+      );
+    },
+    clearAuth: () => void auth.clear(),
     workspaceFolders: () =>
       (vscode.workspace.workspaceFolders ?? [])
         .filter((f) => f.uri.scheme === "file")
@@ -487,12 +672,31 @@ export function vscodeHost(vscode: typeof vscodeTypes, ctx: vscodeTypes.Extensio
       vscodeWebviews(vscode, ctx, folders, (l) => out().appendLine(l), bridge),
     registerScm: (bridge, folders) => {
       const reg = registerScm(vscode, bridge, folders, (l) => out().appendLine(l));
-      return reg;
+      // The smoke test reads the SCM view's state through this command; it is not contributed.
+      const probe = vscode.commands.registerCommand("asc.probe", () => reg.probe());
+      return {
+        dispose() {
+          probe.dispose();
+          reg.dispose();
+        },
+      };
     },
     registerBlame: (bridge, folders) =>
       registerBlame(vscode, bridge, folders, (l) => out().appendLine(l)),
-    registerFeatures: (mgr, roots, hello) =>
-      registerAll({ vscode, ctx, mgr, roots, hello, log: (l) => out().appendLine(l), ascPath }),
+    registerFeatures: (mgr, roots, hello) => {
+      mgrRef = mgr;
+      return registerAll({
+        vscode,
+        ctx,
+        mgr,
+        roots,
+        hello,
+        log: (l) => out().appendLine(l),
+        ascPath,
+        auth,
+        extraEnv: () => auth.env(),
+      });
+    },
   };
 }
 

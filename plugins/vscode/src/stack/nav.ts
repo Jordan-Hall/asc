@@ -1,9 +1,11 @@
 // Stack navigation (SPEC 24.3.2): `up`, `down`, `top` and `bottom` through the allowlisted
-// `Bridge.Run`. At a fork the verb exits 2 with `OpResult.candidates`; the person picks one and the
-// verb runs again with `--to=<change>`. Editor-free; `registerStackNav` is the only `vscode` user.
-// TODO(C09): the bridge allowlist for `up`/`down` has no `--to` flag yet, so the second run is
-// refused there until the allowlist adds `--to` (`rev`) to up, down, top and bottom.
+// `Bridge.Run`. At a fork the verb exits 2 with `OpResult.candidates` and moves nothing; the person picks
+// one, the plugin moves there with `switch --detach <change>` (the move `up` itself makes) and the verb
+// runs again for the steps that are left, so the allowlist needs no `--to` flag. Editor-free;
+// `registerStackNav` is the only `vscode` user.
 import type * as vscodeTypes from "vscode";
+import { OpStatus } from "@asc/asc-client/cli";
+import { changeFull, decodeOpResult } from "../opresult";
 import type { CommandResult, CommandsApi, CommandsUi } from "../scm/commands";
 import { VerbRunner } from "../scm/statusbar";
 
@@ -32,29 +34,21 @@ export function validChange(s: string): boolean {
   return true;
 }
 
-/**
- * Reads `candidates` from the encoded `OpResult`. TODO(M02): `cli.proto` is not in the descriptor set,
- * so the bytes are read as the JSON the verb printed. Anything malformed gives `[]`.
- */
+/** Reads `candidates` from the encoded `OpResult`. A change that is not a plain id is dropped. */
 export function parseCandidates(bytes: Uint8Array | null): Candidate[] {
-  if (bytes === null || bytes.byteLength === 0) return [];
-  let v: unknown;
-  try {
-    v = JSON.parse(new TextDecoder().decode(bytes));
-  } catch {
-    return [];
-  }
-  const list = (v as { candidates?: unknown } | null)?.candidates;
-  if (!Array.isArray(list)) return [];
+  const r = decodeOpResult(bytes);
+  if (r === null) return [];
   const out: Candidate[] = [];
-  for (const e of list) {
-    if (typeof e !== "object" || e === null) continue;
-    const o = e as Record<string, unknown>;
-    if (typeof o.change !== "string" || !validChange(o.change)) continue;
-    out.push({ change: o.change, subject: typeof o.subject === "string" ? o.subject : "" });
+  for (const c of r.candidates) {
+    const change = changeFull(c.change);
+    if (change === null || !validChange(change)) continue;
+    out.push({ change, subject: new TextDecoder().decode(c.subject) });
   }
   return out;
 }
+
+/** Most forks one command walks through before it stops. */
+export const MAX_FORKS = 16;
 
 export class StackNav {
   private readonly r: VerbRunner;
@@ -78,18 +72,46 @@ export class StackNav {
         return { ok: false, reason: "invalid" };
       }
       if (!(await this.r.gate())) return { ok: false, reason: "disabled" };
-      const base = steps === undefined || steps === 1 ? [] : [String(steps)];
-      const first = await this.r.run(root, verb, base);
-      if (first.exit !== 2) return this.r.outcome(verb, first);
-      const cands = parseCandidates(first.opResult);
-      if (cands.length === 0) return this.r.outcome(verb, first);
-      const to = await this.ui.pickCandidate(cands);
-      // Only a change the verb itself offered can be passed back.
-      if (to === undefined || !cands.some((c) => c.change === to))
-        return { ok: false, reason: "cancelled" };
-      return this.r.outcome(verb, await this.r.run(root, verb, [...base, `--to=${to}`]));
+      // `down` and `bottom` never fork, so one run does them. `up N` goes one step at a time, because a
+      // fork reports the children of the node it stopped at and not how far the walk had come; `top`
+      // goes on from the chosen child with a new run.
+      if (!forks(verb)) {
+        const args = steps === undefined || steps === 1 ? [] : [String(steps)];
+        return this.r.outcome(verb, await this.r.run(root, verb, args));
+      }
+      let left = verb === "up" ? (steps ?? 1) : 1;
+      let forked = 0;
+      for (;;) {
+        const res = await this.r.run(root, verb, []);
+        if (res.exit !== 2) {
+          const last = this.r.outcome(verb, res);
+          if (!last.ok) return last;
+          if (decodeOpResult(res.opResult)?.status === OpStatus.NOTHING) {
+            return { ok: true, nothing: true };
+          }
+          if (verb === "top" || --left < 1) return last;
+          continue;
+        }
+        if (++forked > MAX_FORKS) break;
+        const cands = parseCandidates(res.opResult);
+        if (cands.length === 0) return this.r.outcome(verb, res);
+        const to = await this.ui.pickCandidate(cands);
+        // Only a change the verb itself offered can be passed back.
+        if (to === undefined || !cands.some((c) => c.change === to)) {
+          return { ok: false, reason: "cancelled" };
+        }
+        const moved = await this.r.run(root, "switch", ["--detach", to]);
+        if (moved.exit !== 0) return this.r.outcome("switch", moved);
+        if (verb === "up" && --left < 1) return { ok: true };
+      }
+      this.ui.warn("ASC: the stack forks too often to follow; stopped.");
+      return { ok: false, reason: "ambiguous" };
     });
   }
+}
+
+function forks(verb: NavVerb): boolean {
+  return verb === "up" || verb === "top";
 }
 
 /** Registers `asc.stackUp`, `asc.stackDown`, `asc.stackTop`, `asc.stackBottom`. Keybindings live in `package.json`. */

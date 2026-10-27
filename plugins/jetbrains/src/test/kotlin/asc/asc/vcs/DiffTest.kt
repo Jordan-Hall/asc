@@ -1,12 +1,12 @@
 package asc.asc.vcs
 
-import asc.v1.Repo.LogEntry
-import asc.v1.Repo.LogResponse
-import asc.v1.Repo.ReadFileResponse
-import asc.v1.Repo.Signature
-import asc.v1.Workspace.WsLogRequest
-import asc.v1.Workspace.WsReadFileRequest
-import asc.v1.Workspace.WsStatusResponse
+import asc.v1.RepoOuterClass.LogEntry
+import asc.v1.RepoOuterClass.LogResponse
+import asc.v1.RepoOuterClass.ReadFileResponse
+import asc.v1.RepoOuterClass.Signature
+import asc.v1.WorkspaceOuterClass.WsLogRequest
+import asc.v1.WorkspaceOuterClass.WsReadFileRequest
+import asc.v1.WorkspaceOuterClass.WsStatusResponse
 import com.google.protobuf.ByteString
 import asc.asc.bridge.BridgeException
 import kotlinx.coroutines.flow.Flow

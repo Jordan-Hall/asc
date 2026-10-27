@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import {
-  CloudDraftsToggle,
   CloudStatusModel,
   cloudView,
   MAX_COUNT,
@@ -97,30 +96,5 @@ describe("cloud: model", () => {
     s.m.dispose();
     await s.m.onEvent("cloud");
     expect(s.calls.n).toBe(0);
-  });
-});
-
-describe("cloud: Show cloud drafts toggle", () => {
-  test("default off; on adds --cloud only; change notifies", async () => {
-    let v = false;
-    const t = new CloudDraftsToggle({ get: () => v, set: (x) => void (v = x) });
-    let fired = 0;
-    t.onChange(() => fired++);
-    expect(t.slArgs()).toEqual([]);
-    await t.toggle();
-    expect(t.slArgs()).toEqual(["--cloud"]);
-    await t.set(true);
-    expect(fired).toBe(1);
-    await t.toggle();
-    expect(t.slArgs()).toEqual([]);
-  });
-  test("a throwing store reads as off", () => {
-    const t = new CloudDraftsToggle({
-      get: () => {
-        throw new Error("x");
-      },
-      set() {},
-    });
-    expect(t.on).toBe(false);
   });
 });

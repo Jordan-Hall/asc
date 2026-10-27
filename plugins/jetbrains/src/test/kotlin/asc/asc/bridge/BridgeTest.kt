@@ -1,7 +1,7 @@
 package asc.asc.bridge
 
-import asc.v1.Bridge.BridgeFrame
-import asc.v1.Bridge.End
+import asc.v1.BridgeOuterClass.BridgeFrame
+import asc.v1.BridgeOuterClass.End
 import com.google.protobuf.ByteString
 import java.io.ByteArrayInputStream
 import java.io.PipedInputStream
@@ -120,13 +120,23 @@ class BridgeTest {
     }
 
     @Test fun environmentNeverPromptsAndTokenStaysOutOfArgv() {
-        val env = BridgeEnv.build(mapOf("GIT_ASKPASS" to "x", "PATH" to "p", "ASC_TOKEN" to "old"), "new")
+        val env = BridgeEnv.build(mapOf("GIT_ASKPASS" to "x", "PATH" to "p", "ASC_TOKEN" to "old"), "new", "forge.example.com")
         assertFalse(env.containsKey("GIT_ASKPASS"))
         assertEquals("0", env["GIT_TERMINAL_PROMPT"])
         assertEquals("never", env["GCM_INTERACTIVE"])
         assertEquals("new", env["ASC_TOKEN"])
+        assertEquals("forge.example.com", env["ASC_TOKEN_HOST"])
         assertEquals("p", env["PATH"])
         assertEquals(listOf("asc", "api", "--stdio"), BridgeEnv.command("asc"))
-        assertEquals("old", BridgeEnv.build(mapOf("ASC_TOKEN" to "old"), null)["ASC_TOKEN"])
+        assertEquals("old", BridgeEnv.build(mapOf("ASC_TOKEN" to "old"), null, null)["ASC_TOKEN"])
+    }
+
+    @Test fun aTokenWithoutItsHostIsNotPassed() {
+        val inherited = mapOf("PATH" to "p")
+        for (host in listOf(null, "")) {
+            val env = BridgeEnv.build(inherited, "new", host)
+            assertFalse(env.containsKey("ASC_TOKEN"))
+            assertFalse(env.containsKey("ASC_TOKEN_HOST"))
+        }
     }
 }

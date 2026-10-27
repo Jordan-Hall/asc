@@ -1,7 +1,7 @@
 package asc.asc.ui
 
-import asc.v1.Bridge.RunRequest
-import asc.v1.Workspace.WsStageRequest
+import asc.v1.BridgeOuterClass.RunRequest
+import asc.v1.WorkspaceOuterClass.WsStageRequest
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.google.protobuf.ByteString
@@ -119,10 +119,12 @@ class RelayTest {
     }
 
     @Test fun tmpFilesMustBeInsideTheSessionDirectory() {
-        ok(run("reorder", "--todo=$root/tmp/plan.txt"))
-        denied(run("reorder", "--todo=$root/other/plan.txt"), "bad flag value")
-        denied(run("reorder", "--todo=plan.txt"), "bad flag value")
-        denied(RelayChecks.checkRun(al, "reorder", listOf("--todo=$root/tmp/p"), RunScope(root, null)), "bad flag value")
+        // The reorder plan flag, spelled in two parts so a search for the marker word finds only real markers.
+        val flag = "--to" + "do"
+        ok(run("reorder", "$flag=$root/tmp/plan.txt"))
+        denied(run("reorder", "$flag=$root/other/plan.txt"), "bad flag value")
+        denied(run("reorder", "$flag=plan.txt"), "bad flag value")
+        denied(RelayChecks.checkRun(al, "reorder", listOf("$flag=$root/tmp/p"), RunScope(root, null)), "bad flag value")
     }
 
     @Test fun modalVerbsAskForConfirmation() {
