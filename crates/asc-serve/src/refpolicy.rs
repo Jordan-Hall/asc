@@ -81,33 +81,49 @@ pub fn draft_owner_of(principal: &Principal, refname: &str) -> Option<i64> {
     }
 }
 
-/// Whether `refname` lies in the namespace of `agent`'s token or names a run ref of its agent.
-pub(crate) fn agent_ref_shape(agent: &crate::agents::tokens::AgentPrincipal, refname: &str) -> bool {
+/// Which of an agent's refs a name is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AgentRefKind {
+    /// Inside the namespace of the agent's own token.
+    Token,
+    /// The ref of run number `n` of the agent; the caller must own that run.
+    Run(u64),
+}
+
+/// The most digits of a run number in a ref name; a longer one is not a run.
+const MAX_RUN_DIGITS: usize = 18;
+
+/// The run number in `run-<n>`'s `<n>`: ASCII digits only, no sign, no leading zero, at most
+/// [`MAX_RUN_DIGITS`], and a value that parses. The one parser the shape test and the gate share.
+pub(crate) fn parse_run_number(digits: &str) -> Option<u64> {
+    let ok = !digits.is_empty()
+        && digits.len() <= MAX_RUN_DIGITS
+        && digits.bytes().all(|b| b.is_ascii_digit())
+        && !digits.starts_with('0');
+    if ok { digits.parse().ok() } else { None }
+}
+
+/// Classifies `refname` (a branch name or a stored `refs/users/<owner>/heads/...` name) against
+/// the namespace of `agent`'s token; `None` when it is neither the token's namespace nor a
+/// well-formed run ref of its agent.
+pub(crate) fn agent_ref_kind(
+    agent: &crate::agents::tokens::AgentPrincipal,
+    refname: &str,
+) -> Option<AgentRefKind> {
     let branch = match refname.strip_prefix(USER_NS) {
         Some(rest) => {
-            let Some((id, rest)) = rest.split_once('/') else {
-                return false;
-            };
+            let (id, rest) = rest.split_once('/')?;
             if id.parse::<i64>().ok() != Some(agent.owner_id) {
-                return false;
+                return None;
             }
-            match rest.strip_prefix("heads/") {
-                Some(b) => b,
-                None => return false,
-            }
+            rest.strip_prefix("heads/")?
         }
-        None => match refname.strip_prefix(HEADS) {
-            Some(b) => b,
-            None => return false,
-        },
+        None => refname.strip_prefix(HEADS)?,
     };
-    let Some(rest) = branch
-        .strip_prefix("agent/")
-        .and_then(|r| r.strip_prefix(agent.name.as_str()))
-        .and_then(|r| r.strip_prefix('/'))
-    else {
-        return false;
-    };
+    let rest = branch
+        .strip_prefix("agent/")?
+        .strip_prefix(agent.name.as_str())?
+        .strip_prefix('/')?;
     let clean = |s: &str| {
         !s.is_empty()
             && !s.contains(|c: char| c.is_control() || c == '\\')
@@ -118,10 +134,19 @@ pub(crate) fn agent_ref_shape(agent: &crate::agents::tokens::AgentPrincipal, ref
         .strip_prefix(agent.token_id.as_str())
         .and_then(|r| r.strip_prefix('/'))
     {
-        return clean(r);
+        return clean(r).then_some(AgentRefKind::Token);
     }
     rest.strip_prefix("run-")
-        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        .and_then(parse_run_number)
+        .map(AgentRefKind::Run)
+}
+
+/// Whether `refname` has the shape of a ref `agent` may write (see [`agent_ref_kind`]).
+pub(crate) fn agent_ref_shape(
+    agent: &crate::agents::tokens::AgentPrincipal,
+    refname: &str,
+) -> bool {
+    agent_ref_kind(agent, refname).is_some()
 }
 
 /// The prefix of `owner`'s user refs, `refs/users/<owner>/`.

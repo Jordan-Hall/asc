@@ -580,8 +580,9 @@ impl ServerRefs {
         // shared branch and is checked by `land::check_branch`.
         if pushed.is_none() {
             let policy = refpolicy::RepoPolicy::load(self.registry.pool(), entry.key.0).await?;
-            let owner = refpolicy::owner_of(&ctx.principal);
             for p in &mut planned {
+                // An agent has an owner only inside its own token's namespace.
+                let owner = refpolicy::draft_owner_of(&ctx.principal, &p.text);
                 if let refpolicy::Class::User { stored, .. } = policy.classify(owner, &p.text)? {
                     p.name = RefName::new(stored.as_bytes())
                         .map_err(|e| Status::invalid_argument(e.to_string()))?;
@@ -589,11 +590,15 @@ impl ServerRefs {
                 }
             }
         }
-        let user_owner = refpolicy::owner_of(&ctx.principal);
+        let user_owner = refpolicy::accounting_owner_of(&ctx.principal);
         let has_user = planned.iter().any(|p| p.user);
         if has_user {
             for p in planned.iter().filter(|p| p.user) {
-                let owned = refauthz::owns(user_owner, &String::from_utf8_lossy(p.name.as_bytes()));
+                let stored = String::from_utf8_lossy(p.name.as_bytes());
+                let owned = refauthz::owns(
+                    refpolicy::draft_owner_of(&ctx.principal, &stored),
+                    &stored,
+                );
                 if !owned {
                     return Err(Status::permission_denied(
                         "a user ref can only be changed by its owner",
