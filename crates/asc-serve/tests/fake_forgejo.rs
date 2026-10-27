@@ -17,7 +17,7 @@ mod forgejo {
     use asc_serve::config::CompositionGrant;
     use asc_serve::forgejo::{
         AuthzCacheConfig, ForgejoClient, ForgejoHooks, HookClient, HookOptions, InternalAuthz,
-        InternalToken, PostReceiveEffect, PublicApiAuthz,
+        InternalToken, PostReceiveEffect, PublicApiAuthz, RepoIdBinding,
     };
     use asc_serve::outbox::{Effect, Job};
     use asc_serve::registry::{NewRepo, Registry, SqlGitMap};
@@ -627,6 +627,57 @@ mod forgejo {
                 .unwrap_err(),
             AuthError::Unauthenticated
         );
+    }
+
+    #[tokio::test]
+    async fn a_repository_id_other_than_the_bound_one_is_refused() {
+        let (fake, url) = start().await;
+        let answer = |id: u64| {
+            json!({"allowed": true, "user_id": 9, "username": "bob", "perm": "write",
+                   "deploy_key_id": 0, "is_actions_task": false, "repo_id": id})
+        };
+        let set = |id: u64| {
+            fake.with(|i| {
+                i.authz.insert(("pat".into(), "o/r".into()), answer(id));
+            })
+        };
+        let pool = asc_serve::migrate::connect("sqlite::memory:", 1)
+            .await
+            .unwrap();
+        asc_serve::migrate::migrate(&pool).await.unwrap();
+        sqlx::query("INSERT INTO repos (name, ns, created) VALUES ('o/r', $1, 1)")
+            .bind(vec![1u8; 16])
+            .execute(&pool)
+            .await
+            .unwrap();
+        let t = tok("pat");
+        // Each decision is a fresh authorizer: the cache would otherwise answer.
+        let authz =
+            || internal_authz(&url, Vec::new()).with_binding(RepoIdBinding::new(pool.clone()));
+        set(11);
+        authz().decide(Some(&t), "o/r", Access::Read).await.unwrap();
+        authz()
+            .decide(Some(&t), "o/r", Access::Write)
+            .await
+            .unwrap();
+        // The name now belongs to another repository of the forge (deleted and recreated).
+        set(12);
+        assert_eq!(
+            authz()
+                .decide(Some(&t), "o/r", Access::Read)
+                .await
+                .unwrap_err(),
+            AuthError::Forbidden
+        );
+        // A forge that sends no id is not refused (it cannot bind), and without a binding the
+        // id is not looked at.
+        set(0);
+        authz().decide(Some(&t), "o/r", Access::Read).await.unwrap();
+        set(12);
+        internal_authz(&url, Vec::new())
+            .decide(Some(&t), "o/r", Access::Read)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
