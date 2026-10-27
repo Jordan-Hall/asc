@@ -78,6 +78,7 @@ mod imp {
         if !meta.is_file() {
             return Err(denied("the key file is not a regular file".into()));
         }
+        check_owner(meta.uid(), rustix::process::getuid().as_raw())?;
         let mode = meta.permissions().mode();
         if mode & 0o077 != 0 {
             return Err(denied(format!(
@@ -86,6 +87,18 @@ mod imp {
             )));
         }
         Ok(())
+    }
+
+    /// The key file belongs to the user running the server: a file another user owns could be
+    /// replaced or re-moded by them whatever its mode is now.
+    pub fn check_owner(file_uid: u32, process_uid: u32) -> io::Result<()> {
+        if file_uid == process_uid {
+            Ok(())
+        } else {
+            Err(denied(format!(
+                "the key file is owned by uid {file_uid}, not by this process (uid {process_uid})"
+            )))
+        }
     }
 
     #[cfg(test)]
@@ -107,6 +120,15 @@ mod imp {
             assert!(open_private(&path).is_err());
             let handle = File::open(&path).unwrap();
             assert!(check_private(&handle).is_err());
+        }
+
+        #[test]
+        fn a_file_of_another_owner_is_refused() {
+            let me = rustix::process::getuid().as_raw();
+            check_owner(me, me).unwrap();
+            let e = check_owner(me.wrapping_add(1), me).unwrap_err();
+            assert_eq!(e.kind(), io::ErrorKind::PermissionDenied);
+            assert!(e.to_string().contains("owned by uid"), "{e}");
         }
 
         #[test]

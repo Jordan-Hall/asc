@@ -121,12 +121,7 @@ pub fn register(ext: &Extensions, cfg: &ServeConfig, issuers: Vec<String>) {
     if cfg.role != Role::Primary {
         return;
     }
-    let policy = HttpPolicy::new(
-        cfg.listen,
-        cfg.public_url.as_deref(),
-        &[],
-        &cfg.mcp.allowed_origins,
-    );
+    let policy = HttpPolicy::from_config(cfg);
     ext.http
         .register(router(Prm::new(cfg.public_url.as_deref(), issuers, policy)));
 }

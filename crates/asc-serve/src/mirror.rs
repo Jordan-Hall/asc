@@ -156,8 +156,12 @@ pub struct MirrorSources {
     client: RwLock<HashMap<String, MirrorTarget>>,
     configured: RwLock<HashMap<String, MirrorTarget>>,
     forgejo: Option<String>,
-    /// Hosts a client URL may name: the Forgejo host and the operator's list (normalised).
-    hosts: HashSet<String>,
+    /// The Forgejo origin (scheme, normalised host, effective port) a client URL must match
+    /// exactly; over `ssh` only the default port is allowed on that host.
+    origin: Option<(String, String, u16)>,
+    /// Hosts the operator listed, each with the one port it may be reached on (`None`: the
+    /// default port of the scheme).
+    hosts: Vec<(String, Option<u16>)>,
 }
 
 impl MirrorSources {
@@ -167,29 +171,36 @@ impl MirrorSources {
         Self::with_policy(forgejo_url, &[])
     }
 
-    /// As [`with_forgejo`](Self::with_forgejo), plus `allowed_hosts` (host names or IP literals;
-    /// an IPv6 literal in brackets) that client URLs may also name. With no Forgejo and an empty
-    /// list, every client URL is refused.
+    /// As [`with_forgejo`](Self::with_forgejo), plus `allowed_hosts` (host names or IP literals,
+    /// an IPv6 literal in brackets, each optionally with `:port`) that client URLs may also name.
+    /// An entry without a port allows the default port of the URL's scheme only. With no Forgejo
+    /// and an empty list, every client URL is refused.
     pub fn with_policy(forgejo_url: Option<&str>, allowed_hosts: &[String]) -> Self {
-        let mut hosts = HashSet::new();
-        if let Some(h) = forgejo_url
+        let origin = forgejo_url
             .and_then(|u| url::Url::parse(u).ok())
-            .and_then(|u| u.host().map(|h| h.to_string()))
-        {
-            hosts.insert(h);
-        }
+            .and_then(|u| {
+                Some((
+                    u.scheme().to_owned(),
+                    u.host()?.to_string(),
+                    u.port_or_known_default()?,
+                ))
+            });
+        let mut hosts = Vec::new();
         for h in allowed_hosts {
-            match url::Host::parse(h.trim()) {
-                Ok(h) => {
-                    hosts.insert(h.to_string());
-                }
-                Err(_) => tracing::warn!(host = %h, "ignoring an unusable mirror host"),
+            let entry = url::Url::parse(&format!("https://{}", h.trim()))
+                .ok()
+                .filter(|u| u.path() == "/" && u.username().is_empty() && u.query().is_none())
+                .and_then(|u| Some((u.host()?.to_string(), u.port())));
+            match entry {
+                Some(e) => hosts.push(e),
+                None => tracing::warn!(host = %h, "ignoring an unusable mirror host"),
             }
         }
         Self {
             client: RwLock::default(),
             configured: RwLock::default(),
             forgejo: forgejo_url.map(|u| u.trim_end_matches('/').to_owned()),
+            origin,
             hosts,
         }
     }
@@ -276,7 +287,8 @@ impl MirrorSources {
     }
 
     /// The policy for a URL a client chose: `https` or `ssh` (no password in the URL) on the
-    /// Forgejo host or an operator-listed host. An IP literal in a loopback, private, link-local
+    /// Forgejo origin (scheme, host and port exactly; `ssh` on its default port) or an
+    /// operator-listed host on its listed port. An IP literal in a loopback, private, link-local
     /// or unspecified range needs an exact operator entry.
     pub fn check_client_url(&self, url: &str) -> Result<(), MirrorError> {
         let bad = MirrorError::BadUrl;
@@ -292,7 +304,10 @@ impl MirrorSources {
             return Err(bad("credentials in the url are not allowed"));
         }
         let host = parsed.host().ok_or_else(|| bad("no host"))?;
-        let listed = self.hosts.contains(&host.to_string());
+        let name = host.to_string();
+        let on_forge = self.origin.as_ref().is_some_and(|(_, h, _)| *h == name);
+        let on_list = self.hosts.iter().any(|(h, _)| *h == name);
+        let listed = on_forge || on_list;
         let internal = match host {
             url::Host::Ipv4(ip) => is_internal(IpAddr::V4(ip)),
             url::Host::Ipv6(ip) => is_internal(IpAddr::V6(ip)),
@@ -304,6 +319,21 @@ impl MirrorSources {
         if !listed {
             return Err(bad(
                 "host is not the configured forge host or an allowed mirror host",
+            ));
+        }
+        let scheme = parsed.scheme();
+        let default_port = if scheme == "https" { 443 } else { 22 };
+        let port = parsed.port().unwrap_or(default_port);
+        let forge_ok = self.origin.as_ref().is_some_and(|(s, h, p)| {
+            *h == name && ((s == scheme && port == *p) || (scheme == "ssh" && port == 22))
+        });
+        let list_ok = self
+            .hosts
+            .iter()
+            .any(|(h, p)| *h == name && port == p.unwrap_or(default_port));
+        if !forge_ok && !list_ok {
+            return Err(bad(
+                "the scheme and port are not those of the configured forge or the listed host",
             ));
         }
         Ok(())
@@ -1290,8 +1320,17 @@ mod tests {
             "https://192.168.0.5/o/r.git",
             "https://0.0.0.0/o/r.git",
             "https://2130706433/o/r.git",
-            "https://user:pw@forgejo.example/o/r.git",
+            "https://user:pw@forgejo.example:3000/o/r.git",
             "ssh://git:pw@forgejo.example/o/r.git",
+            // The forge origin is exact: another port of the forge host, or the default one, is not it.
+            "https://forgejo.example/o/r.git",
+            "https://forgejo.example:8443/o/r.git",
+            "https://forgejo.example:22/o/r.git",
+            "ssh://git@forgejo.example:2222/o/r.git",
+            "ssh://git@forgejo.example:3000/o/r.git",
+            // A listed host without a port takes the default port of the scheme only.
+            "https://extra.example:8443/o/r.git",
+            "ssh://git@extra.example:2222/o/r.git",
         ] {
             assert!(s.check_client_url(bad).is_err(), "{bad:?}");
             assert!(s.set(&name, target(bad)).is_err(), "{bad:?}");
@@ -1309,9 +1348,7 @@ mod tests {
     fn client_urls_on_the_forgejo_host_or_the_allow_list_are_accepted() {
         let s = policy();
         for good in [
-            "https://forgejo.example/o/r.git",
-            "https://FORGEJO.example:8443/o/r.git",
-            "https://forgejo.example:3000/o/r.git",
+            "https://FORGEJO.example:3000/o/r.git",
             "ssh://git@forgejo.example/o/r.git",
             "https://extra.example/o/r.git",
             // An operator-listed internal literal is allowed; an unlisted one is not.
@@ -1320,11 +1357,28 @@ mod tests {
             assert!(s.check_client_url(good).is_ok(), "{good:?}");
         }
         assert!(s.check_client_url("https://10.1.2.4/o/r.git").is_err());
+        // An entry with a port allows that port and no other.
+        let ported = MirrorSources::with_policy(None, &["git.example:8443".to_owned()]);
+        assert!(
+            ported
+                .check_client_url("https://git.example:8443/o/r.git")
+                .is_ok()
+        );
+        assert!(
+            ported
+                .check_client_url("https://git.example/o/r.git")
+                .is_err()
+        );
+        assert!(
+            ported
+                .check_client_url("https://git.example:9/o/r.git")
+                .is_err()
+        );
         let name = RepoName::parse("o/r").unwrap();
-        s.set(&name, target("https://forgejo.example/o/r.git"))
+        s.set(&name, target("https://forgejo.example:3000/o/r.git"))
             .unwrap();
         let (t, origin) = s.resolve(&name).unwrap();
-        assert_eq!(t.url, "https://forgejo.example/o/r.git");
+        assert_eq!(t.url, "https://forgejo.example:3000/o/r.git");
         assert_eq!(origin, Origin::Client);
         assert_eq!(s.check(&t.url, origin).unwrap(), NETWORK_PROTOCOLS);
     }

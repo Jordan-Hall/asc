@@ -50,9 +50,24 @@ pub async fn authorizer(cfg: &ServeConfig) -> Result<Arc<dyn Authorizer>, ServeE
             )))))
         }
         #[cfg(feature = "forgejo")]
-        Some(AuthProvider::Forgejo) => crate::forgejo::authorizer(cfg)
-            .map_err(|e| invalid(e.to_string()))?
-            .ok_or_else(|| invalid("auth.provider = \"forgejo\" needs a [forgejo] section".into())),
+        Some(AuthProvider::Forgejo) => {
+            // The forge's id of a repository is bound to the registry entry of its name.
+            let binding = match &cfg.db {
+                Some(db) => {
+                    let pool = migrate::connect(db, TOKEN_DB_CONNECTIONS)
+                        .await
+                        .map_err(|e| invalid(e.to_string()))?;
+                    migrate::ensure_current(&pool).await?;
+                    Some(crate::forgejo::RepoIdBinding::new(pool))
+                }
+                None => None,
+            };
+            crate::forgejo::authorizer(cfg, binding)
+                .map_err(|e| invalid(e.to_string()))?
+                .ok_or_else(|| {
+                    invalid("auth.provider = \"forgejo\" needs a [forgejo] section".into())
+                })
+        }
         #[cfg(not(feature = "forgejo"))]
         Some(AuthProvider::Forgejo) => Err(invalid(
             "auth.provider = \"forgejo\" needs a build with the `forgejo` feature".into(),

@@ -52,6 +52,78 @@ const WATCH_BATCH: usize = 200;
 const WATCH_LIFETIME: Duration = Duration::from_secs(10 * 60);
 /// Open watch streams a server holds at once.
 const MAX_WATCHERS: usize = 256;
+/// Open watch streams one caller holds, so one reader cannot take the whole pool.
+const MAX_WATCHERS_PER_CALLER: usize = 8;
+/// Open watch streams one run has, whoever the callers are.
+const MAX_WATCHERS_PER_RUN: usize = 32;
+
+/// The open watch streams: a server-wide pool, and a share of it per caller and per run.
+struct WatchSlots {
+    pool: Arc<tokio::sync::Semaphore>,
+    held: std::sync::Mutex<Held>,
+}
+
+#[derive(Default)]
+struct Held {
+    by_caller: std::collections::HashMap<String, usize>,
+    by_run: std::collections::HashMap<u64, usize>,
+}
+
+/// One open watch. Dropping it frees the slot in the pool, the caller's share and the run's.
+struct WatchSlot {
+    slots: Arc<WatchSlots>,
+    caller: String,
+    run: u64,
+    _pool: tokio::sync::OwnedSemaphorePermit,
+}
+
+impl WatchSlots {
+    fn new(total: usize) -> Arc<Self> {
+        Arc::new(Self {
+            pool: Arc::new(tokio::sync::Semaphore::new(total)),
+            held: std::sync::Mutex::default(),
+        })
+    }
+
+    fn acquire(self: &Arc<Self>, caller: &str, run: u64) -> Result<WatchSlot, Status> {
+        let busy = || Status::resource_exhausted("too many open watches; retry shortly");
+        let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());
+        if held.by_caller.get(caller).copied().unwrap_or(0) >= MAX_WATCHERS_PER_CALLER
+            || held.by_run.get(&run).copied().unwrap_or(0) >= MAX_WATCHERS_PER_RUN
+        {
+            return Err(busy());
+        }
+        let pool = Arc::clone(&self.pool)
+            .try_acquire_owned()
+            .map_err(|_| busy())?;
+        *held.by_caller.entry(caller.to_owned()).or_default() += 1;
+        *held.by_run.entry(run).or_default() += 1;
+        Ok(WatchSlot {
+            slots: Arc::clone(self),
+            caller: caller.to_owned(),
+            run,
+            _pool: pool,
+        })
+    }
+}
+
+impl Drop for WatchSlot {
+    fn drop(&mut self) {
+        let mut held = self.slots.held.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(n) = held.by_caller.get_mut(&self.caller) {
+            *n -= 1;
+            if *n == 0 {
+                held.by_caller.remove(&self.caller);
+            }
+        }
+        if let Some(n) = held.by_run.get_mut(&self.run) {
+            *n -= 1;
+            if *n == 0 {
+                held.by_run.remove(&self.run);
+            }
+        }
+    }
+}
 
 fn db(e: &sqlx::Error) -> Status {
     tracing::error!(class = %crate::ai::store::class(e), "agent services database error");
@@ -79,7 +151,7 @@ type WatchStream =
 pub struct AgentService {
     hub: Arc<AgentsHub>,
     env: Env,
-    watchers: Arc<tokio::sync::Semaphore>,
+    watchers: Arc<WatchSlots>,
 }
 
 impl AgentService {
@@ -87,7 +159,7 @@ impl AgentService {
         Self {
             hub,
             env: Env { authorizer, info },
-            watchers: Arc::new(tokio::sync::Semaphore::new(MAX_WATCHERS)),
+            watchers: WatchSlots::new(MAX_WATCHERS),
         }
     }
 
@@ -366,11 +438,7 @@ impl Agents for AgentService {
             .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
             .await?;
         let run = self.run_in(&ctx, msg.id).await?;
-        let permit = self
-            .watchers
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| Status::resource_exhausted("too many open watches; retry shortly"))?;
+        let permit = self.watchers.acquire(&ctx.principal.id, run.id)?;
         let hub = self.hub.clone();
         let started = std::time::Instant::now();
         let state = (
@@ -876,5 +944,56 @@ fn over(t: &TokenRow) -> Option<&'static str> {
         Some("cost")
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod watch_slot_tests {
+    use super::*;
+
+    #[test]
+    fn one_caller_cannot_take_the_pool_and_a_closed_watch_frees_its_slot() {
+        let slots = WatchSlots::new(MAX_WATCHERS);
+        let mut mine: Vec<WatchSlot> = (0..MAX_WATCHERS_PER_CALLER)
+            .map(|i| slots.acquire("alice", i as u64 + 1).unwrap())
+            .collect();
+        let refused = slots.acquire("alice", 99).err().unwrap();
+        assert_eq!(refused.code(), tonic::Code::ResourceExhausted);
+        // Other callers still get their watches.
+        let bob = slots.acquire("bob", 1).unwrap();
+        // Closing one of alice's frees exactly one.
+        mine.pop();
+        let again = slots.acquire("alice", 99).unwrap();
+        assert!(slots.acquire("alice", 100).is_err());
+        drop((bob, again, mine));
+        let held = slots.held.lock().unwrap();
+        assert!(
+            held.by_caller.is_empty() && held.by_run.is_empty(),
+            "nothing leaks"
+        );
+    }
+
+    #[test]
+    fn one_run_has_a_bounded_number_of_watchers() {
+        let slots = WatchSlots::new(MAX_WATCHERS);
+        let open: Vec<WatchSlot> = (0..MAX_WATCHERS_PER_RUN)
+            .map(|i| slots.acquire(&format!("user{i}"), 7).unwrap())
+            .collect();
+        assert!(slots.acquire("late", 7).is_err());
+        assert!(
+            slots.acquire("late", 8).is_ok(),
+            "another run is unaffected"
+        );
+        drop(open);
+        assert!(slots.acquire("late", 7).is_ok());
+    }
+
+    #[test]
+    fn the_pool_stays_the_ceiling() {
+        let slots = WatchSlots::new(2);
+        let _a = slots.acquire("a", 1).unwrap();
+        let _b = slots.acquire("b", 2).unwrap();
+        assert!(slots.acquire("c", 3).is_err());
+        assert_eq!(slots.held.lock().unwrap().by_caller.len(), 2);
     }
 }
