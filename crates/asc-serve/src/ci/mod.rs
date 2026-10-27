@@ -6,6 +6,7 @@
 //! new ones arrive), [`MAX_JOBS`] jobs per run, [`MAX_LOG`] bytes of log per job (later bytes are
 //! dropped and the append answers `dropped`), [`MAX_APPEND`] bytes per append.
 
+pub mod insights;
 pub mod rpc;
 
 #[cfg(test)]
