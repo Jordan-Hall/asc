@@ -79,6 +79,7 @@ serve() {
   local i=0
   while [ ! -s "$portfile" ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
   [ -s "$portfile" ] || { echo "the fixture server did not start" >&2; exit 1; }
+  # shellcheck disable=SC2034 # read by the scripts that source this file
   BASE="http://127.0.0.1:$(cat "$portfile")"
 }
 

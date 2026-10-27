@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import functools
 import http.server
+import socketserver
 import sys
 
 
@@ -27,6 +28,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         pass
 
 
+class Server(http.server.ThreadingHTTPServer):
+    def server_bind(self) -> None:
+        # HTTPServer.server_bind asks the resolver for the host's name, and a macOS runner can take
+        # many seconds to answer for 127.0.0.1; nothing here uses the name.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name = "127.0.0.1"
+        self.server_port = self.server_address[1]
+
+
 def main(argv: list[str]) -> int:
     if len(argv) != 3:
         print(__doc__, file=sys.stderr)
@@ -35,7 +45,7 @@ def main(argv: list[str]) -> int:
     open(log_file, "w", encoding="utf-8").close()
     Handler.log_path = log_file
     handler = functools.partial(Handler, directory=directory)
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    server = Server(("127.0.0.1", 0), handler)
     with open(port_file, "w", encoding="utf-8") as f:
         f.write(str(server.server_address[1]))
     try:
