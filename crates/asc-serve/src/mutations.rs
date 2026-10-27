@@ -1482,7 +1482,7 @@ mod fx {
             client: None,
             admin: Default::default(),
         }
-}
+    }
 
     /// A call by `who` (a Forgejo identity, `<user_id>:<login>`) with a fresh op id.
     pub fn ctx_as(who: &str) -> CallCtx {

@@ -237,7 +237,7 @@ mod tests {
             client: None,
             admin: Default::default(),
         }
-}
+    }
 
     fn req(a: &str, b: &str) -> wire::CompareRequest {
         wire::CompareRequest {

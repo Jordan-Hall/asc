@@ -595,10 +595,8 @@ impl ServerRefs {
         if has_user {
             for p in planned.iter().filter(|p| p.user) {
                 let stored = String::from_utf8_lossy(p.name.as_bytes());
-                let owned = refauthz::owns(
-                    refpolicy::draft_owner_of(&ctx.principal, &stored),
-                    &stored,
-                );
+                let owned =
+                    refauthz::owns(refpolicy::draft_owner_of(&ctx.principal, &stored), &stored);
                 if !owned {
                     return Err(Status::permission_denied(
                         "a user ref can only be changed by its owner",
@@ -1130,7 +1128,7 @@ mod tests {
             client: None,
             admin: Default::default(),
         }
-}
+    }
 
     fn request(
         name: &str,

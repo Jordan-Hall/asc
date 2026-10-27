@@ -295,8 +295,19 @@ mod confine_tests {
         // What is open to agents is a short, named list: no vault, storage, keys, audit, tokens.
         for path in &open {
             for closed in [
-                "Vault", "Storage", "AiProviders", "Audit", "AgentTokens", "Workflows", "Policy",
-                "Signing", "SecretScan", "Projects", "Cloud", "Changes", "Review",
+                "Vault",
+                "Storage",
+                "AiProviders",
+                "Audit",
+                "AgentTokens",
+                "Workflows",
+                "Policy",
+                "Signing",
+                "SecretScan",
+                "Projects",
+                "Cloud",
+                "Changes",
+                "Review",
             ] {
                 assert!(!path.contains(&format!(".{closed}/")), "{path}");
             }
@@ -315,7 +326,13 @@ mod confine_tests {
         ] {
             assert_eq!(call(ok, Some(AGENT), false).await.0, StatusCode::OK, "{ok}");
         }
-        for closed in ["/mcp", "/o/r/../../admin/info/refs", "/metrics", "/", "/v1/tokens"] {
+        for closed in [
+            "/mcp",
+            "/o/r/../../admin/info/refs",
+            "/metrics",
+            "/",
+            "/v1/tokens",
+        ] {
             assert_eq!(
                 call(closed, Some(AGENT), false).await.0,
                 StatusCode::FORBIDDEN,
@@ -323,7 +340,10 @@ mod confine_tests {
             );
         }
         // Basic with the token as the password is an agent credential too.
-        let basic = format!("Basic {}", base64_basic("x", "ascat_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
+        let basic = format!(
+            "Basic {}",
+            base64_basic("x", "ascat_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+        );
         assert_eq!(
             call("/mcp", Some(&basic), false).await.0,
             StatusCode::FORBIDDEN

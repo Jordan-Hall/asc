@@ -2003,24 +2003,30 @@ async fn evaluate_decides_writes_runs_and_landing_and_guards_other_principals() 
 #[tokio::test]
 async fn an_update_never_escapes_an_unusable_policy_through_the_policy_it_brings() {
     let f = fx().await;
-    let a = commit(&f.e, &[], &[(POLICY_PATH, b"this is not toml ["), ("x", b"1")]).await;
+    let a = commit(
+        &f.e,
+        &[],
+        &[(POLICY_PATH, b"this is not toml ["), ("x", b"1")],
+    )
+    .await;
     f.set_master(a).await;
     // The replacement policy is valid and switches review off, but the update also writes another
     // file: it is no repair and is judged by nothing it brings.
     let off = commit(
         &f.e,
         &[a],
-        &[
-            (POLICY_PATH, policy_text("").as_bytes()),
-            ("evil", b"1"),
-        ],
+        &[(POLICY_PATH, policy_text("").as_bytes()), ("evil", b"1")],
     )
     .await;
     f.register(off, 1, 1, ALICE).await;
     f.review(1, 1, 0).await;
     let err = f.land(ALICE, off).await.unwrap_err();
     assert_eq!(code(&err), "POLICY_DENIED");
-    assert!(paths(&err)[0].contains("cannot be used"), "{:?}", paths(&err));
+    assert!(
+        paths(&err)[0].contains("cannot be used"),
+        "{:?}",
+        paths(&err)
+    );
     assert_eq!(f.tip().await, a);
     // A force push that rewrites trunk, and a delete of trunk, are refused too.
     let del = f
@@ -2076,7 +2082,12 @@ fn admin_tokens() -> Arc<dyn asc_rpc::auth::Authorizer> {
 #[tokio::test]
 async fn only_the_admin_credential_of_the_call_may_repair_an_unusable_policy_with_any_update() {
     let f = fx().await;
-    let a = commit(&f.e, &[], &[(POLICY_PATH, b"this is not toml ["), ("x", b"1")]).await;
+    let a = commit(
+        &f.e,
+        &[],
+        &[(POLICY_PATH, b"this is not toml ["), ("x", b"1")],
+    )
+    .await;
     f.set_master(a).await;
     let fix = commit(
         &f.e,

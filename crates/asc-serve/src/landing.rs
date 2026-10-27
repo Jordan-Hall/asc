@@ -415,7 +415,7 @@ mod tests {
             client: None,
             admin: Default::default(),
         }
-}
+    }
 
     fn update(
         expect: wire::ref_update::Expect,

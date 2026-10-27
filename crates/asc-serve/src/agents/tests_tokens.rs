@@ -1019,13 +1019,21 @@ async fn the_token_paths_and_the_policy_both_bound_what_an_agent_may_change() {
     paths.sort();
     assert_eq!(paths, ["docs/a.md", "docs/b.md"]);
     // Nothing was written by the refused attempts.
-    assert!(w.ref_target(&mine(&w, &secret, "scope").await).await.is_none());
+    assert!(
+        w.ref_target(&mine(&w, &secret, "scope").await)
+            .await
+            .is_none()
+    );
     // Inside both works.
     let tip = commit(&w, &secret, None, vec![("src/ok.rs", "pub fn ok() {}\n")])
         .await
         .unwrap();
     assert!(!tip.is_empty());
-    assert!(w.ref_target(&mine(&w, &secret, "scope").await).await.is_some());
+    assert!(
+        w.ref_target(&mine(&w, &secret, "scope").await)
+            .await
+            .is_some()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1161,7 +1169,11 @@ async fn the_per_run_change_cap_of_a_token_and_of_the_policy_bound_one_update() 
         .await
         .unwrap_err();
     assert_eq!(code(&e), "BUDGET_EXCEEDED", "{e:?}");
-    assert!(w.ref_target(&mine(&w, &capped, "three").await).await.is_none());
+    assert!(
+        w.ref_target(&mine(&w, &capped, "three").await)
+            .await
+            .is_none()
+    );
     let top = stack(&w, &capped, 2).await;
     point(&w, &capped, &mine(&w, &capped, "two").await, &top)
         .await

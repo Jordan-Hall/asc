@@ -802,7 +802,10 @@ impl Inner {
         let principal = &session.ctx.principal;
         commands.iter().filter(|c| c.new.is_some()).any(|c| {
             policy
-                .classify(crate::refpolicy::draft_owner_of(principal, &c.name), &c.name)
+                .classify(
+                    crate::refpolicy::draft_owner_of(principal, &c.name),
+                    &c.name,
+                )
                 .map_or(true, |class| class.is_user())
         })
     }

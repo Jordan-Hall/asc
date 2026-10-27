@@ -485,7 +485,7 @@ mod tests {
             client: None,
             admin: Default::default(),
         }
-}
+    }
 
     struct Fx {
         r: Arc<Registry>,

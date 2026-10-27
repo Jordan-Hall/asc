@@ -2047,7 +2047,7 @@ mod tests {
             client: None,
             admin: Default::default(),
         }
-}
+    }
 
     fn repo_ref(n: &str) -> Option<wire::RepoRef> {
         Some(wire::RepoRef {
