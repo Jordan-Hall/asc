@@ -12,6 +12,7 @@ mod forgejo {
     use asc_rpc::IdMode;
     use asc_rpc::auth::{
         Access, AuthError, Authorizer, BearerToken, Credential, Decision, Principal, SshKey,
+        Standing,
     };
     use asc_rpc::server::{CallCtx, RepoName};
     use asc_serve::config::CompositionGrant;
@@ -976,27 +977,27 @@ mod forgejo {
         let authz = internal_authz(&url, Vec::new());
         assert_eq!(
             authz.user_standing(7, "o/r", Access::Write).await,
-            Some(true)
+            Standing::Person(true)
         );
         assert_eq!(
             authz.user_standing(7, "o/r", Access::Read).await,
-            Some(true)
+            Standing::Person(true)
         );
         assert_eq!(
             authz.user_standing(8, "o/r", Access::Read).await,
-            Some(true)
+            Standing::Person(true)
         );
         assert_eq!(
             authz.user_standing(8, "o/r", Access::Write).await,
-            Some(false)
+            Standing::Person(false)
         );
         assert_eq!(
             authz.user_standing(9, "o/r", Access::Read).await,
-            Some(false)
+            Standing::Person(false)
         );
         assert_eq!(
             authz.user_standing(10, "o/r", Access::Read).await,
-            Some(false)
+            Standing::Person(false)
         );
         let calls = fake.calls("/api/internal/asc/authz");
         assert_eq!(calls[0].auth.as_deref(), Some(INTERNAL));
@@ -1013,7 +1014,7 @@ mod forgejo {
         fake.with(|i| i.authz_status = Some(503));
         assert_eq!(
             authz.user_standing(7, "o/r", Access::Write).await,
-            Some(false)
+            Standing::Person(false)
         );
     }
 

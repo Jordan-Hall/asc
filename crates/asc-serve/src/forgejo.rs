@@ -19,7 +19,7 @@ use asc_core::id::RefTarget;
 use asc_core::transport_policy::{Policy, classify_url};
 use asc_rpc::auth::{
     Access, AuthError, Authorizer, BearerToken, Credential, Decision as SshDecision, Principal,
-    Scheme, SshIdentity, SshKey,
+    Scheme, SshIdentity, SshKey, Standing,
 };
 use asc_rpc::changes::MergeOutcome;
 use asc_rpc::server::{CallCtx, MAX_REF_UPDATES, RepoName};
@@ -845,6 +845,11 @@ impl Authorizer for PublicApiAuthz {
             .await
     }
 
+    /// The public API cannot say what another person may do: a token tied to a person is refused.
+    async fn user_standing(&self, _user_id: i64, _repo: &str, _access: Access) -> Standing {
+        Standing::Person(false)
+    }
+
     /// Stage 1 has only the public API, which cannot map a key to a user: SSH keys are
     /// [`SshSupport::Unsupported`], so every key is unknown (SPEC §25.11.3 item 5).
     async fn identify_ssh_key(&self, _key: &SshKey) -> Result<Option<SshIdentity>, AuthError> {
@@ -1303,8 +1308,8 @@ impl Authorizer for InternalAuthz {
             .clone())
     }
 
-    async fn user_standing(&self, user_id: i64, repo: &str, access: Access) -> Option<bool> {
-        Some(self.person_may(user_id, repo, access).await)
+    async fn user_standing(&self, user_id: i64, repo: &str, access: Access) -> Standing {
+        Standing::Person(self.person_may(user_id, repo, access).await)
     }
 
     /// Who the credential is, from the same internal authz endpoint every other decision uses:
