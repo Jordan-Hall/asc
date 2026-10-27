@@ -128,7 +128,7 @@ pub(crate) fn wcfg() -> WorkflowsConfig {
             allow_unisolated: true,
             // A step that holds secrets needs the restricted wrapper; `env` passes the command on.
             restricted_wrapper: if cfg!(unix) {
-                vec!["env".into()]
+                vec!["/usr/bin/env".into()]
             } else {
                 Vec::new()
             },
@@ -143,8 +143,13 @@ pub(crate) fn wcfg() -> WorkflowsConfig {
 pub(crate) async fn world_with(
     defs: &[(&'static str, &'static str)],
     policy: &'static str,
-    cfg: WorkflowsConfig,
+    mut cfg: WorkflowsConfig,
 ) -> World {
+    // Each world keeps its working copies in a directory of its own: the default is shared by
+    // every test of the process, and one world's startup sweep would remove another's copies.
+    cfg.work_dir.get_or_insert_with(|| {
+        std::env::temp_dir().join(format!("asc-workflows-test-{}", uuid::Uuid::new_v4()))
+    });
     let mut files: Vec<(&'static str, &'static str)> = vec![
         ("src/main.rs", MAIN_RS),
         (
