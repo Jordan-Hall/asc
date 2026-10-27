@@ -217,7 +217,10 @@
       "asc.v1.Workflows/SetEnabled",
       "asc.v1.Workflows/Trigger",
       "asc.v1.Workflows/CancelRun",
-      "asc.v1.Workflows/DecideApproval"
+      "asc.v1.Workflows/DecideApproval",
+      "asc.v1.Workflows/ListSecrets",
+      "asc.v1.Workflows/SetSecret",
+      "asc.v1.Workflows/DeleteSecret"
     ]
   },
   "run": {
