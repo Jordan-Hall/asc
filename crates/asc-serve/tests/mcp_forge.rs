@@ -147,6 +147,7 @@ fn cfg(lockdown: bool) -> ForgeConfig {
     ForgeConfig {
         adapter: Some("fake".into()),
         lockdown,
+        ..ForgeConfig::default()
     }
 }
 
@@ -173,7 +174,16 @@ fn config_rejects_unknown_adapter() {
     assert!(
         ForgeConfig {
             adapter: Some("github".into()),
-            lockdown: true
+            ..ForgeConfig::default()
+        }
+        .validate()
+        .is_err()
+    );
+    // The forgejo adapter needs a URL and a token file.
+    assert!(
+        ForgeConfig {
+            adapter: Some("forgejo".into()),
+            ..ForgeConfig::default()
         }
         .validate()
         .is_err()
@@ -181,10 +191,23 @@ fn config_rejects_unknown_adapter() {
     assert!(
         ForgeConfig {
             adapter: Some("forgejo".into()),
-            lockdown: true
+            url: Some("https://forge.example.org".into()),
+            token_file: Some("/etc/asc/forge-token".into()),
+            ..ForgeConfig::default()
         }
         .validate()
         .is_ok()
+    );
+    assert!(
+        ForgeConfig {
+            adapter: Some("forgejo".into()),
+            url: Some("http://forge.example.org".into()),
+            token_file: Some("/etc/asc/forge-token".into()),
+            ..ForgeConfig::default()
+        }
+        .validate()
+        .is_err(),
+        "plain http to a remote forge"
     );
     assert!(!ForgeConfig::default().enabled());
 }

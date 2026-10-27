@@ -178,6 +178,11 @@ pub struct ForgeConfig {
     /// Hide content by authors who lack write access. On by default; turning it off is the
     /// deployment's decision for read tools only.
     pub lockdown: bool,
+    /// The forge's root URL (https, or loopback http under the transport opt-in).
+    pub url: Option<String>,
+    /// The file holding the service token the adapter acts with (an admin token, so `Sudo`
+    /// works). It must be readable by this user only.
+    pub token_file: Option<std::path::PathBuf>,
 }
 
 impl Default for ForgeConfig {
@@ -185,6 +190,8 @@ impl Default for ForgeConfig {
         Self {
             adapter: None,
             lockdown: true,
+            url: None,
+            token_file: None,
         }
     }
 }
@@ -202,12 +209,44 @@ impl ForgeConfig {
     /// An unknown adapter name.
     pub fn validate(&self) -> Result<(), String> {
         match self.adapter.as_deref() {
-            None | Some("forgejo") => Ok(()),
+            None => Ok(()),
+            Some("forgejo") => {
+                let url = self.url.as_deref().ok_or("adapter \"forgejo\" needs url")?;
+                if self.token_file.is_none() {
+                    return Err("adapter \"forgejo\" needs token_file".into());
+                }
+                // The same rule as every client URL; the adapter checks it again when it connects.
+                let parsed = Url::parse(url).map_err(|e| format!("url: {e}"))?;
+                classify_url(&parsed, Policy::current()).map_err(|why| format!("url: {why}"))?;
+                Ok(())
+            }
             Some(other) => Err(format!(
                 "unknown adapter {:?}; the only adapter is \"forgejo\"",
                 clean(other)
             )),
         }
+    }
+
+    /// The adapter this configuration names: `None` when the toolset is off.
+    ///
+    /// # Errors
+    /// A token file that is missing, readable by others or not visible ASCII, or a URL that is
+    /// not allowed.
+    pub fn open_adapter(&self) -> Result<Option<Arc<dyn ForgeAdapter>>, String> {
+        let Some("forgejo") = self.adapter.as_deref() else {
+            return Ok(None);
+        };
+        let (Some(url), Some(path)) = (self.url.as_deref(), self.token_file.as_deref()) else {
+            return Err("adapter \"forgejo\" needs url and token_file".into());
+        };
+        let file = crate::authz::key_file::open_private(path)
+            .map_err(|e| format!("token_file {}: {e}", path.display()))?;
+        let mut raw = Vec::new();
+        std::io::Read::read_to_end(&mut std::io::Read::take(file, 4097), &mut raw)
+            .map_err(|e| format!("token_file {}: {e}", path.display()))?;
+        let token = String::from_utf8(raw).map_err(|_| "token_file is not UTF-8".to_owned())?;
+        let adapter = ForgejoAdapter::new(url, token.trim(), Policy::current())?;
+        Ok(Some(Arc::new(adapter)))
     }
 }
 

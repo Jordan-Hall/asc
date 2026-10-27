@@ -1022,7 +1022,13 @@ listen = "127.0.0.1:9464"  # default; a non-loopback address is refused unless t
 enabled = false            # true by default once the authorizer layer is wired (M13); true is refused before then
 write = false              # write tools also need write access to the repo (the authorizer's answer)
 allowed_origins = []
-allowed_hosts = []         # Host allowlist besides public_url (DNS-rebinding guard)
+allowed_hosts = []         # Host allowlist besides public_url and the loopback names of `listen` (DNS-rebinding guard); any other Host is 421
+toolsets = ["core", "history", "stack", "projects", "search"]   # the read toolsets tools/list offers (or "all"); the default is every read toolset
+# tools = ["log", "diff"]  # only these tools are offered and callable, within toolsets (forge_* tools are named here too)
+# [mcp.forge]              # the optional forge tools (forge_issues, forge_issue, forge_pr_comments, forge_actions_runs); read-only, off without an adapter
+# adapter = "forgejo"      # needs url and token_file; lockdown = true hides content by authors without write access
+# url = "https://forge.example.org"
+# token_file = "/etc/asc/forge-token"   # mode 0600
 # [mcp.oauth]              # optional (M33): issuer = ["https://idp.example"], audience = "<public_url>/mcp", own_issuer = false
 hmac_keys = []             # key files (32 random bytes each) shared by all replicas
 max_tokens = 6000
