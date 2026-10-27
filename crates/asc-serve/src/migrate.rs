@@ -59,15 +59,19 @@ pub async fn connect(url: &str, max_connections: u32) -> Result<AnyPool, sqlx::E
     let file_db =
         url.starts_with("sqlite:") && !url.contains(":memory:") && !url.contains("mode=memory");
     let mut options = sqlx::any::AnyPoolOptions::new().max_connections(max_connections);
+    // A read-only handle cannot change the mode; it takes what the file has.
+    let read_only = url.contains("mode=ro");
     if file_db {
-        options = options.after_connect(|conn, _meta| {
+        options = options.after_connect(move |conn, _meta| {
             Box::pin(async move {
                 sqlx::query("PRAGMA busy_timeout = 30000")
                     .execute(&mut *conn)
                     .await?;
-                sqlx::query("PRAGMA journal_mode = WAL")
-                    .execute(&mut *conn)
-                    .await?;
+                if !read_only {
+                    sqlx::query("PRAGMA journal_mode = WAL")
+                        .execute(&mut *conn)
+                        .await?;
+                }
                 Ok(())
             })
         });
