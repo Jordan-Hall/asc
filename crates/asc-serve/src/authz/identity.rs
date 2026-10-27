@@ -19,10 +19,10 @@ pub const POSITIVE_TTL: Duration = Duration::from_secs(60);
 pub const NEGATIVE_TTL: Duration = Duration::from_secs(5);
 
 /// The principal of a caller that presented the host application's own service credential.
-pub const HOST_SERVICE_PRINCIPAL: &str = "host-service";
+pub const HOST_SERVICE_PRINCIPAL: &str = asc_rpc::forwarded::HOST_SERVICE_PRINCIPAL;
 /// The value [`HOST_SERVICE_PRINCIPAL`] had before it was made neutral. Ref-log actors and
 /// token-store rows written by earlier versions carry it, so it still counts as the host service.
-pub const LEGACY_HOST_SERVICE_PRINCIPAL: &str = "forgejo-internal";
+pub const LEGACY_HOST_SERVICE_PRINCIPAL: &str = asc_rpc::forwarded::LEGACY_HOST_SERVICE_PRINCIPAL;
 
 /// Whether `principal_id` names the host service (the current or the legacy spelling).
 pub fn is_host_service(principal_id: &str) -> bool {

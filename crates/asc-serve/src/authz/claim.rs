@@ -123,17 +123,7 @@ pub fn acting_principal(
     }
 }
 
-/// Whether `meta` carries any entry of a forwarded claim.
-pub fn carries_claim(meta: &MetadataMap) -> bool {
-    [
-        asc_rpc::forwarded::USER,
-        asc_rpc::forwarded::ROLE,
-        asc_rpc::forwarded::TS,
-        asc_rpc::forwarded::MAC,
-    ]
-    .iter()
-    .any(|k| meta.contains_key(*k))
-}
+pub use asc_rpc::forwarded::carries_claim;
 
 #[cfg(test)]
 mod tests {
