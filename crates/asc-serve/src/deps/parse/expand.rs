@@ -3,12 +3,15 @@
 //! A property can name other properties, so a small file can describe a huge string (a property that
 //! names itself ten times, ten levels deep). Expansion is therefore capped three ways: no expanded
 //! string is longer than [`MAX_EXPANDED`] bytes, a file spends at most [`MAX_SUBSTITUTIONS`]
-//! substitutions in all, and a property that names itself, directly or through others, is unresolved.
+//! substitutions in all, and a property that names itself, directly or through others, is unresolved. Properties may name properties only
+//! [`MAX_DEPTH`] deep, so the recursion cannot exhaust the stack.
 
 use std::collections::HashMap;
 
 /// Longest string an expansion may produce, and the longest property value it will read.
 pub const MAX_EXPANDED: usize = 4096;
+/// Deepest chain of properties naming properties.
+pub const MAX_DEPTH: usize = 16;
 /// Substitutions one file may spend.
 pub const MAX_SUBSTITUTIONS: usize = 10_000;
 
@@ -55,7 +58,7 @@ fn go<'a>(
         let after = &rest[start + open.len()..];
         let end = after.find(close)?;
         let name = &after[..end];
-        if stack.contains(&name) || budget.left == 0 {
+        if stack.contains(&name) || stack.len() >= MAX_DEPTH || budget.left == 0 {
             return None;
         }
         budget.left -= 1;
@@ -107,6 +110,24 @@ mod tests {
         let mut b = Budget::new();
         assert_eq!(expand("${a}", &p, "${", '}', &mut b), None);
         assert_eq!(expand("${x}", &p, "${", '}', &mut b), None);
+    }
+
+    #[test]
+    fn a_long_chain_of_properties_is_refused_not_followed() {
+        let mut p: HashMap<String, String> = (0..10_000)
+            .map(|i| (format!("p{i}"), format!("${{p{}}}", i + 1)))
+            .collect();
+        p.insert("p10000".into(), "end".into());
+        assert_eq!(expand("${p0}", &p, "${", '}', &mut Budget::new()), None);
+        // A chain within the depth bound resolves.
+        let ok: HashMap<String, String> = (0..MAX_DEPTH - 1)
+            .map(|i| (format!("p{i}"), format!("${{p{}}}", i + 1)))
+            .chain([(format!("p{}", MAX_DEPTH - 1), "end".to_owned())])
+            .collect();
+        assert_eq!(
+            expand("${p0}", &ok, "${", '}', &mut Budget::new()).as_deref(),
+            Some("end")
+        );
     }
 
     #[test]
