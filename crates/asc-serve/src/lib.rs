@@ -22,6 +22,7 @@ pub mod codeintel;
 pub mod commit_graph_markers;
 pub mod commit_graph_rpc;
 pub mod config;
+pub mod deps;
 pub mod expire;
 #[cfg(feature = "forgejo")]
 pub mod forgejo;
@@ -52,7 +53,6 @@ pub mod mutations;
 pub mod netguard;
 pub mod objects;
 pub mod outbox;
-pub mod deps;
 pub mod policy;
 pub mod projects;
 pub mod projects_warm;
@@ -252,12 +252,7 @@ fn register_all(
     .map_err(ConfigError::Invalid)?;
     // Dependency scanning and update proposals; the gate above asks it when the policy says to.
     deps::register(
-        ext,
-        registry,
-        &mutations,
-        deps_cfg.1,
-        deps_cfg.0,
-        deps_cfg.2,
+        ext, registry, &mutations, deps_cfg.1, deps_cfg.0, deps_cfg.2,
     )
     .map_err(ConfigError::Invalid)?;
     mutations::rebase::register(ext, &mutations);

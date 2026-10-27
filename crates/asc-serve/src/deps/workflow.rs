@@ -50,7 +50,15 @@ pub fn render(repo: &str, server: &str, cron: &str) -> Result<String, String> {
     }
     let q = |s: &str| format!("{s:?}");
     let remote = format!("{server}/{repo}");
-    let args = ["asc", "deps", "propose", "--remote", &remote, "--token-env", TOKEN_ENV]
+    let args = [
+        "asc",
+        "deps",
+        "propose",
+        "--remote",
+        &remote,
+        "--token-env",
+        TOKEN_ENV,
+    ]
     .iter()
     .map(|a| q(a))
     .collect::<Vec<_>>()

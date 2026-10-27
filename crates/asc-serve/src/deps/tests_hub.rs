@@ -1052,7 +1052,13 @@ async fn settings_are_proposed_with_their_workflow_and_never_written_to_trunk() 
     let wf = asc_core::workflow::Workflow::parse("deps", flow.as_bytes()).unwrap();
     assert_eq!(
         wf.steps[0].command[..5],
-        ["asc", "deps", "propose", "--remote", "https://asc.example.com/o/r"]
+        [
+            "asc",
+            "deps",
+            "propose",
+            "--remote",
+            "https://asc.example.com/o/r"
+        ]
     );
     assert!(flow.contains("https://asc.example.com"));
     // The same settings again: already proposed, nothing new.

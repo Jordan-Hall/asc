@@ -121,7 +121,8 @@ pub(crate) fn remote_with_token(
     let Some(var) = token_env else {
         return Ok(remote.map(str::to_owned));
     };
-    let name = remote.ok_or_else(|| bad("--token-env needs --remote <https URL of the repository>"))?;
+    let name =
+        remote.ok_or_else(|| bad("--token-env needs --remote <https URL of the repository>"))?;
     let mut url = url::Url::parse(name)
         .map_err(|_| bad("--token-env needs --remote to be the https URL of the repository"))?;
     if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
@@ -132,7 +133,9 @@ pub(crate) fn remote_with_token(
     let token = get(var)
         .map(|t| t.trim().to_owned())
         .filter(|t| !t.is_empty())
-        .ok_or_else(|| CliError::Fatal(format!("asc: the environment variable {var} is not set")))?;
+        .ok_or_else(|| {
+            CliError::Fatal(format!("asc: the environment variable {var} is not set"))
+        })?;
     if token.contains(['\0', '\r', '\n']) {
         return Err(CliError::Fatal(format!(
             "asc: the environment variable {var} is not a token"
@@ -148,8 +151,18 @@ pub(crate) fn remote_with_token(
 /// The ecosystem names of `--ecosystem` flags, checked here so a typo fails with a message.
 pub(crate) fn ecosystems(raw: &[String]) -> Result<Vec<String>> {
     const KNOWN: [&str; 12] = [
-        "crates.io", "npm", "pypi", "go", "maven", "nuget", "packagist", "rubygems", "hex", "pub",
-        "swifturl", "cocoapods",
+        "crates.io",
+        "npm",
+        "pypi",
+        "go",
+        "maven",
+        "nuget",
+        "packagist",
+        "rubygems",
+        "hex",
+        "pub",
+        "swifturl",
+        "cocoapods",
     ];
     const ALIASES: [&str; 20] = [
         "cargo", "rust", "yarn", "pnpm", "pip", "python", "poetry", "uv", "golang", "gradle",
@@ -205,7 +218,9 @@ mod tests {
         assert_eq!(got, "https://token:s3cret@asc.example.com/o/r");
         // No variable: the remote as given.
         assert_eq!(
-            remote_with_token(Some("origin"), None, env).unwrap().as_deref(),
+            remote_with_token(Some("origin"), None, env)
+                .unwrap()
+                .as_deref(),
             Some("origin")
         );
         assert_eq!(remote_with_token(None, None, env).unwrap(), None);
@@ -234,8 +249,13 @@ mod tests {
         let multi = |_: &str| Some("a\nb".to_owned());
         assert!(remote_with_token(Some("https://h/o/r"), Some("DEPS_TOKEN"), multi).is_err());
         let special = |_: &str| Some("a/b c@d".to_owned());
-        let got = remote_with_token(Some("https://h/o/r"), Some("T"), special).unwrap().unwrap();
-        assert!(!got.contains("a/b c@d"), "the password is percent-encoded: {got}");
+        let got = remote_with_token(Some("https://h/o/r"), Some("T"), special)
+            .unwrap()
+            .unwrap();
+        assert!(
+            !got.contains("a/b c@d"),
+            "the password is percent-encoded: {got}"
+        );
         assert_eq!(url::Url::parse(&got).unwrap().host_str(), Some("h"));
     }
 
@@ -248,11 +268,17 @@ mod tests {
 
     #[test]
     fn enum_values_have_short_names() {
-        assert_eq!(severity_name(wire::DepSeverity::Critical as i32), "critical");
+        assert_eq!(
+            severity_name(wire::DepSeverity::Critical as i32),
+            "critical"
+        );
         assert_eq!(severity_name(0), "unrated");
         assert_eq!(kind_name(wire::DepUpdateKind::Minor as i32), "minor");
         assert_eq!(kind_name(0), "-");
-        assert_eq!(lookup_name(wire::DepLookupStatus::Partial as i32), "partial");
+        assert_eq!(
+            lookup_name(wire::DepLookupStatus::Partial as i32),
+            "partial"
+        );
         assert_eq!(lookup_name(99), "unknown");
     }
 }

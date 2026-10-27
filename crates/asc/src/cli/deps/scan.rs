@@ -1,6 +1,5 @@
 //! `asc deps scan`.
 
-use std::io::Write as _;
 use std::process::ExitCode;
 
 use asc_rpc::server::wire;
@@ -74,12 +73,7 @@ pub async fn run(ctx: &Ctx, a: ScanArgs) -> Result<ExitCode> {
                 ecosystems: ecos.clone(),
                 refresh: a.refresh,
             };
-            async move {
-                Ok(client(&s)
-                    .scan(s.wire.request(m, None))
-                    .await?
-                    .into_inner())
-            }
+            async move { Ok(client(&s).scan(s.wire.request(m, None)).await?.into_inner()) }
         })
         .await?;
     with_stdout(|out| {
@@ -98,7 +92,11 @@ pub async fn run(ctx: &Ctx, a: ScanArgs) -> Result<ExitCode> {
                 lookup_name(r.lookup),
                 clean_str(&r.source),
                 r.unknown_packages,
-                if r.truncated { "; the scan was cut short" } else { "" }
+                if r.truncated {
+                    "; the scan was cut short"
+                } else {
+                    ""
+                }
             )?;
             for e in &r.lookup_errors {
                 writeln!(out, "# {}", clean_str(e))?;

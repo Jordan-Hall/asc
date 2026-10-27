@@ -340,13 +340,8 @@ pub fn register(
     ));
     let deps_gate = Arc::new(crate::deps::gate::DepsGateSlot::default());
     let gate = Arc::new(
-        gate::ServerGate::new(
-            registry.clone(),
-            policies,
-            scanner,
-            signing_hub.clone(),
-        )
-        .with_deps(deps_gate.clone()),
+        gate::ServerGate::new(registry.clone(), policies, scanner, signing_hub.clone())
+            .with_deps(deps_gate.clone()),
     );
     if ext.pipeline.set_gate(gate).is_err() {
         return Err("the ref gate was already set".into());

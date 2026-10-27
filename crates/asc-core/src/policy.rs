@@ -1744,22 +1744,33 @@ revalidate = false
 block_severity = \"High\"
 block_unknown = false
 ")
-            .unwrap()
-            .deps;
+        .unwrap()
+        .deps;
         assert_eq!(on.block_severity, Some(DepSeverity::High));
         assert!(!on.block_unknown);
         let medium = p("[deps]
 block_severity = \"medium\"
-").unwrap().deps;
+")
+        .unwrap()
+        .deps;
         assert_eq!(medium.block_severity, Some(DepSeverity::Moderate));
-        assert!(DepSeverity::Low < DepSeverity::Moderate && DepSeverity::High < DepSeverity::Critical);
+        assert!(
+            DepSeverity::Low < DepSeverity::Moderate && DepSeverity::High < DepSeverity::Critical
+        );
         assert_eq!(DepSeverity::parse("critical").unwrap().name(), "critical");
-        assert!(p("[deps]
+        assert!(
+            p("[deps]
 block_severity = \"severe\"
-").is_err());
-        assert!(p("[deps]
+")
+            .is_err()
+        );
+        assert!(
+            p("[deps]
 block = \"high\"
-").is_err(), "unknown keys are errors");
+")
+            .is_err(),
+            "unknown keys are errors"
+        );
     }
 
     #[test]
