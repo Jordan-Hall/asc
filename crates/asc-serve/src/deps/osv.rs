@@ -105,11 +105,11 @@ impl FileSource {
             meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
             meta.len(),
         );
-        if let Some(i) = &st.index
+        if let Some(i) = st.index.clone()
             && st.stamp == Some(stamp)
         {
             st.checked = Some(Instant::now());
-            return Ok(i.clone());
+            return Ok(i);
         }
         let path = self.path.clone();
         let max = self.max_bytes;
@@ -177,11 +177,45 @@ fn push_error(errors: &mut Vec<String>, e: String) {
     }
 }
 
-fn osv_name(q: &Query) -> String {
-    match q.eco {
-        Ecosystem::PyPi => q.eco.canonical(&q.name),
-        _ => q.name.clone(),
+/// The spellings of a package name to ask OSV about, and whether asking them settles the question.
+///
+/// PyPI and Packagist have one registry spelling, which is derived (PEP 503, lower case). crates.io
+/// treats `-` and `_` and case alike, Hex and pub.dev are lower case, so each variant is asked and the
+/// answers merged. NuGet ids are case-insensitive but OSV keeps the published casing, which cannot be
+/// derived: a name written without a capital letter that gets no answer is *not certain*, and the lookup
+/// then says unknown instead of clean. npm, Go, Maven, RubyGems and Swift names are case-sensitive and
+/// are asked as written.
+pub fn spellings(eco: Ecosystem, name: &str) -> (Vec<String>, bool) {
+    let mut v: Vec<String> = Vec::new();
+    let mut certain = true;
+    match eco {
+        Ecosystem::PyPi => v.push(eco.canonical(name)),
+        Ecosystem::Packagist => v.push(name.to_lowercase()),
+        Ecosystem::CratesIo => {
+            for base in [name.to_owned(), name.to_lowercase()] {
+                let swapped = if base.contains('_') {
+                    base.replace('_', "-")
+                } else {
+                    base.replace('-', "_")
+                };
+                v.push(base);
+                v.push(swapped);
+            }
+        }
+        Ecosystem::Hex | Ecosystem::Pub => {
+            v.push(name.to_owned());
+            v.push(name.to_lowercase());
+        }
+        Ecosystem::NuGet => {
+            v.push(name.to_owned());
+            v.push(name.to_lowercase());
+            certain = name.chars().any(|c| c.is_ascii_uppercase());
+        }
+        _ => v.push(name.to_owned()),
     }
+    let mut seen = HashSet::new();
+    v.retain(|n| seen.insert(n.clone()));
+    (v, certain)
 }
 
 pub struct Osv {
@@ -196,6 +230,7 @@ pub struct Osv {
 }
 
 /// What the cache and the network gave for the ids of one package version.
+#[derive(Clone)]
 enum Ids {
     Found(Vec<String>),
     Failed(String),
@@ -245,10 +280,10 @@ impl Osv {
         self.endpoint.enabled() && eco.osv_covered()
     }
 
-    /// The cache key is exactly what is sent to OSV, so two spellings OSV tells apart never share an
-    /// answer.
+    /// The cache key is exactly what is sent to OSV (the `name` of a query is the spelling to send), so
+    /// two spellings OSV tells apart never share an answer.
     fn cache_key(q: &Query) -> String {
-        format!("{}|{}|{}", q.eco.osv_name(), osv_name(q), q.version)
+        format!("{}|{}|{}", q.eco.osv_name(), q.name, q.version)
     }
 
     async fn cached_ids(&self, q: &Query, now: i64) -> Option<Vec<String>> {
@@ -275,7 +310,7 @@ impl Osv {
                 .iter()
                 .map(|q| {
                     json!({
-                        "package": {"name": osv_name(q), "ecosystem": q.eco.osv_name()},
+                        "package": {"name": q.name, "ecosystem": q.eco.osv_name()},
                         "version": q.version,
                     })
                 })
@@ -317,7 +352,7 @@ impl Osv {
                         break;
                     }
                     let body = json!({"queries": [{
-                        "package": {"name": osv_name(q), "ecosystem": q.eco.osv_name()},
+                        "package": {"name": q.name, "ecosystem": q.eco.osv_name()},
                         "version": q.version,
                         "page_token": t,
                     }]})
@@ -407,22 +442,46 @@ impl Osv {
     pub async fn lookup(&self, queries: &[Query], refresh: bool) -> Answer {
         let now = (self.clock)();
         let mut errors: Vec<String> = Vec::new();
-        // Distinct package versions, and which queries want each.
+        // Distinct package versions as written, and which queries want each.
         let mut slot_of: HashMap<(Ecosystem, String, String), usize> = HashMap::new();
         let mut unique: Vec<Query> = Vec::new();
         let mut want: Vec<usize> = Vec::with_capacity(queries.len());
         for q in queries {
-            let key = (q.eco, osv_name(q), q.version.clone());
+            let key = (q.eco, q.name.clone(), q.version.clone());
             let i = *slot_of.entry(key).or_insert_with(|| {
                 unique.push(q.clone());
                 unique.len() - 1
             });
             want.push(i);
         }
+        // What is asked of OSV: each spelling of each name, once, whoever wants it.
+        let mut phys: Vec<Query> = Vec::new();
+        let mut phys_slot: HashMap<(Ecosystem, String, String), usize> = HashMap::new();
+        let mut phys_of: Vec<Vec<usize>> = Vec::with_capacity(unique.len());
+        let mut certain: Vec<bool> = Vec::with_capacity(unique.len());
+        for q in &unique {
+            let (names, sure) = spellings(q.eco, &q.name);
+            certain.push(sure);
+            let mut mine = Vec::new();
+            for n in names {
+                let key = (q.eco, n.clone(), q.version.clone());
+                let p = *phys_slot.entry(key).or_insert_with(|| {
+                    phys.push(Query {
+                        eco: q.eco,
+                        name: n.clone(),
+                        version: q.version.clone(),
+                    });
+                    phys.len() - 1
+                });
+                mine.push(p);
+            }
+            phys_of.push(mine);
+        }
         let mut results: Vec<Option<Lookup>> = vec![None; unique.len()];
 
         // The file first: it is local.
         let mut from_file: Vec<Vec<Advisory>> = vec![Vec::new(); unique.len()];
+        let mut file_failed = false;
         if let Some(f) = &self.file {
             match f.current(refresh).await {
                 Ok(index) => {
@@ -431,6 +490,7 @@ impl Osv {
                     }
                 }
                 Err(e) => {
+                    file_failed = true;
                     push_error(&mut errors, e.clone());
                     for r in &mut results {
                         *r = Some(Lookup::Unknown(e.clone()));
@@ -440,38 +500,40 @@ impl Osv {
         }
 
         // The API: the cache, then the network for what is missing.
-        let mut ids: Vec<Option<Ids>> = (0..unique.len()).map(|_| None).collect();
+        let mut ids: Vec<Option<Ids>> = (0..phys.len()).map(|_| None).collect();
         let mut missing: Vec<usize> = Vec::new();
-        for (i, q) in unique.iter().enumerate() {
-            if results[i].is_some() || !self.api_covers(q.eco) {
-                continue;
-            }
-            match if refresh {
-                None
-            } else {
-                self.cached_ids(q, now).await
-            } {
-                Some(found) => ids[i] = Some(Ids::Found(found)),
-                None => missing.push(i),
+        if !file_failed {
+            for (p, q) in phys.iter().enumerate() {
+                if !self.api_covers(q.eco) {
+                    continue;
+                }
+                match if refresh {
+                    None
+                } else {
+                    self.cached_ids(q, now).await
+                } {
+                    Some(found) => ids[p] = Some(Ids::Found(found)),
+                    None => missing.push(p),
+                }
             }
         }
         if !missing.is_empty() {
-            let asked: Vec<&Query> = missing.iter().map(|i| &unique[*i]).collect();
+            let asked: Vec<&Query> = missing.iter().map(|p| &phys[*p]).collect();
             let got = self.fetch_ids(&asked, &mut errors).await;
-            for (i, g) in missing.iter().zip(got) {
+            for (p, g) in missing.iter().zip(got) {
                 if let Ids::Found(list) = &g
                     && let Ok(text) = serde_json::to_string(list)
                 {
                     let _ = store::cache_put(
                         &self.pool,
                         "osv",
-                        &Self::cache_key(&unique[*i]),
+                        &Self::cache_key(&phys[*p]),
                         &text,
                         now,
                     )
                     .await;
                 }
-                ids[*i] = Some(g);
+                ids[*p] = Some(g);
             }
         }
 
@@ -501,25 +563,36 @@ impl Osv {
             if results[i].is_some() {
                 continue;
             }
-            let api: Option<Result<Vec<Advisory>, String>> = match ids[i].take() {
-                None => None,
-                Some(Ids::Failed(e)) => Some(Err(e)),
-                Some(Ids::Found(list)) => {
-                    let mut adv = Vec::new();
-                    let mut err = None;
-                    for id in list {
-                        match records.get(&id) {
-                            Some(Ok(r)) => adv.push(r.advisory(q.eco, &q.name)),
-                            Some(Err(e)) => {
-                                push_error(&mut errors, e.clone());
-                                err = Some(e.clone());
+            // The advisories every spelling found, and the first reason any spelling failed.
+            let mut api: Option<Result<Vec<Advisory>, String>> = None;
+            if self.api_covers(q.eco) {
+                let mut adv: Vec<Advisory> = Vec::new();
+                let mut have: HashSet<String> = HashSet::new();
+                let mut err = None;
+                for p in &phys_of[i] {
+                    match &ids[*p] {
+                        None => {}
+                        Some(Ids::Failed(e)) => err = Some(e.clone()),
+                        Some(Ids::Found(list)) => {
+                            for id in list {
+                                match records.get(id) {
+                                    Some(Ok(r)) => {
+                                        if have.insert(id.clone()) {
+                                            adv.push(r.advisory(q.eco, &phys[*p].name));
+                                        }
+                                    }
+                                    Some(Err(e)) => {
+                                        push_error(&mut errors, e.clone());
+                                        err = Some(e.clone());
+                                    }
+                                    None => err = Some(format!("advisory {id} was not read")),
+                                }
                             }
-                            None => err = Some(format!("advisory {id} was not read")),
                         }
                     }
-                    Some(err.map_or(Ok(adv), Err))
                 }
-            };
+                api = Some(err.map_or(Ok(adv), Err));
+            }
             results[i] = Some(match api {
                 None if self.file.is_none() => Lookup::Uncovered,
                 None => Lookup::Known(std::mem::take(&mut from_file[i])),
@@ -532,7 +605,17 @@ impl Osv {
                             .filter(|a| !have.contains(&a.id)),
                     );
                     adv.sort_by(|a, b| a.id.cmp(&b.id));
-                    Lookup::Known(adv)
+                    if adv.is_empty() && !certain[i] {
+                        // Nothing under the spellings asked, and the registry spelling cannot be derived.
+                        let e = format!(
+                            "no advisories were found for {} as written, and its spelling in OSV cannot be derived, so it is not counted clean",
+                            q.name
+                        );
+                        push_error(&mut errors, e.clone());
+                        Lookup::Unknown(e)
+                    } else {
+                        Lookup::Known(adv)
+                    }
                 }
             });
         }
@@ -564,32 +647,77 @@ mod tests {
 
     #[test]
     fn names_osv_tells_apart_never_share_a_cache_entry() {
-        // npm names are case-sensitive: OSV is asked about each spelling separately.
-        for eco in [Ecosystem::Npm, Ecosystem::Go, Ecosystem::Maven, Ecosystem::Packagist, Ecosystem::NuGet, Ecosystem::CratesIo] {
+        for eco in [
+            Ecosystem::Npm,
+            Ecosystem::Go,
+            Ecosystem::Maven,
+            Ecosystem::RubyGems,
+        ] {
             assert_ne!(
                 Osv::cache_key(&q(eco, "Foo")),
                 Osv::cache_key(&q(eco, "foo")),
                 "{eco}"
             );
         }
-        assert_ne!(
-            Osv::cache_key(&q(Ecosystem::CratesIo, "foo_bar")),
-            Osv::cache_key(&q(Ecosystem::CratesIo, "foo-bar"))
-        );
-        // PyPI names are normalised before they are sent, so their spellings are one query.
-        assert_eq!(
-            Osv::cache_key(&q(Ecosystem::PyPi, "Foo_Bar")),
-            Osv::cache_key(&q(Ecosystem::PyPi, "foo-bar"))
-        );
-        assert_eq!(osv_name(&q(Ecosystem::PyPi, "Foo_Bar")), "foo-bar");
-        assert_eq!(osv_name(&q(Ecosystem::Npm, "Foo_Bar")), "Foo_Bar");
-        // Versions and ecosystems are part of the key.
         let mut v2 = q(Ecosystem::Npm, "foo");
         v2.version = "2.0.0".into();
-        assert_ne!(Osv::cache_key(&q(Ecosystem::Npm, "foo")), Osv::cache_key(&v2));
+        assert_ne!(
+            Osv::cache_key(&q(Ecosystem::Npm, "foo")),
+            Osv::cache_key(&v2)
+        );
         assert_ne!(
             Osv::cache_key(&q(Ecosystem::Npm, "foo")),
             Osv::cache_key(&q(Ecosystem::Hex, "foo"))
+        );
+    }
+
+    #[test]
+    fn each_ecosystem_asks_for_the_spellings_it_can_have() {
+        let sp = |e, n: &str| spellings(e, n);
+        // Derivable: one spelling, certain.
+        assert_eq!(
+            sp(Ecosystem::PyPi, "Foo_Bar.baz"),
+            (vec!["foo-bar-baz".to_owned()], true)
+        );
+        assert_eq!(
+            sp(Ecosystem::Packagist, "Symfony/Console"),
+            (vec!["symfony/console".to_owned()], true)
+        );
+        // Case-sensitive: as written, certain.
+        for e in [
+            Ecosystem::Npm,
+            Ecosystem::Go,
+            Ecosystem::Maven,
+            Ecosystem::RubyGems,
+            Ecosystem::SwiftUrl,
+        ] {
+            assert_eq!(sp(e, "Foo_Bar"), (vec!["Foo_Bar".to_owned()], true), "{e}");
+        }
+        // Equivalent spellings: all of them are asked.
+        let (crates, certain) = sp(Ecosystem::CratesIo, "Serde_Json");
+        assert!(certain);
+        assert_eq!(
+            crates,
+            ["Serde_Json", "Serde-Json", "serde_json", "serde-json"]
+        );
+        let (crates, _) = sp(Ecosystem::CratesIo, "serde");
+        assert_eq!(crates, ["serde"]);
+        assert_eq!(
+            sp(Ecosystem::Hex, "Plug"),
+            (vec!["Plug".to_owned(), "plug".to_owned()], true)
+        );
+        assert_eq!(sp(Ecosystem::Pub, "http"), (vec!["http".to_owned()], true));
+        // NuGet: the published casing cannot be derived.
+        assert_eq!(
+            sp(Ecosystem::NuGet, "Newtonsoft.Json"),
+            (
+                vec!["Newtonsoft.Json".to_owned(), "newtonsoft.json".to_owned()],
+                true
+            )
+        );
+        assert_eq!(
+            sp(Ecosystem::NuGet, "newtonsoft.json"),
+            (vec!["newtonsoft.json".to_owned()], false)
         );
     }
 }
