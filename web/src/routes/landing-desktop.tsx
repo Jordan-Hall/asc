@@ -30,9 +30,9 @@ export default function LandingDesktop() {
             <a href="#git" className="navl">
               Git compatible
             </a>
-            <a href="#docs" className="navl">
+            <Link to="/docs" className="navl">
               Docs
-            </a>
+            </Link>
           </nav>
           <div className="land6">
             <Link to="/signin" className="navl land7">
@@ -356,7 +356,7 @@ export default function LandingDesktop() {
                 when you want stacks, undo, and live restack.
               </p>
               <div className="mono land108">
-                <span className="land17">$</span> git push origin HEAD:refs/for/main
+                <span className="land17">$</span> git push origin HEAD:refs/for/master
               </div>
             </div>
           </div>
@@ -372,9 +372,9 @@ export default function LandingDesktop() {
                 <Link to="/signin" className="btn btn-p">
                   Create account
                 </Link>
-                <a href="#docs" className="btn btn-g">
+                <Link to="/docs" className="btn btn-g">
                   Read the docs
-                </a>
+                </Link>
               </div>
             </div>
           </div>
@@ -386,11 +386,10 @@ export default function LandingDesktop() {
             ASC Hub <span className="land118">· Based on Forgejo</span>
           </div>
           <div className="land119">
-            <a href="#docs">Docs</a>
-            <a href="#api">API</a>
-            <a href="#status">Status</a>
-            <a href="#licenses">Licenses</a>
-            <a href="#privacy">Privacy</a>
+            <Link to="/docs">Docs</Link>
+            <Link to="/install">Install</Link>
+            <Link to="/licenses">Licenses</Link>
+            <Link to="/privacy">Privacy</Link>
           </div>
         </div>
       </footer>

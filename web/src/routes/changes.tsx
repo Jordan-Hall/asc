@@ -2,6 +2,7 @@
 import type { ReactNode } from "react";
 import type { ChangeListView, ChangeRow, StackView } from "../api/types";
 import { useApp, useQ } from "../api/queries";
+import { Badge } from "../components/bits";
 import { ErrorState } from "../components/error-state";
 import { RowsSkeleton } from "../components/skeleton";
 import { VirtualList } from "../components/virtual-list";
@@ -20,24 +21,6 @@ export function flatten(view: ChangeListView): Item[] {
     { kind: "stack" as const, stack },
     ...stack.changes.map((row) => ({ kind: "change" as const, row })),
   ]);
-}
-
-function Badge(props: {
-  tone: "good" | "bad" | "warn" | "note" | "plain";
-  children: ReactNode;
-}): ReactNode {
-  const tone = {
-    good: "bg-good-bg text-good",
-    bad: "bg-danger-bg text-bad",
-    warn: "bg-warn-bg text-warn",
-    note: "bg-note-bg text-note",
-    plain: "bg-subtle text-fg-muted",
-  }[props.tone];
-  return (
-    <span className={`whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium ${tone}`}>
-      {props.children}
-    </span>
-  );
 }
 
 function ChecksBadge(props: { checks: string }): ReactNode {

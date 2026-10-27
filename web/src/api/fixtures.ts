@@ -1,7 +1,10 @@
 // A demo repository for the mock transport: a tree, a README, a very long file (to exercise the
 // virtualiser), a binary file, and two stacks of changes. Used by tests and by `?mock`.
-import { changeIdToString } from "@asc/asc-client";
+import { changeIdToString, toHex } from "@asc/asc-client";
+import { AgentRunState, Agents } from "@asc/asc-client/agents";
 import { Changes } from "@asc/asc-client/changes";
+import { Ci, CiStatus } from "@asc/asc-client/ci";
+import { CodeIntel } from "@asc/asc-client/codeintel";
 import { Inbox, InboxSection } from "@asc/asc-client/inbox";
 import { Repo } from "@asc/asc-client/repo";
 import { Review, ThreadStatus } from "@asc/asc-client/review";
@@ -512,6 +515,27 @@ function inboxChange(name: string, s: InboxSeed, i: number): Uint8Array {
     : changeIdBytes(`inbox:${name}`, i);
 }
 
+const SUBJECTS = [
+  "Wire the retry policy into the client",
+  "Cache merge bases per generation",
+  "Tighten the sidebar spacing",
+  "Add the token store",
+  "Fix the empty README heading",
+  "Initial commit",
+];
+
+/** The demo history of a repository, newest first; the first entry is the tip. */
+function historyOf(name: string | undefined) {
+  const prof = profile(name);
+  const repo = name ?? DEMO_REPO;
+  return SUBJECTS.map((subject, i) => ({
+    id: fakeId(`${repo}:history:${i}`),
+    parents: i < SUBJECTS.length - 1 ? [fakeId(`${repo}:history:${i + 1}`)] : [],
+    message: enc.encode(i === 0 ? `${prof.subject}\n\nBody.` : `${subject}\n\nWhy: demo history.`),
+    author: signature(i % 2 === 0 ? "Ada" : "Linus", prof.ageSec + i * 2 * DAY),
+  }));
+}
+
 /** A transport wired with the demo repositories. */
 export function demoTransport(latencyMs = 0): MockTransport {
   const t = new MockTransport(latencyMs);
@@ -551,7 +575,8 @@ export function demoTransport(latencyMs = 0): MockTransport {
       if (!p.startsWith(prefix)) continue;
       const rest = p.slice(prefix.length);
       const slash = rest.indexOf("/");
-      seen.set(slash < 0 ? rest : rest.slice(0, slash), slash >= 0);
+      if (req.recursive) seen.set(rest, false);
+      else seen.set(slash < 0 ? rest : rest.slice(0, slash), slash >= 0);
     }
     if (seen.size === 0 && dir) throw notFound(dir);
     const entries = [...seen].map(([name, isDir]) => ({
@@ -580,6 +605,13 @@ export function demoTransport(latencyMs = 0): MockTransport {
   t.onStream(Repo.method.log, function* (req) {
     const prof = profile(req.repo?.name);
     const include = req.include[0] ?? "refs/heads/main";
+    const history = historyOf(req.repo?.name);
+    if (/^[0-9a-f]{6,}$/.test(include)) {
+      // A commit id: the demo history knows its own.
+      const found = history.find((c) => toHex(c.id).startsWith(include));
+      if (found) yield { entries: [found] };
+      return;
+    }
     const stack = prof.stacks[include];
     if (stack && req.exclude.length > 0) {
       yield {
@@ -593,6 +625,10 @@ export function demoTransport(latencyMs = 0): MockTransport {
       };
       return;
     }
+    if (req.limit > 1) {
+      yield { entries: history.slice(0, req.limit) };
+      return;
+    }
     yield {
       entries: [
         {
@@ -603,6 +639,165 @@ export function demoTransport(latencyMs = 0): MockTransport {
       ],
     };
   });
+
+  t.onStream(Repo.method.diff, function* (req) {
+    yield {
+      changes: [
+        { path: enc.encode("src/index.ts"), status: "M" },
+        { path: enc.encode("docs/guide.md"), status: "A" },
+      ],
+      text: enc.encode(
+        [
+          "diff --git a/src/index.ts b/src/index.ts",
+          "--- a/src/index.ts",
+          "+++ b/src/index.ts",
+          "@@ -1,2 +1,3 @@",
+          " export const hello = (name: string) => `hello ${name}`;",
+          "-export { hello };",
+          "+export { hello };",
+          "+export const bye = (name: string) => `bye ${name}`;",
+          "diff --git a/docs/guide.md b/docs/guide.md",
+          "new file mode 100644",
+          "--- /dev/null",
+          "+++ b/docs/guide.md",
+          "@@ -0,0 +1 @@",
+          `+Changed in ${req.head.slice(0, 10)}`,
+          "",
+        ].join("\n"),
+      ),
+    };
+  });
+
+  t.onStream(Repo.method.blame, function* (req) {
+    const body = filesOf(req.repo?.name).get(new TextDecoder().decode(req.path));
+    if (!body) throw notFound("file");
+    const lines = new TextDecoder().decode(body).split("\n").length;
+    const history = historyOf(req.repo?.name);
+    const third = Math.max(1, Math.floor(lines / 3));
+    const cuts = [1, 1 + third, 1 + 2 * third].filter((c) => c <= lines);
+    yield {
+      commits: history.slice(0, cuts.length),
+      hunks: cuts.map((start, i) => ({
+        origin: history[i]?.id ?? new Uint8Array(),
+        start,
+        len: (cuts[i + 1] ?? lines + 1) - start,
+      })),
+    };
+  });
+
+  t.onStream(CodeIntel.method.search, function* (req) {
+    const files = filesOf(req.scope?.repo?.name);
+    const want = req.pattern.toLowerCase();
+    const dec = new TextDecoder();
+    const hits = [];
+    for (const [path, body] of files) {
+      if (path.includes("big.txt") || body.includes(0)) continue;
+      const matches = dec
+        .decode(body)
+        .split("\n")
+        .flatMap((text, i) =>
+          text.toLowerCase().includes(want) ? [{ line: i + 1, text: enc.encode(text) }] : [],
+        );
+      if (matches.length > 0) hits.push({ path: enc.encode(path), lang: "", matches });
+    }
+    yield { files: hits.slice(0, 100), truncated: false };
+  });
+
+  t.onUnary(Changes.method.versions, (req) => {
+    const id = toHex(req.change);
+    return {
+      versions: [2, 1].map((v) => ({
+        v,
+        cs: fakeId(`cs:${id}:${v}`),
+        at: BigInt(NOW() - v * 3 * HOUR),
+        actor: v === 2 ? "Ada" : "Linus",
+      })),
+    };
+  });
+
+  t.onUnary(Repo.method.readChangeset, () => ({
+    changes: [
+      { path: enc.encode("src/index.ts"), status: "M" },
+      { path: enc.encode("src/token.ts"), status: "A" },
+      { path: enc.encode("src/old.ts"), status: "D" },
+    ],
+  }));
+
+  t.onUnary(Ci.method.listRuns, () => ({
+    runs: [
+      {
+        id: 3n,
+        name: "build",
+        status: CiStatus.RUNNING,
+        created: BigInt(NOW() - 4 * MIN),
+        jobs: [
+          { id: 31n, name: "compile", status: CiStatus.SUCCESS, logSize: 120n },
+          { id: 32n, name: "test", status: CiStatus.RUNNING, logSize: 64n },
+        ],
+      },
+      {
+        id: 2n,
+        name: "build",
+        status: CiStatus.FAILURE,
+        created: BigInt(NOW() - 3 * HOUR),
+        version: 1,
+        change: changeIdBytes("refs/heads/feature-cache", 0),
+        jobs: [{ id: 21n, name: "test", status: CiStatus.FAILURE, logSize: 90n }],
+      },
+      {
+        id: 1n,
+        name: "lint",
+        status: CiStatus.SUCCESS,
+        created: BigInt(NOW() - DAY),
+        jobs: [{ id: 11n, name: "oxlint", status: CiStatus.SUCCESS, logSize: 30n }],
+      },
+    ],
+  }));
+
+  t.onUnary(Ci.method.jobLog, (req) => {
+    const data = enc.encode(
+      req.jobId === 21n
+        ? "running 3 tests\ntest dedupe_reads ... FAILED\n\nfailures:\n    dedupe_reads: left 2, right 1\n"
+        : "step 1: fetch\nstep 2: build\nstep 3: done\n",
+    );
+    return { data, size: BigInt(data.length), offset: 0n, nextOffset: BigInt(data.length) };
+  });
+
+  t.onUnary(Repo.method.repoConfig, () => ({
+    visibility: "private",
+    branchless: true,
+    cloud: true,
+    sharedRefs: [],
+    autolinks: [{ prefix: "ASC-", url: "https://tracker.example.org/browse/ASC-" }],
+  }));
+
+  t.onUnary(Repo.method.getPolicy, () => ({
+    present: true,
+    version: 1,
+    mergeStrategy: "rebase",
+    trunk: { branch: "main", requireApprovals: 1, requireChecks: ["build"], allowForce: false },
+    roles: [{ name: "maintainers", members: ["ada", "linus"] }],
+    paths: [{ glob: "docs/**", write: ["maintainers"] }],
+  }));
+
+  t.onUnary(Agents.method.listRuns, (req) => ({
+    runs:
+      req.repo?.name === DEMO_REPO
+        ? [
+            {
+              id: 7n,
+              repo: DEMO_REPO,
+              agent: "assistant",
+              title: "Add retry policy",
+              state: AgentRunState.SUCCEEDED,
+              target: "main",
+              createdBy: "ada",
+              created: BigInt(NOW() - 2 * HOUR),
+              changes: [changeIdBytes("refs/heads/feature-auth", 0)],
+            },
+          ]
+        : [],
+  }));
 
   t.onUnary(Changes.method.stack, (req) => {
     const ref = req.at.case === "rev" ? req.at.value : "";

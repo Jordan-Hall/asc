@@ -143,15 +143,12 @@ function AgentsPill(props: { short?: boolean }): ReactNode {
 function InboxLink(): ReactNode {
   const count = useInboxTotal(true);
   return (
-    <Link
-      to="/inbox"
-      className="hd-inbox"
-      aria-label={count > 0 ? `Inbox, ${count} waiting` : "Inbox"}
-    >
+    <Link to="/inbox" className="hd-inbox">
       Inbox
       {count > 0 ? (
-        <span className="hd-badge" aria-hidden="true">
+        <span className="hd-badge">
           {count > 99 ? "99+" : count}
+          <span className="sr-only"> waiting</span>
         </span>
       ) : null}
     </Link>
@@ -518,7 +515,7 @@ function BottomBar(props: { setSlot: (el: HTMLElement | null) => void }): ReactN
   const total = useInboxTotal(true);
   return (
     <div className="bottom">
-      <div ref={props.setSlot} className="bottom-cta" />
+      <div ref={props.setSlot} className="bottom-cta" role="region" aria-label="Primary action" />
       <nav aria-label="Primary" className="tabs">
         <Tab
           to="/"

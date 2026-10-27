@@ -43,8 +43,8 @@ export default function SettingsPage(): ReactNode {
           Show agent features
         </label>
         <p className="text-sm text-fg-muted">
-          Off by default. When on, the product page describes agents and MCP, and the dashboard
-          shows where agent work appears. This choice stays in this browser.
+          Off by default. When on, the sidebar links to Agent runs, the runs started with{" "}
+          <code>asc agent run</code>. This choice stays in this browser.
         </p>
       </section>
       <section aria-labelledby="acct-h">
