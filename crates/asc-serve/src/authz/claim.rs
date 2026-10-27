@@ -36,6 +36,48 @@ pub fn account_claim(
     host_claim(authorizer, principal_id, meta, &format!("user:{login}"))
 }
 
+/// What a call from the host service says about who it is for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HostCall {
+    /// Not the host service: its own rights decide, and metadata is ignored.
+    NotHost,
+    /// The host service with no claim: system work, decided as the service always was.
+    System,
+    /// The host service for a person, with a claim that verified for the subject. The claim is the
+    /// whole of the authority: the service's breadth does not widen it.
+    Person(Claim),
+    /// The host service with a claim that does not verify for the subject (wrong key, subject,
+    /// time or spelling). It is refused, never treated as system work.
+    Refused,
+}
+
+/// Sorts a call by what it claims for `subject`.
+pub fn classify(
+    authorizer: &dyn Authorizer,
+    principal_id: &str,
+    meta: &MetadataMap,
+    subject: &str,
+) -> HostCall {
+    if !is_host_service(principal_id) {
+        return HostCall::NotHost;
+    }
+    let claimed = [
+        asc_rpc::forwarded::USER,
+        asc_rpc::forwarded::ROLE,
+        asc_rpc::forwarded::TS,
+        asc_rpc::forwarded::MAC,
+    ]
+    .iter()
+    .any(|k| meta.contains_key(*k));
+    if !claimed {
+        return HostCall::System;
+    }
+    match AdminProof::forwarded_in(authorizer, meta, subject) {
+        Some(c) => HostCall::Person(c),
+        None => HostCall::Refused,
+    }
+}
+
 /// The principal id a call acts as for something personal: the person of an account claim of at
 /// least `needed`, else the caller as authenticated.
 pub fn acting_principal(
