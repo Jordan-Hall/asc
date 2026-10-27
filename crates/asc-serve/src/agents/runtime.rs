@@ -745,13 +745,15 @@ impl AgentsHub {
         }
         self.event(&fresh, EventKind::State, state.name(), "", &[], "")
             .await;
+        // The token is revoked before the run reads as finished: whoever sees the end finds the
+        // token already dead, never a window in which a finished run still has a live token.
+        if !fresh.token_id.is_empty() {
+            let _ = self.core.tokens.revoke(&fresh.token_id, "run ended").await;
+        }
         // The state row changes after its last event, so a reader that sees a finished run finds
         // the whole log: the final state event is the last one.
         if let Err(e) = self.core.runs.finish(id, state, &code, &message).await {
             tracing::error!(class = %crate::ai::store::class(&e), "agent run not finished");
-        }
-        if !fresh.token_id.is_empty() {
-            let _ = self.core.tokens.revoke(&fresh.token_id, "run ended").await;
         }
         self.audit(
             "agent.run.finished",
