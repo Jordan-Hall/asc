@@ -849,8 +849,9 @@ fn git_path_value(p: &Path) -> OsString {
     }
 }
 
-/// `PATH` of every child: the directory of the resolved git and, for Git for Windows, its
-/// `mingw64\bin` and `usr\bin`, which hold the `sh` that runs hooks.
+/// `PATH` of every child: the directory of the resolved git, for Git for Windows its
+/// `mingw64/bin` and `usr/bin` (which hold the `sh` that runs hooks), and on Unix `/usr/bin` and
+/// `/bin`.
 fn path_env(git: &RealGit) -> OsString {
     let mut dirs: Vec<PathBuf> = Vec::new();
     if let Some(dir) = git.path().parent() {
@@ -860,6 +861,10 @@ fn path_env(git: &RealGit) -> OsString {
         dirs.push(root.join("mingw64").join("bin"));
         dirs.push(root.join("usr").join("bin"));
     }
+    // Hooks are shell scripts: they need the system utilities (`cat`, `env`, `sleep`, `awk`) even
+    // when git itself sits alone in its directory, as the pinned build does.
+    #[cfg(unix)]
+    dirs.extend(["/usr/bin", "/bin"].map(PathBuf::from));
     std::env::join_paths(dirs).unwrap_or_default()
 }
 

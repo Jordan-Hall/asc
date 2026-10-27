@@ -79,11 +79,13 @@ impl Rig {
 }
 
 /// git's client text with everything that legitimately differs between hosts removed: URLs,
-/// secrets, object ids, `remote:` lines (a host's own words) and blank lines.
+/// secrets, object ids, `remote:` lines (a host's own words), git's `warning: redirecting to`
+/// line (a client that answers a challenge reports the base URL it ends on, though nothing was
+/// redirected: it depends on the git and libcurl in use) and blank lines.
 pub fn norm(text: &str, scrub: &[String]) -> Vec<String> {
     let hex = Regex::new(r"\b[0-9a-f]{7,40}\b").unwrap();
     text.lines()
-        .filter(|l| !l.starts_with("remote:"))
+        .filter(|l| !l.starts_with("remote:") && !l.starts_with("warning: redirecting to "))
         .map(|l| {
             let mut l = l.to_owned();
             for s in scrub {
