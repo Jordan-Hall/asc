@@ -240,14 +240,19 @@ dependencies = [
  "asc-store",
  "asc-wc",
  "async-trait",
+ "blake3",
  "bytes",
  "futures",
+ "getrandom 0.4.3",
  "globset",
  "postcard",
+ "regex",
+ "rustix",
  "serde",
  "tempfile",
  "thiserror",
  "tokio",
+ "tokio-util",
  "toml",
  "uuid",
 ]
@@ -466,6 +471,7 @@ dependencies = [
 name = "asc-serve"
 version = "0.1.0"
 dependencies = [
+ "asc-ci",
  "asc-codeintel",
  "asc-core",
  "asc-engine",
@@ -480,6 +486,7 @@ dependencies = [
  "blake3",
  "bstr",
  "bytes",
+ "chacha20poly1305",
  "flate2",
  "fs4",
  "futures",
@@ -487,6 +494,7 @@ dependencies = [
  "gix-attributes",
  "h3",
  "h3-quinn",
+ "hkdf",
  "hmac",
  "http-body",
  "object_store",
@@ -507,6 +515,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.1",
+ "similar 3.2.0",
  "sqlx",
  "tar",
  "tempfile",
@@ -521,6 +530,7 @@ dependencies = [
  "url",
  "uuid",
  "windows-sys 0.61.2",
+ "zeroize",
  "zip",
 ]
 
@@ -1114,6 +1124,19 @@ dependencies = [
  "cipher",
  "cpufeatures 0.3.1",
  "rand_core 0.10.1",
+ "zeroize",
+]
+
+[[package]]
+name = "chacha20poly1305"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b89e1c441e926b9c82a8d023f6e1b7ae0adcfaa7d621814e4d60789bac751cb"
+dependencies = [
+ "aead",
+ "chacha20",
+ "cipher",
+ "poly1305",
  "zeroize",
 ]
 

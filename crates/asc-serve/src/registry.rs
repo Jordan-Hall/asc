@@ -606,18 +606,26 @@ pub struct Extensions {
     pub cloud: crate::cloud::rpc::CloudSlot,
     /// The `CodeIntel` service handler (I16); `build_routes` serves it behind the authorizer.
     pub codeintel: crate::codeintel::rpc::CodeIntelSlot,
+    /// The `AiProviders` hub (bring-your-own AI keys); `build_grpc` serves it behind the authorizer.
+    pub ai: crate::ai::AiSlot,
+    /// The `Agents` and `AgentTokens` hub; `build_grpc` serves them behind the authorizer.
+    pub agents: crate::agents::AgentsSlot,
+    /// The `Workflows` hub; `build_grpc` serves it behind the authorizer.
+    pub workflows: crate::workflows::WorkflowsSlot,
     /// The `Review`, `Inbox` and `Ci` handlers; `build_routes` serves them behind the authorizer.
     pub review: crate::review::ReviewSlot,
-    /// Bring-your-own storage and the vault; `build_routes` serves `Storage` and `Vault`.
-    pub byos: crate::storage::ByosSlot,
-}
-
-impl Extensions {
-    pub fn new() -> Self {
     /// The `Audit` and `Stacks` (ref log, undo) state; `build_routes` serves them behind the authorizer.
     pub audit: crate::audit::AuditSlot,
     /// The `CiInsights` hub (failure groups, flaky tests); `build_routes` serves it behind the authorizer.
     pub insights: crate::ci::insights::InsightsSlot,
+    /// Bring-your-own storage and the vault; `build_routes` serves `Storage` and `Vault`.
+    pub byos: crate::storage::ByosSlot,
+    /// Policy, secret scanning and signing; `build_routes` serves `Policy`, `SecretScan` and `Signing`.
+    pub security: crate::policy::SecuritySlot,
+}
+
+impl Extensions {
+    pub fn new() -> Self {
         Self {
             handlers: Arc::new(RepoHandlers::new()),
             http: HttpRoutes::new(),
@@ -629,8 +637,14 @@ impl Extensions {
             changes: Default::default(),
             cloud: Default::default(),
             codeintel: Default::default(),
+            ai: Default::default(),
+            agents: Default::default(),
+            workflows: Default::default(),
             review: Default::default(),
+            audit: Default::default(),
+            insights: Default::default(),
             byos: Default::default(),
+            security: Default::default(),
         }
     }
 }
@@ -641,8 +655,6 @@ impl Default for Extensions {
     }
 }
 
-            audit: Default::default(),
-            insights: Default::default(),
 #[cfg(test)]
 mod tests {
     use super::*;

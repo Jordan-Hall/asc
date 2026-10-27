@@ -27,6 +27,7 @@ mod add_patch;
 mod add_patch_diff;
 mod add_patch_ui;
 pub mod affected;
+pub mod agent;
 pub mod am;
 pub mod api;
 pub mod apply;
@@ -115,6 +116,7 @@ pub mod upgrade;
 pub mod url_display;
 pub mod watch;
 pub mod whatchanged;
+pub mod workflow;
 pub mod worktree;
 
 use common::{CliError, Ctx, Result};
@@ -245,6 +247,8 @@ pub static COMMANDS: &[Command] = &[
     entry!("sparse", sparse),
     entry!("debug", debug),
     entry!("ci", ci),
+    entry!("agent", agent),
+    entry!("workflow", workflow),
     entry!("codeintel", codeintel_cmd),
     entry!("search", search),
     entry!("sym", sym),

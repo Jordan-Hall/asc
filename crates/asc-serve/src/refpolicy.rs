@@ -49,6 +49,10 @@ pub const MAX_USER_REFS: i64 = 1000;
 /// no user refs; neither has the anonymous caller, an Actions task, the internal principal or any
 /// other principal.
 pub fn owner_of(principal: &Principal) -> Option<i64> {
+    // An agent acts in the draft namespace of the person it acts for (agents/tokens.rs).
+    if let Some(agent) = crate::agents::tokens::parse_principal(&principal.id) {
+        return Some(agent.owner_id);
+    }
     let who = UserIdentity::of(principal)?;
     who.is_user().then_some(who.user_id)
 }

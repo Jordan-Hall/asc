@@ -7,6 +7,8 @@
 pub mod actions_store;
 pub mod admin;
 pub mod admin_cli;
+pub mod agents;
+pub mod ai;
 pub mod alt_svc;
 pub mod audit;
 pub mod authn;
@@ -50,6 +52,7 @@ pub mod mutations;
 pub mod netguard;
 pub mod objects;
 pub mod outbox;
+pub mod policy;
 pub mod projects;
 pub mod projects_warm;
 pub mod read;
@@ -58,7 +61,9 @@ pub mod refpolicy;
 pub mod reftl;
 pub mod registry;
 pub mod review;
+pub mod secretscan;
 pub mod seeds;
+pub mod signing;
 #[cfg(feature = "git-ssh")]
 pub mod ssh;
 pub mod storage;
@@ -67,6 +72,7 @@ pub mod update;
 pub mod vault;
 pub mod watch_refs;
 pub mod web;
+pub mod workflows;
 
 use std::future::Future;
 use std::path::Path as FsPath;
@@ -207,6 +213,7 @@ fn codeintel_settings(cfg: &config::ServeConfig) -> Option<codeintel::rpc::Setti
 }
 
 /// One registration line per unit goes here (PLAN "Stubs and extension points").
+#[allow(clippy::too_many_arguments)] // one handle per subsystem, called from one place
 fn register_all(
     ext: &Extensions,
     registry: &Arc<Registry>,
@@ -215,7 +222,8 @@ fn register_all(
     cloud_cfg: &config::CloudConfig,
     codeintel_cfg: Option<codeintel::rpc::Settings>,
     embed: Option<Arc<dyn codeintel::worker::EmbedModel>>,
-) {
+    security_cfg: (&secretscan::Config, &signing::Config),
+) -> Result<(), ServeError> {
     limits::register(ext, limits);
     // `HasObjects`, `GetObjects` and `PutObjects`: what clone, fetch and push move objects with.
     objects::register(ext, registry);
@@ -229,6 +237,16 @@ fn register_all(
     let hooks = read::register(ext, registry);
     classify::register(ext, registry, &hooks);
     let mutations = mutations::register(ext, registry, &hooks);
+    // Repository policy, secret scanning and signed changes: the gate every ref update passes and
+    // the `Policy`, `SecretScan` and `Signing` services (docs/BUILDOUT.md sections 1, 4 and 5).
+    policy::register(
+        ext,
+        registry,
+        &mutations,
+        security_cfg.0.clone(),
+        security_cfg.1.clone(),
+    )
+    .map_err(ConfigError::Invalid)?;
     mutations::rebase::register(ext, &mutations);
     mutations::land_merge::register(ext, &hooks);
     import_push::register(ext, registry, mutations, import_root);
@@ -245,6 +263,7 @@ fn register_all(
     {
         tracing::error!(error = %e, "CodeIntel is not served");
     }
+    Ok(())
 }
 
 /// The gRPC services of `ext` behind `authorizer`. They are added to a copy of `ext.grpc`, so the
@@ -305,12 +324,54 @@ pub fn build_grpc(ext: &Extensions, authorizer: Arc<dyn Authorizer>, info: Serve
     if let Some(a) = ext.audit.get() {
         grpc = grpc
             .add_service(
-                audit::rpc::AuditService::new(a.clone(), authorizer.clone(), info.clone()).into_service(),
+                audit::rpc::AuditService::new(a.clone(), authorizer.clone(), info.clone())
+                    .into_service(),
             )
             .add_service(
                 audit::stacks_rpc::StacksService::new(a.clone(), authorizer.clone(), info.clone())
                     .into_service(),
             );
+    }
+    // `Policy`, `SecretScan` and `Signing`: present once the security state is registered.
+    if let Some(s) = ext.security.get() {
+        grpc = grpc
+            .add_service(
+                policy::rpc::PolicyService::new(s.policy.clone(), authorizer.clone(), info.clone())
+                    .into_service(),
+            )
+            .add_service(
+                secretscan::rpc::SecretScanService::new(
+                    s.secrets.clone(),
+                    authorizer.clone(),
+                    info.clone(),
+                )
+                .into_service(),
+            )
+            .add_service(
+                signing::rpc::SigningService::new(
+                    s.signing.clone(),
+                    authorizer.clone(),
+                    info.clone(),
+                )
+                .into_service(),
+            );
+    }
+    if let Some(h) = ext.ai.get() {
+        grpc = grpc.add_service(
+            ai::rpc::AiService::new(h.clone(), authorizer.clone(), info.clone()).into_service(),
+        );
+    }
+    if let Some(h) = ext.agents.get() {
+        let svc = agents::rpc::AgentService::new(h.clone(), authorizer.clone(), info.clone());
+        grpc = grpc
+            .add_service(svc.tokens().into_service())
+            .add_service(svc.into_service());
+    }
+    if let Some(h) = ext.workflows.get() {
+        grpc = grpc.add_service(
+            workflows::rpc::WorkflowService::new(h.clone(), authorizer.clone(), info.clone())
+                .into_service(),
+        );
     }
     grpc.add_service(RepoService::new(ext.handlers.clone(), authorizer, info).into_service())
 }
@@ -406,7 +467,8 @@ pub async fn serve(
         &cfg.cloud,
         ci_settings,
         ci_embed.clone(),
-    );
+        (&cfg.secrets, &cfg.signing),
+    )?;
     // Bring-your-own storage: the vault, the network guard, the router and the background work.
     let byos = storage::register(
         &ext,
@@ -426,6 +488,34 @@ pub async fn serve(
         },
     );
     byos.start().await;
+    // AI keys and agents (docs/AGENTS.md): both hubs, the agent gate of the `UpdateRefs` pipeline,
+    // and the authorizer that also knows agent tokens, which every later user of it gets.
+    let ai_agents = agents::register::register(
+        &ext,
+        &registry,
+        agents::register::Parts {
+            vault: byos.vault.clone(),
+            guard: netguard::Guard::new(cfg.netguard.clone()),
+            authorizer: authorizer.clone(),
+            ai: cfg.aikeys.clone(),
+            agents: cfg.agents.clone(),
+            audit: None,
+        },
+    )
+    .map_err(ConfigError::Invalid)?;
+    let authorizer = ai_agents.agents.authorizer(authorizer);
+    // Workflows: definitions in the repository, runs in the database, agents and commands as steps.
+    let workflows = workflows::register(
+        &ext,
+        &registry,
+        ai_agents.agents.clone(),
+        workflows::Parts {
+            vault: byos.vault.clone(),
+            cfg: cfg.workflows.clone(),
+            audit: None,
+        },
+    )
+    .map_err(ConfigError::Invalid)?;
     // The audit log, the ref log and ref undo (docs/BUILDOUT.md sections 3 and 6).
     audit::register(&ext, &registry, &cfg.audit);
     ci::insights::register(&ext, &registry, &cfg.ci_insights);
@@ -513,6 +603,11 @@ pub async fn serve(
     features.push(ci::insights::FEATURE.to_owned());
     features.extend(codeintel::features::features(&ext.codeintel));
     features.extend(storage::features(&ext.byos));
+    features.extend(ai_agents.features());
+    features.extend(workflows::features(&workflows));
+    if ext.security.get().is_some() {
+        features.extend(policy::features());
+    }
     #[cfg(feature = "git-compat")]
     if git_live {
         features.push(git_http::FEATURE.to_owned());
@@ -547,6 +642,13 @@ pub async fn serve(
             },
         )?;
     }
+    // The agent runtime calls the server's own services through this router, as the run's agent.
+    let agent_tasks = ai_agents.start(build_grpc(&ext, authorizer.clone(), info.clone()));
+    let workflow_tasks = if workflows.cfg.enabled {
+        workflows.start_workers()
+    } else {
+        Vec::new()
+    };
     let routes = limits::guarded_routes(&ext, authorizer, admission, info);
     // gRPC-Web and Connect unary for browsers, in front of admission and the services.
     let routes = web::grpc_web::wrap(routes, &cfg.web, cfg.public_url.as_deref());
@@ -660,6 +762,12 @@ pub async fn serve(
     if let Some(i) = indexers {
         i.stop().await;
     }
+    // Live agent runs are told to stop; a run that does not end in time is failed by the next start.
+    workflows.shutdown();
+    for t in &workflow_tasks {
+        t.abort();
+    }
+    ai_agents.stop(&agent_tasks);
     // Delivery is at least once, so stopping the worker mid-row is safe.
     worker.abort();
     sweeper.abort();

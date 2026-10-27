@@ -568,6 +568,9 @@ Every method of the build-out services (83). A test keeps this list equal to the
 - `asc.v1.Workflows/CancelRun` — run starter or maintainer; idempotent
 - `asc.v1.Workflows/DecideApproval` — named approver; mutating
 - `asc.v1.Workflows/WatchRun` — repo read; long-lived, resumable
+- `asc.v1.Workflows/ListSecrets` — repo admin; names and hints only
+- `asc.v1.Workflows/SetSecret` — repo admin; mutating
+- `asc.v1.Workflows/DeleteSecret` — repo admin; idempotent
 
 **CrossSearch** (`crosssearch.proto`)
 
@@ -586,23 +589,6 @@ that mounts the real service. When this list is empty, delete `scaffold.rs`, the
 scaffold part of `crates/asc-rpc/tests/scaffold_registry.rs`.
 
 <!-- scaffolds:begin -->
-- `asc.v1.Policy/GetSource`
-- `asc.v1.Policy/Validate`
-- `asc.v1.Policy/Propose`
-- `asc.v1.Policy/Evaluate`
-
-- `asc.v1.SecretScan/ListRules`
-- `asc.v1.SecretScan/Scan`
-- `asc.v1.SecretScan/ListFindings`
-- `asc.v1.SecretScan/UpdateFinding`
-
-- `asc.v1.Signing/ListKeys`
-- `asc.v1.Signing/AddKey`
-- `asc.v1.Signing/RevokeKey`
-- `asc.v1.Signing/SubmitSignature`
-- `asc.v1.Signing/Verify`
-- `asc.v1.Signing/GetServerKey`
-
 - `asc.v1.MergeQueue/Enqueue`
 - `asc.v1.MergeQueue/Dequeue`
 - `asc.v1.MergeQueue/List`
@@ -610,40 +596,6 @@ scaffold part of `crates/asc-rpc/tests/scaffold_registry.rs`.
 - `asc.v1.MergeQueue/Revalidate`
 - `asc.v1.MergeQueue/SetPaused`
 - `asc.v1.MergeQueue/Watch`
-
-- `asc.v1.AiProviders/CreateKey`
-- `asc.v1.AiProviders/ListKeys`
-- `asc.v1.AiProviders/GetKey`
-- `asc.v1.AiProviders/UpdateKey`
-- `asc.v1.AiProviders/DeleteKey`
-- `asc.v1.AiProviders/TestKey`
-- `asc.v1.AiProviders/Usage`
-- `asc.v1.AiProviders/ListModels`
-
-- `asc.v1.Agents/CreateRun`
-- `asc.v1.Agents/ListRuns`
-- `asc.v1.Agents/GetRun`
-- `asc.v1.Agents/CancelRun`
-- `asc.v1.Agents/SendInput`
-- `asc.v1.Agents/WatchRun`
-
-- `asc.v1.AgentTokens/CreateToken`
-- `asc.v1.AgentTokens/ListTokens`
-- `asc.v1.AgentTokens/GetToken`
-- `asc.v1.AgentTokens/RevokeToken`
-- `asc.v1.AgentTokens/SetBudget`
-- `asc.v1.AgentTokens/ReportUsage`
-
-- `asc.v1.Workflows/ListDefinitions`
-- `asc.v1.Workflows/GetDefinition`
-- `asc.v1.Workflows/Validate`
-- `asc.v1.Workflows/SetEnabled`
-- `asc.v1.Workflows/Trigger`
-- `asc.v1.Workflows/ListRuns`
-- `asc.v1.Workflows/GetRun`
-- `asc.v1.Workflows/CancelRun`
-- `asc.v1.Workflows/DecideApproval`
-- `asc.v1.Workflows/WatchRun`
 
 - `asc.v1.CrossSearch/Search`
 - `asc.v1.CrossSearch/LookupSymbol`

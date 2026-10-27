@@ -30,6 +30,7 @@ use crate::graph_sql::SqlGraph;
 use crate::ingest::{IngestObserver, Ingestor};
 use crate::landing;
 use crate::mainline::{self, MainlineIndex, MainlineStep, SqlMainline};
+use crate::policy::gate::{GateMode, GateRequest, GateUpdate};
 use crate::registry::RepoEntry;
 use asc_core::path::RepoPath;
 use asc_store::sqlrefs::SqlRefs;
@@ -568,6 +569,23 @@ pub(crate) async fn run(
         }
 
         let new = RefTarget::Changeset(landing.new_tip);
+        // The repository policy, secret scanning and signatures see what will land, rewrites included.
+        if let Some(gate) = server.hooks.gate() {
+            gate.check(&GateRequest {
+                ctx: job.ctx,
+                entry: job.entry,
+                updates: &[GateUpdate {
+                    name: refname.clone(),
+                    old: current,
+                    new: Some(new),
+                    user: false,
+                }],
+                mode: GateMode::Land {
+                    rewrites: landing.rewrite.pairs.clone(),
+                },
+            })
+            .await?;
+        }
         let hook_updates = vec![HookUpdate {
             name: refname.clone(),
             old: current,
