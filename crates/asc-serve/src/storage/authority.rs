@@ -20,7 +20,7 @@ use asc_rpc::auth::{Access, Authorizer, Credential, Principal};
 use async_trait::async_trait;
 
 use super::model::{Owner, OwnerKind};
-use crate::authz::claim::{HostCall, classify};
+use crate::authz::claim::{HostCall, classify, subject};
 use crate::authz::{UserIdentity, is_host_service};
 use asc_rpc::forwarded::Role;
 
@@ -33,6 +33,10 @@ pub struct Caller {
     /// The `x-asc-forwarded-*` entries of the call, for a claim from the hub (see
     /// [`crate::authz::claim`]). Empty when the call carried none.
     pub forwarded: tonic::metadata::MetadataMap,
+    /// `(person, subject)` of the verified claim the call was decided on, set by the authority.
+    /// The audit events are then the person's, with the host service as the relay, and an
+    /// operation's stored answer is bound to both.
+    pub acted_for: std::sync::OnceLock<(String, String)>,
 }
 
 impl Caller {
@@ -52,9 +56,26 @@ impl Caller {
         out
     }
 
-    /// The text recorded as the actor of audit events.
+    /// The text recorded as the actor of audit events: the person of a claim the call was
+    /// decided on, else the principal.
     pub fn actor(&self) -> &str {
-        &self.principal.id
+        self.acted_for
+            .get()
+            .map_or(&self.principal.id, |(user, _)| user.as_str())
+    }
+
+    /// The relay of a call made for a person: the host service.
+    pub fn relay(&self) -> Option<&str> {
+        self.acted_for.get().map(|_| self.principal.id.as_str())
+    }
+
+    /// What a stored answer is bound to: the principal, and for a call made on a claim the person
+    /// and the subject too.
+    pub fn replay_identity(&self) -> String {
+        match self.acted_for.get() {
+            Some((user, subject)) => format!("{}\n{user}\n{subject}", self.principal.id),
+            None => self.principal.id.clone(),
+        }
     }
 
     pub fn is_host(&self) -> bool {
@@ -100,23 +121,22 @@ impl DefaultAuthority {
 impl Authority for DefaultAuthority {
     async fn can_admin_owner(&self, caller: &Caller, owner: &Owner) -> bool {
         // A call from the hub with a claim is decided by the claim alone: the hub's verdict on
-        // the account (write), the organisation (admin) or the repository (admin).
+        // the account (write), the organisation (admin) or the repository (admin). The subject
+        // is the canonical name this service stores, spelled by `claim::subject`.
         let (subject, needed) = match owner.kind {
-            OwnerKind::User => (
-                format!("user:{}", owner.name.to_ascii_lowercase()),
-                Role::Write,
-            ),
-            OwnerKind::Org => (
-                format!("org:{}", owner.name.to_ascii_lowercase()),
-                Role::Admin,
-            ),
-            OwnerKind::Repo => (owner.name.to_ascii_lowercase(), Role::Admin),
+            OwnerKind::User => (subject::user(&owner.name), Role::Write),
+            OwnerKind::Org => (subject::org(&owner.name), Role::Admin),
+            OwnerKind::Repo => (subject::repo(&owner.name), Role::Admin),
         };
         match self.host_call(caller, &subject) {
             HostCall::Person(c) => {
-                return c.allows(needed)
+                let ok = c.allows(needed)
                     && (owner.kind != OwnerKind::User
                         || c.login().eq_ignore_ascii_case(&owner.name));
+                if ok {
+                    let _ = caller.acted_for.set((c.user, subject));
+                }
+                return ok;
             }
             HostCall::Refused => return false,
             HostCall::System | HostCall::NotHost => {}
@@ -134,8 +154,15 @@ impl Authority for DefaultAuthority {
     }
 
     async fn can_admin_repo(&self, caller: &Caller, repo: &str) -> bool {
-        match self.host_call(caller, &repo.to_ascii_lowercase()) {
-            HostCall::Person(c) => return c.allows(Role::Admin),
+        let subject = subject::repo(repo);
+        match self.host_call(caller, &subject) {
+            HostCall::Person(c) => {
+                let ok = c.allows(Role::Admin);
+                if ok {
+                    let _ = caller.acted_for.set((c.user, subject));
+                }
+                return ok;
+            }
             HostCall::Refused => return false,
             HostCall::System | HostCall::NotHost => {}
         }
@@ -149,8 +176,14 @@ impl Authority for DefaultAuthority {
     }
 
     async fn is_site_admin(&self, caller: &Caller) -> bool {
-        match self.host_call(caller, "instance") {
-            HostCall::Person(c) => c.allows(Role::Admin),
+        match self.host_call(caller, subject::INSTANCE) {
+            HostCall::Person(c) => {
+                let ok = c.allows(Role::Admin);
+                if ok {
+                    let _ = caller.acted_for.set((c.user, subject::INSTANCE.to_owned()));
+                }
+                ok
+            }
             HostCall::Refused => false,
             HostCall::System | HostCall::NotHost => caller.is_host(),
         }
@@ -243,6 +276,7 @@ mod tests {
             principal: Principal { id: id.into() },
             credential: None,
             forwarded: Default::default(),
+            acted_for: Default::default(),
         }
     }
 

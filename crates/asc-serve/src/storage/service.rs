@@ -195,7 +195,9 @@ impl Service {
     }
 
     fn event(&self, action: &str, caller: &Caller) -> AuditEvent {
-        AuditEvent::new(action).actor(caller.actor())
+        AuditEvent::new(action)
+            .actor(caller.actor())
+            .on_behalf(caller.relay().unwrap_or_default())
     }
 
     async fn view(&self, target: Target) -> Result<View, StorageError> {

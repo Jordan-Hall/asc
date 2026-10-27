@@ -127,6 +127,7 @@ async fn caller_of(
         principal,
         credential,
         forwarded: Caller::forwarded_of(meta),
+        acted_for: Default::default(),
     })
 }
 
@@ -146,9 +147,10 @@ fn now() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }
 
-/// Marks a stored answer with the caller it was made for: the SHA-256 of the principal id.
+/// Marks a stored answer with the caller it was made for: the SHA-256 of the principal id, and
+/// for a call made on the hub's claim of the person and the subject as well.
 fn answer_owner(caller: &Caller) -> [u8; 32] {
-    Sha256::digest(caller.principal.id.as_bytes()).into()
+    Sha256::digest(caller.replay_identity().as_bytes()).into()
 }
 
 /// The first answer of a retried mutating call. The answer holds the target or migration the
@@ -749,6 +751,7 @@ impl VaultSvc for VaultService {
         self.audit.record(
             AuditEvent::new("vault.rotated")
                 .actor(caller.actor())
+                .on_behalf(caller.relay().unwrap_or_default())
                 .target(&rotation.id)
                 .detail("generation", &rotation.to_generation.to_string())
                 .detail("values", &rotation.total.to_string()),
@@ -780,5 +783,72 @@ impl VaultSvc for VaultService {
         Ok(Response::new(wire::GetVaultRotationResponse {
             rotation: Some(rotation_pb(&r)),
         }))
+    }
+}
+
+#[cfg(test)]
+mod claim_replay_tests {
+    use super::*;
+
+    fn host_for(user: &str, subject: &str) -> Caller {
+        let c = Caller {
+            principal: asc_rpc::auth::Principal {
+                id: crate::authz::HOST_SERVICE_PRINCIPAL.into(),
+            },
+            credential: None,
+            forwarded: Default::default(),
+            acted_for: Default::default(),
+        };
+        c.acted_for.set((user.into(), subject.into())).unwrap();
+        c
+    }
+
+    #[tokio::test]
+    async fn a_stored_answer_replays_only_to_the_person_and_subject_it_was_made_for() {
+        let pool = crate::migrate::connect("sqlite::memory:", 1).await.unwrap();
+        crate::migrate::migrate(&pool).await.unwrap();
+        let op = Uuid::new_v4();
+        let alice = host_for("7:alice", "org:acme");
+        let answer = wire::RotateVaultResponse {
+            generation: 3,
+            rotation_id: "r1".into(),
+        };
+        remember(&pool, op, &alice, &answer).await;
+        // The same person and subject get it back.
+        let again: Option<wire::RotateVaultResponse> =
+            replay(&pool, op, &host_for("7:alice", "org:acme"))
+                .await
+                .unwrap();
+        assert_eq!(again.unwrap().rotation_id, "r1");
+        // Another person through the same host principal, and the same person for another
+        // subject, are refused and learn nothing of it.
+        for other in [
+            host_for("8:bob", "org:acme"),
+            host_for("7:alice", "org:zed"),
+        ] {
+            let e = replay::<wire::RotateVaultResponse>(&pool, op, &other)
+                .await
+                .unwrap_err();
+            assert_eq!(e.code(), tonic::Code::InvalidArgument);
+        }
+        // The host service acting alone (system work) is neither of them.
+        let plain = Caller {
+            principal: asc_rpc::auth::Principal {
+                id: crate::authz::HOST_SERVICE_PRINCIPAL.into(),
+            },
+            credential: None,
+            forwarded: Default::default(),
+            acted_for: Default::default(),
+        };
+        assert!(
+            replay::<wire::RotateVaultResponse>(&pool, op, &plain)
+                .await
+                .is_err()
+        );
+        // Audit: the person is the actor and the host is the relay.
+        assert_eq!(alice.actor(), "7:alice");
+        assert_eq!(alice.relay(), Some(crate::authz::HOST_SERVICE_PRINCIPAL));
+        assert_eq!(plain.actor(), crate::authz::HOST_SERVICE_PRINCIPAL);
+        assert_eq!(plain.relay(), None);
     }
 }
