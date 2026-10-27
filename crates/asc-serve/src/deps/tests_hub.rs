@@ -113,6 +113,22 @@ fn crates_route(m: &Mock, name: &str, versions: &[(&str, &str)]) {
         200,
         &format!(r#"{{"versions":[{}]}}"#, list.join(",")),
     );
+    // The two paths a lockfile move checks the checksum against: the version's own document and the
+    // sparse index, which also says what the version depends on.
+    let mut index = String::new();
+    for (v, c) in versions {
+        m.route(
+            &format!("/api/v1/crates/{name}/{v}"),
+            200,
+            &format!(r#"{{"version":{{"num":"{v}","yanked":false,"checksum":"{c}"}}}}"#),
+        );
+        index.push_str(&format!(
+            r#"{{"name":"{name}","vers":"{v}","deps":[],"cksum":"{c}","features":{{}},"yanked":false}}"#
+        ));
+        index.push('\n');
+    }
+    let path: Vec<String> = super::facts::crates_index_path(name).unwrap();
+    m.route(&format!("/{}", path.join("/")), 200, &index);
 }
 
 impl H {
@@ -792,7 +808,7 @@ async fn a_proposal_is_a_change_on_an_agent_deps_ref_and_never_trunk() {
         serde
             .notes
             .iter()
-            .any(|n| n.contains("cargo update -p serde")),
+            .any(|n| n.contains("crates.io API and index agree on the checksum")),
         "{:?}",
         serde.notes
     );

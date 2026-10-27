@@ -15,9 +15,11 @@ use futures::StreamExt as _;
 use tonic::Status;
 
 use super::REF_PREFIX;
-use super::apply::{Move, apply};
+use super::apply::{Move, apply, needs};
+use super::facts::FactStore;
 use super::hub::{DepsHub, ecosystems_of, hex, kind_from_wire, kind_wire};
-use super::listing::{Meta, Versions};
+use super::listing::Versions;
+use super::lock::Need;
 use super::model::{Dep, Ecosystem, Lookup};
 use super::osv::Query;
 use super::plan::{self, Pick, effective};
@@ -51,7 +53,6 @@ pub struct Row {
     pub ignored: bool,
     /// Why there is no target, or what is not known.
     pub error: String,
-    pub meta: Meta,
 }
 
 pub struct Plan {
@@ -66,7 +67,40 @@ fn kind_of(cur: &str, to: &str, eco: Ecosystem) -> Option<UpdateKind> {
     UpdateKind::between(&Version::parse(s, cur)?, &Version::parse(s, to)?)
 }
 
+/// Most facts one proposal asks the registries for.
+const MAX_FACTS: usize = 2000;
+
 impl DepsHub {
+    /// Asks the registries for `needs`: the full, verified facts of the version a pin goes to, and what
+    /// the version it leaves and the packages that require it declare. An answer that cannot be had is
+    /// kept as the reason, for the move that needed it to report.
+    pub async fn fetch_facts(&self, needs: Vec<Need>) -> FactStore {
+        let mut store = FactStore::new();
+        let (take, over) = needs.split_at(needs.len().min(MAX_FACTS));
+        for n in over {
+            store.insert(
+                n.key.clone(),
+                Err(format!(
+                    "more than {MAX_FACTS} registry answers are needed at once"
+                )),
+            );
+        }
+        let asked = futures::stream::iter(take.iter().cloned().map(|n| async move {
+            let (eco, _, version) = n.key.clone();
+            let r = if n.full {
+                self.latest.facts(eco, &n.name, &version).await
+            } else {
+                self.latest.declared(eco, &n.name, &version).await
+            };
+            (n.key, r.map(std::sync::Arc::new))
+        }))
+        .buffer_unordered(self.cfg.concurrency.max(1))
+        .collect::<Vec<_>>()
+        .await;
+        store.extend(asked);
+        store
+    }
+
     /// The rows for the packages of `snap`. `security_only` keeps only those a security fix moves.
     pub async fn plan(
         &self,
@@ -126,7 +160,6 @@ impl DepsHub {
                 group: String::new(),
                 ignored: false,
                 error: String::new(),
-                meta: Meta::default(),
             };
             let versions = match registry.get(&(*eco, name.clone())) {
                 Some(Ok(v)) => v.clone(),
@@ -249,7 +282,6 @@ impl DepsHub {
                             .filter(|id| !unfixed.contains(id))
                             .collect();
                         row.unfixed = unfixed;
-                        row.meta = versions.meta.get(&cand).cloned().unwrap_or_default();
                         row.target_kind = kind_of(current, &cand, *eco);
                         target = Some(cand);
                     }
@@ -260,7 +292,6 @@ impl DepsHub {
                     None if check_failed => {
                         row.error = "the advisories of the new version could not be checked".into();
                         row.target_kind = kind_of(current, &t, *eco);
-                        row.meta = versions.meta.get(&t).cloned().unwrap_or_default();
                     }
                     None => {
                         row.error =
@@ -407,10 +438,12 @@ impl DepsHub {
                     name: r.name.clone(),
                     from: r.current.clone(),
                     to: r.target.clone().unwrap_or_default(),
-                    meta: r.meta.clone(),
                 })
                 .collect();
-            let applied = apply(&snap.texts, &snap.deps, &moves);
+            let facts = self
+                .fetch_facts(needs(&snap.texts, &snap.deps, &moves))
+                .await;
+            let applied = apply(&snap.texts, &snap.deps, &moves, &facts);
             for (i, why) in &applied.failed {
                 skip(&rows[*i], why.clone());
             }
