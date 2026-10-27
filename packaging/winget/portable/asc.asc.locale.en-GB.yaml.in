@@ -1,0 +1,11 @@
+PackageIdentifier: asc.asc
+PackageVersion: "@VERSION@"
+PackageLocale: en-GB
+Publisher: ASC
+PackageName: asc
+PackageUrl: "@HOMEPAGE@"
+License: MIT OR Apache-2.0
+ShortDescription: "@DESCRIPTION@"
+Moniker: asc
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

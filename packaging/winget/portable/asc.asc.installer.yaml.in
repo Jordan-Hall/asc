@@ -1,0 +1,17 @@
+PackageIdentifier: asc.asc
+PackageVersion: "@VERSION@"
+MinimumOSVersion: 10.0.17763.0
+InstallerType: zip
+NestedInstallerType: portable
+NestedInstallerFiles:
+  - RelativeFilePath: asc.exe
+    PortableCommandAlias: asc
+Commands:
+  - asc
+ReleaseDate: "@DATE@"
+Installers:
+  - Architecture: x64
+    InstallerUrl: "@RELEASE_URL@/asc-@VERSION@-x86_64-pc-windows-msvc.zip"
+    InstallerSha256: "@SHA256:x86_64-pc-windows-msvc.zip@"
+ManifestType: installer
+ManifestVersion: 1.6.0

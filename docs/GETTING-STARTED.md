@@ -6,17 +6,19 @@ Install asc, sign in to a server, clone, and work in stacks. The git to asc comm
 
 ## 1. Install
 
-Release files live at `https://forge.example.org/api/packages/asc/generic/asc`
-(`<ver>/...`; the newest version is in `latest/version`). See [`RELEASING.md`](RELEASING.md).
+Release files are served from a download directory that holds `latest/version` and `<ver>/...`; set
+`ASC_DOWNLOAD_BASE_URL` to its URL (your ASC Hub or any static host). See [`RELEASE.md`](RELEASE.md).
 
 | Platform | How |
 |---|---|
-| Windows (x86_64) | Run the MSI, or use winget with the manifests in `<ver>/winget/` (package id `asc.asc`). An elevated MSI also puts the shim directory on the machine `PATH`. |
-| Linux (x86_64) | Download `install.sh`, `asc-<ver>-x86_64-unknown-linux-gnu.tar.gz` and its `.minisig`, then `sh install.sh --tarball <file> [--shim] [--no-service]`. It needs `minisign`. |
+| Linux, macOS (x86_64, aarch64) | `sh scripts/install.sh` installs to `~/.local/share/asc-install` and links `~/.local/bin/asc`. `--dry-run` shows the plan. |
+| Windows (x86_64) | `./scripts/install.ps1` installs to `%LOCALAPPDATA%\Programs\asc` and adds it to the user `PATH`. Or run the MSI of the Forgejo flow, or use the winget, Scoop or Homebrew manifests of a release. |
+| Linux, from a downloaded tarball | `sh install.sh --tarball <file> [--shim] [--no-service]` from `packaging/linux/` (needs `minisign`; installs the systemd user unit). |
 | From source | Rust 1.95: `cargo build --release -p asc`. |
-| macOS, arm | No release build exists yet. |
 
-Real git 2.40 or later is required. Then run `asc doctor`; `asc upgrade` updates a release install.
+Set `ASC_RELEASE_PUBKEY` to the release's minisign public key to make the installers require a signature.
+
+Real git 2.40 or later is required. Then run `asc doctor`; `asc self-update` (or `asc upgrade`) updates an install made by the installers.
 Optionally `asc install-shim` so `git` is asc inside an asc workspace (see ONBOARDING section 2).
 
 ## 2. Authenticate

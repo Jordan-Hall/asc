@@ -1,0 +1,9 @@
+# winget version manifest template (portable zip). assemble.py replaces the tokens between at signs and writes the
+# three files into the release directory as winget-asc.asc.yaml, winget-asc.asc.installer.yaml and
+# winget-asc.asc.locale.en-GB.yaml; drop the winget- prefix and submit them to a winget source or a
+# private repository. The MSI manifests next to this directory belong to the Forgejo release workflow.
+PackageIdentifier: asc.asc
+PackageVersion: "@VERSION@"
+DefaultLocale: en-GB
+ManifestType: version
+ManifestVersion: 1.6.0

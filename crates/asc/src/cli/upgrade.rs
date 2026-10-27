@@ -7,7 +7,8 @@
 //! the shim, switches `current`, then asks the running daemon to `Shutdown`. Old directories
 //! are pruned at the next upgrade (Windows cannot delete a running executable).
 //!
-//! The release source is `asc.releasesUrl` (https only) or a directory given with `--from`:
+//! The release source is `asc.releasesUrl` (https only), else the `ASC_DOWNLOAD_BASE_URL`
+//! environment variable (the same value the installers read), or a directory given with `--from`:
 //! `latest/version` (a version), `<ver>/asc-<ver>-<target>.zip` and `<ver>/asc-<ver>-<target>.zip.minisig`.
 //! Everything fetched is untrusted and size-bounded; the public key is baked in at build time
 //! (`ASC_RELEASE_PUBKEY`), so a build without it refuses to upgrade.
@@ -62,6 +63,8 @@ const TARGET: &str = if cfg!(all(windows, target_arch = "x86_64")) {
     "aarch64-unknown-linux-gnu"
 } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
     "aarch64-apple-darwin"
+} else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+    "x86_64-apple-darwin"
 } else {
     "unknown"
 };
@@ -284,7 +287,7 @@ fn unpack(zip_bytes: &Verified, dest: &Path) -> UResult<()> {
         }
         drop(out);
         #[cfg(unix)]
-        if !name.contains('.') || name == EXE {
+        if name == EXE {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(dest.join(&name), std::fs::Permissions::from_mode(0o755))?;
         }
@@ -413,7 +416,7 @@ fn running_prefix() -> UResult<(PathBuf, Version)> {
     match (dir, ver) {
         (Some(p), Some(v)) => Ok((p, v)),
         _ => refuse(
-            "this asc is not in a versioned install (<prefix>/<version>/asc); reinstall with the MSI or install.sh",
+            "this asc is not in a versioned install (<prefix>/<version>/asc); update it with the tool that installed it, or reinstall with install.sh, install.ps1 or the MSI",
         ),
     }
 }
@@ -458,16 +461,32 @@ fn fatal(e: impl std::fmt::Display) -> CliError {
     CliError::Fatal(format!("asc: {e}"))
 }
 
+/// The environment variable the installers and `asc upgrade` share for the releases location.
+pub const DOWNLOAD_BASE_ENV: &str = "ASC_DOWNLOAD_BASE_URL";
+
+/// Picks the release source: `--from`, then `asc.releasesUrl`, then `ASC_DOWNLOAD_BASE_URL`.
+fn pick_source(
+    from: Option<&Path>,
+    configured: Option<String>,
+    env_url: Option<String>,
+) -> UResult<Source> {
+    let nonempty = |u: Option<String>| u.map(|u| u.trim().to_owned()).filter(|u| !u.is_empty());
+    match (from, nonempty(configured), nonempty(env_url)) {
+        (Some(d), _, _) => Ok(Source::Dir(d.to_owned())),
+        (None, Some(u), _) | (None, None, Some(u)) => Source::url(&u),
+        (None, None, None) => refuse(format!(
+            "no release source: set asc.releasesUrl or {DOWNLOAD_BASE_ENV}, or pass --from <dir>"
+        )),
+    }
+}
+
 pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
-    let source = match (&args.from, ctx.config.get("asc.releasesUrl")) {
-        (Some(d), _) => Source::Dir(d.clone()),
-        (None, Some(u)) => Source::url(&u).map_err(fatal)?,
-        (None, None) => {
-            return Err(fatal(
-                "no release source: set asc.releasesUrl or pass --from <dir>",
-            ));
-        }
-    };
+    let source = pick_source(
+        args.from.as_deref(),
+        ctx.config.get("asc.releasesUrl"),
+        std::env::var(DOWNLOAD_BASE_ENV).ok(),
+    )
+    .map_err(fatal)?;
     let current =
         Version::parse(env!("CARGO_PKG_VERSION")).ok_or_else(|| fatal("bad build version"))?;
     let latest = source.latest().await.map_err(fatal)?;
@@ -681,6 +700,75 @@ mod tests {
             .to_string();
         assert!(why.contains("http://example.com:81"), "{why}");
         assert!(!why.contains("hunter2") && !why.contains("abc"), "{why}");
+    }
+
+    #[test]
+    fn the_source_is_from_then_config_then_environment() {
+        let dir = std::path::Path::new("/releases");
+        let url = |s: &str| Some(s.to_owned());
+        assert!(matches!(
+            pick_source(
+                Some(dir),
+                url("https://a.example/r"),
+                url("https://b.example/r")
+            ),
+            Ok(Source::Dir(_))
+        ));
+        match pick_source(
+            None,
+            url("https://a.example/r/"),
+            url("https://b.example/r"),
+        ) {
+            Ok(Source::Url(u)) => assert_eq!(u, "https://a.example/r"),
+            _ => panic!("the config value wins over the environment"),
+        }
+        match pick_source(None, url("  "), url("https://b.example/r")) {
+            Ok(Source::Url(u)) => assert_eq!(u, "https://b.example/r"),
+            _ => panic!("a blank config value falls through to the environment"),
+        }
+        let none = pick_source(None, None, None).err().unwrap().to_string();
+        assert!(
+            none.contains(DOWNLOAD_BASE_ENV) && none.contains("--from"),
+            "{none}"
+        );
+        // The environment value is held to the same https rule as the config value.
+        assert!(pick_source(None, None, url("http://example.com/r")).is_err());
+    }
+
+    #[test]
+    fn a_binary_outside_a_versioned_install_says_what_to_do() {
+        // The test executable lives in target/<profile>/deps, which is not a version directory.
+        let why = running_prefix().err().unwrap().to_string();
+        assert!(
+            why.contains("tool that installed it") && why.contains("install.sh"),
+            "{why}"
+        );
+    }
+
+    #[test]
+    fn only_the_executable_is_marked_executable() {
+        let t = tempfile::tempdir().unwrap();
+        let archive = zip_of(&[
+            (EXE, b"bin"),
+            ("LICENSE-MIT.txt", b"text"),
+            ("LICENSE", b"text"),
+        ]);
+        let dest = t.path().join("d");
+        unpack(&archive, &dest).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |n: &str| {
+                std::fs::metadata(dest.join(n))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o111
+            };
+            assert_ne!(mode(EXE), 0);
+            assert_eq!(mode("LICENSE-MIT.txt"), 0);
+            assert_eq!(mode("LICENSE"), 0, "a file without a dot is data too");
+        }
     }
 
     #[test]
