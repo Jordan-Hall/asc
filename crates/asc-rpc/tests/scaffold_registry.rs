@@ -1,18 +1,16 @@
-//! The build-out contract (docs/BUILDOUT.md) and its temporary scaffolds stay in step with the protos.
+//! The build-out contract (docs/BUILDOUT.md) stays in step with the protos, and no scaffold returns.
 //!
 //! * "RPC index" in BUILDOUT.md lists exactly the methods of the build-out services in the descriptor set.
-//! * "Scaffolds" in BUILDOUT.md lists exactly `asc_rpc::scaffold::SCAFFOLDED_RPCS`, and each of those exists.
-//! * The refusal a scaffold gives is `UNIMPLEMENTED` and names the method, so a client can tell a server
-//!   without the feature from any other `UNIMPLEMENTED`. (The compiler checks that every method of a
-//!   scaffolded service is covered.)
+//! * No scaffold remains: BUILDOUT.md lists none and `asc_rpc` has no scaffold module.
+//! * The refusal of a method this server does not carry is `UNIMPLEMENTED` and names the method, so a
+//!   client can tell a server without the feature from any other `UNIMPLEMENTED`.
 //!
-//! A unit that implements a service deletes its scaffold group and its lines in the "Scaffolds" list; the
-//! "RPC index" never shrinks.
+//! The "RPC index" never shrinks.
 
 use std::collections::BTreeSet;
 
 use asc_rpc::DESCRIPTOR_SET;
-use asc_rpc::scaffold::{SCAFFOLDED_RPCS, UNIMPLEMENTED_HEADER, not_available};
+use asc_rpc::unavailable::{UNIMPLEMENTED_HEADER, not_available};
 use prost_reflect::DescriptorPool;
 use tonic::Code;
 
@@ -103,22 +101,12 @@ fn the_rpc_index_is_the_descriptor() {
 }
 
 #[test]
-fn the_scaffold_list_is_the_scaffold() {
+fn no_scaffold_remains() {
     let doc = buildout_md();
-    let in_doc = listed(&doc, "scaffolds");
-    no_duplicates(&in_doc, "the scaffold list");
-    let in_code: Vec<String> = SCAFFOLDED_RPCS.iter().map(|s| (*s).to_owned()).collect();
-    no_duplicates(&in_code, "SCAFFOLDED_RPCS");
-    let doc_set: BTreeSet<&String> = in_doc.iter().collect();
-    let code_set: BTreeSet<&String> = in_code.iter().collect();
-    assert_eq!(doc_set, code_set, "BUILDOUT.md and scaffold.rs disagree");
-    let all = descriptor_rpcs();
-    for rpc in &in_code {
-        assert!(
-            all.contains(rpc),
-            "{rpc} is scaffolded but not in the protos"
-        );
-    }
+    assert!(
+        !doc.contains("<!-- scaffolds:begin -->"),
+        "BUILDOUT.md lists a scaffold; a service is served or it is not in the router"
+    );
 }
 
 #[test]
