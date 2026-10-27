@@ -40,6 +40,7 @@ struct Rig {
     client: WorkspaceClient<Channel>,
     ws: String,
     metrics: SocketAddr,
+    pid: u32,
     _daemon: Daemon,
 }
 
@@ -97,6 +98,7 @@ async fn rig(idle_secs: u64) -> Rig {
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn the daemon");
+    let pid = child.id();
     let daemon = Daemon { child };
     let mut client = WorkspaceClient::new(connect(&IpcEndpoint::from_raw(ep)));
     let mut up = false;
@@ -118,6 +120,7 @@ async fn rig(idle_secs: u64) -> Rig {
         client,
         ws,
         metrics,
+        pid,
         _daemon: daemon,
     }
 }
@@ -228,6 +231,20 @@ fn rss(addr: SocketAddr) -> u64 {
         .trim()
         .parse()
         .unwrap()
+}
+
+/// The memory the daemon owns: anonymous plus shared memory from `/proc/<pid>/status`, which
+/// leaves out the file-backed pages of the executable (shared, evictable and sized by the debug
+/// binary, which links the whole server). Where the kernel gives no split, the daemon's metric.
+fn owned_memory(pid: u32, metrics: SocketAddr) -> u64 {
+    let field = |text: &str, key: &str| -> Option<u64> {
+        let line = text.lines().find_map(|l| l.strip_prefix(key))?;
+        line.trim().strip_suffix("kB")?.trim().parse::<u64>().ok()
+    };
+    std::fs::read_to_string(format!("/proc/{pid}/status"))
+        .ok()
+        .and_then(|t| Some((field(&t, "RssAnon:")? + field(&t, "RssShmem:")?) << 10))
+        .unwrap_or_else(|| rss(metrics))
 }
 
 #[tokio::test]
@@ -439,7 +456,7 @@ async fn idle_rss_is_low_after_the_reader_closes() {
     // the budget is the SPEC's idle 64 MiB (§16.4) or the baseline plus what the overlay may
     // hold (its 16 MiB heap bound and the code pages a query touches), whichever is larger: the
     // test measures what the reader leaves behind, not the binary it runs in.
-    let baseline = rss(r.metrics);
+    let baseline = owned_memory(r.pid, r.metrics);
     let limit = (64u64 << 20).max(baseline + (24 << 20));
     // 24 dirty files of about 900 KiB each: more than the overlay's 16 MiB heap bound.
     let body = "word another line of text\n".repeat(36_000);
@@ -462,7 +479,7 @@ async fn idle_rss_is_low_after_the_reader_closes() {
     let mut last = u64::MAX;
     while Instant::now() < end {
         tokio::time::sleep(Duration::from_secs(1)).await;
-        last = rss(r.metrics);
+        last = owned_memory(r.pid, r.metrics);
         if last <= limit {
             break;
         }
