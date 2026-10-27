@@ -16,10 +16,13 @@
 //! * one transaction: the owner and lease rules, the versions, the stored answer and the same
 //!   outbox effects a push queues (post-receive, webhooks, fan-out).
 //!
-//! **Who owns a change.** The person who published its first version. That first version is
-//! accepted only from the person who put its changeset on the server (the ingester the byte ledger
-//! recorded for it) or from an administrator, so someone else's changeset cannot be published
-//! under one's own name by being first. The recorded owner is the actor of version 1. Every later version, and a forced one, needs
+//! **Who owns a change.** The principal that published its first version. That first version is
+//! accepted only from the principal the server recorded as having put its changeset there (the
+//! exact principal id of the submit that brought a changeset the server did not know, in
+//! `cs_publisher`; or the user the byte ledger names), or from an administrator. A changeset nobody
+//! is recorded for (no ledger row, ingester 0, brought by another principal) is refused, so
+//! someone else's changeset cannot be published under one's own name by being first. The recorded
+//! owner is the actor of version 1. Every later version, and a forced one, needs
 //! the recorded owner or an administrator (`CHANGE_NOT_ALLOWED` otherwise); the lease of
 //! `versions::append` still requires the latest version to be in the new changeset's `preds`
 //! closure (`CHANGE_DIVERGED`) unless the push option `force-push` is set.
@@ -139,6 +142,22 @@ impl ServerRefs {
             .filter(crate::authz::UserIdentity::is_user)
             .map(|u| u.user_id);
         let targets: Vec<RefTarget> = subs.iter().map(|s| RefTarget::Changeset(s.cs)).collect();
+        // Changesets this submit brings: the server did not know them before. Only these are
+        // recorded as put here by the submitting principal (see `publish`).
+        let mut fresh = Vec::new();
+        for sub in &subs {
+            let known: Option<i64> = sqlx::query_scalar(
+                "SELECT CAST(1 AS BIGINT) FROM cs_graph WHERE ns = $1 AND cs = $2",
+            )
+            .bind(entry.ns.as_bytes().to_vec())
+            .bind(sub.cs.as_bytes().to_vec())
+            .fetch_optional(self.registry.pool())
+            .await
+            .map_err(|e| internal("cs_graph", &e))?;
+            if known.is_none() {
+                fresh.push(sub.cs);
+            }
+        }
         let windows_safe = self.windows_safe(&entry).await?;
         Ingestor::new(
             self.registry.pool(),
@@ -150,6 +169,17 @@ impl ServerRefs {
         .ingest(&targets, self.hooks.observer())
         .await
         .map_err(ingest_status)?;
+        for cs in &fresh {
+            sqlx::query(
+                "INSERT INTO cs_publisher (ns, cs, principal) VALUES ($1, $2, $3)                  ON CONFLICT (ns, cs) DO NOTHING",
+            )
+            .bind(entry.ns.as_bytes().to_vec())
+            .bind(cs.as_bytes().to_vec())
+            .bind(ctx.principal.id.clone())
+            .execute(self.registry.pool())
+            .await
+            .map_err(|e| internal("cs_publisher", &e))?;
+        }
 
         // Each changeset must be a version of the change its topic names.
         let css: Vec<ChangesetId> = subs.iter().map(|s| s.cs).collect();
@@ -310,9 +340,19 @@ impl ServerRefs {
                     )));
                 }
                 Some(_) => {}
-                // The first version: the person who put this changeset on the server, or nobody
-                // in particular (a changeset the ledger has no owner for).
+                // The first version: the principal that put this changeset on the server, by the
+                // exact principal id the submit recorded, or the user the byte ledger names. A
+                // changeset nobody is recorded for (unknown, ingester 0, written by land or
+                // mirror) belongs to nobody a non-administrator can be: refused.
                 None if !admin => {
+                    let publisher: Option<String> = sqlx::query_scalar(
+                        "SELECT principal FROM cs_publisher WHERE ns = $1 AND cs = $2",
+                    )
+                    .bind(entry.ns.as_bytes().to_vec())
+                    .bind(s.cs.as_bytes().to_vec())
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .map_err(|e| internal("cs_publisher", &e))?;
                     let ingester: Option<i64> = sqlx::query_scalar(
                         "SELECT CAST(ingester AS BIGINT) FROM cs_ledger WHERE ns = $1 AND cs = $2",
                     )
@@ -321,10 +361,11 @@ impl ServerRefs {
                     .fetch_optional(&mut *tx)
                     .await
                     .map_err(|e| internal("cs_ledger", &e))?;
-                    let mine = submitter.unwrap_or(0);
-                    if ingester.is_some_and(|i| i != 0 && i != mine) {
+                    let by_principal = publisher.as_deref() == Some(actor.as_str());
+                    let by_user = submitter.is_some_and(|u| u != 0 && ingester == Some(u));
+                    if !by_principal && !by_user {
                         return Err(refusal(format!(
-                            "not allowed to publish change {}: its changeset was put here by someone else",
+                            "not allowed to publish change {}: its changeset was not put here by you",
                             s.change
                         )));
                     }

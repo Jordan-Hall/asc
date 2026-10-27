@@ -2414,7 +2414,8 @@ async fn a_submit_meets_the_gate_a_push_to_the_branch_meets() {
     f.set_master(a).await;
     let t = token();
     let secret = format!("name = \"svc\"\ngithub = \"{t}\"\n");
-    let cases: [(&str, &[(&str, &[u8])], &str, Option<&str>); 4] = [
+    type Case<'a> = (&'a str, &'a [(&'a str, &'a [u8])], &'a str, Option<&'a str>);
+    let cases: [Case; 4] = [
         // A path the pusher may not write (bob is not a maintainer).
         ("src/x", &[("src/x", b"1")], BOB, Some("POLICY_DENIED")),
         // A secret in the diff.
@@ -2572,24 +2573,17 @@ async fn nobody_claims_a_change_by_being_first_to_publish_it() {
     f.set_master(a).await;
     let alices = commit(&f.e, &[a], &[("docs/a", b"a")]).await;
     f.known_change(alices, 1).await;
-    // Alice (user 7) put her changeset on the server; the ledger names her.
-    sqlx::query(
-        "INSERT INTO cs_ledger (ns, cs, bytes, ingester, shared) VALUES ($1, $2, 10, 7, 0)",
-    )
-    .bind(f.e.ns.as_bytes().to_vec())
-    .bind(alices.as_bytes().to_vec())
-    .execute(f.reg.pool())
-    .await
-    .unwrap();
+    // Alice put her changeset on the server (as a push does); the ledger names her.
+    f.ingest(alices).await;
     // Bob (user 8) submits her changeset as his before she does.
-    let e = f.submit("8:bob", 1, alices).await.unwrap_err();
+    let e = f.submit(BOB, 1, alices).await.unwrap_err();
     assert_eq!(code(&e), "CHANGE_NOT_ALLOWED", "{e:?}");
     assert_eq!(f.published(1).await, 0);
     // He may submit a change of his own, and Alice her own.
     let mine = commit(&f.e, &[a], &[("docs/c", b"c")]).await;
     f.known_change(mine, 2).await;
-    f.submit("8:bob", 2, mine).await.unwrap();
-    f.submit("7:alice", 1, alices).await.unwrap();
+    f.submit(BOB, 2, mine).await.unwrap();
+    f.submit(ALICE, 1, alices).await.unwrap();
     assert_eq!(f.published(1).await, 1);
     // Later versions are for the recorded owner (the actor of version 1), whoever published last.
     let next = commit(&f.e, &[alices], &[("docs/a", b"a2")]).await;
@@ -2603,8 +2597,105 @@ async fn nobody_claims_a_change_by_being_first_to_publish_it() {
     .await
     .unwrap();
     tx.commit().await.unwrap();
-    let e = f.submit("8:bob", 1, next).await.unwrap_err();
+    let e = f.submit(BOB, 1, next).await.unwrap_err();
     assert_eq!(code(&e), "CHANGE_NOT_ALLOWED");
-    f.submit("7:alice", 1, next).await.unwrap();
+    f.submit(ALICE, 1, next).await.unwrap();
     assert_eq!(f.published(1).await, 2);
+}
+
+/// A first version is published only by the principal the server recorded as having put its
+/// changeset there. Nobody recorded (no ledger row, ingester 0, a non-user submitter that did not
+/// bring it) means refused, and a non-user principal is told apart by its exact id.
+#[tokio::test]
+async fn an_unowned_changeset_cannot_be_published_by_a_non_administrator() {
+    let f = fx().await;
+    let a = commit(&f.e, &[], &[("base", b"0")]).await;
+    f.set_master(a).await;
+    let pool = f.reg.pool();
+    let ns = f.e.ns.as_bytes().to_vec();
+    let mut n = 0u8;
+    let mut fresh = |name: &'static str| {
+        n += 1;
+        (n, name)
+    };
+
+    // The server knows the changeset and nobody is recorded: no ledger row at all.
+    let (n1, p1) = fresh("docs/one");
+    let cs1 = commit(&f.e, &[a], &[(p1, b"1")]).await;
+    f.known_change(cs1, n1).await;
+    f.ingest(cs1).await;
+    sqlx::query("DELETE FROM cs_ledger WHERE ns = $1 AND cs = $2")
+        .bind(ns.clone())
+        .bind(cs1.as_bytes().to_vec())
+        .execute(pool)
+        .await
+        .unwrap();
+    for who in [ALICE, CAROL] {
+        let e = f.submit(who, n1, cs1).await.unwrap_err();
+        assert_eq!(code(&e), "CHANGE_NOT_ALLOWED", "no ledger row, {who}");
+    }
+
+    // Ingester 0: known, recorded to no user, and no principal recorded either.
+    let (n2, p2) = fresh("docs/two");
+    let cs2 = commit(&f.e, &[a], &[(p2, b"2")]).await;
+    f.known_change(cs2, n2).await;
+    f.ingest(cs2).await;
+    sqlx::query("UPDATE cs_ledger SET ingester = 0 WHERE ns = $1 AND cs = $2")
+        .bind(ns.clone())
+        .bind(cs2.as_bytes().to_vec())
+        .execute(pool)
+        .await
+        .unwrap();
+    for who in [ALICE, CAROL] {
+        let e = f.submit(who, n2, cs2).await.unwrap_err();
+        assert_eq!(code(&e), "CHANGE_NOT_ALLOWED", "ingester 0, {who}");
+    }
+    assert_eq!(f.published(n1).await + f.published(n2).await, 0);
+
+    // A non-user principal that brings a changeset publishes it; another one cannot, even though
+    // the ledger names no user for it.
+    let (n3, p3) = fresh("docs/three");
+    let cs3 = commit(&f.e, &[a], &[(p3, b"3")]).await;
+    f.known_change(cs3, n3).await;
+    let e = f.submit("pat:dave", n3, cs3).await;
+    assert!(e.is_ok(), "{e:?}");
+    let (n4, p4) = fresh("docs/four");
+    let cs4 = commit(&f.e, &[a], &[(p4, b"4")]).await;
+    f.known_change(cs4, n4).await;
+    // Carol's submit refused by the forge or gate would still leave her recorded as the one who
+    // brought it: a later submit of the same bytes by dave is not hers to publish.
+    f.submit(CAROL, n4, cs4).await.unwrap();
+    // A changeset recorded to carol is not dave's to publish, and is still carol's.
+    let (n5, p5) = fresh("docs/five");
+    let cs5 = commit(&f.e, &[a], &[(p5, b"5")]).await;
+    f.known_change(cs5, n5).await;
+    sqlx::query("INSERT INTO cs_publisher (ns, cs, principal) VALUES ($1, $2, $3)")
+        .bind(ns.clone())
+        .bind(cs5.as_bytes().to_vec())
+        .bind(CAROL)
+        .execute(pool)
+        .await
+        .unwrap();
+    let e = f.submit("pat:dave", n5, cs5).await.unwrap_err();
+    assert_eq!(
+        code(&e),
+        "CHANGE_NOT_ALLOWED",
+        "not the principal that brought it"
+    );
+    f.submit(CAROL, n5, cs5).await.unwrap();
+
+    // A user the ledger names publishes; another user does not.
+    let (n6, p6) = fresh("docs/six");
+    let cs6 = commit(&f.e, &[a], &[(p6, b"6")]).await;
+    f.known_change(cs6, n6).await;
+    f.ingest(cs6).await;
+    sqlx::query("UPDATE cs_ledger SET ingester = 42 WHERE ns = $1 AND cs = $2")
+        .bind(ns)
+        .bind(cs6.as_bytes().to_vec())
+        .execute(pool)
+        .await
+        .unwrap();
+    let e = f.submit(BOB, n6, cs6).await.unwrap_err();
+    assert_eq!(code(&e), "CHANGE_NOT_ALLOWED");
+    f.submit(ALICE, n6, cs6).await.unwrap();
 }
