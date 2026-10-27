@@ -1,0 +1,41 @@
+{
+  "pins" : [
+    {
+      "identity" : "swift-nio",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-nio.git",
+      "state" : {
+        "revision" : "abc",
+        "version" : "2.40.0"
+      }
+    },
+    {
+      "identity" : "alamofire",
+      "kind" : "remoteSourceControl",
+      "location" : "git@github.com:Alamofire/Alamofire.git",
+      "state" : {
+        "revision" : "def",
+        "version" : "5.6.1"
+      }
+    },
+    {
+      "identity" : "branchy",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/example/branchy.git",
+      "state" : {
+        "branch" : "main",
+        "revision" : "ghi"
+      }
+    },
+    {
+      "identity" : "local",
+      "kind" : "localSourceControl",
+      "location" : "/Users/me/local",
+      "state" : {
+        "revision" : "jkl",
+        "version" : "1.0.0"
+      }
+    }
+  ],
+  "version" : 2
+}

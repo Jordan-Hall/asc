@@ -1,0 +1,29 @@
+lockfileVersion: 5.4
+
+specifiers:
+  lodash: ^4.17.20
+  react-dom: ^17.0.0
+
+dependencies:
+  lodash: 4.17.20
+  react-dom: 17.0.2_react@17.0.2
+
+packages:
+
+  /lodash/4.17.20:
+    resolution: {integrity: sha512-aaaa}
+    dev: false
+
+  /react-dom/17.0.2_react@17.0.2:
+    resolution: {integrity: sha512-bbbb}
+    peerDependencies:
+      react: 17.0.2
+    dev: false
+
+  /@babel/core/7.18.0:
+    resolution: {integrity: sha512-cccc}
+    dev: false
+
+  /@scope/name@3.0.1:
+    resolution: {integrity: sha512-dddd}
+    dev: false

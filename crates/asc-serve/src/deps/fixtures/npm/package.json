@@ -1,0 +1,23 @@
+{
+  "name": "web",
+  "version": "1.0.0",
+  "dependencies": {
+    "lodash": "^4.17.20",
+    "@scope/pkg": "~2.0.0",
+    "react": ">=17.0.0 <19.0.0",
+    "local": "file:../local",
+    "tagged": "latest",
+    "aliased": "npm:real@^1.0.0",
+    "ws": "workspace:*",
+    "any": "*"
+  },
+  "devDependencies": {
+    "mocha": "10.2.0"
+  },
+  "optionalDependencies": {
+    "fsevents": "^2.3.2"
+  },
+  "peerDependencies": {
+    "react-dom": "^18.0.0"
+  }
+}
