@@ -403,8 +403,17 @@ impl Vault {
     async fn start_rotation(self: &Arc<Self>, retire_old: bool) -> Result<Rotation, VaultError> {
         let ring = self.ring()?;
         let next = ring.with_new_generation(now())?;
+        // Only one replica may take the step from this generation to the next; the others are
+        // told a rotation is running. This comes before the key file is written.
+        let holder = uuid::Uuid::new_v4().simple().to_string();
+        self.claim_generation(ring.active(), next.active(), &holder)
+            .await?;
         if let Some(path) = &self.path {
-            keyring::store(path, &next)?;
+            if let Err(e) = keyring::store(path, &next) {
+                self.release_generation(ring.active(), next.active(), &holder)
+                    .await;
+                return Err(e);
+            }
             if let Ok(mut s) = self.file_stamp.lock() {
                 *s = stamp(path);
             }
@@ -444,6 +453,50 @@ impl Vault {
             finished: false,
             error: String::new(),
         })
+    }
+
+    /// Moves the shared generation from `old` to `new` (compare-and-swap). A claim that was made
+    /// and never finished (its replica died before it wrote the key file) can be taken again
+    /// once it is stale.
+    async fn claim_generation(&self, old: u32, new: u32, holder: &str) -> Result<(), VaultError> {
+        let sql = |e: sqlx::Error| VaultError::sql(&e);
+        sqlx::query(
+            "INSERT INTO vault_state (id, generation, holder, updated) VALUES (1, $1, '', 0)              ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(i64::from(old))
+        .execute(&self.pool)
+        .await
+        .map_err(sql)?;
+        let t = now();
+        let won = sqlx::query(
+            "UPDATE vault_state SET generation = $2, holder = $3, updated = $4              WHERE id = 1 AND (generation = $1 OR (generation = $2 AND updated < $5))",
+        )
+        .bind(i64::from(old))
+        .bind(i64::from(new))
+        .bind(holder)
+        .bind(t)
+        .bind(t - STALE_AFTER_SECS)
+        .execute(&self.pool)
+        .await
+        .map_err(sql)?
+        .rows_affected();
+        if won == 1 {
+            Ok(())
+        } else {
+            Err(VaultError::RotationActive)
+        }
+    }
+
+    /// Undoes [`claim_generation`](Self::claim_generation) when the key file could not be written.
+    async fn release_generation(&self, old: u32, new: u32, holder: &str) {
+        let _ = sqlx::query(
+            "UPDATE vault_state SET generation = $1 WHERE id = 1 AND generation = $2 AND holder = $3",
+        )
+        .bind(i64::from(old))
+        .bind(i64::from(new))
+        .bind(holder)
+        .execute(&self.pool)
+        .await;
     }
 
     async fn count_not_under(&self, target: u32) -> Result<u64, VaultError> {
