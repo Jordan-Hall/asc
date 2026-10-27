@@ -1,6 +1,6 @@
 # asc web UI
 
-Status: design plus v1 scaffold. This file is the contract for `web/` and `crates/asc-serve/src/web/`. It does not change `SPEC.md` or `PLAN.md`; section "Prerequisites and open decisions" lists the SPEC points it needs amended.
+Status: implemented in `web/`. This file is the contract for `web/` and `crates/asc-serve/src/web/`. It does not change `SPEC.md` or `PLAN.md`; section "Prerequisites and open decisions" lists the SPEC points it needs amended.
 
 ## 1. Goals and non-goals
 
@@ -40,19 +40,19 @@ The app is mounted under the base path `/ui`. Paths below are relative to it. `:
 | `/:owner/:repo` | Repo home: branch picker, file tree of the default ref, README, last commit, clone panel | `repo` | yes |
 | `/:owner/:repo/tree/:ref/*path` | Directory view (same pane as repo home) | `repo` | yes |
 | `/:owner/:repo/blob/:ref/*path` | Code view: virtualised lines, line anchors, raw link | `blob` | yes |
-| `/:owner/:repo/blame/:ref/*path` | Blame gutter over the code view | `blame` | later (v1.1) |
-| `/:owner/:repo/commits/:ref/*path` | History, streamed, virtualised | `history` | later (v1.1) |
-| `/:owner/:repo/commit/:id` | One commit with diff | `diff` | later (v1.1) |
+| `/:owner/:repo/blame/:ref/*path` | Blame gutter over the code view | `blame` | yes |
+| `/:owner/:repo/commits/:ref/*path` | History, streamed, virtualised | `history` | yes |
+| `/:owner/:repo/commit/:id` | One commit with diff | `commit` | yes |
 | `/:owner/:repo/changes` | Change list: stacks of the default target, review state, mergeability | `changes` | yes |
-| `/:owner/:repo/changes/:id` | Change review: stack panel, versions, files, threads, inline diff | `review` | later (v1.2) |
-| `/:owner/:repo/actions` and `/actions/runs/:run` | CI runs and job logs (tail streaming) | `ci` | later (v1.3) |
-| `/:owner/:repo/search` and `/search` | Code search, symbols, references | `search` | later (v1.3) |
-| `/inbox` | Review requests, mentions, pinned and snoozed | `inbox` | later (v1.2) |
-| `/settings` | Token, theme, shortcuts; repo settings under `/:owner/:repo/settings` | `settings` | v1: token and theme only |
+| `/:owner/:repo/changes/:id` | Change review: stack panel, versions, files, threads, inline diff | `change` | yes (read-only) |
+| `/:owner/:repo/actions` and `/actions/runs/:run` | CI runs and job logs (tail streaming) | `actions`, `run` | yes (job log tail, not streamed) |
+| `/:owner/:repo/search` and `/search` | Code search, symbols, references | `search` | yes |
+| `/inbox` | Review requests, mentions, pinned and snoozed | `inbox` | yes |
+| `/settings` | Token, theme, shortcuts; repo settings under `/:owner/:repo/settings` | `settings`, `repo-settings` | token and theme; repository settings read-only |
 | `/signin` | Token entry | `signin` | yes |
 | anything else | Not found | entry chunk | yes |
 
-Rows marked "later" exist in the route table as a lazy `Planned` screen, so links, shortcuts and the nav are final from v1 and only the screen body changes.
+Every row above is a real screen in the route table (`web/src/routes.ts`). The product pages `/install`, `/docs`, `/licenses` and `/privacy`, the lists `/stacks`, `/reviews`, `/repos`, `/people/me`, `/agents` and `/agents/new`, and the pages `/new` and `/new/change` (which show the CLI commands: the browser cannot create a repository or a change) complete the navigation. The app writes nothing: comments, approvals and merges are made with `asc` or on the forge.
 
 Shell: top bar (logo, global search `/`, inbox, theme, user menu), repo header with tabs (Code, Changes, Actions, Search, Settings), skip link, `main` landmark. The shell is in the entry chunk and renders before any RPC returns.
 
@@ -253,14 +253,12 @@ These need a decision from the SPEC owner before the UI can leave staging:
 4. **Mount path.** `/ui` now, `/` later (section 8).
 5. **Allowlist ownership.** The write RPCs the UI needs from v1.2 (`AddComment`, `ResolveThread`, `SetState`, `RequestMerge`) need the same per-method allowlist and idempotency (`x-asc-op-id`) treatment as the IDE relay.
 
-## 11. v1 and later
+## 11. What ships and what is next
 
-v1 (this scaffold): shell, router, theme, sign-in, dashboard stub, repo home with virtualised file tree and README (lazy markdown renderer), blob view (virtualised, streamed), change list over `Changes.Stack`, settings (token, theme), shortcuts and help, mock transport, tests, size gate, embed and serving in `asc serve`, CSP.
+Shipped: shell, router, theme, sign-in, dashboard, inbox, repo home with virtualised file tree and README (lazy markdown renderer), blob view (virtualised, streamed), history, commit, blame, change list and change review (read-only), Actions runs and job logs, code search and file finder, repository settings (read-only), product pages, shortcuts and help, mock transport for development and the browser suite.
 
-v1.1: history, blame, commit view and diff (virtualised, split and unified), syntax highlighting worker, `WatchRefs` live updates, IndexedDB cache, `[web] connect_src`.
-v1.2: change review (stack panel, versions and interdiff, threaded comments, resolve, request review, merge), inbox.
-v1.3: CI runs and live log tail, search and code intelligence (definitions, references, outline), repo settings.
-Later: OAuth/PKCE sign-in, mount at `/`, command palette, i18n, offline shell (service worker), Trusted Types enforcement.
+Next: syntax highlighting worker, `WatchRefs` live updates, IndexedDB cache, `[web] connect_src`, split and unified diff views with inline comments, and the write calls (`AddComment`, `ResolveThread`, `RequestMerge`) once the allowlist covers them (section 10).
+Later: OAuth/PKCE sign-in, mount at `/`, i18n, offline shell (service worker), Trusted Types enforcement.
 
 ## 12. Testing
 
@@ -269,4 +267,5 @@ Later: OAuth/PKCE sign-in, mount at `/`, command palette, i18n, offline shell (s
 - Build gate: `size` (budgets above), `no inline script` check on `dist/index.html`.
 - Server: `cargo test -p asc-serve web::` covers ETag/304, immutable cache headers, SPA fallback rules, 404 for missing assets, CSP header presence, encoding negotiation, method handling, and that the router is absent when `[web] enabled = false`.
 - gRPC-Web: `cargo test -p asc-serve --lib web::grpc_web` (translation, CORS, caps, Connect) and `cargo test -p asc-serve --test grpc_web` (a real server on loopback: a unary and a server-streaming call, no token, bad token, cookie ignored, CORS denied and allowed, preflight, request cap, Connect, switch off).
-- Later: Playwright with axe against `asc serve` plus the mock backend; Lighthouse CI for LCP, CLS and INP against the budgets.
+- Browser: `bun run e2e` builds the mock-transport bundle, serves it with the production headers and drives every route in light and dark at 1440 and 390 px (no console error, no horizontal scroll, axe WCAG 2.2 AA, layout shift, CSP, keyboard). `e2e/visual.spec.ts` compares full-page captures with baselines accepted against the design boards; create them with `--update-snapshots` before the first run.
+- Later: Lighthouse CI for LCP, CLS and INP against the budgets.
