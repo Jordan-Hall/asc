@@ -25,7 +25,7 @@ mod pods;
 mod python;
 mod ruby;
 mod swift;
-mod xml;
+pub mod xml;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
