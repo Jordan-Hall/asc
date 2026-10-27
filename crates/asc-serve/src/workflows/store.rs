@@ -392,7 +392,9 @@ impl Store {
         let now = clock::now();
         let mut last = None;
         for _ in 0..5 {
-            let mut tx = self.pool.begin().await?;
+            // SQLite takes its write lock up front: a read followed by a write fails at once with
+            // a snapshot error when another writer (the dispatcher, a step) commits in between.
+            let mut tx = crate::audit::store::begin(&self.pool).await?;
             let max: i64 = sqlx::query_scalar(
                 "SELECT CAST(COALESCE(MAX(id), 0) AS BIGINT) FROM workflow_runs",
             )
