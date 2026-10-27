@@ -10,7 +10,17 @@ const settings = () => import("./routes/settings");
 const repoPage = () => import("./routes/repo");
 const blob = () => import("./routes/blob");
 const changes = () => import("./routes/changes");
-const planned = () => import("./routes/planned");
+const lists = () => import("./routes/lists");
+const inbox = () => import("./routes/inbox");
+const search = () => import("./routes/search");
+const newPage = () => import("./routes/new");
+const blame = () => import("./routes/blame");
+const history = () => import("./routes/history");
+const commit = () => import("./routes/commit");
+const change = () => import("./routes/change");
+const actions = () => import("./routes/actions");
+const run = () => import("./routes/run");
+const repoSettings = () => import("./routes/repo-settings");
 
 const nameOf = (p: Params) => `${p.owner ?? ""}/${p.repo ?? ""}`;
 
@@ -50,9 +60,16 @@ export function createRoutes(app: AppCtx): RouteDef[] {
     { id: "home", path: PATTERNS.home, component: home },
     { id: "signin", path: PATTERNS.signin, component: signin },
     { id: "settings", path: PATTERNS.settings, component: settings },
-    { id: "inbox", path: PATTERNS.inbox, component: planned },
-    { id: "search", path: PATTERNS.search, component: planned },
-    { id: "newRepo", path: PATTERNS.newRepo, component: planned },
+    { id: "inbox", path: PATTERNS.inbox, component: inbox },
+    { id: "search", path: PATTERNS.search, component: search },
+    { id: "stacks", path: PATTERNS.stacks, component: lists },
+    { id: "repos", path: PATTERNS.repos, component: lists },
+    { id: "me", path: PATTERNS.me, component: lists },
+    { id: "agents", path: PATTERNS.agents, component: lists },
+    { id: "agentsNew", path: PATTERNS.agentsNew, component: lists },
+    { id: "reviews", path: PATTERNS.reviews, component: inbox },
+    { id: "newChange", path: PATTERNS.newChange, component: newPage },
+    { id: "newRepo", path: PATTERNS.newRepo, component: newPage },
     { id: "repo", path: PATTERNS.repo, component: repoPage, load: loadTree },
     { id: "tree", path: PATTERNS.tree, component: repoPage, load: loadTree },
     {
@@ -67,13 +84,13 @@ export function createRoutes(app: AppCtx): RouteDef[] {
       component: changes,
       load: (p) => warm(app, q.changes(nameOf(p))),
     },
-    { id: "blame", path: PATTERNS.blame, component: planned },
-    { id: "history", path: PATTERNS.history, component: planned },
-    { id: "commit", path: PATTERNS.commit, component: planned },
-    { id: "change", path: PATTERNS.change, component: planned },
-    { id: "actions", path: PATTERNS.actions, component: planned },
-    { id: "run", path: PATTERNS.run, component: planned },
-    { id: "repoSearch", path: PATTERNS.repoSearch, component: planned },
-    { id: "repoSettings", path: PATTERNS.repoSettings, component: planned },
+    { id: "blame", path: PATTERNS.blame, component: blame },
+    { id: "history", path: PATTERNS.history, component: history },
+    { id: "commit", path: PATTERNS.commit, component: commit },
+    { id: "change", path: PATTERNS.change, component: change },
+    { id: "actions", path: PATTERNS.actions, component: actions },
+    { id: "run", path: PATTERNS.run, component: run },
+    { id: "repoSearch", path: PATTERNS.repoSearch, component: search },
+    { id: "repoSettings", path: PATTERNS.repoSettings, component: repoSettings },
   ];
 }
