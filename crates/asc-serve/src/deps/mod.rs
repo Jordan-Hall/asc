@@ -23,6 +23,7 @@ pub mod apply;
 pub mod config;
 pub mod cvss;
 pub mod egress;
+pub mod facts;
 pub mod gate;
 pub mod hub;
 pub mod latest;
