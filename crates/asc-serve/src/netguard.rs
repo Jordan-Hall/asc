@@ -60,6 +60,10 @@ pub struct NetGuardConfig {
     /// Lets a user-supplied endpoint be plain `http` on a loopback address (a local S3 for
     /// development and tests). Off by default; nothing else about the guard relaxes.
     pub allow_loopback_http: bool,
+    /// With `allow_loopback_http`, the only loopback ports plain http may reach. Empty: any port
+    /// (development); set it wherever the local service has a known port. https to a loopback
+    /// address is never allowed.
+    pub loopback_ports: Vec<u16>,
     /// Ports allowed in addition to the usual ones, overriding [`DENIED_PORTS`].
     pub allow_ports: Vec<u16>,
     /// Seconds to connect.
@@ -72,6 +76,7 @@ impl Default for NetGuardConfig {
     fn default() -> Self {
         Self {
             allow_loopback_http: false,
+            loopback_ports: Vec::new(),
             allow_ports: Vec::new(),
             connect_timeout_secs: 10,
             request_timeout_secs: 30,
@@ -90,6 +95,12 @@ impl NetGuardConfig {
         }
         if self.allow_ports.contains(&0) || self.allow_ports.len() > 64 {
             return Err("netguard.allow_ports must hold at most 64 ports, 1 to 65535".into());
+        }
+        if self.loopback_ports.contains(&0) || self.loopback_ports.len() > 64 {
+            return Err("netguard.loopback_ports must hold at most 64 ports, 1 to 65535".into());
+        }
+        if !self.loopback_ports.is_empty() && !self.allow_loopback_http {
+            return Err("netguard.loopback_ports needs allow_loopback_http".into());
         }
         Ok(())
     }
@@ -417,11 +428,20 @@ impl Guard {
         Ok(Endpoint { url, port })
     }
 
-    /// Judges one address under this guard's rules: `Ok` when the server may connect to it.
-    fn admit(&self, ip: IpAddr) -> Result<(), Blocked> {
+    /// Judges one address under this guard's rules: `Ok` when the server may connect to it. A
+    /// loopback address is admitted only for plain http (never https) and only on a configured
+    /// port when `loopback_ports` is set.
+    fn admit(&self, ip: IpAddr, endpoint: &Endpoint) -> Result<(), Blocked> {
         match classify(ip) {
             None => Ok(()),
-            Some(BlockReason::Loopback) if self.cfg.allow_loopback_http => Ok(()),
+            Some(BlockReason::Loopback)
+                if self.cfg.allow_loopback_http
+                    && !endpoint.is_https()
+                    && (self.cfg.loopback_ports.is_empty()
+                        || self.cfg.loopback_ports.contains(&endpoint.port)) =>
+            {
+                Ok(())
+            }
             Some(r) => Err(Blocked(r)),
         }
     }
@@ -455,7 +475,7 @@ impl Guard {
         addrs.truncate(MAX_ADDRS);
         // Every address, not the first: a name that also answers with an inward address is refused.
         for ip in &addrs {
-            self.admit(*ip)?;
+            self.admit(*ip, &endpoint)?;
         }
         // Plain http is for loopback only; the addresses are already known to be allowed.
         if !endpoint.is_https() && !addrs.iter().all(|a| is_loopback(*a)) {
@@ -767,6 +787,29 @@ mod tests {
     }
 
     #[test]
+    fn loopback_ports_are_checked() {
+        let on = NetGuardConfig {
+            allow_loopback_http: true,
+            loopback_ports: vec![9000],
+            ..NetGuardConfig::default()
+        };
+        assert!(on.validate().is_ok());
+        assert!(
+            NetGuardConfig {
+                loopback_ports: vec![0],
+                ..on.clone()
+            }
+            .validate()
+            .is_err()
+        );
+        let off = NetGuardConfig {
+            allow_loopback_http: false,
+            ..on
+        };
+        assert!(off.validate().is_err(), "ports without the opt-in");
+    }
+
+    #[test]
     fn allow_ports_overrides_the_deny_list() {
         let cfg = NetGuardConfig {
             allow_ports: vec![9200],
@@ -874,6 +917,45 @@ mod tests {
                 .reason(),
             BlockReason::Loopback
         );
+        // The opt-in is for plain http: https to a loopback address stays refused, on any port.
+        let (open, _) = guard(true);
+        for url in [
+            "https://127.0.0.1:9000",
+            "https://127.0.0.1",
+            "https://[::1]:9000",
+        ] {
+            assert_eq!(
+                open.pin(url, Shape::Endpoint).await.unwrap_err().reason(),
+                BlockReason::Loopback,
+                "{url}"
+            );
+        }
+        // With ports configured, only those ports are reachable on loopback.
+        let ported = Guard::with_resolver(
+            NetGuardConfig {
+                allow_loopback_http: true,
+                loopback_ports: vec![9000],
+                ..NetGuardConfig::default()
+            },
+            Arc::new(StaticResolver::default()),
+        );
+        assert!(
+            ported
+                .pin("http://127.0.0.1:9000", Shape::Endpoint)
+                .await
+                .is_ok()
+        );
+        for url in [
+            "http://127.0.0.1:9001",
+            "http://[::1]:80",
+            "http://127.0.0.1",
+        ] {
+            assert_eq!(
+                ported.pin(url, Shape::Endpoint).await.unwrap_err().reason(),
+                BlockReason::Loopback,
+                "{url}"
+            );
+        }
         let (open, r) = guard(true);
         r.script("local.example.com", vec![vec![ip("127.0.0.1")]]);
         assert!(

@@ -72,6 +72,7 @@ pub mod update;
 pub mod vault;
 pub mod watch_refs;
 pub mod web;
+pub mod workdir;
 pub mod workflows;
 
 use std::future::Future;
@@ -492,6 +493,25 @@ pub async fn serve(
     byos.start().await;
     // AI keys and agents (docs/AGENTS.md): both hubs, the agent gate of the `UpdateRefs` pipeline,
     // and the authorizer that also knows agent tokens, which every later user of it gets.
+    // Working directories are private to the server's user; the default is under its data dir.
+    let mut agents_cfg = cfg.agents.clone();
+    let agents_dir = agents_cfg
+        .work_dir
+        .get_or_insert_with(|| workdir::default_dir(&cfg, "agents"))
+        .clone();
+    let mut workflows_cfg = cfg.workflows.clone();
+    let workflows_dir = workflows_cfg
+        .work_dir
+        .get_or_insert_with(|| workdir::default_dir(&cfg, "workflows"))
+        .clone();
+    for (on, dir) in [
+        (agents_cfg.enabled, &agents_dir),
+        (workflows_cfg.enabled, &workflows_dir),
+    ] {
+        if on {
+            workdir::prepare(dir).map_err(|e| ConfigError::Invalid(e.to_string()))?;
+        }
+    }
     let ai_agents = agents::register::register(
         &ext,
         &registry,
@@ -500,7 +520,7 @@ pub async fn serve(
             guard: netguard::Guard::new(cfg.netguard.clone()),
             authorizer: authorizer.clone(),
             ai: cfg.aikeys.clone(),
-            agents: cfg.agents.clone(),
+            agents: agents_cfg,
             audit: None,
         },
     )
@@ -513,7 +533,7 @@ pub async fn serve(
         ai_agents.agents.clone(),
         workflows::Parts {
             vault: byos.vault.clone(),
-            cfg: cfg.workflows.clone(),
+            cfg: workflows_cfg,
             audit: None,
         },
     )

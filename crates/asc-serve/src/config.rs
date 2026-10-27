@@ -241,11 +241,65 @@ pub struct McpConfig {
     pub enabled: bool,
     pub write: bool,
     pub allowed_origins: Vec<String>,
+    /// Host names (optionally `:port`) the endpoint answers to besides `public_url` and the
+    /// loopback names of the listen address. Any other `Host` is refused with 421 (DNS rebinding).
+    pub allowed_hosts: Vec<String>,
+    /// The read toolsets `tools/list` offers: any of `core`, `history`, `stack`, `projects`,
+    /// `search`, or `all`. The default is every read toolset; write tools follow `write`.
+    pub toolsets: Vec<String>,
+    /// When set, only these tools are offered (and callable), within `toolsets`. Forge tools are
+    /// named here too.
+    pub tools: Option<Vec<String>>,
+    /// `[mcp.forge]`: the optional forge tools. Off unless an adapter is named.
+    pub forge: crate::mcp::forge::ForgeConfig,
     pub hmac_keys: Vec<PathBuf>,
     pub max_tokens: u32,
     pub max_inflight_per_principal: u32,
     /// `[mcp.oauth]` (M33): absent means no OAuth.
     pub oauth: Option<crate::mcp::oauth::McpOauthConfig>,
+}
+
+impl McpConfig {
+    /// Checks `allowed_hosts`, `toolsets`, `tools` and `[mcp.forge]`.
+    fn validate_exposure(&self) -> Result<(), ConfigError> {
+        for h in &self.allowed_hosts {
+            let t = h.trim();
+            let bad = t.is_empty()
+                || t.len() > 255
+                || t.contains(['/', '?', '#', '@', '*', ' ', '\\'])
+                || t.contains("://");
+            if bad {
+                return invalid(format!(
+                    "mcp.allowed_hosts: {h:?} is not a host name (no scheme, path or wildcard)"
+                ));
+            }
+        }
+        for t in &self.toolsets {
+            let t = t.trim();
+            if t != "all" && asc_mcp::catalogue::Toolset::parse(t).is_none() {
+                return invalid(format!(
+                    "mcp.toolsets: unknown toolset {t:?} (core, history, stack, projects, search, all)"
+                ));
+            }
+            if t == "write" {
+                return invalid("mcp.toolsets: write tools follow `mcp.write`, not a toolset");
+            }
+        }
+        for t in self.tools.iter().flatten() {
+            let known = asc_mcp::catalogue::find(t, asc_mcp::schema::Surface::Http).is_some()
+                || crate::mcp::forge::FORGE_TOOLS.contains(&t.as_str());
+            if !known {
+                return invalid(format!("mcp.tools: unknown tool {t:?}"));
+            }
+        }
+        self.forge
+            .validate()
+            .map_err(|e| ConfigError::Invalid(format!("mcp.forge: {e}")))?;
+        if self.forge.enabled() && !self.enabled {
+            return invalid("mcp.forge needs mcp.enabled");
+        }
+        Ok(())
+    }
 }
 
 impl Default for McpConfig {
@@ -254,6 +308,12 @@ impl Default for McpConfig {
             enabled: false,
             write: false,
             allowed_origins: Vec::new(),
+            allowed_hosts: Vec::new(),
+            toolsets: ["core", "history", "stack", "projects", "search"]
+                .map(str::to_owned)
+                .to_vec(),
+            tools: None,
+            forge: crate::mcp::forge::ForgeConfig::default(),
             hmac_keys: Vec::new(),
             max_tokens: 6000,
             max_inflight_per_principal: 8,
@@ -1173,6 +1233,7 @@ impl ServeConfig {
         if self.mcp.max_tokens == 0 || self.mcp.max_inflight_per_principal == 0 {
             return invalid("mcp.max_tokens and mcp.max_inflight_per_principal must be positive");
         }
+        self.mcp.validate_exposure()?;
         if self.codeintel.enabled && (self.codeintel.workers == 0 || self.codeintel.memory.0 == 0) {
             return invalid("codeintel.workers and codeintel.memory must be positive");
         }
@@ -1586,6 +1647,48 @@ enabled = true
             format!("{base}[admin]\nlisten = \"10.0.0.5:9464\"\ntoken_file = \"/etc/asc/a\"");
         assert!(ServeConfig::parse(&open).is_ok());
         assert!(ServeConfig::parse(&format!("{base}[admin]\nlisten = \"[::1]:1\"")).is_ok());
+    }
+
+    #[test]
+    fn the_mcp_exposure_is_configurable_and_checked() {
+        let base = "store = \"memory:///\"\ndb = \"sqlite::memory:\"\n\
+                    public_url = \"https://asc.example.org\"\n";
+        let on = format!("{base}[mcp]\nenabled = true\n");
+        let c = ServeConfig::parse(&on).unwrap();
+        assert_eq!(
+            c.mcp.toolsets,
+            ["core", "history", "stack", "projects", "search"]
+        );
+        assert!(c.mcp.tools.is_none() && c.mcp.allowed_hosts.is_empty() && !c.mcp.forge.enabled());
+        let c = ServeConfig::parse(&format!(
+            "{on}allowed_hosts = [\"hub.example.org\"]\ntoolsets = [\"core\"]\n\
+             tools = [\"log\", \"forge_issue\"]"
+        ))
+        .unwrap();
+        assert_eq!(c.mcp.allowed_hosts, ["hub.example.org"]);
+        assert_eq!(c.mcp.toolsets, ["core"]);
+        for bad in [
+            "allowed_hosts = [\"https://hub.example.org\"]",
+            "allowed_hosts = [\"hub.example.org/x\"]",
+            "allowed_hosts = [\"*.example.org\"]",
+            "allowed_hosts = [\"\"]",
+            "toolsets = [\"core\", \"nope\"]",
+            "toolsets = [\"write\"]",
+            "tools = [\"not_a_tool\"]",
+            "[mcp.forge]\nadapter = \"forgejo\"",
+            "[mcp.forge]\nadapter = \"github\"",
+        ] {
+            assert!(
+                ServeConfig::parse(&format!("{on}{bad}\n")).is_err(),
+                "{bad}"
+            );
+        }
+        // The forge tools need the endpoint itself.
+        let forge = "[mcp.forge]\nadapter = \"forgejo\"\nurl = \"https://forge.example.org\"\n\
+                     token_file = \"/etc/asc/forge-token\"";
+        let off = format!("{base}{forge}");
+        assert!(ServeConfig::parse(&off).is_err());
+        assert!(ServeConfig::parse(&format!("{on}{forge}")).is_ok());
     }
 
     #[test]

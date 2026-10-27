@@ -266,6 +266,10 @@ jobs:
           MINISIGN_KEY: ${{ secrets.ASC_MINISIGN_KEY }}
         run: |
           set -euo pipefail
+          case "$GITHUB_REF" in
+            refs/heads/master|refs/tags/v[0-9]*) ;;
+            *) echo "::error::the signing key is only used on master or a v* tag, not on $GITHUB_REF"; exit 1 ;;
+          esac
           test -n "$MINISIGN_KEY" || { echo "::error::ASC_MINISIGN_KEY is not set; an unsigned release is not published"; exit 1; }
           test -n "$ASC_RELEASE_PUBKEY" || { echo "::error::ASC_RELEASE_PUBKEY is not set"; exit 1; }
           umask 077

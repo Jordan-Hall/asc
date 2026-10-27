@@ -51,6 +51,7 @@ pub const MAX_ADDED: usize = 100_000;
 pub const MAX_REPORTED: usize = 20;
 /// `CiStatus::Success`.
 const CI_SUCCESS: i64 = 3;
+const CI_FAILURE: i64 = 4;
 
 /// One ref change as the gate sees it.
 #[derive(Clone, Debug)]
@@ -180,6 +181,8 @@ impl Added {
 struct LandNeed<'a> {
     approvals: u32,
     checks: &'a [String],
+    /// `[ci] allow_quarantine`: a failed check whose failures are all quarantined passes.
+    quarantine: bool,
 }
 
 /// What the review side knows about the change a changeset belongs to.
@@ -460,7 +463,7 @@ impl ServerGate {
             if !is_trunk || !only_policy {
                 return Err(unusable(d));
             }
-            self.check_approvals(entry, REPAIR_APPROVALS, &[], &added, &rewrites)
+            self.check_approvals(entry, REPAIR_APPROVALS, &[], false, &added, &rewrites)
                 .await?;
         }
 
@@ -603,11 +606,12 @@ impl ServerGate {
         change: &[u8],
         version: i64,
         name: &str,
+        quarantine: bool,
     ) -> Result<bool, Status> {
         let pool = self.registry.pool();
-        let run: Option<i64> = sqlx::query_scalar(
-            "SELECT status FROM check_runs WHERE ns = $1 AND change = $2 AND version = $3 \
-             AND name = $4 ORDER BY id DESC LIMIT 1",
+        let run: Option<(i64, i64)> = sqlx::query_as(
+            "SELECT CAST(id AS BIGINT), status FROM check_runs WHERE ns = $1 AND change = $2 \
+             AND version = $3 AND name = $4 ORDER BY id DESC LIMIT 1",
         )
         .bind(entry.ns.as_bytes().to_vec())
         .bind(change.to_vec())
@@ -616,11 +620,12 @@ impl ServerGate {
         .fetch_optional(pool)
         .await
         .map_err(sql)?;
-        if run == Some(CI_SUCCESS) {
+        if run.is_some_and(|(_, status)| status == CI_SUCCESS) {
             return Ok(true);
         }
-        let job: Option<i64> = sqlx::query_scalar(
-            "SELECT j.status FROM check_jobs j JOIN check_runs r ON r.ns = j.ns AND r.id = j.run \
+        let job: Option<(i64, i64)> = sqlx::query_as(
+            "SELECT CAST(r.id AS BIGINT), j.status FROM check_jobs j \
+             JOIN check_runs r ON r.ns = j.ns AND r.id = j.run \
              WHERE r.ns = $1 AND r.change = $2 AND r.version = $3 AND j.name = $4 \
              ORDER BY r.id DESC, j.id DESC LIMIT 1",
         )
@@ -631,7 +636,22 @@ impl ServerGate {
         .fetch_optional(pool)
         .await
         .map_err(sql)?;
-        Ok(job == Some(CI_SUCCESS))
+        if job.is_some_and(|(_, status)| status == CI_SUCCESS) {
+            return Ok(true);
+        }
+        // A check that failed only on failures a maintainer quarantined does not block, when the
+        // policy still allows quarantine. A run still going, cancelled or skipped is not a failure.
+        let failed = run
+            .or(job)
+            .filter(|(_, status)| *status == CI_FAILURE)
+            .map(|(id, _)| id);
+        if let (true, Some(id)) = (quarantine, failed) {
+            let mut conn = pool.acquire().await.map_err(sql)?;
+            return crate::ci::insights::store::failed_only_on_quarantined(&mut conn, entry.ns, id)
+                .await
+                .map_err(sql);
+        }
+        Ok(false)
     }
 
     /// `[trunk] require_approvals` and `require_checks`, for each changeset that lands. Approvals
@@ -645,8 +665,15 @@ impl ServerGate {
         rewrites: &HashMap<ChangesetId, ChangesetId>,
     ) -> Result<(), Status> {
         let need = policy.land_requirements();
-        self.check_approvals(entry, need.approvals, &need.checks, added, rewrites)
-            .await
+        self.check_approvals(
+            entry,
+            need.approvals,
+            &need.checks,
+            policy.ci.allow_quarantine,
+            added,
+            rewrites,
+        )
+        .await
     }
 
     /// `approvals` and the named `checks` for each changeset that lands.
@@ -655,10 +682,15 @@ impl ServerGate {
         entry: &RepoEntry,
         approvals: u32,
         checks: &[String],
+        quarantine: bool,
         added: &Added,
         rewrites: &HashMap<ChangesetId, ChangesetId>,
     ) -> Result<(), Status> {
-        let need = LandNeed { approvals, checks };
+        let need = LandNeed {
+            approvals,
+            checks,
+            quarantine,
+        };
         if need.approvals == 0 && need.checks.is_empty() {
             return Ok(());
         }
@@ -692,7 +724,7 @@ impl ServerGate {
             }
             for check in need.checks {
                 if !self
-                    .check_passed(entry, &f.change, f.version, check)
+                    .check_passed(entry, &f.change, f.version, check, need.quarantine)
                     .await?
                 {
                     problems.push(format!("{}: check {check:?} has not passed", short(cs)));

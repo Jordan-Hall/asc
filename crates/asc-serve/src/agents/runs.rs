@@ -362,7 +362,8 @@ impl RunStore {
             conds.join(" AND "),
             limit + 1
         );
-        let mut query = sqlx::query(sqlx::AssertSqlSafe(q)).bind(repo.to_owned());
+        // Runs are stored under the lower-case name; a request may spell the repository otherwise.
+        let mut query = sqlx::query(sqlx::AssertSqlSafe(q)).bind(repo.to_ascii_lowercase());
         for b in binds {
             query = query.bind(b);
         }
@@ -532,12 +533,32 @@ impl RunStore {
             .collect()
     }
 
+    /// The queued runs a dispatcher may start now, oldest first: of each repository that has room
+    /// (fewer than `per_repo` runs active), at most `per_repo` of its oldest queued runs. A
+    /// repository at its cap contributes nothing, so its backlog cannot hide another's runs.
+    pub async fn dispatchable(
+        &self,
+        per_repo: u32,
+        limit: usize,
+    ) -> Result<Vec<RunRow>, sqlx::Error> {
+        let q = format!(
+            "SELECT {COLS} FROM agent_runs WHERE id IN (               SELECT id FROM (                 SELECT id, ROW_NUMBER() OVER (PARTITION BY repo ORDER BY id) AS rn                  FROM agent_runs WHERE state = 1 AND repo NOT IN (                   SELECT repo FROM agent_runs WHERE state IN (2, 3)                    GROUP BY repo HAVING COUNT(*) >= $1)               ) q WHERE rn <= $1)              ORDER BY id LIMIT {limit}"
+        );
+        sqlx::query(sqlx::AssertSqlSafe(q))
+            .bind(i64::from(per_repo))
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(row_of)
+            .collect()
+    }
+
     /// Runs of `repo` that are active.
     pub async fn active_in(&self, repo: &str) -> Result<i64, sqlx::Error> {
         sqlx::query_scalar(
             "SELECT CAST(COUNT(*) AS BIGINT) FROM agent_runs WHERE repo = $1 AND state IN (2, 3)",
         )
-        .bind(repo.to_owned())
+        .bind(repo.to_ascii_lowercase())
         .fetch_one(&self.pool)
         .await
     }

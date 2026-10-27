@@ -840,6 +840,39 @@ struct AuthzAnswer {
     task: Option<TaskInfo>,
     #[serde(default)]
     branch_rules: BranchRules,
+    /// The forge's stable id of the repository; 0 from a forge that does not send one.
+    #[serde(default)]
+    repo_id: u64,
+}
+
+/// Binds a repository name to the forge's id of it, in the registry's `repos.forge_id`.
+#[derive(Clone)]
+pub struct RepoIdBinding {
+    pool: sqlx::AnyPool,
+}
+
+impl RepoIdBinding {
+    pub fn new(pool: sqlx::AnyPool) -> Self {
+        Self { pool }
+    }
+
+    /// `Ok(true)`: `id` is the id bound to `repo` (it is bound now if none was), or the registry
+    /// does not know the name yet. `Ok(false)`: the name is bound to another id.
+    pub async fn check(&self, repo: &str, id: u64) -> Result<bool, sqlx::Error> {
+        let Ok(id) = i64::try_from(id) else {
+            return Ok(false);
+        };
+        sqlx::query("UPDATE repos SET forge_id = $2 WHERE name = $1 AND forge_id = 0")
+            .bind(repo)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        let bound: Option<i64> = sqlx::query_scalar("SELECT forge_id FROM repos WHERE name = $1")
+            .bind(repo)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(bound.is_none_or(|b| b == id))
+    }
 }
 
 /// Stage 2+: `POST /api/internal/asc/authz` (K07), with composition grants (SPEC §15.5).
@@ -848,9 +881,17 @@ pub struct InternalAuthz {
     core: AuthzCore,
     grants: Vec<CompositionGrant>,
     ssh: forgejo_ssh::SshLookup,
+    binding: Option<RepoIdBinding>,
 }
 
 impl InternalAuthz {
+    /// Refuses an answer whose `repo_id` is not the one bound to the repository's registry entry.
+    #[must_use]
+    pub fn with_binding(mut self, binding: RepoIdBinding) -> Self {
+        self.binding = Some(binding);
+        self
+    }
+
     pub fn new(
         client: Arc<ForgejoClient>,
         grants: Vec<CompositionGrant>,
@@ -862,6 +903,7 @@ impl InternalAuthz {
             core: AuthzCore::new(cache, internal),
             grants,
             ssh: forgejo_ssh::SshLookup::new(cache),
+            binding: None,
         }
     }
 
@@ -955,6 +997,26 @@ impl InternalAuthz {
             _ => return Err(Fetch::Unavailable),
         }
         let a: AuthzAnswer = decode(&bytes).map_err(|e| unavailable(&e))?;
+        if a.allowed
+            && a.repo_id != 0
+            && let Some(binding) = &self.binding
+        {
+            match binding.check(repo, a.repo_id).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    tracing::warn!(
+                        event = "authz.repo_id_mismatch",
+                        repo,
+                        "the forge's id of this repository is not the one the registry entry is bound to"
+                    );
+                    return Err(Fetch::Denied(denied_for(login)));
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "repository id binding");
+                    return Err(Fetch::Unavailable);
+                }
+            }
+        }
         self.judge(a, login, repo, access)
     }
 
@@ -1548,18 +1610,23 @@ fn client_of(cfg: &ForgejoConfig) -> Result<(Arc<ForgejoClient>, bool), ForgejoE
 
 /// The authorizer for a server configured with Forgejo: [`InternalAuthz`] when the internal token
 /// is configured (Stage 2+), otherwise [`PublicApiAuthz`] (Stage 1). `None` without `[forgejo]`.
-pub fn authorizer(cfg: &ServeConfig) -> Result<Option<Arc<dyn Authorizer>>, ForgejoError> {
+///
+/// With a `binding`, the forge's `repo_id` of a repository is bound to its registry entry.
+pub fn authorizer(
+    cfg: &ServeConfig,
+    binding: Option<RepoIdBinding>,
+) -> Result<Option<Arc<dyn Authorizer>>, ForgejoError> {
     let Some(f) = &cfg.forgejo else {
         return Ok(None);
     };
     let (client, internal) = client_of(f)?;
     let cache = AuthzCacheConfig::default();
     Ok(Some(if internal {
-        Arc::new(InternalAuthz::new(
-            client,
-            cfg.composition_grants.clone(),
-            cache,
-        ))
+        let authz = InternalAuthz::new(client, cfg.composition_grants.clone(), cache);
+        Arc::new(match binding {
+            Some(b) => authz.with_binding(b),
+            None => authz,
+        })
     } else {
         Arc::new(PublicApiAuthz::new(client, cache))
     }))
@@ -1710,5 +1777,52 @@ mod tests {
             why.contains("http://forgejo.example:3000") && !why.contains("hunter2"),
             "{why}"
         );
+    }
+}
+
+#[cfg(test)]
+mod binding_tests {
+    use super::*;
+
+    async fn registry_with(names: &[&str]) -> sqlx::AnyPool {
+        let pool = crate::migrate::connect("sqlite::memory:", 1).await.unwrap();
+        crate::migrate::migrate(&pool).await.unwrap();
+        for n in names {
+            sqlx::query("INSERT INTO repos (name, ns, created) VALUES ($1, $2, 1)")
+                .bind(*n)
+                .bind(n.as_bytes().to_vec())
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        pool
+    }
+
+    #[test]
+    fn the_answer_carries_the_repository_id_and_an_old_forge_has_none() {
+        let a: AuthzAnswer = decode(br#"{"allowed": true, "repo_id": 42}"#).unwrap();
+        assert_eq!(a.repo_id, 42);
+        let old: AuthzAnswer = decode(br#"{"allowed": true}"#).unwrap();
+        assert_eq!(old.repo_id, 0);
+    }
+
+    #[tokio::test]
+    async fn the_first_id_binds_and_another_id_for_the_same_name_is_refused() {
+        let pool = registry_with(&["o/r", "o/other"]).await;
+        let b = RepoIdBinding::new(pool.clone());
+        assert!(b.check("o/r", 7).await.unwrap(), "binds");
+        assert!(b.check("o/r", 7).await.unwrap(), "the same id again");
+        assert!(!b.check("o/r", 8).await.unwrap(), "a recreated repository");
+        assert!(
+            b.check("o/other", 8).await.unwrap(),
+            "ids are per repository"
+        );
+        // A name the registry does not know yet has nothing to bind to.
+        assert!(b.check("o/new", 9).await.unwrap());
+        let bound: i64 = sqlx::query_scalar("SELECT forge_id FROM repos WHERE name = 'o/r'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(bound, 7);
     }
 }

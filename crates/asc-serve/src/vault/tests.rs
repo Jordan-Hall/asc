@@ -407,6 +407,56 @@ async fn a_replica_that_did_not_rotate_picks_up_the_new_generation() {
 }
 
 #[tokio::test]
+async fn two_replicas_rotating_at_once_make_one_new_generation() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("vault.keys");
+    let pool = pool().await;
+    let one = Vault::open_file(path.clone(), pool.clone());
+    let two = Vault::open_file(path.clone(), pool.clone());
+    one.register(Arc::new(Rows { pool: pool.clone() }));
+    two.register(Arc::new(Rows { pool: pool.clone() }));
+    let (a, b) = tokio::join!(one.rotate(false), two.rotate(false));
+    let won = [&a, &b].iter().filter(|r| r.is_ok()).count();
+    assert_eq!(won, 1, "{a:?} {b:?}");
+    let lost = if a.is_err() { a } else { b };
+    assert!(matches!(lost, Err(VaultError::RotationActive)));
+    one.wait_idle().await;
+    two.wait_idle().await;
+    let ring = keyring::load(&path).unwrap();
+    assert_eq!(ring.generations().len(), 2, "one new generation, not two");
+    assert_eq!(one.active_generation().unwrap(), 2);
+    assert_eq!(two.active_generation().unwrap(), 2);
+}
+
+#[tokio::test]
+async fn a_claim_whose_replica_died_before_writing_the_key_is_taken_over_once_stale() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("vault.keys");
+    let pool = pool().await;
+    let vault = Vault::open_file(path, pool.clone());
+    vault.register(Arc::new(Rows { pool: pool.clone() }));
+    // A claim of generation 2 that never reached the key file.
+    sqlx::query(
+        "INSERT INTO vault_state (id, generation, holder, updated) VALUES (1, 2, 'dead', $1)",
+    )
+    .bind(now())
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(matches!(
+        vault.rotate(false).await,
+        Err(VaultError::RotationActive)
+    ));
+    sqlx::query("UPDATE vault_state SET updated = 1")
+        .execute(&pool)
+        .await
+        .unwrap();
+    vault.rotate(false).await.unwrap();
+    vault.wait_idle().await;
+    assert_eq!(vault.active_generation().unwrap(), 2);
+}
+
+#[tokio::test]
 async fn an_unusable_key_file_leaves_the_vault_locked_with_a_reason() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("vault.keys");
