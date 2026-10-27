@@ -69,9 +69,11 @@ staging `asc serve` is not yet wired to ASC Hub.
 - `asc doctor --store` is implemented (`crates/asc/src/cli/doctor.rs`: store transport checks and an
   integrity sample of stored objects, plus the create-exclusive probe). Its result against the
   staging bucket is not recorded here (unverified).
-- Not built yet: MCP tools (`asc mcp` is a stub; `crates/asc-mcp` is a protocol skeleton), `asc cloud`,
-  `asc live`, the `UploadScip` RPC (TODO(I16) in `crates/asc/src/cli/codeintel/scip.rs`) and the
-  Semantic embedder.
+- Built since this page was first written: `asc mcp` (`crates/asc/src/cli/mcp.rs`, tools in
+  `crates/asc-mcp`; reference in [`mcp.md`](mcp.md)), `asc live` (`crates/asc/src/cli/live.rs`),
+  `asc cloud` (`crates/asc/src/stack/cli/cloud.rs`) and `asc codeintel upload-scip`
+  (`crates/asc/src/cli/codeintel/scip.rs`). The per-unit state is in [`PLAN-STATUS.md`](PLAN-STATUS.md);
+  where it and this page disagree, it is newer.
 - PLAN unit completion is tracked in `docs/PLAN.md` and `docs/CARRY.md`, not here.
 
 ## Known gaps in git compatibility

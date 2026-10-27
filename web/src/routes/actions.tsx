@@ -39,8 +39,8 @@ export default function ActionsPage(): ReactNode {
           <RowsSkeleton rows={6} rowHeight={56} label="Loading runs" />
         ) : data.runs.length === 0 ? (
           <Empty>
-            No runs yet. A runner or forge adapter reports them with the Ci service; see the CI
-            guide in the docs.
+            No runs yet. A runner or forge adapter reports them with the Ci service; the service is
+            described in docs/api.md.
           </Empty>
         ) : (
           <ul className="m-0 list-none p-0">
