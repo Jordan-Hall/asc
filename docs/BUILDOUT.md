@@ -35,6 +35,19 @@ system work (`WithSystem`); a system call never stands in for a user. Access lev
 *repo admin* (as in `Access` in `asc-rpc`), *maintainer* (named by the policy role `maintainer`), *owner admin* (admin of the user,
 organisation or repository that owns the resource), *site administrator*.
 
+**Forwarded administrator.** One call the hub makes with the internal (host service) token needs a person's authority: repairing
+an unusable `.asc/policy.toml`. The host service's credential never holds repository admin, so the hub forwards the signed-in
+person as gRPC metadata, signed with a key it shares with the server (`[auth] forwarded_key_file`, 32 bytes raw or 64 hex digits,
+mode 0600; without it no claim is accepted): `x-asc-forwarded-user: <user id>:<login>`, `x-asc-forwarded-role: admin`,
+`x-asc-forwarded-ts: <unix seconds>` and `x-asc-forwarded-mac`, the lower-case hex HMAC-SHA256 of
+`asc-forwarded-v1
+<user>
+<role>
+<owner/name>
+<ts>`. The server accepts a claim only on a call made with the host service's
+credential, only for the repository named in the MAC, and only within 60 seconds of its clock; the hub sends it only after it
+checked that the person administers the repository. The repair is logged as `policy.repair.forwarded_admin`.
+
 **Fail closed.** A handler that cannot decide (policy unreadable, store down, clock skew) refuses. Reading a resource of an owner the
 caller cannot administer answers `NOT_FOUND`, so identifiers cannot be probed.
 
@@ -142,7 +155,7 @@ and evaluated through the API and the hub shows it; every key below is parsed st
   host), so a second lookup cannot return something else (rebinding). Redirects are not followed. Responses are bounded in size and time.
 - **Error reasons** (slugs in `ErrorDetail.paths[0]`): `not_https`, `credentials_in_url`, `port`, `unresolvable`, `loopback`, `private`,
   `link_local`, `metadata`, `reserved`.
-- **Config:** `[netguard] allow_loopback_http` (default `false`), `allow_ports` (default `[]`), `connect_timeout_secs` (10),
+- **Config:** `[netguard] allow_loopback_http` (default `false`; admits plain `http` only, never `https`, to a loopback address), `loopback_ports` (default `[]`: any port; set, only those ports; needs `allow_loopback_http`), `allow_ports` (default `[]`), `connect_timeout_secs` (10),
   `request_timeout_secs` (30).
 - **Tests:** table test over every range above in v4, v6 and mapped forms; a resolver that returns a public then a private address on
   the second call is pinned to the first; a redirect to a private address is not followed; loopback http works only with the opt-in.

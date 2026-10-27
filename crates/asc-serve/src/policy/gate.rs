@@ -254,11 +254,27 @@ impl ServerGate {
     }
 
     /// Whether the caller may repair a repository whose policy is unusable: the credential of
-    /// this very call holds admin on the repository. The host service never does through this
-    /// path: it relays calls of users the gate cannot see, so a relayed call is judged as any
-    /// other non-administrator's.
+    /// this very call holds admin on the repository. The host service's own credential never
+    /// does: it relays calls of users the gate cannot see. A relayed call is allowed only when
+    /// the host service also forwards the person it acts for, signed under the key it shares with
+    /// this server (`asc_rpc::forwarded`), as an administrator of this very repository; the
+    /// claim is read from the call's metadata and checked before it gets here.
     async fn may_repair(&self, ctx: &CallCtx) -> bool {
-        !crate::authz::is_host_service(&ctx.principal.id) && ctx.admin.holds().await
+        if crate::authz::is_host_service(&ctx.principal.id) {
+            return match ctx.admin.forwarded_admin() {
+                Some(person) => {
+                    tracing::info!(
+                        event = "policy.repair.forwarded_admin",
+                        repo = %ctx.repo,
+                        person,
+                        "unusable policy repaired on behalf of a forwarded administrator"
+                    );
+                    true
+                }
+                None => false,
+            };
+        }
+        ctx.admin.holds().await
     }
 
     /// Whether `name` is a protected ref of the repository: trunk, `release/*` or a land branch.

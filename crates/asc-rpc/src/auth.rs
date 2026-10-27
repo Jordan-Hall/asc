@@ -283,7 +283,10 @@ pub struct Principal {
 /// repository. It re-authorizes that exact credential for [`Access::Admin`]; nothing is
 /// aggregated across the caller's other credentials. [`AdminProof::default`] holds nothing.
 #[derive(Clone, Default)]
-pub struct AdminProof(Option<(Arc<dyn Authorizer>, Option<Credential>, String)>);
+pub struct AdminProof {
+    own: Option<(Arc<dyn Authorizer>, Option<Credential>, String)>,
+    forwarded: Option<String>,
+}
 
 impl AdminProof {
     pub fn new(
@@ -291,12 +294,43 @@ impl AdminProof {
         credential: Option<Credential>,
         repo: &str,
     ) -> Self {
-        Self(Some((authorizer, credential, repo.to_owned())))
+        Self {
+            own: Some((authorizer, credential, repo.to_owned())),
+            forwarded: None,
+        }
+    }
+
+    /// Adds the person a host service vouched for with a verified claim (see
+    /// [`forwarded`](crate::forwarded)): `<user id>:<login>`, an administrator of the repository.
+    /// This is not the credential's own right; the caller decides whether the credential may
+    /// act on such a claim (only the host service's may).
+    #[must_use]
+    pub fn with_forwarded(mut self, claim: Option<String>) -> Self {
+        self.forwarded = claim;
+        self
+    }
+
+    /// The administrator a host service verifiably forwarded with this call, if any.
+    pub fn forwarded_admin(&self) -> Option<&str> {
+        self.forwarded.as_deref()
+    }
+
+    /// Reads and checks the claim in `meta` against the authorizer's key.
+    pub fn forwarded_in(
+        authorizer: &dyn Authorizer,
+        meta: &tonic::metadata::MetadataMap,
+        repo: &str,
+    ) -> Option<String> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .and_then(|d| i64::try_from(d.as_secs()).ok())?;
+        authorizer.forwarded_verifier()?.verify(meta, repo, now)
     }
 
     /// Whether the credential that made the call is allowed admin on the repository.
     pub async fn holds(&self) -> bool {
-        match &self.0 {
+        match &self.own {
             Some((authorizer, credential, repo)) => authorizer
                 .authorize_credential(credential.as_ref(), repo, Access::Admin)
                 .await
@@ -354,6 +388,12 @@ pub trait Authorizer: Send + Sync {
     /// authorizer.
     async fn authenticate(&self, _credential: Option<&Credential>) -> Result<Principal, AuthError> {
         Err(AuthError::Unauthenticated)
+    }
+
+    /// The key a host service signs forwarded administrator claims with, when this server takes
+    /// them. The default takes none. A wrapper must forward this method to its inner authorizer.
+    fn forwarded_verifier(&self) -> Option<&crate::forwarded::ForwardedVerifier> {
+        None
     }
 
     /// Recognises an SSH key at login (SPEC §25.11.3 item 2): `Ok(None)` for an unknown, revoked
