@@ -630,6 +630,10 @@ impl Authorizer for RecordingAuthorizer {
         answer
     }
 
+    fn forwarded_verifier(&self) -> Option<&asc_rpc::forwarded::ForwardedVerifier> {
+        self.inner.forwarded_verifier()
+    }
+
     /// SSH keys are the inner authorizer's to recognise; the listener's own admission limits
     /// them (U86), so this only forwards.
     async fn identify_ssh_key(

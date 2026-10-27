@@ -211,6 +211,10 @@ impl Authorizer for AgentAuthorizer {
         }
     }
 
+    fn forwarded_verifier(&self) -> Option<&asc_rpc::forwarded::ForwardedVerifier> {
+        self.inner.forwarded_verifier()
+    }
+
     async fn identify_ssh_key(&self, key: &SshKey) -> Result<Option<SshIdentity>, AuthError> {
         self.inner.identify_ssh_key(key).await
     }

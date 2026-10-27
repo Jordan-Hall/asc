@@ -35,6 +35,19 @@ system work (`WithSystem`); a system call never stands in for a user. Access lev
 *repo admin* (as in `Access` in `asc-rpc`), *maintainer* (named by the policy role `maintainer`), *owner admin* (admin of the user,
 organisation or repository that owns the resource), *site administrator*.
 
+**Forwarded administrator.** One call the hub makes with the internal (host service) token needs a person's authority: repairing
+an unusable `.asc/policy.toml`. The host service's credential never holds repository admin, so the hub forwards the signed-in
+person as gRPC metadata, signed with a key it shares with the server (`[auth] forwarded_key_file`, 32 bytes raw or 64 hex digits,
+mode 0600; without it no claim is accepted): `x-asc-forwarded-user: <user id>:<login>`, `x-asc-forwarded-role: admin`,
+`x-asc-forwarded-ts: <unix seconds>` and `x-asc-forwarded-mac`, the lower-case hex HMAC-SHA256 of
+`asc-forwarded-v1
+<user>
+<role>
+<owner/name>
+<ts>`. The server accepts a claim only on a call made with the host service's
+credential, only for the repository named in the MAC, and only within 60 seconds of its clock; the hub sends it only after it
+checked that the person administers the repository. The repair is logged as `policy.repair.forwarded_admin`.
+
 **Fail closed.** A handler that cannot decide (policy unreadable, store down, clock skew) refuses. Reading a resource of an owner the
 caller cannot administer answers `NOT_FOUND`, so identifiers cannot be probed.
 

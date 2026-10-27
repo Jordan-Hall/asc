@@ -12,6 +12,7 @@ pub mod coalesce;
 pub mod codeintel;
 pub mod convert;
 pub mod errors;
+pub mod forwarded;
 pub mod h3;
 pub mod ipc;
 pub mod json;
