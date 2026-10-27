@@ -547,7 +547,7 @@ impl ServerRefs {
                 .iter()
                 .map(|p| (p.text.clone(), p.new.is_none()))
                 .collect();
-            agent.check_refs(ctx, pushed.is_some(), &refs)?;
+            agent.check_refs(ctx, pushed.is_some(), &refs).await?;
         }
         let hooks = self.hooks.push_hooks();
         if req.hooks == wire::HookMode::SkipPre as i32 && !hooks.may_skip_pre(ctx) {

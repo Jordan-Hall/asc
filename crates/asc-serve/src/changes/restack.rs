@@ -675,7 +675,7 @@ impl Restacker {
         // the caller is recorded as the ingester and pays for what it adds, and a caller with no
         // bytes left is refused before anything is recorded. The internal principal has no
         // owner and is not charged.
-        let owner = crate::refpolicy::owner_of(&ctx.principal);
+        let owner = crate::refpolicy::accounting_owner_of(&ctx.principal);
         let quota = self.pipeline.user_quota();
         let mut ingestor = Ingestor::new(
             self.registry.pool(),

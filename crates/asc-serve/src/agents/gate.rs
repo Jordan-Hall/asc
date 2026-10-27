@@ -4,8 +4,10 @@
 //! `Commit` with an `update_ref`, a land, a restack). For a principal that is not an agent the
 //! gate does nothing. For an agent:
 //!
-//! * **Never trunk.** The only refs an agent writes are `refs/heads/agent/<its name>/<anything>`:
-//!   its own drafts, under the namespace of the person it acts for. A land, a tag, any shared
+//! * **Never trunk.** The only refs an agent writes are in its own token's namespace,
+//!   `refs/heads/agent/<its name>/<its token id>/<anything>`, or the ref of a run its token
+//!   started, `refs/heads/agent/<its name>/run-<n>`: its own drafts, under the namespace of the
+//!   person it acts for. Two tokens of one agent name never write each other's branches. A land, a tag, any shared
 //!   branch and another agent's branch are refused with `AGENT_SCOPE_DENIED` before a byte is
 //!   ingested ([`AgentGate::check_refs`]).
 //! * **Scope.** The paths of the changesets the update adds (everything reachable from the new
@@ -32,7 +34,7 @@ use tonic::Status;
 use super::Core;
 use super::errors;
 use super::repo::PolicyState;
-use super::tokens::{Refusal, parse_principal};
+use super::tokens::{AgentPrincipal, Refusal, parse_principal};
 use crate::ai::clock;
 use crate::registry::RepoEntry;
 
@@ -62,8 +64,13 @@ pub struct Charge {
 #[async_trait]
 pub trait AgentGate: Send + Sync {
     /// Before anything is ingested: may this principal write these refs at all? `land` is true
-    /// for a LAND update. Pure and cheap; a non-agent passes.
-    fn check_refs(&self, ctx: &CallCtx, land: bool, refs: &[(String, bool)]) -> Result<(), Status>;
+    /// for a LAND update. Cheap; a non-agent passes.
+    async fn check_refs(
+        &self,
+        ctx: &CallCtx,
+        land: bool,
+        refs: &[(String, bool)],
+    ) -> Result<(), Status>;
 
     /// After the closure is ingested, before the refs move: scope and budget. `None`: not an
     /// agent, nothing charged.
@@ -89,25 +96,30 @@ impl ServerAgentGate {
     }
 }
 
-/// Whether `name` is `refs/heads/agent/<agent>/<something>`.
-pub fn is_agent_ref(agent: &str, name: &str) -> bool {
-    let Some(rest) = name
-        .strip_prefix("refs/heads/agent/")
-        .and_then(|r| r.strip_prefix(agent))
-        .and_then(|r| r.strip_prefix('/'))
-    else {
-        return false;
-    };
-    !rest.is_empty()
-        && !name.contains(|c: char| c.is_control() || c == '\\')
-        && rest
-            .split('/')
-            .all(|seg| !seg.is_empty() && seg != "." && seg != "..")
+/// Whether `name` is `refs/heads/agent/<agent>/<token id>/<something>`, the namespace of one
+/// token, or `refs/heads/agent/<agent>/run-<n>`, a run ref of the agent (whose run the caller
+/// must also own: see [`ServerAgentGate::check_refs`]).
+pub fn is_agent_ref(agent: &AgentPrincipal, name: &str) -> bool {
+    name.starts_with("refs/heads/") && crate::refpolicy::agent_ref_shape(agent, name)
+}
+
+/// The run number of `refs/heads/agent/<agent>/run-<n>`.
+fn run_of_ref(agent: &AgentPrincipal, name: &str) -> Option<u64> {
+    name.strip_prefix("refs/heads/agent/")?
+        .strip_prefix(agent.name.as_str())?
+        .strip_prefix("/run-")?
+        .parse()
+        .ok()
 }
 
 #[async_trait]
 impl AgentGate for ServerAgentGate {
-    fn check_refs(&self, ctx: &CallCtx, land: bool, refs: &[(String, bool)]) -> Result<(), Status> {
+    async fn check_refs(
+        &self,
+        ctx: &CallCtx,
+        land: bool,
+        refs: &[(String, bool)],
+    ) -> Result<(), Status> {
         let Some(p) = parse_principal(&ctx.principal.id) else {
             return Ok(());
         };
@@ -116,12 +128,21 @@ impl AgentGate for ServerAgentGate {
                 "an agent never lands a change".into(),
             ]));
         }
-        let bad: Vec<String> = refs
-            .iter()
-            .filter(|(name, _)| !is_agent_ref(&p.name, name))
-            .map(|(name, _)| name.clone())
-            .take(MAX_REPORTED)
-            .collect();
+        let mut bad: Vec<String> = Vec::new();
+        for (name, _) in refs {
+            let own = is_agent_ref(&p, name)
+                && match run_of_ref(&p, name) {
+                    // A run ref belongs to the run's own token and to nobody else's.
+                    Some(run) => matches!(
+                        self.core.runs.get(run).await,
+                        Ok(Some(r)) if r.token_id == p.token_id
+                    ),
+                    None => true,
+                };
+            if !own && bad.len() < MAX_REPORTED {
+                bad.push(name.clone());
+            }
+        }
         if bad.is_empty() {
             Ok(())
         } else {
@@ -305,26 +326,45 @@ fn refusal(r: Refusal) -> Status {
 mod tests {
     use super::*;
 
+    fn fixer() -> AgentPrincipal {
+        AgentPrincipal {
+            name: "fixer".into(),
+            owner_id: 7,
+            token_id: "at_one".into(),
+        }
+    }
+
     #[test]
-    fn only_the_agents_own_branches_qualify() {
-        assert!(is_agent_ref("fixer", "refs/heads/agent/fixer/run-1"));
-        assert!(is_agent_ref("fixer", "refs/heads/agent/fixer/a/b/c"));
+    fn only_the_tokens_own_branches_qualify() {
+        let a = fixer();
+        assert!(is_agent_ref(&a, "refs/heads/agent/fixer/run-1"));
+        assert!(is_agent_ref(&a, "refs/heads/agent/fixer/at_one/a/b/c"));
         for bad in [
+            // another token of the same agent name
+            "refs/heads/agent/fixer/at_two/x",
+            "refs/heads/agent/fixer/at_one2/x",
+            // no token namespace
+            "refs/heads/agent/fixer/a/b/c",
+            "refs/heads/agent/fixer/run-x",
+            "refs/heads/agent/fixer/run-",
+            "refs/heads/agent/fixer/at_one",
+            "refs/heads/agent/fixer/at_one/",
             "refs/heads/agent/fixer",
             "refs/heads/agent/fixer/",
             "refs/heads/agent/fixer2/run-1",
             "refs/heads/agent/other/run-1",
             "refs/heads/master",
-            "refs/heads/agent/fixer/../../master",
-            "refs/heads/agent/fixer//x",
-            "refs/heads/agent/fixer/./x",
-            "refs/heads/agent/fixer/x\\y",
-            "refs/tags/agent/fixer/v1",
-            "refs/users/7/heads/agent/fixer/x",
-            "agent/fixer/x",
-            "refs/heads/agent/fixer/x\n",
+            "refs/heads/agent/fixer/at_one/../../master",
+            "refs/heads/agent/fixer/at_one//x",
+            "refs/heads/agent/fixer/at_one/./x",
+            "refs/heads/agent/fixer/at_one/x\\y",
+            "refs/tags/agent/fixer/at_one/v1",
+            "refs/users/7/heads/agent/fixer/at_one/x",
+            "agent/fixer/at_one/x",
+            "refs/heads/agent/fixer/at_one/x
+",
         ] {
-            assert!(!is_agent_ref("fixer", bad), "{bad:?}");
+            assert!(!is_agent_ref(&a, bad), "{bad:?}");
         }
     }
 }

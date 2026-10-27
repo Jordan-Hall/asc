@@ -198,13 +198,12 @@ impl ImportPush {
         // git saw it as `refs/heads/<n>`, the `refs` table holds it under `refs/users/`. `UpdateRefs`
         // classifies the same names again; this pass finds the stored value for the CAS.
         let policy = crate::refpolicy::RepoPolicy::load(self.registry.pool(), entry.key.0).await?;
-        let owner = crate::refpolicy::owner_of(&ctx.principal);
         // A push whose answer was lost (the git child was killed or the client went away after
         // asc committed) is sent again under a new op id: it is the same push when every ref
         // already holds what the commands ask for because this principal's push stored it.
         if let Some(via) = opts.via
             && let Some(results) = self
-                .already_applied(&entry, ctx, via, &map, &policy, owner, commands)
+                .already_applied(&entry, ctx, via, &map, &policy, commands)
                 .await?
         {
             return Ok(wire::ImportGitPushResponse { results });
@@ -215,6 +214,7 @@ impl ImportPush {
         // pusher's alone to pay for.
         let mut only_user_refs = true;
         for c in commands {
+            let owner = crate::refpolicy::draft_owner_of(&ctx.principal, &c.name);
             let class = policy.classify(owner, &c.name)?;
             if let (crate::refpolicy::Class::User { owner, .. }, Some(_)) = (&class, c.new) {
                 quota_owner = Some(*owner);
@@ -263,7 +263,7 @@ impl ImportPush {
                 quarantine,
                 commands,
                 (windows_safe, native),
-                (owner.unwrap_or(0), budget),
+                (crate::refpolicy::accounting_owner_of(&ctx.principal).unwrap_or(0), budget),
             )
             .await?;
 
@@ -325,11 +325,11 @@ impl ImportPush {
         via: &str,
         map: &PushMap,
         policy: &crate::refpolicy::RepoPolicy,
-        owner: Option<i64>,
         commands: &[PushCommand],
     ) -> Result<Option<Vec<wire::RefResult>>, Status> {
         let mut results = Vec::with_capacity(commands.len());
         for c in commands {
+            let owner = crate::refpolicy::draft_owner_of(&ctx.principal, &c.name);
             let class = policy.classify(owner, &c.name)?;
             let name = RefName::new(class.stored(&c.name).as_bytes())
                 .map_err(|e| Status::invalid_argument(e.to_string()))?;
