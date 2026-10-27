@@ -614,6 +614,10 @@ pub struct Extensions {
 
 impl Extensions {
     pub fn new() -> Self {
+    /// The `Audit` and `Stacks` (ref log, undo) state; `build_routes` serves them behind the authorizer.
+    pub audit: crate::audit::AuditSlot,
+    /// The `CiInsights` hub (failure groups, flaky tests); `build_routes` serves it behind the authorizer.
+    pub insights: crate::ci::insights::InsightsSlot,
         Self {
             handlers: Arc::new(RepoHandlers::new()),
             http: HttpRoutes::new(),
@@ -637,6 +641,8 @@ impl Default for Extensions {
     }
 }
 
+            audit: Default::default(),
+            insights: Default::default(),
 #[cfg(test)]
 mod tests {
     use super::*;

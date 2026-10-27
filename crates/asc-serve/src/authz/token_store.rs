@@ -104,6 +104,12 @@ pub enum TokenError {
     Db(#[from] sqlx::Error),
 }
 
+/// A change to a credential is refused when its audit event cannot be written: no unaudited token.
+pub(super) fn audit_failed(e: crate::audit::AuditError) -> TokenError {
+    tracing::error!(error = %e, "audit event not recorded");
+    TokenError::Invalid("the audit log could not record this change".into())
+}
+
 fn invalid<T>(msg: impl Into<String>) -> Result<T, TokenError> {
     Err(TokenError::Invalid(msg.into()))
 }
@@ -633,6 +639,17 @@ impl TokenStore {
             .execute(&mut *tx)
             .await?;
         }
+        let event = crate::audit::hooks::token_created(
+            &id,
+            req.kind.as_str(),
+            &req.label,
+            plan.expires,
+            plan.user.as_deref(),
+            plan.grants.first().map(|g| g.repo.as_str()),
+        );
+        crate::audit::store::append_in_tx(&mut tx, &event)
+            .await
+            .map_err(audit_failed)?;
         tx.commit().await?;
         tracing::info!(
             token_id = %id,
@@ -696,12 +713,31 @@ impl TokenStore {
     /// Revokes the token with public id `id`. `Ok(false)` when it was already revoked. Takes
     /// effect at once in this process and within [`CACHE_TTL_SECS`] elsewhere.
     pub async fn revoke(&self, id: &str) -> Result<bool, TokenError> {
+        let mut tx = crate::audit::store::begin(&self.pool).await?;
         let done =
             sqlx::query("UPDATE auth_tokens SET revoked = $1 WHERE id = $2 AND revoked IS NULL")
                 .bind(self.now())
                 .bind(id.to_owned())
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await?;
+        if done.rows_affected() > 0 {
+            let row = sqlx::query(
+                "SELECT t.kind, t.principal, t.label,                  (SELECT MIN(g.repo) FROM auth_token_grants g WHERE g.token_id = t.id) AS repo                  FROM auth_tokens t WHERE t.id = $1",
+            )
+            .bind(id.to_owned())
+            .fetch_one(&mut *tx)
+            .await?;
+            let principal: String = row.try_get("principal")?;
+            let label: String = row.try_get("label")?;
+            let repo: Option<String> = row.try_get("repo")?;
+            let user = principal.strip_prefix("pat:").map(str::to_owned);
+            let event =
+                crate::audit::hooks::token_revoked(id, &label, user.as_deref(), repo.as_deref());
+            crate::audit::store::append_in_tx(&mut tx, &event)
+                .await
+                .map_err(audit_failed)?;
+        }
+        tx.commit().await?;
         self.cache.clear();
         // A user's SSH keys act with the rights of that user's live tokens.
         #[cfg(feature = "git-ssh")]

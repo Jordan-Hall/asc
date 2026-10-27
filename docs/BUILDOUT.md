@@ -158,7 +158,8 @@ and evaluated through the API and the hub shows it; every key below is parsed st
   segment record that keeps the head hash.
 - **Details** are built per action from an allow-list of keys (`ListActions` returns them); free text is truncated to 256 bytes; a value
   that matches a secret rule is dropped.
-- **Config:** `[audit] retention_days` (default 400; 0 keeps everything), `[audit] export_max_events` (1,000,000).
+- **Config:** `[audit] retention_days` (default 365; 0 keeps everything), `[audit] export_max_events` (1,000,000), `[audit] undo_window_secs` (600), `[audit] admins`.
+  See `docs/AUDIT.md`.
 - **Action catalogue** (dotted; units add theirs here): `policy.proposed`, `repo.ref.update`, `repo.ref.undo`, `stack.reverted`,
   `stack.restacked`, `queue.enqueued`, `queue.dequeued`, `queue.landed`, `queue.paused`, `secret.finding.updated`, `signing.key.added`,
   `signing.key.revoked`, `signing.signature.submitted`, `storage.target.created`, `.updated`, `.verified`, `.enabled`, `.deleted`,
@@ -602,16 +603,6 @@ scaffold part of `crates/asc-rpc/tests/scaffold_registry.rs`.
 - `asc.v1.Signing/Verify`
 - `asc.v1.Signing/GetServerKey`
 
-- `asc.v1.Audit/List`
-- `asc.v1.Audit/Export`
-- `asc.v1.Audit/VerifyChain`
-- `asc.v1.Audit/ListActions`
-
-- `asc.v1.Stacks/Restack`
-- `asc.v1.Stacks/RevertLanded`
-- `asc.v1.Stacks/ListRefLog`
-- `asc.v1.Stacks/UndoRef`
-
 - `asc.v1.MergeQueue/Enqueue`
 - `asc.v1.MergeQueue/Dequeue`
 - `asc.v1.MergeQueue/List`
@@ -619,13 +610,6 @@ scaffold part of `crates/asc-rpc/tests/scaffold_registry.rs`.
 - `asc.v1.MergeQueue/Revalidate`
 - `asc.v1.MergeQueue/SetPaused`
 - `asc.v1.MergeQueue/Watch`
-
-- `asc.v1.CiInsights/ReportTestCases`
-- `asc.v1.CiInsights/ListFailureGroups`
-- `asc.v1.CiInsights/GetFailureGroup`
-- `asc.v1.CiInsights/SetFailureGroupState`
-- `asc.v1.CiInsights/FlakyHistory`
-- `asc.v1.CiInsights/ListFlakyTests`
 
 - `asc.v1.AiProviders/CreateKey`
 - `asc.v1.AiProviders/ListKeys`

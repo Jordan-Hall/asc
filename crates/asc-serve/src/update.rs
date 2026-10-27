@@ -496,12 +496,31 @@ impl ServerRefs {
         };
         let hooks = self.hooks.push_hooks();
         if req.hooks == wire::HookMode::SkipPre as i32 && !hooks.may_skip_pre(ctx) {
+    /// `update_rewriting_via_inner`, with a `push.refused` audit event when the push is
+    /// refused for a reason of authorisation, policy or a hook.
             return Err(Status::permission_denied(
                 "hooks cannot be skipped by this caller",
             ));
         }
         if req.push_options.len() > MAX_PUSH_OPTIONS
             || req
+    ) -> Result<wire::UpdateRefsResponse, Status> {
+        let refs: Vec<String> = req.updates.iter().map(|u| u.name.clone()).collect();
+        let result = self.update_rewriting_via_inner(ctx, req, rewrites, via).await;
+        if let Err(status) = &result
+            && let Some(code) = crate::audit::hooks::refusal_code(status)
+        {
+            crate::audit::hooks::record_refused(self.registry.pool(), ctx, &refs, via, &code).await;
+        }
+        result
+    }
+
+    async fn update_rewriting_via_inner(
+        &self,
+        ctx: &CallCtx,
+        req: wire::UpdateRefsRequest,
+        rewrites: Option<Rewrites<'_>>,
+        via: &'static str,
                 .push_options
                 .iter()
                 .any(|o| o.len() > MAX_PUSH_OPTION_LEN)
@@ -1010,6 +1029,11 @@ mod tests {
     use asc_store::codec::encode_stored;
     use asc_store::key::ObjKey;
     use asc_store::objects::Objects;
+        // The audit events of this update, in the same transaction: a push that cannot be
+        // recorded is not accepted.
+        crate::audit::hooks::append_ref_updates(&mut tx, entry.key.0, entry.name.as_str(), txn)
+            .await
+            .map_err(|e| internal("audit", &e))?;
 
     use super::*;
     use crate::ingest::testutil::{commit, put_file, registry, repo, sig};
