@@ -361,6 +361,8 @@ impl WorkflowsHub {
             AgentState::BudgetExceeded => {
                 StepEnd::Failed(format!("BUDGET_EXCEEDED: {}", ar.failure_message))
             }
+            // The run was told to stop and its agent run ended first: the step is stopped, not failed.
+            AgentState::Cancelled if live.stop.is_cancelled() => StepEnd::Stopped,
             AgentState::Cancelled => StepEnd::Failed("the agent run was cancelled".into()),
             AgentState::Expired => StepEnd::Failed("the agent run ran out of time".into()),
             _ => StepEnd::Failed(if ar.failure_code.is_empty() {
@@ -647,16 +649,29 @@ impl WorkflowsHub {
                 url: String::new(),
             }],
         };
-        match reviews.ci_report_run(&ctx, req).await {
-            Ok(r) => {
-                let run_ = r.run.unwrap_or_default();
-                (run_.id, run_.jobs.first().map_or(0, |j| j.id))
-            }
-            Err(e) => {
-                tracing::warn!(code = ?e.code(), "a workflow check could not be reported");
-                (0, 0)
+        // Steps of one run report at the same time, and a writer that loses a race for the
+        // database answers with a transient error: report again, a few times.
+        let mut last = tonic::Code::Ok;
+        for attempt in 0..5u64 {
+            match reviews.ci_report_run(&ctx, req.clone()).await {
+                Ok(r) => {
+                    let run_ = r.run.unwrap_or_default();
+                    return (run_.id, run_.jobs.first().map_or(0, |j| j.id));
+                }
+                Err(e) => {
+                    last = e.code();
+                    if !matches!(
+                        last,
+                        tonic::Code::Internal | tonic::Code::Aborted | tonic::Code::Unavailable
+                    ) {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(50 * (attempt + 1))).await;
+                }
             }
         }
+        tracing::warn!(code = ?last, "a workflow check could not be reported");
+        (0, 0)
     }
 
     #[allow(clippy::too_many_arguments)]
