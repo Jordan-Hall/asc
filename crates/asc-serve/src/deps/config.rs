@@ -17,11 +17,15 @@ use crate::netguard::{BlockReason, Guard, NetGuardConfig, Shape, classify};
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Endpoint {
-    /// Base URL, no trailing slash. Empty: not used.
+    /// Base URL, no trailing slash. Empty in a file: the built-in one. Empty after
+    /// [`Config::resolved`]: the endpoint is not used.
     pub url: String,
-    /// Seconds one request may take.
+    /// `true` switches the endpoint off.
+    pub off: bool,
+    /// Seconds one request may take; 0 in a file: the built-in value.
     pub timeout_secs: u64,
-    /// Largest response read, in bytes; more is an error, never a prefix.
+    /// Largest response read, in bytes, more is an error, never a prefix; 0 in a file: the built-in
+    /// value.
     pub max_bytes: ByteSize,
 }
 
@@ -29,9 +33,26 @@ impl Endpoint {
     fn new(url: &str, timeout_secs: u64, max: u64) -> Self {
         Self {
             url: url.to_owned(),
+            off: false,
             timeout_secs,
             max_bytes: ByteSize(max),
         }
+    }
+
+    /// The endpoint with what a file left out taken from `built_in`.
+    fn filled(mut self, built_in: &Self) -> Self {
+        if self.off {
+            self.url.clear();
+        } else if self.url.is_empty() {
+            self.url = built_in.url.clone();
+        }
+        if self.timeout_secs == 0 {
+            self.timeout_secs = built_in.timeout_secs;
+        }
+        if self.max_bytes.0 == 0 {
+            self.max_bytes = built_in.max_bytes;
+        }
+        self
     }
 
     pub fn enabled(&self) -> bool {
@@ -40,8 +61,9 @@ impl Endpoint {
 }
 
 impl Default for Endpoint {
+    /// What a table that names nothing means: all the built-in values.
     fn default() -> Self {
-        Self::new("", 15, 4 * ByteSize::MIB)
+        Self::new("", 0, 0)
     }
 }
 
@@ -193,6 +215,27 @@ fn host_of(url: &str) -> Option<String> {
 }
 
 impl Config {
+    /// The config with every value a file left out taken from the built-in one, and every endpoint
+    /// that is switched off without a URL. The scanner only ever sees a resolved config.
+    #[must_use]
+    pub fn resolved(mut self) -> Self {
+        let d = Self::default();
+        self.osv = self.osv.filled(&d.osv);
+        let r = &mut self.registries;
+        let b = &d.registries;
+        r.crates_io = r.crates_io.clone().filled(&b.crates_io);
+        r.npm = r.npm.clone().filled(&b.npm);
+        r.pypi = r.pypi.clone().filled(&b.pypi);
+        r.go = r.go.clone().filled(&b.go);
+        r.maven = r.maven.clone().filled(&b.maven);
+        r.nuget = r.nuget.clone().filled(&b.nuget);
+        r.packagist = r.packagist.clone().filled(&b.packagist);
+        r.rubygems = r.rubygems.clone().filled(&b.rubygems);
+        r.hex = r.hex.clone().filled(&b.hex);
+        r.pub_dev = r.pub_dev.clone().filled(&b.pub_dev);
+        self
+    }
+
     /// The URLs the config names, with the key of each.
     fn urls(&self) -> Vec<(String, &str)> {
         let mut v = vec![("osv".to_owned(), self.osv.url.as_str())];
@@ -342,11 +385,16 @@ mod tests {
     #[test]
     fn a_toml_section_overrides_and_unknown_keys_are_errors() {
         let c: Config = toml::from_str(
-            "osv.url = \"https://osv.mirror.example\"\negress_allow = [\"*.example\", \"crates.io\", \"registry.npmjs.org\", \"pypi.org\", \"proxy.golang.org\", \"repo1.maven.org\", \"api.nuget.org\", \"repo.packagist.org\", \"rubygems.org\", \"hex.pm\", \"pub.dev\"]\n[registries.pub]\nurl = \"\"\n[registries.npm]\ntimeout_secs = 5\nmax_bytes = \"1MiB\"\n",
+            "osv.url = \"https://osv.mirror.example\"\negress_allow = [\"*.example\", \"crates.io\", \"registry.npmjs.org\", \"pypi.org\", \"proxy.golang.org\", \"repo1.maven.org\", \"api.nuget.org\", \"repo.packagist.org\", \"rubygems.org\", \"hex.pm\", \"pub.dev\"]\n[registries.pub]\noff = true\n[registries.npm]\ntimeout_secs = 5\nmax_bytes = \"1MiB\"\n",
         )
         .unwrap();
+        let c = c.resolved();
         c.validate(&net()).unwrap();
         assert_eq!(c.osv.url, "https://osv.mirror.example");
+        assert_eq!(
+            c.osv.timeout_secs, 30,
+            "unnamed keys keep their built-in value"
+        );
         assert!(!c.registries.pub_dev.enabled());
         assert_eq!(c.registries.npm.timeout_secs, 5);
         assert_eq!(c.registries.npm.max_bytes.0, ByteSize::MIB);
@@ -402,7 +450,7 @@ mod tests {
     fn bounds_are_checked_and_name_their_key() {
         for (f, key) in [
             (
-                Box::new(|c: &mut Config| c.osv.timeout_secs = 0) as Box<dyn Fn(&mut Config)>,
+                Box::new(|c: &mut Config| c.osv.timeout_secs = 601) as Box<dyn Fn(&mut Config)>,
                 "osv.timeout_secs",
             ),
             (
