@@ -42,6 +42,7 @@ pub mod inbox;
 pub mod ingest;
 pub mod land;
 pub mod landing;
+pub mod lease;
 pub mod limits;
 pub mod logging;
 pub mod mainline;
