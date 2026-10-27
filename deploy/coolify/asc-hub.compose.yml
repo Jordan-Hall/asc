@@ -6,7 +6,7 @@
 #   hub-init      one-shot, root: volume ownership, the two secret files, the asc-serve.toml.
 #   asc-migrate    one-shot: `asc serve migrate` (SPEC 8.2: never at replica start).
 #   hub           the public face: web UI, PRs, Actions, git over HTTPS (Coolify proxy, port 3000)
-#                 and git over SSH (built-in server, published port). The only public route.
+#                 (no SSH port by default). The only public route.
 #   asc            `asc serve`. No route, no published port. It runs INSIDE the hub's network
 #                 namespace (network_mode: service:hub), so hub and asc meet on 127.0.0.1.
 #   hub-admin     one-shot: creates the first admin once; the password goes to a 0600 file.
@@ -51,13 +51,12 @@ x-hub-env: &hub-env
   FORGEJO____APP_NAME: ${ASC_HUB_APP_NAME:-ASC Hub}
   FORGEJO____APP_SLOGAN: ${ASC_HUB_APP_SLOGAN:-Source hosting for asc}
   FORGEJO__server__ROOT_URL: ${ASC_HUB_ROOT_URL:?public https URL of the hub, for example https://hub.example.org}
-  FORGEJO__server__SSH_DOMAIN: ${ASC_HUB_SSH_DOMAIN:?host name shown in ssh clone URLs, for example hub.example.org}
   FORGEJO__server__HTTP_PORT: '3000'
-  FORGEJO__server__DISABLE_SSH: 'false'
-  FORGEJO__server__START_SSH_SERVER: 'true'
-  # Listen port in the container, and the host port clients use (published below).
-  FORGEJO__server__SSH_LISTEN_PORT: '2222'
-  FORGEJO__server__SSH_PORT: ${ASC_HUB_SSH_PORT:-22224}
+  # HTTPS only: no SSH server, no SSH port, no SSH instructions in the UI. To opt in, see the
+  # comment at the `ports` key of the hub service.
+  FORGEJO__server__DISABLE_SSH: 'true'
+  FORGEJO__server__START_SSH_SERVER: 'false'
+  FORGEJO__asc__SSH_ENABLED: 'false'
   FORGEJO__ui__DEFAULT_THEME: asc-auto
   FORGEJO__ui__THEMES: asc-auto,asc-light,asc-dark,forgejo-auto,forgejo-light,forgejo-dark,gitea-auto,gitea-light,gitea-dark,forgejo-auto-deuteranopia-protanopia,forgejo-light-deuteranopia-protanopia,forgejo-dark-deuteranopia-protanopia,forgejo-auto-tritanopia,forgejo-light-tritanopia,forgejo-dark-tritanopia
   FORGEJO__security__INSTALL_LOCK: 'true'
@@ -275,11 +274,11 @@ services:
       SERVICE_FQDN_HUB_3000: ''
     expose:
       - '3000'
-    # Git over SSH, handled by the hub's built-in server. Coolify publishes `ports` as written;
-    # no TLS terminates it. Open this TCP port in the host firewall. 22222 is the production
-    # Forgejo and 22223 the standalone asc staging, hence 22224.
-    ports:
-      - '${ASC_HUB_SSH_PORT:-22224}:2222'
+    # No `ports`: HTTPS (the Coolify proxy) is the only inbound port. Git over SSH is an opt-in for
+    # a host that can open a TCP port (no TLS terminates it): set FORGEJO__server__DISABLE_SSH to
+    # 'false', START_SSH_SERVER to 'true' and FORGEJO__asc__SSH_ENABLED to 'true' above, add
+    # FORGEJO__server__SSH_DOMAIN, FORGEJO__server__SSH_LISTEN_PORT (2222) and
+    # FORGEJO__server__SSH_PORT (the host port), and publish `- '<host port>:2222'` here.
     healthcheck:
       test: ['CMD-SHELL', 'curl -fsS http://127.0.0.1:3000/api/healthz >/dev/null || exit 1']
       interval: 30s
