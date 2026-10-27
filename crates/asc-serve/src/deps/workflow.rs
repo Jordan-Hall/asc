@@ -2,7 +2,7 @@
 //!
 //! A repository that sets `schedule` gets `.asc/workflows/deps.toml`: a workflow of the repository
 //! (docs/WORKFLOWS.md) with a schedule trigger, a manual trigger and one command step that runs
-//! `asc deps propose` against this server. The definition is data like any other workflow: the server
+//! `asc deps propose --remote <this repository>` against this server. The definition is data like any other workflow: the server
 //! writes it into the same changeset as the config, a maintainer reviews and lands it, and a maintainer
 //! switches the workflow on. The step holds one repository secret, `deps-token`, a token that may write
 //! to the repository; it reaches the program as `DEPS_TOKEN` and the sandbox lets it talk to this server
@@ -49,23 +49,14 @@ pub fn render(repo: &str, server: &str, cron: &str) -> Result<String, String> {
         return Err("the schedule holds a character a workflow cannot carry".into());
     }
     let q = |s: &str| format!("{s:?}");
-    let args = [
-        "asc",
-        "deps",
-        "propose",
-        "--repo",
-        repo,
-        "--server",
-        server,
-        "--token-env",
-        TOKEN_ENV,
-    ]
+    let remote = format!("{server}/{repo}");
+    let args = ["asc", "deps", "propose", "--remote", &remote, "--token-env", TOKEN_ENV]
     .iter()
     .map(|a| q(a))
     .collect::<Vec<_>>()
     .join(", ");
     Ok(format!(
-        "# Generated from .asc/deps.toml by `asc deps config`; change the schedule there.\n\
+        "# Generated from .asc/deps.toml (the server writes it with SetConfig); change the schedule there.\n\
          # The step needs the repository secret `{SECRET}` and `asc` in [workflows.sandbox] allow.\n\
          description = \"Scan dependencies and propose updates (docs/DEPENDENCIES.md)\"\n\
          max_parallel_runs = 1\n\
@@ -112,10 +103,8 @@ mod tests {
                 "asc",
                 "deps",
                 "propose",
-                "--repo",
-                "acme/app",
-                "--server",
-                "https://asc.example.com",
+                "--remote",
+                "https://asc.example.com/acme/app",
                 "--token-env",
                 "DEPS_TOKEN"
             ]
@@ -151,7 +140,7 @@ mod tests {
         assert!(
             wf.steps[0]
                 .command
-                .contains(&"https://h.example:8443".to_owned())
+                .contains(&"https://h.example:8443/a/b".to_owned())
         );
     }
 }
