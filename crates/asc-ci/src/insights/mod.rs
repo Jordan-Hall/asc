@@ -6,7 +6,7 @@
 //!   names its group.
 //! * [`flaky`]: a test's recent results become a flip count and a rate.
 //! * [`is_stale`]: a result for a change version that a newer version replaced.
-//! * [`Quarantine`]: which failing tests a landing check ignores, and who may add one.
+//! * [`Quarantine`]: which failures a landing check ignores, and who may add one.
 
 pub mod flaky;
 pub mod normalize;
@@ -55,10 +55,20 @@ pub fn may_quarantine(
     Ok(())
 }
 
-/// A test (in a job) that a landing check ignores while it fails.
+/// A failure as a landing check sees it: the job, the test and the failure signature.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Failing<'a> {
+    pub job: &'a str,
+    pub test: &'a str,
+    /// [`signature_hex`] of the failure.
+    pub signature: &'a str,
+}
+
+/// The failure signatures a maintainer quarantined. A failure whose signature is in the list does
+/// not block a landing; a *different* failure of the same test still does.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Quarantine {
-    entries: BTreeSet<(String, String)>,
+    signatures: BTreeSet<String>,
 }
 
 impl Quarantine {
@@ -67,31 +77,31 @@ impl Quarantine {
         Self::default()
     }
 
-    /// Adds `test` of `job`. An empty `test` quarantines the job-level failure of `job`.
-    pub fn add(&mut self, job: &str, test: &str) {
-        self.entries.insert((job.to_owned(), test.to_owned()));
+    /// Adds the failure with `signature` (hex).
+    pub fn add(&mut self, signature: &str) {
+        self.signatures.insert(signature.to_owned());
     }
 
-    pub fn contains(&self, job: &str, test: &str) -> bool {
-        self.entries.contains(&(job.to_owned(), test.to_owned()))
+    pub fn contains(&self, signature: &str) -> bool {
+        self.signatures.contains(signature)
     }
 
     pub fn len(&self) -> usize {
-        self.entries.len()
+        self.signatures.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.signatures.is_empty()
     }
 
-    /// The failures of `failing` (job, test) that are not quarantined: the ones that still block.
+    /// The failures of `failing` that are not quarantined: the ones that still block.
     pub fn blocking<'a>(
         &self,
-        failing: impl IntoIterator<Item = (&'a str, &'a str)>,
-    ) -> Vec<(&'a str, &'a str)> {
+        failing: impl IntoIterator<Item = Failing<'a>>,
+    ) -> Vec<Failing<'a>> {
         failing
             .into_iter()
-            .filter(|(job, test)| !self.contains(job, test))
+            .filter(|f| !self.contains(f.signature))
             .collect()
     }
 }
@@ -136,19 +146,21 @@ mod tests {
     fn a_quarantined_failure_does_not_block() {
         let mut q = Quarantine::new();
         assert!(q.is_empty());
-        q.add("unit", "suite::flaky_one");
-        q.add("unit", "suite::flaky_one");
-        q.add("e2e", "");
+        q.add("aa");
+        q.add("aa");
+        q.add("bb");
         assert_eq!(q.len(), 2);
+        let f = |job, test, signature| Failing { job, test, signature };
         let failing = [
-            ("unit", "suite::flaky_one"),
-            ("unit", "suite::other"),
-            ("e2e", ""),
-            ("e2e", "login"),
+            f("unit", "suite::flaky_one", "aa"),
+            f("unit", "suite::flaky_one", "cc"),
+            f("e2e", "", "bb"),
+            f("e2e", "login", "dd"),
         ];
         assert_eq!(
             q.blocking(failing),
-            vec![("unit", "suite::other"), ("e2e", "login")]
+            vec![f("unit", "suite::flaky_one", "cc"), f("e2e", "login", "dd")],
+            "a different failure of a quarantined test still blocks"
         );
     }
 }
