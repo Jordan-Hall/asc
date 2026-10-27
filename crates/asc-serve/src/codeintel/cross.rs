@@ -48,6 +48,11 @@ pub const MAX_SYMBOLS: u32 = 200;
 /// Other repositories a symbol panel looks in for references (`cross_repo`).
 const PANEL_REPOS: usize = 20;
 const KIND_CROSS: u8 = 3;
+/// The most authorisation questions one call asks, however many repositories there are: eight per
+/// repository it may visit, and never more than this. Each question may be a call to the forge, so
+/// an instance of thousands of repositories the caller cannot read must not become thousands of
+/// them. A call that runs out stops where it is and gives a page token to go on from.
+pub const MAX_ASKS: usize = 1_000;
 
 /// The deployment's bounds (`[codeintel] cross_search_max_repos`, `cross_search_timeout_secs`).
 #[derive(Clone, Copy, Debug)]
@@ -64,6 +69,30 @@ impl Default for Limits {
             max_repos: 200,
             timeout: Duration::from_secs(20),
         }
+    }
+}
+
+/// What one call may still ask of the authorizer, and until when.
+struct Asks {
+    left: usize,
+    deadline: tokio::time::Instant,
+}
+
+impl Asks {
+    fn new(limits: &Limits, repos: usize) -> Self {
+        Self {
+            left: repos.saturating_mul(8).min(MAX_ASKS),
+            deadline: tokio::time::Instant::now() + limits.timeout,
+        }
+    }
+
+    /// Whether one more question may be asked; spends it.
+    fn take(&mut self) -> bool {
+        if self.left == 0 || tokio::time::Instant::now() >= self.deadline {
+            return false;
+        }
+        self.left -= 1;
+        true
     }
 }
 
@@ -167,6 +196,7 @@ impl CrossSearchService {
     async fn candidates(
         &self,
         target: Option<&wire::CrossSearchTarget>,
+        from: &str,
     ) -> Result<(Vec<RepoName>, bool), Status> {
         let target = target.ok_or_else(|| Status::invalid_argument("missing target"))?;
         let mut cut = false;
@@ -188,28 +218,38 @@ impl CrossSearchService {
                 wire::OwnerKind::Unspecified => {
                     return Err(Status::invalid_argument("the scope has no kind"));
                 }
-                wire::OwnerKind::Instance => sqlx::query_scalar("SELECT name FROM repos")
-                    .fetch_all(self.registry.pool())
-                    .await
-                    .map_err(internal)?,
+                wire::OwnerKind::Instance => sqlx::query_scalar(
+                    "SELECT name FROM repos WHERE name >= $1 ORDER BY name LIMIT $2",
+                )
+                .bind(from.to_owned())
+                .bind(MAX_CANDIDATES as i64 + 1)
+                .fetch_all(self.registry.pool())
+                .await
+                .map_err(internal)?,
                 wire::OwnerKind::Repo => vec![scope.name.clone()],
                 wire::OwnerKind::User | wire::OwnerKind::Org => {
                     if scope.name.is_empty() || scope.name.contains('/') {
                         return Err(Status::invalid_argument("invalid owner name"));
                     }
                     let prefix = format!("{}/", scope.name);
-                    sqlx::query_scalar("SELECT name FROM repos WHERE substr(name, 1, $1) = $2")
-                        .bind(prefix.len() as i64)
-                        .bind(prefix)
-                        .fetch_all(self.registry.pool())
-                        .await
-                        .map_err(internal)?
+                    sqlx::query_scalar(
+                        "SELECT name FROM repos WHERE substr(name, 1, $1) = $2 AND name >= $3 \
+                         ORDER BY name LIMIT $4",
+                    )
+                    .bind(prefix.len() as i64)
+                    .bind(prefix)
+                    .bind(from.to_owned())
+                    .bind(MAX_CANDIDATES as i64 + 1)
+                    .fetch_all(self.registry.pool())
+                    .await
+                    .map_err(internal)?
                 }
             };
             rows
         };
         names.sort_unstable();
         names.dedup();
+        names.retain(|n| n.as_str() >= from);
         if names.len() > MAX_CANDIDATES {
             names.truncate(MAX_CANDIDATES);
             cut = true;
@@ -260,6 +300,10 @@ impl CrossSearchService {
         }
         *h.finalize().as_bytes()
     }
+}
+
+fn too_slow() -> Status {
+    Status::deadline_exceeded("the search took too long; narrow it to fewer repositories")
 }
 
 fn internal(e: sqlx::Error) -> Status {
@@ -355,11 +399,7 @@ impl CrossSearch for CrossSearchService {
         .await;
         let resp = match answer {
             Ok(r) => r?,
-            Err(_) => {
-                return Err(Status::deadline_exceeded(
-                    "the search took too long; narrow it to fewer repositories",
-                ));
-            }
+            Err(_) => return Err(too_slow()),
         };
         Ok(Response::new(Box::pin(futures::stream::once(async move {
             Ok(resp)
@@ -367,6 +407,26 @@ impl CrossSearch for CrossSearchService {
     }
 
     async fn lookup_symbol(
+        &self,
+        request: Request<wire::LookupSymbolRequest>,
+    ) -> Result<Response<wire::LookupSymbolResponse>, Status> {
+        tokio::time::timeout(self.limits.timeout, self.lookup(request))
+            .await
+            .map_err(|_| too_slow())?
+    }
+
+    async fn symbol_panel(
+        &self,
+        request: Request<wire::SymbolPanelRequest>,
+    ) -> Result<Response<wire::SymbolPanelResponse>, Status> {
+        tokio::time::timeout(self.limits.timeout, self.panel(request))
+            .await
+            .map_err(|_| too_slow())?
+    }
+}
+
+impl CrossSearchService {
+    async fn lookup(
         &self,
         request: Request<wire::LookupSymbolRequest>,
     ) -> Result<Response<wire::LookupSymbolResponse>, Status> {
@@ -382,7 +442,7 @@ impl CrossSearch for CrossSearchService {
             0 => DEFAULT_SYMBOLS,
             n => n.min(MAX_SYMBOLS),
         } as usize;
-        let (names, cut) = self.candidates(msg.target.as_ref()).await?;
+        let mut resume = String::new();
         let rev = msg.target.as_ref().map_or("", |t| t.rev.as_str());
         let digest = self.digest(
             &self.who(credential.as_ref()).await,
@@ -390,8 +450,6 @@ impl CrossSearch for CrossSearchService {
             &[msg.name.as_bytes(), rev.as_bytes(), &[kind as u8]],
         );
         let mut hits: Vec<wire::SymbolHit> = Vec::new();
-        let (mut visited, mut truncated) = (0usize, cut);
-        let mut resume = String::new();
         if !msg.page_token.is_empty() {
             let page: CrossPage = self.rpc.open_token(KIND_CROSS, &msg.page_token)?;
             if page.digest != digest {
@@ -401,17 +459,19 @@ impl CrossSearch for CrossSearchService {
             }
             resume = page.repo;
         }
-        let started = tokio::time::Instant::now();
-        for repo in names.iter().filter(|n| n.as_str() >= resume.as_str()) {
-            let Some(caller) = self.readable(credential.as_ref(), repo).await? else {
-                continue;
-            };
-            if visited >= self.limits.max_repos || hits.len() >= limit {
+        let (names, cut) = self.candidates(msg.target.as_ref(), &resume).await?;
+        let (mut visited, mut truncated) = (0usize, cut);
+        let mut asks = Asks::new(&self.limits, self.limits.max_repos);
+        for repo in &names {
+            if hits.len() >= limit || !asks.take() {
                 truncated = true;
                 resume = repo.to_string();
                 break;
             }
-            if started.elapsed() > self.limits.timeout {
+            let Some(caller) = self.readable(credential.as_ref(), repo).await? else {
+                continue;
+            };
+            if visited >= self.limits.max_repos {
                 truncated = true;
                 resume = repo.to_string();
                 break;
@@ -484,7 +544,7 @@ impl CrossSearch for CrossSearchService {
         }))
     }
 
-    async fn symbol_panel(
+    async fn panel(
         &self,
         request: Request<wire::SymbolPanelRequest>,
     ) -> Result<Response<wire::SymbolPanelResponse>, Status> {
@@ -553,18 +613,31 @@ impl CrossSearch for CrossSearchService {
             // References by name in the other repositories the caller can read; each is labelled
             // by the confidence the symbol engine gave it (`name_match` unless a precise index says
             // otherwise).
-            let (names, cut) = self
-                .candidates(Some(&wire::CrossSearchTarget {
-                    scope: Some(wire::OwnerRef {
-                        kind: wire::OwnerKind::Instance as i32,
-                        name: String::new(),
+            // A bounded set: the panel repository's owner first, then the rest of the instance in
+            // name order, and no more questions to the authorizer than eight per repository the
+            // panel will look in.
+            let (mut names, cut) = self
+                .candidates(
+                    Some(&wire::CrossSearchTarget {
+                        scope: Some(wire::OwnerRef {
+                            kind: wire::OwnerKind::Instance as i32,
+                            name: String::new(),
+                        }),
+                        ..wire::CrossSearchTarget::default()
                     }),
-                    ..wire::CrossSearchTarget::default()
-                }))
+                    "",
+                )
                 .await?;
             truncated |= cut;
+            let owner = format!("{}/", repo.as_str().split('/').next().unwrap_or(""));
+            names.sort_by_key(|n| !n.as_str().starts_with(&owner));
             let mut visited = 0;
+            let mut asks = Asks::new(&self.limits, PANEL_REPOS.min(self.limits.max_repos));
             for other in names.iter().filter(|n| **n != repo) {
+                if !asks.take() {
+                    truncated = true;
+                    break;
+                }
                 let Some(c) = self.readable(credential.as_ref(), other).await? else {
                     continue;
                 };
@@ -611,9 +684,7 @@ impl CrossSearch for CrossSearchService {
             est_tokens: tokens,
         }))
     }
-}
 
-impl CrossSearchService {
     /// The walk of `Search`: visits the candidates in name order and stops when the budget is
     /// spent, the repository limit is reached or the walk is cut.
     async fn walk(
@@ -623,7 +694,6 @@ impl CrossSearchService {
         mode: wire::SearchMode,
         budget: &wire::Budget,
     ) -> Result<wire::CrossSearchResponse, Status> {
-        let (names, cut) = self.candidates(msg.target.as_ref()).await?;
         let rev = msg.target.as_ref().map_or("", |t| t.rev.as_str());
         let digest = self.digest(
             &self.who(credential).await,
@@ -644,6 +714,7 @@ impl CrossSearchService {
             }
             (resume, inner) = (page.repo, page.inner);
         }
+        let (names, cut) = self.candidates(msg.target.as_ref(), &resume).await?;
         let results = match budget.max_results {
             0 => asc_codeintel::render::DEFAULT_RESULTS,
             n => n.min(asc_codeintel::render::MAX_RESULTS),
@@ -665,8 +736,19 @@ impl CrossSearchService {
         };
         let mut next: Option<(String, String)> = None;
         let mut visited = 0usize;
-        for repo in names.iter().filter(|n| n.as_str() >= resume.as_str()) {
+        let mut asks = Asks::new(&self.limits, self.limits.max_repos);
+        for repo in &names {
             let resuming = repo.as_str() == resume;
+            if !asks.take() {
+                out.truncated = true;
+                let again = if resuming {
+                    std::mem::take(&mut inner)
+                } else {
+                    String::new()
+                };
+                next = Some((repo.to_string(), again));
+                break;
+            }
             let Some(caller) = self.readable(credential, repo).await? else {
                 continue;
             };
