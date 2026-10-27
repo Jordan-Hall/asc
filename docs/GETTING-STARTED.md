@@ -23,18 +23,20 @@ Optionally `asc install-shim` so `git` is asc inside an asc workspace (see ONBOA
 
 ## 2. Authenticate
 
-asc has no `login` command. `asc auth status [--json] [<url>]` only reports which source would
-supply a credential for a URL and never prints the secret. Credentials come, in this order,
-from the URL, git's credential helpers, and the `ASC_TOKEN` environment variable (sent only to
-the remote's own origin; see `crates/asc/src/credential.rs`).
+`asc auth login --host <url> --token-stdin` stores a token with git's credential helpers (the token
+is read from standard input, never from an argument), `asc auth logout --host <url>` forgets it, and
+`asc auth status [--json] [<url>]` reports which source would supply a credential for a URL and never
+prints the secret. Credentials come, in this order, from the URL, git's credential helpers, and the
+`ASC_TOKEN` environment variable (sent only to the remote's own origin; see
+`crates/asc/src/credential.rs`).
 
 1. Get a token from the server administrator. On an `asc serve` with the token store the
    administrator mints it with `asc serve token create --user <name> --repo '<owner>/*' --expires <duration>`
    (add `--admin` for an admin). The value is printed once.
 2. Give it to asc either way:
    - `export ASC_TOKEN=<token>`, or
-   - store it with git's helper, which asc uses as git does:
-     `printf 'protocol=https\nhost=asc-staging.example.org\nusername=<name>\npassword=<token>\n' | git credential approve`.
+   - store it: `printf '%s' "$TOKEN" | asc auth login --host https://asc-staging.example.org --token-stdin`
+     (the same as `git credential approve` with that host and the token as the password).
 3. Check: `asc auth status https://asc-staging.example.org`.
 
 Never put a token in a URL. asc does not store a credential that came from URL userinfo
@@ -102,6 +104,8 @@ HTTP/3 is used when the server advertises it and falls back to HTTP/2.
 
 ## 7. Where to go next
 
+- Every command, with an example: [`CLI.md`](CLI.md). Every configuration key: [`CONFIG.md`](CONFIG.md).
+  All docs: [`README.md`](README.md).
 - What works today and what does not: [`STATUS.md`](STATUS.md).
 - Run your own server: [`../deploy/README.md`](../deploy/README.md).
 - Something wrong: `asc doctor` and ONBOARDING section 8.
