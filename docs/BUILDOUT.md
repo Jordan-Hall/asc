@@ -426,15 +426,16 @@ the `MergeQueue` service: its methods answer `UNIMPLEMENTED` from the router unt
 
 ## 14. Cross-repository search and symbol panel
 
-*Today:* per-repository search at `/<owner>/<repo>/asc/search`; cross-repo search, the symbol panel and the JSON API exist as hub handlers
-without routes. `asc serve` does not mount the `CrossSearch` service: its methods answer `UNIMPLEMENTED` from the router until it is
-built, and no client calls it.
+*Today:* `asc serve` mounts `asc.v1.CrossSearch` beside `CodeIntel` whenever `[codeintel] enabled` and advertises `cross-search.v1`.
+`Search` and `LookupSymbol` run the per-repository `CodeIntel` calls over each repository the caller may read; `SymbolPanel` combines
+definition, references and callers of one repository with, on request, references by name in other readable repositories.
+A client calls it with the user's own credential.
 
 - **RPCs** (`crosssearch.proto`, `cross-search.v1`): `CrossSearch.Search` (stream), `LookupSymbol`, `SymbolPanel`.
 - **Behaviour:** `target.repos` (at most 64) or a `scope` (user, organisation, instance) expands to the repositories the caller may read;
   readability is decided per repository on every call by the same authorisation as `CodeIntel`, and unreadable repositories contribute
-  nothing, not even a count. Results are merged by score with a total byte and token budget, paged by an opaque token that
-  encodes the position per repository. Patterns shorter than 3 bytes or matching everything are `SEARCH_TOO_BROAD`. The symbol panel
+  nothing, not even a count. Repositories are searched in name order and share one result and token budget, paged by an opaque token that
+  names the repository to resume at and that repository's own token. Patterns shorter than 3 bytes or matching everything are `SEARCH_TOO_BROAD`. The symbol panel
   combines `CodeIntel.Symbols` (def, refs, callers) and, with `cross_repo`, a name lookup in other readable repositories, labelled by
   confidence (`precise`, `import_match`, `name_match`).
 - **Data:** none new (uses the code index). **Config:** `[codeintel] cross_search_max_repos` (200 for an instance scope),

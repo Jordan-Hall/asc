@@ -2,6 +2,7 @@
 //! units add their own `pub mod` lines.
 
 pub mod backfill;
+pub mod cross;
 pub mod embedder;
 pub mod features;
 pub mod files;
