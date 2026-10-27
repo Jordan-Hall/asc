@@ -87,6 +87,7 @@ fn run_of(r: &AnyRow) -> Result<wire::CiRun, sqlx::Error> {
         finished: r.try_get("finished")?,
         url: r.try_get("url")?,
         jobs: Vec::new(),
+        stale: false,
     })
 }
 
@@ -275,6 +276,9 @@ impl Reviews {
             String::new()
         };
         attach_jobs(&mut conn, &ns, &mut runs).await.map_err(sql)?;
+        super::insights::store::mark_stale(&mut conn, entry.ns, &mut runs)
+            .await
+            .map_err(sql)?;
         Ok(wire::ListRunsResponse {
             runs,
             next_page_token,
@@ -348,10 +352,13 @@ impl Reviews {
         let entry = self.open(ctx).await?;
         let id = retry_conflict(|| self.try_report(&entry, &report)).await?;
         let mut conn = self.registry.pool().acquire().await.map_err(sql)?;
-        let run = load_run(&mut conn, entry.ns.as_bytes(), id)
+        let mut run = load_run(&mut conn, entry.ns.as_bytes(), id)
             .await
             .map_err(sql)?
             .ok_or_else(|| Status::internal("internal error"))?;
+        super::insights::store::mark_stale(&mut conn, entry.ns, std::slice::from_mut(&mut run))
+            .await
+            .map_err(sql)?;
         Ok(wire::ReportRunResponse { run: Some(run) })
     }
 
