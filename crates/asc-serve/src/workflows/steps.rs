@@ -411,6 +411,19 @@ impl WorkflowsHub {
             Ok(e) => e,
             Err(m) => return StepEnd::Failed(m),
         };
+        let steps = self.store.steps(run.id).await.unwrap_or_default();
+        let Some(this) = steps.iter().find(|s| s.step == def.id) else {
+            return StepEnd::Failed("internal error".into());
+        };
+        let tip = self.work_tip(run, &wf, this, &steps, &entry).await;
+        // Secrets go only to code that is already trusted: trunk content, or the exact version of
+        // a change a reviewer approved. Anything else (a change nobody approved, an agent's
+        // output) could print or send them, and masking the output does not stop that.
+        if !def.secrets.is_empty() && !self.tip_trusted(&entry, &tip).await {
+            return StepEnd::Failed(
+                "this step holds secrets and its working copy is neither landed nor an approved version of a change; approve the change first".into(),
+            );
+        }
         // The environment: what the event says first, then the secrets, which nothing may override.
         let ctx = template_of(run, hex(&run.change));
         let mut env: BTreeMap<String, String> = core::command_env(&ctx);
@@ -435,11 +448,6 @@ impl WorkflowsHub {
             }
         }
         let masker = Masker::new(secret_values.iter().map(|s| s.to_string()));
-        let steps = self.store.steps(run.id).await.unwrap_or_default();
-        let Some(this) = steps.iter().find(|s| s.step == def.id) else {
-            return StepEnd::Failed("internal error".into());
-        };
-        let tip = self.work_tip(run, &wf, this, &steps, &entry).await;
         let view = &self.agents.core.view;
         let root_cs = match tip.cs {
             Some(c) => Some(c),
@@ -491,6 +499,8 @@ impl WorkflowsHub {
             root: ws.dir().to_path_buf(),
             env,
             secrets: secret_values.iter().map(|s| s.to_string()).collect(),
+            // A step with secrets has no network beyond the hosts its trunk definition names.
+            egress: (!secret_values.is_empty()).then(|| def.egress.clone()),
             timeout,
         };
         let result = self.sandbox.run(&spec, &live.stop).await;
@@ -543,6 +553,10 @@ impl WorkflowsHub {
                             "this command is not allowed on this server; it must start with one of: {}",
                             self.sandbox.allowed_text().join("; ")
                         )
+                    }
+                    SandboxError::NoEgressControl => {
+                        "this step holds secrets and the server has no restricted wrapper ([workflows.sandbox] restricted_wrapper) to deny it the network"
+                            .to_owned()
                     }
                     SandboxError::NotIsolated | SandboxError::Disabled => {
                         "commands cannot run on this server: no isolation wrapper is configured"
@@ -603,6 +617,7 @@ impl WorkflowsHub {
             },
             op_id: Some(uuid::Uuid::new_v4()),
             client: None,
+            admin: Default::default(),
         };
         // The exact version this command ran on.
         let version = if tip.change.is_empty() {
@@ -677,6 +692,7 @@ impl WorkflowsHub {
             },
             op_id: Some(uuid::Uuid::new_v4()),
             client: None,
+            admin: Default::default(),
         };
         let data = tail(output, crate::ci::MAX_APPEND);
         let _ = reviews
@@ -690,6 +706,43 @@ impl WorkflowsHub {
                 },
             )
             .await;
+    }
+
+    /// Whether a working copy at `tip` is trusted with secrets: trunk's own content, or the exact
+    /// changeset of a change version that carries an approval for that version.
+    async fn tip_trusted(&self, entry: &RepoEntry, tip: &Tip) -> bool {
+        let Some(cs) = tip.cs else {
+            return true; // no change: the step works on the trunk tip
+        };
+        if let Ok(Some(trunk)) = self.agents.core.view.trunk_tip(entry).await {
+            if trunk == cs {
+                return true;
+            }
+            let graph = crate::policy::graph_of(&self.registry, entry);
+            if graph.is_ancestor(cs, trunk).await.unwrap_or(false) {
+                return true;
+            }
+        }
+        self.approved_exactly(entry, &tip.change, cs).await
+    }
+
+    /// Whether `cs` is version `v` of `change` and the review state holds an approval for exactly
+    /// version `v`. Read at the time the step runs, never remembered from when the run began.
+    async fn approved_exactly(&self, entry: &RepoEntry, change: &[u8], cs: ChangesetId) -> bool {
+        let version = self.version_of(entry, change, Some(cs)).await;
+        if version == 0 {
+            return false;
+        }
+        let state: Option<Vec<u8>> =
+            sqlx::query_scalar("SELECT state FROM review_state WHERE ns = $1 AND change = $2")
+                .bind(entry.ns.as_bytes().to_vec())
+                .bind(change.to_vec())
+                .fetch_optional(self.store.pool())
+                .await
+                .ok()
+                .flatten();
+        let review = state.and_then(|raw| <wire::ReviewState as prost::Message>::decode(raw.as_slice()).ok());
+        review.is_some_and(|r| r.approvals >= 1 && r.reviewed_version == version)
     }
 
     /// The version of `change` that is changeset `cs`, 0 when the version log does not know it

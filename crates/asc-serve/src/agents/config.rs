@@ -41,6 +41,9 @@ pub struct SandboxConfig {
     /// The isolation wrapper put in front of every command (`bwrap`, `firejail`, `docker run`,
     /// `prlimit`); `{cwd}` is replaced by the working directory.
     pub wrapper: Vec<String>,
+    /// The wrapper for a command that holds secrets: it denies the network except the hosts in
+    /// `{allow}` (comma-joined; none for no network). Empty: such a command does not run.
+    pub restricted_wrapper: Vec<String>,
     /// Run commands with no wrapper. Off: the server refuses to run a command without isolation.
     pub allow_unisolated: bool,
     /// Longest output captured from a command, in bytes.
@@ -56,6 +59,7 @@ impl Default for SandboxConfig {
             path_dirs: Vec::new(),
             pass_env: Vec::new(),
             wrapper: Vec::new(),
+            restricted_wrapper: Vec::new(),
             allow_unisolated: false,
             max_output_bytes: 256 * 1024,
             max_command_seconds: 1800,

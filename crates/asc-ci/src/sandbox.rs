@@ -43,6 +43,10 @@ pub enum SandboxError {
         "this server has no isolation wrapper configured and does not allow unisolated commands"
     )]
     NotIsolated,
+    #[error(
+        "this command must run without network access and this server has no restricted wrapper configured"
+    )]
+    NoEgressControl,
     #[error("the command is empty or holds a NUL")]
     Empty,
     #[error("the program must be a bare name")]
@@ -73,6 +77,10 @@ pub struct Config {
     pub wrapper: Vec<String>,
     /// Run commands with no wrapper. Off by default.
     pub allow_unisolated: bool,
+    /// The wrapper for a command that holds secrets ([`Spec::egress`] is set): it denies every
+    /// network connection except to the hosts joined by commas in `{allow}` (none: no network at
+    /// all). `{cwd}` is the working directory. Empty: such a command does not run.
+    pub restricted_wrapper: Vec<String>,
     /// Longest the captured output grows, in bytes.
     pub max_output: usize,
     /// Longest any command runs; a caller's timeout is capped to it.
@@ -87,6 +95,7 @@ impl Default for Config {
             pass_env: Vec::new(),
             wrapper: Vec::new(),
             allow_unisolated: false,
+            restricted_wrapper: Vec::new(),
             max_output: 256 * 1024,
             max_wall: Duration::from_secs(3600),
         }
@@ -106,6 +115,10 @@ pub struct Spec {
     pub env: BTreeMap<String, String>,
     /// Secret values to hide in the output.
     pub secrets: Vec<String>,
+    /// `Some` restricts the network to these hosts (empty: none) through
+    /// [`Config::restricted_wrapper`]; the command is refused when there is none. A command that
+    /// holds secrets sets it: masking the output does not stop a program sending a secret away.
+    pub egress: Option<Vec<String>>,
     pub timeout: Duration,
 }
 
@@ -215,9 +228,20 @@ impl Sandbox {
     /// Runs `spec`. `cancel` ends it early.
     pub async fn run(&self, spec: &Spec, cancel: &Cancel) -> Result<Outcome, SandboxError> {
         self.check(&spec.argv)?;
-        if self.cfg.wrapper.is_empty() && !self.cfg.allow_unisolated {
-            return Err(SandboxError::NotIsolated);
-        }
+        let (wrapper, allow) = match &spec.egress {
+            Some(hosts) => {
+                if self.cfg.restricted_wrapper.is_empty() {
+                    return Err(SandboxError::NoEgressControl);
+                }
+                (&self.cfg.restricted_wrapper, hosts.join(","))
+            }
+            None => {
+                if self.cfg.wrapper.is_empty() && !self.cfg.allow_unisolated {
+                    return Err(SandboxError::NotIsolated);
+                }
+                (&self.cfg.wrapper, String::new())
+            }
+        };
         let cwd = confined(&spec.root, &spec.cwd)?;
         for k in spec.env.keys() {
             let ok = !k.is_empty()
@@ -233,8 +257,8 @@ impl Sandbox {
         let scratch = scratch_dir(&cwd)?;
         let mut argv: Vec<String> = Vec::new();
         let cwd_text = cwd.to_string_lossy().into_owned();
-        for w in &self.cfg.wrapper {
-            argv.push(w.replace("{cwd}", &cwd_text));
+        for w in wrapper {
+            argv.push(w.replace("{cwd}", &cwd_text).replace("{allow}", &allow));
         }
         argv.push(program.to_string_lossy().into_owned());
         argv.extend(spec.argv[1..].iter().cloned());
@@ -462,8 +486,48 @@ mod tests {
             root: root.to_path_buf(),
             env: BTreeMap::new(),
             secrets: vec![],
+            egress: None,
             timeout: Duration::from_secs(60),
         }
+    }
+
+    #[tokio::test]
+    async fn a_command_that_must_not_reach_the_network_needs_the_restricted_wrapper() {
+        let root = tempfile::tempdir().unwrap();
+        let work = root.path().join("work");
+        std::fs::create_dir(&work).unwrap();
+        let (sb, name) = sandbox("sandbox::tests::child_echo");
+        let mut s = spec(&name, "sandbox::tests::child_echo", &work);
+        s.egress = Some(vec!["registry.example.com".into()]);
+        // The plain wrapper settings (here: none, unisolated allowed) never stand in for it.
+        assert_eq!(
+            sb.run(&s, &Cancel::new()).await.unwrap_err(),
+            SandboxError::NoEgressControl
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_restricted_wrapper_gets_the_allowed_hosts() {
+        let root = tempfile::tempdir().unwrap();
+        let work = root.path().join("work");
+        std::fs::create_dir(&work).unwrap();
+        let (dir, name) = exe();
+        let sb = Sandbox::new(Config {
+            allow: vec![vec![
+                name.clone(),
+                "--ignored".into(),
+                "--exact".into(),
+                "sandbox::tests::child_echo".into(),
+            ]],
+            path_dirs: vec![dir],
+            restricted_wrapper: vec!["env".into(), "ASC_ALLOW={allow}".into()],
+            ..Config::default()
+        });
+        let mut s = spec(&name, "sandbox::tests::child_echo", &work);
+        s.egress = Some(vec!["a.example.com".into(), "b.example.com".into()]);
+        let out = sb.run(&s, &Cancel::new()).await.unwrap();
+        assert!(out.output.contains("ASC_ALLOW"), "{}", out.output);
     }
 
     #[test]

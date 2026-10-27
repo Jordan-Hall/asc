@@ -126,6 +126,12 @@ pub(crate) fn wcfg() -> WorkflowsConfig {
             ],
             path_dirs: git_dir().into_iter().collect(),
             allow_unisolated: true,
+            // A step that holds secrets needs the restricted wrapper; `env` passes the command on.
+            restricted_wrapper: if cfg!(unix) {
+                vec!["env".into()]
+            } else {
+                Vec::new()
+            },
             max_command_seconds: 60,
             ..SandboxConfig::default()
         },
@@ -937,7 +943,7 @@ async fn a_command_that_runs_too_long_is_killed_and_the_step_says_so() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_secret_is_sealed_shown_nowhere_and_scrubbed_from_the_output_of_the_step_that_reads_it() {
-    if git_dir().is_none() {
+    if git_dir().is_none() || wcfg().sandbox.restricted_wrapper.is_empty() {
         return;
     }
     // `git config` prints a value set through the environment the secrets provide.
