@@ -39,6 +39,7 @@ message AuditEvent {
   map<string, string> details = 12;
   bytes prev_hash = 13 [(asc.v1.json) = JSON_KIND_HEX];
   bytes hash = 14 [(asc.v1.json) = JSON_KIND_HEX];
+  string user_agent = 15;         // the client program, control characters removed, at most 256 bytes
 }
 
 // Filters. `actions` are exact names or a prefix ending in ".*". `search` matches `target` as a prefix. `limit` 0 means 50, at
@@ -80,6 +81,7 @@ message ExportAuditResponse {
   bool last = 2;
   bytes digest = 3 [(asc.v1.json) = JSON_KIND_HEX];
   uint64 events = 4;               // on the last message: how many events the export holds
+  bool truncated = 5;            // on the last message: more events matched than `[audit] export_max_events`
 }
 
 // `to_seq` 0 means the newest.

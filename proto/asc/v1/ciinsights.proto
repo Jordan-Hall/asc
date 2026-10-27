@@ -40,6 +40,7 @@ message ReportTestCasesRequest {
   uint64 run_id = 2;
   uint64 job_id = 3;
   repeated TestCase cases = 4;
+  bytes head = 5 [(asc.v1.json) = JSON_KIND_HEX];   // the code the cases ran against; empty: the head of the run's change version, else unknown
 }
 message ReportTestCasesResponse {
   uint32 stored = 1;
@@ -67,6 +68,7 @@ message FailureGroup {
   int64 last_seen = 10;
   bool flaky = 11;
   string note = 12;
+  bool new_vs_main = 13;       // no occurrence came from a run on the trunk
 }
 
 // Most recently seen first. `limit` 0 means 30, at most 100.
@@ -94,6 +96,7 @@ message FailureOccurrence {
   uint32 attempt = 6;
   int64 at = 7;
   string message = 8;
+  bool stale = 9;              // the change has a newer version than the one this result is for
 }
 message GetFailureGroupRequest {
   RepoRef repo = 1;
@@ -145,6 +148,7 @@ message FlakyTest {
   uint32 runs = 4;
   int64 last_flip = 5;
   uint64 group_id = 6;
+  uint32 flips = 7;            // verdict changes between results of one head, in the last runs
 }
 message ListFlakyTestsRequest {
   RepoRef repo = 1;
