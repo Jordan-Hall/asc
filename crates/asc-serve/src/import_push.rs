@@ -11,7 +11,10 @@
 //!    path (SPEC §2.8, §25.4), and record the graph rows and the stack metadata in one
 //!    transaction;
 //! 3. call `UpdateRefs` with `UPDATE_MODE_FAST_FORWARD`, even on land branches (git cannot be
-//!    told about rewrites, SPEC §8.5), so a non-fast-forward is git's `(fetch first)` rejection.
+//!    told about rewrites, SPEC §8.5), so a non-fast-forward there is git's `(fetch first)`
+//!    rejection. Elsewhere a non-fast-forward is a force push the user asked for: the compare-and-set
+//!    on `old` makes it a lease, and it runs in `UPDATE_MODE_FORCE` under the gate (see
+//!    [`ImportPush::update_mode`]).
 //!
 //! Step 3 is the normal pipeline (authorise, idempotency, mode check, hooks, one SQL transaction
 //! with the outbox). The host RPC sets `SKIP_PRE` because the caller is the host's own
@@ -31,6 +34,7 @@ use asc_core::id::{ChangesetId, GitOid, RefTarget, TagId, TreeId};
 use asc_core::object::{Change, Changeset, Kind, Tree};
 use asc_core::path::{Name, RefName, RepoPath, casefold, checkout_safe, windows_valid};
 use asc_engine::derive::{self, GitMapRow, GitMapSink};
+use asc_engine::graph::Graph;
 use asc_git::import::{ImportError, ImportMap, ImportPolicy, ImportReport, Importer, Tip};
 use asc_git::odb::{Odb, OdbError};
 use asc_rpc::IdMode;
@@ -47,7 +51,7 @@ use tonic::Status;
 use uuid::Uuid;
 
 use crate::expire::ttl_eligible;
-use crate::graph_sql::{self, NewNode};
+use crate::graph_sql::{self, NewNode, SqlGraph};
 use crate::mirror::import_lock;
 use crate::mutations::ServerMutations;
 use crate::registry::{Extensions, Registry, RepoEntry, RepoMode};
@@ -273,8 +277,10 @@ impl ImportPush {
         // Step 3. The import's fence is released: `UpdateRefs` takes its own, and a queued
         // exclusive GC lock between the two would otherwise deadlock them.
         let mut updates = Vec::with_capacity(commands.len());
+        let mut moves = Vec::with_capacity(commands.len());
         for (c, expect) in commands.iter().zip(expects) {
             let new = c.new.map(|_| imported.target(&c.name)).transpose()?;
+            moves.push((c.name.as_str(), expect, new));
             updates.push(wire::RefUpdate {
                 name: c.name.clone(),
                 expect: Some(match expect {
@@ -291,7 +297,7 @@ impl ImportPush {
                 id_mode: 0,
             }),
             updates,
-            mode: wire::UpdateMode::FastForward as i32,
+            mode: self.update_mode(&entry, &moves).await? as i32,
             push_options: opts.push_options.clone(),
             hooks: if opts.skip_pre {
                 wire::HookMode::SkipPre as i32
@@ -313,6 +319,59 @@ impl ImportPush {
             }),
             Err(s) => Err(fetch_first(s)),
         }
+    }
+
+    /// The mode `UpdateRefs` runs a push in. A git client sends an update that is not a
+    /// fast-forward only when the user forced it, and the `old` of each command is pinned to the
+    /// ref's value by the compare-and-set (a stale `old` was refused before the import), so such
+    /// an update is a lease-style force push: the history is rewritten only if nobody moved the
+    /// ref since the pusher fetched it. It runs in `FORCE` mode, so the gate still decides (trunk
+    /// needs `allow_force`, protected refs need a maintainer). A land branch is the exception: git
+    /// cannot be told about the rewrites a land makes, so a non-fast-forward there stays git's
+    /// `(fetch first)`. A moved tag stays refused too, and so does the whole push with it.
+    async fn update_mode(
+        &self,
+        entry: &RepoEntry,
+        moves: &[(&str, Option<RefTarget>, Option<RefTarget>)],
+    ) -> Result<wire::UpdateMode, Status> {
+        let graph = Graph::new(SqlGraph::new(
+            self.registry.pool().clone(),
+            entry.ns,
+            entry.backend.engine().clone(),
+        ));
+        let mut rewrites = Vec::new();
+        for (name, old, new) in moves {
+            let (Some(old), Some(new)) = (old, new) else {
+                continue;
+            };
+            match (old, new) {
+                (o, n) if o == n => {}
+                (RefTarget::Changeset(o), RefTarget::Changeset(n)) => {
+                    if !graph
+                        .is_ancestor(*o, *n)
+                        .await
+                        .map_err(|e| internal("graph", &e))?
+                    {
+                        rewrites.push(*name);
+                    }
+                }
+                // A moved tag is no fast-forward and no rewrite of a change: `UpdateRefs` refuses it.
+                _ => return Ok(wire::UpdateMode::FastForward),
+            }
+        }
+        for name in &rewrites {
+            if crate::land::check_branch(self.registry.pool(), entry, name)
+                .await
+                .is_ok()
+            {
+                return Ok(wire::UpdateMode::FastForward);
+            }
+        }
+        Ok(if rewrites.is_empty() {
+            wire::UpdateMode::FastForward
+        } else {
+            wire::UpdateMode::Force
+        })
     }
 
     /// The results of `commands` when each of them was already applied by an earlier push of the
@@ -1612,6 +1671,57 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(f.git_of("refs/heads/master").await, c3);
+    }
+
+    /// `git push --force-with-lease` to a branch that is not a land branch: the update is not a
+    /// fast-forward, its `old` is the ref's value, and the ref is rewritten. A push whose `old` is
+    /// stale is still a conflict, and a moved tag is still refused.
+    #[tokio::test]
+    async fn a_lease_style_force_push_rewrites_a_branch_that_is_not_a_land_branch() {
+        let f = fx().await;
+        sqlx::query("UPDATE repos SET land_branches = '[\"master\"]'")
+            .execute(f.registry.pool())
+            .await
+            .unwrap();
+        let c1 = f.forge.commit(None, &[("a", "1")]);
+        let c2 = f.forge.commit(Some(&c1), &[("a", "2")]);
+        f.push(&[cmd("refs/heads/master", None, Some(&c1))])
+            .await
+            .unwrap();
+        f.push(&[cmd("refs/heads/topic", None, Some(&c2))])
+            .await
+            .unwrap();
+        // The pusher amended c2: a sibling of it, not a descendant.
+        let amended = f.forge.commit(Some(&c1), &[("a", "amended")]);
+        let stale = f
+            .push(&[cmd("refs/heads/topic", Some(&c1), Some(&amended))])
+            .await
+            .unwrap_err();
+        assert_eq!(code(&stale), "REF_CONFLICT");
+        assert_eq!(f.git_of("refs/heads/topic").await, c2);
+        f.push(&[cmd("refs/heads/topic", Some(&c2), Some(&amended))])
+            .await
+            .unwrap();
+        assert_eq!(f.git_of("refs/heads/topic").await, amended);
+        // The default branch is a land branch: a rewrite there is git's "fetch first".
+        let side = f.forge.commit(None, &[("a", "side")]);
+        let s = f
+            .push(&[cmd("refs/heads/master", Some(&c1), Some(&side))])
+            .await
+            .unwrap_err();
+        assert_eq!(code(&s), "NOT_FAST_FORWARD");
+        // And a rewrite beside it does not carry the land branch along.
+        let again = f.forge.commit(Some(&c1), &[("a", "again")]);
+        let s = f
+            .push(&[
+                cmd("refs/heads/topic", Some(&amended), Some(&again)),
+                cmd("refs/heads/master", Some(&c1), Some(&side)),
+            ])
+            .await
+            .unwrap_err();
+        assert_eq!(code(&s), "NOT_FAST_FORWARD");
+        assert_eq!(f.git_of("refs/heads/topic").await, amended);
+        assert_eq!(f.git_of("refs/heads/master").await, c1);
     }
 
     #[tokio::test]
