@@ -73,13 +73,15 @@ impl AuditService {
         who.kind == "host" || (who.kind == "user" && self.admins.contains(&who.name))
     }
 
-    /// The scope `owner` names, if the caller may read it, and who the caller is.
+    /// The scope `owner` names, if the caller may read it, and who the caller is. For a call the
+    /// hub made for a person, the caller is the person and the host service is the relay the
+    /// events name as `on_behalf_of`.
     async fn resolve(
         &self,
         ext: &TonicExt,
         meta: &tonic::metadata::MetadataMap,
         owner: Option<&wire::OwnerRef>,
-    ) -> Result<(Scope, Actor), Status> {
+    ) -> Result<(Scope, Actor, Option<Actor>), Status> {
         let owner = owner.ok_or_else(|| Status::invalid_argument("missing scope"))?;
         let credential = ext.get::<Credential>();
         let kind = wire::OwnerKind::try_from(owner.kind)
@@ -90,12 +92,12 @@ impl AuditService {
         // decided for the person: it decides the scope, not `[audit] admins`, the organisation's
         // repository list or the name. A claim that does not verify for the scope is refused.
         let subject = match kind {
-            wire::OwnerKind::Instance => Some("instance".to_owned()),
+            wire::OwnerKind::Instance => Some(crate::authz::claim::subject::INSTANCE.to_owned()),
             wire::OwnerKind::Repo => RepoName::parse(&owner.name)
                 .ok()
-                .map(|n| n.as_str().to_ascii_lowercase()),
-            wire::OwnerKind::Org => Some(format!("org:{}", owner.name.to_ascii_lowercase())),
-            wire::OwnerKind::User => Some(format!("user:{}", owner.name.to_ascii_lowercase())),
+                .map(|n| crate::authz::claim::subject::repo(n.as_str())),
+            wire::OwnerKind::Org => Some(crate::authz::claim::subject::org(&owner.name)),
+            wire::OwnerKind::User => Some(crate::authz::claim::subject::user(&owner.name)),
             wire::OwnerKind::Unspecified => None,
         };
         if let Some(subject) = subject {
@@ -115,7 +117,7 @@ impl AuditService {
                     let own = kind != wire::OwnerKind::User
                         || claim.login().eq_ignore_ascii_case(&owner.name);
                     return if claim.allows(needed) && own {
-                        Ok((scope, who))
+                        Ok((scope, actor_of(&claim.user), Some(who)))
                     } else {
                         Err(not_found())
                     };
@@ -131,7 +133,7 @@ impl AuditService {
                     return Err(Status::invalid_argument("the instance scope has no name"));
                 }
                 if self.is_site_admin(&who) {
-                    Ok((Scope::instance(), who))
+                    Ok((Scope::instance(), who, None))
                 } else {
                     Err(not_found())
                 }
@@ -139,14 +141,14 @@ impl AuditService {
             wire::OwnerKind::Repo => {
                 let name = RepoName::parse(&owner.name)?;
                 if self.is_site_admin(&who) {
-                    return Ok((Scope::repo(name.as_str()), who));
+                    return Ok((Scope::repo(name.as_str()), who, None));
                 }
                 match self
                     .authorizer
                     .authorize_credential(credential, name.as_str(), Access::Admin)
                     .await
                 {
-                    Ok(_) => Ok((Scope::repo(name.as_str()), who)),
+                    Ok(_) => Ok((Scope::repo(name.as_str()), who, None)),
                     Err(AuthError::Unauthenticated) => Err(AuthError::Unauthenticated.into()),
                     Err(_) => Err(not_found()),
                 }
@@ -157,7 +159,7 @@ impl AuditService {
                 }
                 let scope = Scope::owner(owner.name.clone());
                 if self.is_site_admin(&who) {
-                    return Ok((scope, who));
+                    return Ok((scope, who, None));
                 }
                 let allowed = if kind == wire::OwnerKind::User {
                     who.kind == "user" && who.name == owner.name && who.name != "anonymous"
@@ -165,7 +167,7 @@ impl AuditService {
                     self.owns_every_repo(credential, &owner.name).await?
                 };
                 if allowed {
-                    Ok((scope, who))
+                    Ok((scope, who, None))
                 } else {
                     Err(not_found())
                 }
@@ -336,7 +338,7 @@ impl AuditApi for AuditService {
         request: Request<wire::ListAuditRequest>,
     ) -> Result<Response<wire::ListAuditResponse>, Status> {
         let (meta, ext, msg) = request.into_parts();
-        let (scope, _) = self.resolve(&ext, &meta, msg.scope.as_ref()).await?;
+        let (scope, _, _) = self.resolve(&ext, &meta, msg.scope.as_ref()).await?;
         let filter = filter_of(msg.filter.as_ref())?;
         let after = page_after(&msg.page_token)?;
         let page = store::list(
@@ -362,7 +364,7 @@ impl AuditApi for AuditService {
         request: Request<wire::ExportAuditRequest>,
     ) -> Result<Response<Self::ExportStream>, Status> {
         let (meta, ext, msg) = request.into_parts();
-        let (scope, who) = self.resolve(&ext, &meta, msg.scope.as_ref()).await?;
+        let (scope, who, relay) = self.resolve(&ext, &meta, msg.scope.as_ref()).await?;
         let filter = filter_of(msg.filter.as_ref())?;
         let format = match wire::AuditExportFormat::try_from(msg.format) {
             Ok(wire::AuditExportFormat::Jsonl) => Format::Jsonl,
@@ -380,6 +382,9 @@ impl AuditApi for AuditService {
                 },
             )
             .detail("filter", filter_summary(&filter));
+        if let Some(relay) = relay {
+            event = event.on_behalf_of(relay);
+        }
         match scope.kind {
             super::ScopeKind::Repo => event = event.repo(&scope.name),
             super::ScopeKind::Owner => event = event.owner(&scope.name),
@@ -428,7 +433,7 @@ impl AuditApi for AuditService {
         request: Request<wire::VerifyAuditChainRequest>,
     ) -> Result<Response<wire::VerifyAuditChainResponse>, Status> {
         let (meta, ext, msg) = request.into_parts();
-        let (scope, _) = self.resolve(&ext, &meta, msg.scope.as_ref()).await?;
+        let (scope, _, _) = self.resolve(&ext, &meta, msg.scope.as_ref()).await?;
         if msg.to_seq != 0 && msg.from_seq > msg.to_seq {
             return Err(Status::invalid_argument("from_seq is above to_seq"));
         }

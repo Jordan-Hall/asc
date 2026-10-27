@@ -67,6 +67,32 @@ impl AgentAuthorizer {
         Ok(row)
     }
 
+    /// A token made by a person is only as good as that person's access on the forge: the forge
+    /// is asked on every use whether the person who made it may still do what the token does
+    /// (read for a read, write for a write). A person who lost access, or a forge that cannot
+    /// answer, refuses the token; with no forge behind the server (a token store) there is no one
+    /// to ask and the token stands on its own.
+    async fn owner_standing(
+        &self,
+        row: &TokenRow,
+        repo: &str,
+        access: Access,
+    ) -> Result<(), AuthError> {
+        let Some(who) =
+            crate::authz::UserIdentity::parse(&row.created_by).filter(|u| u.user_id > 0)
+        else {
+            return Ok(());
+        };
+        let needed = match access {
+            Access::Read => Access::Read,
+            Access::Write | Access::Admin => Access::Write,
+        };
+        match self.inner.user_standing(who.user_id, repo, needed).await {
+            None | Some(true) => Ok(()),
+            Some(false) => Err(AuthError::Forbidden),
+        }
+    }
+
     fn decide(row: &TokenRow, repo: &str, access: Access) -> Result<Principal, AuthError> {
         if !row.repo.eq_ignore_ascii_case(repo) {
             return Err(AuthError::Forbidden);
@@ -174,7 +200,9 @@ impl Authorizer for AgentAuthorizer {
         match token {
             Some(t) if is_agent_secret(t.expose()) => {
                 let row = self.live(t.expose()).await?;
-                Self::decide(&row, repo, access)
+                let principal = Self::decide(&row, repo, access)?;
+                self.owner_standing(&row, repo, access).await?;
+                Ok(principal)
             }
             _ => self.inner.authorize(token, repo, access).await,
         }
@@ -189,7 +217,9 @@ impl Authorizer for AgentAuthorizer {
         match credential {
             Some(c) if is_agent_secret(c.secret().expose()) => {
                 let row = self.live(c.secret().expose()).await?;
-                Self::decide(&row, repo, access)
+                let principal = Self::decide(&row, repo, access)?;
+                self.owner_standing(&row, repo, access).await?;
+                Ok(principal)
             }
             _ => {
                 self.inner
@@ -213,6 +243,10 @@ impl Authorizer for AgentAuthorizer {
 
     fn forwarded_verifier(&self) -> Option<&asc_rpc::forwarded::ForwardedVerifier> {
         self.inner.forwarded_verifier()
+    }
+
+    async fn user_standing(&self, user_id: i64, repo: &str, access: Access) -> Option<bool> {
+        self.inner.user_standing(user_id, repo, access).await
     }
 
     async fn identify_ssh_key(&self, key: &SshKey) -> Result<Option<SshIdentity>, AuthError> {

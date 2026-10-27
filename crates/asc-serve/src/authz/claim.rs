@@ -6,9 +6,37 @@
 
 use asc_rpc::auth::{AdminProof, Authorizer};
 use asc_rpc::forwarded::{Claim, Role};
+use tonic::Status;
 use tonic::metadata::MetadataMap;
 
 use super::is_host_service;
+
+/// The subjects of the hub's claims, defined once for every service. Each takes the canonical
+/// name the service stores and does not fold case: the claim must carry exactly that spelling, so
+/// a claim for `acme/app` is never a claim for a distinct `acme/APP`. Users and organisations are
+/// stored lower case everywhere; a repository is the name as the registry holds it.
+pub mod subject {
+    /// The whole server.
+    pub const INSTANCE: &str = "instance";
+
+    /// The account of a person.
+    #[must_use]
+    pub fn user(login: &str) -> String {
+        format!("user:{login}")
+    }
+
+    /// An organisation.
+    #[must_use]
+    pub fn org(name: &str) -> String {
+        format!("org:{name}")
+    }
+
+    /// A repository, `owner/name`.
+    #[must_use]
+    pub fn repo(name: &str) -> String {
+        name.to_owned()
+    }
+}
 
 /// The claim in `meta` for `subject`, when `principal_id` is the host service and the claim
 /// verifies. Any other caller has no claim, whatever its metadata says.
@@ -61,15 +89,7 @@ pub fn classify(
     if !is_host_service(principal_id) {
         return HostCall::NotHost;
     }
-    let claimed = [
-        asc_rpc::forwarded::USER,
-        asc_rpc::forwarded::ROLE,
-        asc_rpc::forwarded::TS,
-        asc_rpc::forwarded::MAC,
-    ]
-    .iter()
-    .any(|k| meta.contains_key(*k));
-    if !claimed {
+    if !carries_claim(meta) {
         return HostCall::System;
     }
     match AdminProof::forwarded_in(authorizer, meta, subject) {
@@ -78,19 +98,32 @@ pub fn classify(
     }
 }
 
-/// The principal id a call acts as for something personal: the person of an account claim of at
-/// least `needed`, else the caller as authenticated.
+/// The principal id a call acts as for something personal. It never falls back to the host
+/// service when a claim was presented:
+///
+/// * not the host service, or the host service with no claim at all (system work): the principal
+///   as it is;
+/// * a claim for the account (`user:<login>`) that verifies and covers `needed`: the person;
+/// * anything else (a claim that is malformed, expired, signed under another key, for another
+///   subject, or whose role is too small): `PERMISSION_DENIED`.
 pub fn acting_principal(
     authorizer: &dyn Authorizer,
     principal_id: &str,
     meta: &MetadataMap,
     needed: Role,
-) -> String {
+) -> Result<String, Status> {
+    if !is_host_service(principal_id) || !carries_claim(meta) {
+        return Ok(principal_id.to_owned());
+    }
     match account_claim(authorizer, principal_id, meta) {
-        Some(c) if c.allows(needed) => c.user,
-        _ => principal_id.to_owned(),
+        Some(c) if c.allows(needed) => Ok(c.user),
+        _ => Err(Status::permission_denied(
+            "the claim the host service forwarded does not cover this call",
+        )),
     }
 }
+
+pub use asc_rpc::forwarded::carries_claim;
 
 #[cfg(test)]
 mod tests {
@@ -137,23 +170,46 @@ mod tests {
     }
 
     #[test]
-    fn an_account_claim_makes_the_host_act_as_the_person_within_its_role() {
+    fn an_account_claim_makes_the_host_act_as_the_person_within_its_role_and_nothing_else_passes() {
         let (a, v) = authz();
         let host = crate::authz::HOST_SERVICE_PRINCIPAL;
+        let act = |m: &MetadataMap, needed| acting_principal(&a, host, m, needed);
         let write = meta(&v, "7:alice", Role::Write, "user:alice");
-        assert_eq!(acting_principal(&a, host, &write, Role::Write), "7:alice");
-        assert_eq!(acting_principal(&a, host, &write, Role::Read), "7:alice");
-        // A read claim does not write, and a claim for another account is nobody's.
+        assert_eq!(act(&write, Role::Write).unwrap(), "7:alice");
+        assert_eq!(act(&write, Role::Read).unwrap(), "7:alice");
+        // A read claim does not write: denied, never the host's own breadth.
         let read = meta(&v, "7:alice", Role::Read, "user:alice");
-        assert_eq!(acting_principal(&a, host, &read, Role::Write), host);
-        assert_eq!(acting_principal(&a, host, &read, Role::Read), "7:alice");
-        let other = meta(&v, "7:alice", Role::Write, "user:bob");
-        assert_eq!(acting_principal(&a, host, &other, Role::Read), host);
-        // Another caller keeps its own identity, claim or no claim.
-        assert_eq!(acting_principal(&a, "8:bob", &write, Role::Read), "8:bob");
         assert_eq!(
-            acting_principal(&a, host, &MetadataMap::new(), Role::Read),
-            host
+            act(&read, Role::Write).unwrap_err().code(),
+            tonic::Code::PermissionDenied
+        );
+        assert_eq!(act(&read, Role::Read).unwrap(), "7:alice");
+        // A claim for another account, a forged one and an expired one are all denied.
+        let other = meta(&v, "7:alice", Role::Write, "user:bob");
+        let theirs = ForwardedVerifier::new(vec![9u8; 32]).unwrap();
+        let forged = meta(&theirs, "7:alice", Role::Write, "user:alice");
+        let mut stale = MetadataMap::new();
+        for (k, val) in v.sign("7:alice", Role::Write, "user:alice", now() - 600) {
+            stale.append(k, val.parse().unwrap());
+        }
+        let mut partial = MetadataMap::new();
+        partial.append(asc_rpc::forwarded::USER, "7:alice".parse().unwrap());
+        let mut junk = write.clone();
+        junk.insert(asc_rpc::forwarded::MAC, "zz".parse().unwrap());
+        for bad in [&other, &forged, &stale, &partial, &junk] {
+            for needed in [Role::Read, Role::Write] {
+                assert_eq!(
+                    act(bad, needed).unwrap_err().code(),
+                    tonic::Code::PermissionDenied
+                );
+            }
+        }
+        // No claim at all is system work: the host as it is. Another caller keeps its own
+        // identity, claim or no claim.
+        assert_eq!(act(&MetadataMap::new(), Role::Write).unwrap(), host);
+        assert_eq!(
+            acting_principal(&a, "8:bob", &write, Role::Read).unwrap(),
+            "8:bob"
         );
     }
 }

@@ -26,6 +26,23 @@ pub const USER: &str = "x-asc-forwarded-user";
 pub const ROLE: &str = "x-asc-forwarded-role";
 pub const TS: &str = "x-asc-forwarded-ts";
 pub const MAC: &str = "x-asc-forwarded-mac";
+/// The principal of a caller that presented the host application's own service credential, and
+/// the name it had before it was made neutral. Only these may act on a forwarded claim.
+pub const HOST_SERVICE_PRINCIPAL: &str = "host-service";
+pub const LEGACY_HOST_SERVICE_PRINCIPAL: &str = "forgejo-internal";
+
+/// Whether `principal_id` is the host service.
+#[must_use]
+pub fn is_host_principal(principal_id: &str) -> bool {
+    principal_id == HOST_SERVICE_PRINCIPAL || principal_id == LEGACY_HOST_SERVICE_PRINCIPAL
+}
+
+/// Whether `meta` carries any entry of a forwarded claim.
+#[must_use]
+pub fn carries_claim(meta: &MetadataMap) -> bool {
+    [USER, ROLE, TS, MAC].iter().any(|k| meta.contains_key(*k))
+}
+
 /// What the hub decided a person may do on a subject. Ordered: `Admin` includes `Write`, which
 /// includes `Read`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

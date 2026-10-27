@@ -339,6 +339,37 @@ impl AdminProof {
         authorizer.forwarded_verifier()?.verify(meta, subject, now)
     }
 
+    /// The claim of a call for `repo`, checked against what the call needs. A call made with the
+    /// host service's credential that carries a claim is bound by it: the claim must verify for
+    /// this repository and cover `access`, or the call is `PERMISSION_DENIED`. It never continues
+    /// on the host service's own breadth, so a `read` claim cannot write and a stale or foreign
+    /// claim cannot do anything. Any other caller's metadata is ignored.
+    pub fn forwarded_for_call(
+        authorizer: &dyn Authorizer,
+        principal: &Principal,
+        meta: &tonic::metadata::MetadataMap,
+        repo: &str,
+        access: Access,
+    ) -> Result<Option<crate::forwarded::Claim>, Status> {
+        let claim = Self::forwarded_in(authorizer, meta, repo);
+        if !crate::forwarded::is_host_principal(&principal.id)
+            || !crate::forwarded::carries_claim(meta)
+        {
+            return Ok(claim);
+        }
+        let needed = match access {
+            Access::Read => crate::forwarded::Role::Read,
+            Access::Write => crate::forwarded::Role::Write,
+            Access::Admin => crate::forwarded::Role::Admin,
+        };
+        match claim {
+            Some(c) if c.allows(needed) => Ok(Some(c)),
+            _ => Err(Status::permission_denied(
+                "the claim the host service forwarded does not cover this call",
+            )),
+        }
+    }
+
     /// Whether the credential that made the call is allowed admin on the repository.
     pub async fn holds(&self) -> bool {
         match &self.own {
@@ -399,6 +430,14 @@ pub trait Authorizer: Send + Sync {
     /// authorizer.
     async fn authenticate(&self, _credential: Option<&Credential>) -> Result<Principal, AuthError> {
         Err(AuthError::Unauthenticated)
+    }
+
+    /// Whether the person with the forge's id `user_id` may do `access` on `repo` right now, asked
+    /// of the forge that owns the permissions. `None`: this authorizer has no such source (a token
+    /// store knows tokens, not people). A token made by a person is only as good as that person's
+    /// access, so the agent authorizer asks this on every use. A wrapper must forward it.
+    async fn user_standing(&self, _user_id: i64, _repo: &str, _access: Access) -> Option<bool> {
+        None
     }
 
     /// The key a host service signs forwarded administrator claims with, when this server takes
@@ -909,5 +948,83 @@ mod tests {
             auth.authorize(None, "o/r", Access::Read).await,
             Err(AuthError::Unauthenticated)
         );
+    }
+
+    struct Keyed {
+        inner: StaticTokens,
+        verifier: crate::forwarded::ForwardedVerifier,
+    }
+
+    #[async_trait]
+    impl Authorizer for Keyed {
+        async fn authorize(
+            &self,
+            token: Option<&BearerToken>,
+            repo: &str,
+            access: Access,
+        ) -> Result<Principal, AuthError> {
+            self.inner.authorize(token, repo, access).await
+        }
+
+        fn forwarded_verifier(&self) -> Option<&crate::forwarded::ForwardedVerifier> {
+            Some(&self.verifier)
+        }
+    }
+
+    fn claim_meta(
+        v: &crate::forwarded::ForwardedVerifier,
+        role: crate::forwarded::Role,
+        subject: &str,
+        at: i64,
+    ) -> tonic::metadata::MetadataMap {
+        let mut m = tonic::metadata::MetadataMap::new();
+        for (k, val) in v.sign("7:alice", role, subject, at) {
+            m.append(k, val.parse().unwrap());
+        }
+        m
+    }
+
+    #[test]
+    fn a_host_call_with_a_claim_is_bound_by_it_and_other_callers_ignore_it() {
+        use crate::forwarded::{ForwardedVerifier, Role};
+        let v = ForwardedVerifier::new(vec![2u8; 32]).unwrap();
+        let a = Keyed {
+            inner: StaticTokens::new(),
+            verifier: v.clone(),
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let host = Principal {
+            id: "host-service".into(),
+        };
+        let call = |p: &Principal, m: &tonic::metadata::MetadataMap, access| {
+            AdminProof::forwarded_for_call(&a, p, m, "acme/app", access)
+        };
+        let read = claim_meta(&v, Role::Read, "acme/app", now);
+        assert!(call(&host, &read, Access::Read).unwrap().is_some());
+        // A read claim does not write or administer.
+        for access in [Access::Write, Access::Admin] {
+            assert_eq!(
+                call(&host, &read, access).unwrap_err().code(),
+                tonic::Code::PermissionDenied
+            );
+        }
+        // A claim for another repository, a stale one and one under another key are denied.
+        let elsewhere = claim_meta(&v, Role::Admin, "acme/other", now);
+        let stale = claim_meta(&v, Role::Admin, "acme/app", now - 600);
+        let theirs = ForwardedVerifier::new(vec![3u8; 32]).unwrap();
+        let forged = claim_meta(&theirs, Role::Admin, "acme/app", now);
+        for bad in [&elsewhere, &stale, &forged] {
+            assert!(call(&host, bad, Access::Read).is_err());
+        }
+        // The host service with no claim is system work; another caller's claim is ignored.
+        let none = tonic::metadata::MetadataMap::new();
+        assert_eq!(call(&host, &none, Access::Admin).unwrap(), None);
+        let user = Principal {
+            id: "7:alice".into(),
+        };
+        assert!(call(&user, &elsewhere, Access::Admin).unwrap().is_none());
     }
 }

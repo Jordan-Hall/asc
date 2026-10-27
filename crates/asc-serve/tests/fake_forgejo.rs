@@ -143,6 +143,7 @@ mod forgejo {
             &[
                 ("token", is_str),
                 ("user", is_str),
+                ("as_user_id", is_int),
                 ("key_id", is_int),
                 ("ssh_key", is_obj),
                 ("owner", is_str),
@@ -156,7 +157,8 @@ mod forgejo {
         if !matches!(s("mode"), "read" | "write") {
             return Err("mode must be read or write");
         }
-        if s("owner").is_empty() || s("repo").is_empty() {
+        // An empty owner and repository together ask for the identity alone.
+        if s("owner").is_empty() != s("repo").is_empty() {
             return Err("invalid owner or repo");
         }
         if let Some(k) = o.get("ssh_key") {
@@ -167,6 +169,9 @@ mod forgejo {
                 return Err("ssh_key excludes token, user and key_id");
             }
             return strict_key(k).map(|_| ()).ok_or("invalid key");
+        }
+        if o.contains_key("as_user_id") && (o.contains_key("token") || o.contains_key("user")) {
+            return Err("as_user_id excludes token and user");
         }
         if !s("user").is_empty() && s("token").is_empty() {
             return Err("user needs a token");
@@ -288,6 +293,18 @@ mod forgejo {
                 };
             }
             if path == "/api/internal/asc/authz" {
+                // The standing of a person, asked with the internal token alone.
+                if let Some(id) = json["as_user_id"].as_i64() {
+                    let r = format!(
+                        "{}/{}",
+                        json["owner"].as_str().unwrap_or(""),
+                        json["repo"].as_str().unwrap_or("")
+                    );
+                    return match i.authz.get(&(format!("as_user:{id}"), r)) {
+                        Some(v) => reply(200, v.clone()),
+                        None => reply(200, zero_denial()),
+                    };
+                }
                 // K07, K07b: `{token, user, owner, repo, mode}`.
                 let mut t = json["token"].as_str().unwrap_or("").to_owned();
                 if let Some(user) = json["user"].as_str().filter(|u| !u.is_empty()) {
@@ -296,6 +313,23 @@ mod forgejo {
                     if !i.users.contains_key(&t) {
                         return reply(200, zero_denial());
                     }
+                }
+                // No owner and no repository: who is this credential? (`authenticate`)
+                if json["owner"].as_str().unwrap_or("").is_empty()
+                    && json["repo"].as_str().unwrap_or("").is_empty()
+                {
+                    if let Some(v) = i.authz.get(&(t.clone(), "/".into())) {
+                        return reply(200, v.clone());
+                    }
+                    return match i.users.get(&t) {
+                        Some((id, name)) if !t.is_empty() => reply(
+                            200,
+                            json!({"allowed": true, "user_id": id, "username": name, "perm": "",
+                                   "deploy_key_id": 0, "is_actions_task": false, "task": null,
+                                   "branch_rules": {"require_signed": false}, "perm_version": 5}),
+                        ),
+                        _ => reply(200, zero_denial()),
+                    };
                 }
                 let r = format!(
                     "{}/{}",
@@ -426,17 +460,17 @@ mod forgejo {
                 AuthError::Forbidden
             );
         }
-        assert_eq!(fake.calls("/api/v1/repos/o/r").len(), 2);
+        assert_eq!(
+            fake.calls("/api/v1/repos/o/r").len(),
+            3,
+            "a call that changes something asks the forge every time"
+        );
         tokio::time::sleep(Duration::from_millis(250)).await;
         authz
             .authorize(Some(&alice), "o/r", Access::Write)
             .await
             .unwrap_err();
-        assert_eq!(
-            fake.calls("/api/v1/repos/o/r").len(),
-            3,
-            "negative answers expire"
-        );
+        assert_eq!(fake.calls("/api/v1/repos/o/r").len(), 4);
 
         authz
             .authorize(Some(&alice), "o/w", Access::Write)
@@ -678,6 +712,309 @@ mod forgejo {
             .decide(Some(&t), "o/r", Access::Read)
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn authenticate_asks_the_internal_endpoint_and_never_the_public_user_api() {
+        let (fake, url) = start().await;
+        fake.with(|i| {
+            i.users.insert("pat".into(), (7, "alice".into()));
+        });
+        let authz = internal_authz(&url, Vec::new());
+        let c = Credential::bearer(tok("pat"));
+        assert_eq!(authz.authenticate(Some(&c)).await.unwrap().id, "7:alice");
+        // Cached for the next caller of the same credential.
+        assert_eq!(authz.authenticate(Some(&c)).await.unwrap().id, "7:alice");
+        assert_eq!(fake.calls("/api/internal/asc/authz").len(), 1);
+        assert_eq!(
+            fake.calls("/api/v1/user").len(),
+            0,
+            "no read:user scope is needed"
+        );
+        let calls = fake.calls("/api/internal/asc/authz");
+        assert_eq!(
+            calls[0].body,
+            json!({"token": "pat", "owner": "", "repo": "", "mode": "read"})
+        );
+        // An unknown credential and no credential are unauthenticated.
+        let unknown = Credential::bearer(tok("nope"));
+        assert_eq!(
+            authz.authenticate(Some(&unknown)).await.unwrap_err(),
+            AuthError::Unauthenticated
+        );
+        assert_eq!(
+            authz.authenticate(None).await.unwrap_err(),
+            AuthError::Unauthenticated
+        );
+    }
+
+    #[tokio::test]
+    async fn only_a_read_decision_is_reused_and_never_its_branch_rules_or_task() {
+        let (fake, url) = start().await;
+        fake.with(|i| {
+            i.authz.insert(
+                ("pat".into(), "o/r".into()),
+                json!({"allowed": true, "user_id": 9, "username": "bob", "perm": "write",
+                       "deploy_key_id": 0, "is_actions_task": false,
+                       "branch_rules": {"require_signed": true}, "perm_version": 42}),
+            );
+        });
+        let authz = internal_authz(&url, Vec::new());
+        let t = tok("pat");
+        let calls = || fake.calls("/api/internal/asc/authz").len();
+        // Reads that need only who the caller is are answered once.
+        for _ in 0..3 {
+            authz
+                .authorize(Some(&t), "o/r", Access::Read)
+                .await
+                .unwrap();
+        }
+        assert_eq!(calls(), 1);
+        // A caller that reads the branch rules always asks, and sees the current rule and version.
+        for n in 2..=3 {
+            let d = authz.decide(Some(&t), "o/r", Access::Read).await.unwrap();
+            assert!(d.require_signed && d.task.is_none());
+            assert_eq!(d.perm_version, 42);
+            assert_eq!(calls(), n);
+        }
+        // Whatever the cache holds has no branch rules in it.
+        let before = calls();
+        authz
+            .authorize(Some(&t), "o/r", Access::Read)
+            .await
+            .unwrap();
+        assert!(calls() >= before);
+        // Every call that changes something asks the forge fresh.
+        for n in 1..=3 {
+            authz
+                .authorize(Some(&t), "o/r", Access::Write)
+                .await
+                .unwrap();
+            assert_eq!(calls(), before + n, "write {n}");
+        }
+        // A forge that cannot answer refuses the caller, even one it answered a moment ago.
+        fake.with(|i| i.authz_status = Some(503));
+        assert!(
+            authz
+                .authorize(Some(&t), "o/r", Access::Write)
+                .await
+                .is_err(),
+            "fail closed"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cached_answer_is_kept_for_seconds_at_most() {
+        let (fake, url) = start().await;
+        fake.with(|i| {
+            i.authz.insert(
+                ("pat".into(), "o/r".into()),
+                json!({"allowed": true, "user_id": 9, "username": "bob", "perm": "read",
+                       "deploy_key_id": 0, "is_actions_task": false, "perm_version": 1}),
+            );
+        });
+        // A configured minute is cut to the ceiling; a short one is honoured.
+        assert_eq!(asc_serve::forgejo::MAX_AUTHZ_TTL, Duration::from_secs(5));
+        let cfg = AuthzCacheConfig {
+            positive: Duration::from_secs(60),
+            negative: Duration::from_secs(60),
+            ..AuthzCacheConfig::default()
+        };
+        assert!(AuthzCacheConfig::default().positive <= asc_serve::forgejo::MAX_AUTHZ_TTL);
+        let short = AuthzCacheConfig {
+            positive: Duration::from_millis(50),
+            ..cfg
+        };
+        let authz = InternalAuthz::new(client(&url, true), Vec::new(), short);
+        let t = tok("pat");
+        let calls = || fake.calls("/api/internal/asc/authz").len();
+        authz
+            .authorize(Some(&t), "o/r", Access::Read)
+            .await
+            .unwrap();
+        authz
+            .authorize(Some(&t), "o/r", Access::Read)
+            .await
+            .unwrap();
+        assert_eq!(calls(), 1);
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        authz
+            .authorize(Some(&t), "o/r", Access::Read)
+            .await
+            .unwrap();
+        assert_eq!(calls(), 2, "expired, so asked again");
+    }
+
+    /// The states of an account that the forge refuses to let in, as the forge reports them: a
+    /// definite `allowed: false` (with or without the user's own id).
+    const REFUSED_ACCOUNTS: [(&str, i64); 5] = [
+        ("inactive", 0),
+        ("prohibit_login", 9),
+        ("restricted", 9),
+        ("two_factor_pending", 9),
+        ("blocked", 9),
+    ];
+
+    fn refusal(user_id: i64) -> Value {
+        json!({"allowed": false, "user_id": user_id,
+               "username": if user_id == 0 { "" } else { "bob" }, "perm": "",
+               "deploy_key_id": 0, "is_actions_task": false, "task": null,
+               "branch_rules": {"require_signed": false}})
+    }
+
+    #[tokio::test]
+    async fn every_identity_path_refuses_the_same_account_states() {
+        for (state, user_id) in REFUSED_ACCOUNTS {
+            let (fake, url) = start().await;
+            fake.with(|i| {
+                i.authz
+                    .insert(("pat".into(), "o/r".into()), refusal(user_id));
+                i.authz.insert(("pat".into(), "/".into()), refusal(user_id));
+            });
+            let authz = internal_authz(&url, Vec::new());
+            let bearer = tok("pat");
+            let cred = Credential::bearer(tok("pat"));
+            let token = Credential::token(tok("pat"));
+            for access in [Access::Read, Access::Write] {
+                let a = authz.authorize(Some(&bearer), "o/r", access).await;
+                let b = authz
+                    .authorize_credential(Some(&token), "o/r", access)
+                    .await;
+                let c = authz
+                    .decide(Some(&bearer), "o/r", access)
+                    .await
+                    .map(|d| d.principal.clone());
+                for (path, got) in [("authorize", a), ("authorize_credential", b), ("decide", c)] {
+                    assert!(
+                        got.is_err(),
+                        "{state}: {path} {access:?} let the account in"
+                    );
+                }
+            }
+            assert_eq!(
+                authz.authenticate(Some(&cred)).await.unwrap_err(),
+                AuthError::Unauthenticated,
+                "{state}: authenticate"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_actions_task_or_a_deploy_key_is_never_taken_for_a_person_by_authenticate() {
+        let (fake, url) = start().await;
+        let task = json!({"allowed": true, "user_id": -2, "username": "ci-task", "perm": "read",
+                          "deploy_key_id": 0, "is_actions_task": true,
+                          "task": {"run_id": 5, "repo": "o/r", "ref": "refs/heads/m"}});
+        let task_only_in_task_field = json!({"allowed": true, "user_id": 9, "username": "bob",
+                          "perm": "read", "deploy_key_id": 0, "is_actions_task": false,
+                          "task": {"run_id": 5, "repo": "o/r"}});
+        let deploy = json!({"allowed": true, "user_id": 9, "username": "bob", "perm": "read",
+                            "deploy_key_id": 3, "is_actions_task": false});
+        let anonymous = json!({"allowed": true, "user_id": 0, "username": "", "perm": "read"});
+        let negative = json!({"allowed": true, "user_id": -1, "username": "x", "perm": "read"});
+        fake.with(|i| {
+            for (t, v) in [
+                ("task", &task),
+                ("task2", &task_only_in_task_field),
+                ("deploy", &deploy),
+                ("anon", &anonymous),
+                ("neg", &negative),
+            ] {
+                i.authz.insert((t.into(), "/".into()), v.clone());
+            }
+        });
+        let authz = internal_authz(&url, Vec::new());
+        for t in ["task", "task2", "deploy", "anon", "neg"] {
+            let c = Credential::bearer(tok(t));
+            assert_eq!(
+                authz.authenticate(Some(&c)).await.unwrap_err(),
+                AuthError::Unauthenticated,
+                "{t}"
+            );
+        }
+        // A task credential is not kept as anything: it is not in the cache for the next caller.
+        fake.with(|i| {
+            i.authz.insert(
+                ("task".into(), "o/r".into()),
+                json!({"allowed": true, "user_id": -2, "username": "ci", "perm": "read",
+                       "is_actions_task": true,
+                       "task": {"run_id": 5, "repo": "o/r", "ref": "refs/heads/m"}}),
+            );
+        });
+        let before = fake.calls("/api/internal/asc/authz").len();
+        for _ in 0..2 {
+            authz
+                .authorize(Some(&tok("task")), "o/r", Access::Read)
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            fake.calls("/api/internal/asc/authz").len(),
+            before + 2,
+            "an Actions task answer is never reused"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_standing_of_a_person_is_asked_of_the_hub_with_the_internal_token_alone() {
+        let (fake, url) = start().await;
+        fake.with(|i| {
+            i.authz.insert(
+                ("as_user:7".into(), "o/r".into()),
+                json!({"allowed": true, "user_id": 7, "username": "alice", "perm": "write"}),
+            );
+            i.authz.insert(
+                ("as_user:8".into(), "o/r".into()),
+                json!({"allowed": true, "user_id": 8, "username": "bob", "perm": "read"}),
+            );
+            // An answer about another person than the one asked is not believed.
+            i.authz.insert(
+                ("as_user:9".into(), "o/r".into()),
+                json!({"allowed": true, "user_id": 1, "username": "root", "perm": "admin"}),
+            );
+        });
+        let authz = internal_authz(&url, Vec::new());
+        assert_eq!(
+            authz.user_standing(7, "o/r", Access::Write).await,
+            Some(true)
+        );
+        assert_eq!(
+            authz.user_standing(7, "o/r", Access::Read).await,
+            Some(true)
+        );
+        assert_eq!(
+            authz.user_standing(8, "o/r", Access::Read).await,
+            Some(true)
+        );
+        assert_eq!(
+            authz.user_standing(8, "o/r", Access::Write).await,
+            Some(false)
+        );
+        assert_eq!(
+            authz.user_standing(9, "o/r", Access::Read).await,
+            Some(false)
+        );
+        assert_eq!(
+            authz.user_standing(10, "o/r", Access::Read).await,
+            Some(false)
+        );
+        let calls = fake.calls("/api/internal/asc/authz");
+        assert_eq!(calls[0].auth.as_deref(), Some(INTERNAL));
+        assert_eq!(
+            calls[0].body,
+            json!({"as_user_id": 7, "owner": "o", "repo": "r", "mode": "write"})
+        );
+        // A read is kept for seconds; a write is asked every time; an outage is a no.
+        let n = fake.calls("/api/internal/asc/authz").len();
+        authz.user_standing(7, "o/r", Access::Read).await;
+        assert_eq!(fake.calls("/api/internal/asc/authz").len(), n);
+        authz.user_standing(7, "o/r", Access::Write).await;
+        assert_eq!(fake.calls("/api/internal/asc/authz").len(), n + 1);
+        fake.with(|i| i.authz_status = Some(503));
+        assert_eq!(
+            authz.user_standing(7, "o/r", Access::Write).await,
+            Some(false)
+        );
     }
 
     #[tokio::test]
@@ -985,7 +1322,7 @@ mod forgejo {
         assert_eq!(nameless.user(), None);
         for c in [&bearer, &token, &nameless] {
             let p = authz
-                .authorize_credential(Some(c), "o/w", Access::Write)
+                .authorize_credential(Some(c), "o/w", Access::Read)
                 .await
                 .unwrap();
             assert_eq!(p.id, "7:alice");
@@ -998,7 +1335,7 @@ mod forgejo {
         }
         // The plain `authorize` takes the Bearer path too.
         authz
-            .authorize(Some(&tok("alice-tok")), "o/w", Access::Write)
+            .authorize(Some(&tok("alice-tok")), "o/w", Access::Read)
             .await
             .unwrap();
         assert_eq!(fake.calls("/api/v1/user").len(), 1);
@@ -1072,7 +1409,7 @@ mod forgejo {
         });
         let authz = internal_authz(&url, Vec::new());
         let a = authz
-            .authorize_credential(Some(&basic("alice", "pw-1")), "o/r", Access::Write)
+            .authorize_credential(Some(&basic("alice", "pw-1")), "o/r", Access::Read)
             .await
             .unwrap();
         assert_eq!(a.id, "7:alice");
@@ -1082,12 +1419,12 @@ mod forgejo {
         assert_eq!(calls[0].body["token"], "pw-1");
         // The cache key includes the user.
         let b = authz
-            .authorize_credential(Some(&basic("bob", "pw-1")), "o/r", Access::Write)
+            .authorize_credential(Some(&basic("bob", "pw-1")), "o/r", Access::Read)
             .await
             .unwrap();
         assert_eq!(b.id, "8:bob");
         authz
-            .authorize_credential(Some(&basic("alice", "pw-1")), "o/r", Access::Write)
+            .authorize_credential(Some(&basic("alice", "pw-1")), "o/r", Access::Read)
             .await
             .unwrap();
         assert_eq!(fake.calls("/api/internal/asc/authz").len(), 2);

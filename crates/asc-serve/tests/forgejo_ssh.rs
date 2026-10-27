@@ -1020,3 +1020,33 @@ async fn stage_one_cannot_resolve_ssh_keys() {
     cfg.forgejo = Some(forgejo);
     assert_eq!(ssh_support(&cfg), SshSupport::Supported, "Stage 2+");
 }
+
+/// The account states the forge refuses, the same list the HTTP identity paths are held to
+/// (`every_identity_path_refuses_the_same_account_states` in `fake_forgejo.rs`): the forge reports
+/// each as a key that is not usable, and neither SSH path lets the account in.
+#[tokio::test]
+async fn every_refused_account_state_is_refused_on_both_ssh_paths() {
+    let states = [
+        "inactive",
+        "prohibit_login",
+        "restricted",
+        "two_factor_pending",
+        "blocked",
+    ];
+    for (n, state) in states.iter().enumerate() {
+        let (fake, url) = start().await;
+        let k = key(state);
+        let mut row = user_row(20 + n as i64, (9, "bob"), &[("o/r", "write")]);
+        row.usable = false;
+        fake.add(&k, row);
+        let a = authz(&url, AuthzCacheConfig::default());
+        assert_eq!(a.identify_ssh_key(&k).await, Ok(None), "{state}");
+        for access in [Access::Read, Access::Write] {
+            assert_eq!(
+                a.authorize_ssh_key(&k, "o/r", access).await,
+                Ok(Decision::Denied),
+                "{state} {access:?}"
+            );
+        }
+    }
+}

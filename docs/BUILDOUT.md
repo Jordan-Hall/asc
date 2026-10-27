@@ -35,18 +35,55 @@ system work (`WithSystem`); a system call never stands in for a user. Access lev
 *repo admin* (as in `Access` in `asc-rpc`), *maintainer* (named by the policy role `maintainer`), *owner admin* (admin of the user,
 organisation or repository that owns the resource), *site administrator*.
 
-**Forwarded administrator.** One call the hub makes with the internal (host service) token needs a person's authority: repairing
-an unusable `.asc/policy.toml`. The host service's credential never holds repository admin, so the hub forwards the signed-in
-person as gRPC metadata, signed with a key it shares with the server (`[auth] forwarded_key_file`, 32 bytes raw or 64 hex digits,
-mode 0600; without it no claim is accepted): `x-asc-forwarded-user: <user id>:<login>`, `x-asc-forwarded-role: admin`,
-`x-asc-forwarded-ts: <unix seconds>` and `x-asc-forwarded-mac`, the lower-case hex HMAC-SHA256 of
-`asc-forwarded-v1
+**Forwarded claim.** A page of the hub calls `asc serve` with the hub's service credential (the host service) and a claim about
+the person: what the hub's own permission model decided the person may do on the subject of the call. The claim is four gRPC
+metadata entries, signed with a key the hub and the server share (`[auth] forwarded_key_file`, 32 bytes raw or 64 hex digits, mode
+0600; without it no claim is accepted and a call carrying one is refused): `x-asc-forwarded-user: <user id>:<login>`,
+`x-asc-forwarded-role: read|write|admin`, `x-asc-forwarded-ts: <unix seconds, canonical decimal>` and `x-asc-forwarded-mac`, the
+lower-case hex HMAC-SHA256 of `asc-forwarded-v1
 <user>
 <role>
-<owner/name>
-<ts>`. The server accepts a claim only on a call made with the host service's
-credential, only for the repository named in the MAC, and only within 60 seconds of its clock; the hub sends it only after it
-checked that the person administers the repository. The repair is logged as `policy.repair.forwarded_admin`.
+<subject>
+<ts>`. The subject is exactly the name the server
+stores, never folded: `owner/name` for a repository (the `RepoRef` name of the request), `org:<name>` and `user:<login>` (lower
+case, as `OwnerRef` names are stored), and `instance`. `asc_rpc::forwarded` and `authz/claim.rs` (`subject::*`) define it once.
+
+Rules, all fail closed:
+
+* A claim counts only on a call authenticated as the host service, only for its own subject, and within 60 seconds of the
+  server's clock either way (that window is the replay window; the hub signs each call anew).
+* A host-service call that carries a claim is bound by it. A claim that is malformed, stale, signed under another key, for another
+  subject or too small is `PERMISSION_DENIED`; it is never read as system work. A `read` claim cannot write and a `write` claim
+  cannot administer. Without a claim the host service is the system, as before.
+* Every repository-scoped RPC checks the claim against the access it needs (`read`, `write` or `admin`). Audit scopes (repository
+  admin; organisation owner; site administrator for `instance`; the person's own account), AI keys, storage targets and the vault
+  are decided by the claim for the repository, organisation, account or instance they name. The signing keys pages act as the
+  person of an account claim (`user:<login>`, `read` to list, `write` to add or revoke).
+* Audit events of such a call name the person as the actor and the host service as `on_behalf_of` (the relay); a stored answer
+  of a mutating call is bound to the person and the subject as well as to the host principal, so it never replays to another
+  person or another target.
+* An unusable policy can be repaired by the host service only with an `admin` claim for the repository (logged as
+  `policy.repair.forwarded_admin`).
+
+**Authorization answers from the hub (K07).** `asc serve` asks `POST /api/internal/asc/authz` and reuses the answer only briefly
+and only in part. The cache key is the credential, the repository and the access; an entry lives at most 5 seconds (a configured
+longer lifetime is cut to it; a revocation cannot be seen without asking). Only a plain `read` decision is reused, and what is
+reused has no branch rules and no task: a caller that reads those (`decide`) asks every time, every `write` and `admin` call
+asks the hub fresh, an Actions task is never kept, and a hub that cannot answer refuses the caller and drops what it held. The
+answer's `perm_version` (a fingerprint of the permission facts, equality only) is kept with the decision and a change is logged
+as `authz.perm_version_changed`. `authenticate()` (who is this credential, with no repository) is the same endpoint with an empty
+`owner` and `repo`: the hub answers `allowed` with `user_id` and `username` when the credential authenticates, so no `read:user`
+scope is needed.
+
+**Tokens with a hub.** Behind a hub (`auth.provider = "forgejo"`) the hub's own access tokens, with their scopes, are the credential:
+asc stores none of them. An agent token (`ascat_`) is the hub's scoped-token idea applied to one repository, one agent and a budget,
+and it is only as good as the person who made it: on every use the hub is asked (`as_user_id`, internal token only, the answer must
+name that person) whether they may still read, or for a write still write, the repository; a person who lost access, a hub that
+cannot answer, and an answer about someone else all refuse the token (a read is kept for 5 seconds at most). The parallel systems
+that remain, and what each is for: the standalone token store (`provider = "token_store"`, `asc serve token ...`, `token_key_file`)
+exists for a server with no hub and is unused behind one, as are the SSH keys of that store; the vault key file seals stored
+secrets and is not a credential; the MCP HMAC keys seal cursors; `forwarded_key_file` signs the hub's claims. Remove the token store
+key from a hub deployment's config: nothing reads it.
 
 **Fail closed.** A handler that cannot decide (policy unreadable, store down, clock skew) refuses. Reading a resource of an owner the
 caller cannot administer answers `NOT_FOUND`, so identifiers cannot be probed.

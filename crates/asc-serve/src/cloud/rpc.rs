@@ -821,11 +821,13 @@ impl CloudService {
             ext.get::<Credential>().cloned(),
             name.as_str(),
         )
-        .with_forwarded(asc_rpc::auth::AdminProof::forwarded_in(
+        .with_forwarded(asc_rpc::auth::AdminProof::forwarded_for_call(
             &*self.authorizer,
+            &principal,
             meta,
             name.as_str(),
-        ));
+            access,
+        )?);
         Ok(CallCtx {
             repo: name,
             id_mode,

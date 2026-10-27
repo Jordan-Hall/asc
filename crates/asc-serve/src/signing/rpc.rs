@@ -130,6 +130,7 @@ impl Signing {
     pub async fn add_key(
         &self,
         principal_id: &str,
+        relay: Option<&str>,
         req: wire::AddSigningKeyRequest,
     ) -> Result<wire::AddSigningKeyResponse, Status> {
         let owner = Self::handle(principal_id)?;
@@ -171,11 +172,14 @@ impl Signing {
             created: at,
             expires_at: req.expires_at,
         };
-        let event = NewEvent::new("signing.key.added", actor_of(principal_id))
+        let mut event = NewEvent::new("signing.key.added", actor_of(principal_id))
             .owner(&owner)
             .target(&new.id)
             .detail("fingerprint", key.fingerprint())
             .detail("kind", key.kind().algorithm());
+        if let Some(r) = relay {
+            event = event.on_behalf_of(actor_of(r));
+        }
         match store::add_key(pool, &new, self.cfg.max_keys_per_user, Some(&event)).await {
             Ok(row) => Ok(wire::AddSigningKeyResponse {
                 key: Some(key_to_wire(&row)),
@@ -195,6 +199,7 @@ impl Signing {
     pub async fn revoke_key(
         &self,
         principal_id: &str,
+        relay: Option<&str>,
         req: wire::RevokeSigningKeyRequest,
     ) -> Result<wire::RevokeSigningKeyResponse, Status> {
         let me = handle_of(principal_id);
@@ -210,11 +215,14 @@ impl Signing {
         if !allowed {
             return Err(Status::not_found("no such key"));
         }
-        let event = NewEvent::new("signing.key.revoked", actor_of(principal_id))
+        let mut event = NewEvent::new("signing.key.revoked", actor_of(principal_id))
             .owner(&key.owner)
             .target(&key.id)
             .detail("fingerprint", &key.fingerprint)
             .detail("kind", key.kind.algorithm());
+        if let Some(r) = relay {
+            event = event.on_behalf_of(actor_of(r));
+        }
         let revoked = store::revoke_key(pool, &key.id, &reason, now(), Some(&event))
             .await
             .map_err(sql)?
@@ -438,19 +446,18 @@ impl SigningService {
         ext: &TonicExt,
         meta: &tonic::metadata::MetadataMap,
         needed: asc_rpc::forwarded::Role,
-    ) -> Result<String, Status> {
+    ) -> Result<(String, Option<String>), Status> {
         let id = self
             .env
             .authorizer
             .authenticate(ext.get::<Credential>())
             .await?
             .id;
-        Ok(crate::authz::claim::acting_principal(
-            &*self.env.authorizer,
-            &id,
-            meta,
-            needed,
-        ))
+        let acting =
+            crate::authz::claim::acting_principal(&*self.env.authorizer, &id, meta, needed)?;
+        // The host service stays on the record as the relay of a call made for a person.
+        let relay = (acting != id).then_some(id);
+        Ok((acting, relay))
     }
 }
 
@@ -461,7 +468,7 @@ impl SigningApi for SigningService {
         request: Request<wire::ListSigningKeysRequest>,
     ) -> Result<Response<wire::ListSigningKeysResponse>, Status> {
         let (meta, ext, msg) = request.into_parts();
-        let who = self.caller(&ext, &meta, Role::Read).await?;
+        let (who, _) = self.caller(&ext, &meta, Role::Read).await?;
         self.hub.list_keys(&who, msg).await.map(Response::new)
     }
 
@@ -470,8 +477,11 @@ impl SigningApi for SigningService {
         request: Request<wire::AddSigningKeyRequest>,
     ) -> Result<Response<wire::AddSigningKeyResponse>, Status> {
         let (meta, ext, msg) = request.into_parts();
-        let who = self.caller(&ext, &meta, Role::Write).await?;
-        self.hub.add_key(&who, msg).await.map(Response::new)
+        let (who, relay) = self.caller(&ext, &meta, Role::Write).await?;
+        self.hub
+            .add_key(&who, relay.as_deref(), msg)
+            .await
+            .map(Response::new)
     }
 
     async fn revoke_key(
@@ -479,8 +489,11 @@ impl SigningApi for SigningService {
         request: Request<wire::RevokeSigningKeyRequest>,
     ) -> Result<Response<wire::RevokeSigningKeyResponse>, Status> {
         let (meta, ext, msg) = request.into_parts();
-        let who = self.caller(&ext, &meta, Role::Write).await?;
-        self.hub.revoke_key(&who, msg).await.map(Response::new)
+        let (who, relay) = self.caller(&ext, &meta, Role::Write).await?;
+        self.hub
+            .revoke_key(&who, relay.as_deref(), msg)
+            .await
+            .map(Response::new)
     }
 
     async fn submit_signature(
