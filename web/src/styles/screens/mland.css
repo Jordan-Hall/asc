@@ -1,4 +1,4 @@
-:where(.mland) a{color:inherit;text-decoration:none}
+:where(.mland a){color:inherit;text-decoration:none}
 :where(.mland) button{font:inherit;color:inherit}
 :where(.mland button){font:inherit;color:inherit}
 :where(.mland .mono){font-family:'JetBrains Mono',ui-monospace,monospace}
@@ -28,7 +28,7 @@
 .mland10{margin:14px 0 0;font-size:32px;line-height:1.1;letter-spacing:-0.03em}
 .mland11{margin:12px 0 0;font-size:16.5px;line-height:1.55;color:var(--c-334155)}
 .mland12{display:flex;flex-direction:column;gap:10px;margin-top:18px}
-.mland13{background:var(--c-125469);color:#ffffff;border:1px solid var(--c-125469);border-radius:10px;min-height:48px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:15.5px;flex:1 1 0;min-width:0}
+.mland13{background:#125469;color:#ffffff;border:1px solid #125469;border-radius:10px;min-height:48px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:15.5px;flex:1 1 0;min-width:0}
 .mland14{background:var(--c-ffffff);color:var(--c-0f172a);border:1px solid var(--c-cbd5e1);border-radius:10px;min-height:48px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:15.5px;flex:1 1 0;min-width:0}
 .mland15{background:#0b1220;color:#e2e8f0;border-radius:12px;padding:14px 16px;overflow-x:auto}
 .mland16{font-size:12.5px;line-height:1.7;white-space:pre;min-width:max-content}
