@@ -24,6 +24,7 @@ pub mod land;
 pub mod limits;
 pub mod oauth;
 pub mod prm;
+pub mod toolset;
 pub mod write;
 
 use std::collections::HashSet;
@@ -32,11 +33,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use asc_mcp::backend::McpBackend;
-use asc_mcp::config::{McpConfig, parse_toolsets};
 use asc_mcp::cursor::KeyRing;
 use asc_mcp::handler::{Caller, Handler, HandlerConfig, Notifier, SUPPORTED_VERSIONS};
 use asc_mcp::schema::Surface;
-use asc_mcp::shape::HARD_MAX_TOKENS;
 use asc_rpc::auth::Authorizer;
 use axum::Router;
 use axum::body::Body;
@@ -175,6 +174,18 @@ impl HttpPolicy {
         }
     }
 
+    /// The policy of a server: its `public_url`, its listen address and `[mcp] allowed_hosts` and
+    /// `allowed_origins`.
+    #[must_use]
+    pub fn from_config(cfg: &ServeConfig) -> Self {
+        Self::new(
+            cfg.listen,
+            cfg.public_url.as_deref(),
+            &cfg.mcp.allowed_hosts,
+            &cfg.mcp.allowed_origins,
+        )
+    }
+
     /// Whether a `Host` value (or URI authority) names this server.
     #[must_use]
     pub fn host_allowed(&self, value: &str) -> bool {
@@ -287,8 +298,12 @@ struct McpState {
 
 /// The `/mcp` router over `handler`. It carries no authentication: the auth layer wraps it.
 pub fn router<B: McpBackend>(handler: Handler<B>, policy: HttpPolicy) -> Router {
+    service_router(Arc::new(handler), policy)
+}
+
+fn service_router(svc: Arc<dyn Service>, policy: HttpPolicy) -> Router {
     let state = Arc::new(McpState {
-        svc: Arc::new(handler),
+        svc,
         policy,
         next_id: AtomicU64::new(1),
     });
@@ -358,6 +373,7 @@ pub fn mount(ext: &Extensions, d: Deps<'_>) -> Result<(), ConfigError> {
         &prm::metadata_url(public_url),
     );
     let gate = Arc::new(auth.gate());
+    let forge_gate: Arc<dyn backend::RepoGate> = gate.clone();
     let mut backend = ServeBackend::new(
         d.routes,
         d.scope,
@@ -371,24 +387,32 @@ pub fn mount(ext: &Extensions, d: Deps<'_>) -> Result<(), ConfigError> {
     let backend = LandBackend::new(backend, Arc::new(RegistryLandPolicy(d.registry)));
 
     let mut hc = HandlerConfig::new(Surface::Http);
-    hc.config = McpConfig {
-        // The remote client narrows what it shows; the server lists every read toolset it can
-        // serve (a tool whose feature is absent is not listed).
-        toolsets: parse_toolsets("all"),
-        max_tokens: u64::from(cfg.mcp.max_tokens).min(HARD_MAX_TOKENS),
-        ..McpConfig::default()
-    };
+    // `[mcp] toolsets` and `tools` choose what is listed (a tool whose feature is absent is
+    // not listed either); the remote client can narrow it further.
+    hc.config = toolset::exposed(cfg);
+    let hc_tools = hc.config.tools.clone();
     hc.features = d.features.iter().cloned().collect();
     hc.server_mcp_write = cfg.mcp.write;
     let handler = Handler::new(backend, hc, keys);
 
-    let policy = HttpPolicy::new(
-        cfg.listen,
-        cfg.public_url.as_deref(),
-        &[],
-        &cfg.mcp.allowed_origins,
-    );
-    let app = prm::scope_layer(auth::layer(router(handler, policy), auth), authorizer);
+    let policy = HttpPolicy::from_config(cfg);
+    let mut svc: Arc<dyn Service> = Arc::new(handler);
+    if cfg.mcp.forge.enabled() {
+        let adapter = cfg
+            .mcp
+            .forge
+            .open_adapter()
+            .map_err(|e| ConfigError::Invalid(format!("mcp.forge: {e}")))?;
+        svc = toolset::with_forge(
+            svc,
+            forge_gate,
+            adapter,
+            &cfg.mcp.forge,
+            hc_tools.as_ref(),
+            u64::from(cfg.mcp.max_tokens),
+        );
+    }
+    let app = prm::scope_layer(auth::layer(service_router(svc, policy), auth), authorizer);
     ext.http.register(app);
     tracing::info!(write = cfg.mcp.write, "mcp mounted at {PATH}");
     Ok(())
@@ -726,6 +750,37 @@ mod tests {
         assert!(!p.host_allowed("evil.example.net"));
         assert!(!p.host_allowed("127.0.0.1:1"));
         assert!(!p.host_allowed(""));
+    }
+
+    #[test]
+    fn the_policy_follows_the_configuration() {
+        let cfg = ServeConfig::parse(
+            "store = \"memory:///\"\ndb = \"sqlite::memory:\"\nlisten = \"0.0.0.0:7890\"\n\
+             public_url = \"https://asc.example.org\"\n\
+             [mcp]\nallowed_hosts = [\"Hub.Example.org\", \"gw.example.org:8443\"]\n\
+             allowed_origins = [\"https://hub.example.org\"]",
+        )
+        .unwrap();
+        let p = HttpPolicy::from_config(&cfg);
+        assert!(p.host_allowed("asc.example.org"));
+        assert!(p.host_allowed("hub.example.org"));
+        assert!(
+            p.host_allowed("hub.example.org:443"),
+            "a bare entry takes any port"
+        );
+        assert!(p.host_allowed("gw.example.org:8443"));
+        assert!(!p.host_allowed("gw.example.org:1"));
+        assert!(!p.host_allowed("evil.example.net"));
+        assert!(p.origin_allowed("https://hub.example.org"));
+        // A wildcard listen address names no loopback host: only the configured names work.
+        assert!(!p.host_allowed("localhost:7890"));
+        let local = ServeConfig::parse(
+            "store = \"memory:///\"\ndb = \"sqlite::memory:\"\nlisten = \"127.0.0.1:7890\"",
+        )
+        .unwrap();
+        let p = HttpPolicy::from_config(&local);
+        assert!(p.host_allowed("localhost:7890") && p.host_allowed("127.0.0.1:7890"));
+        assert!(!p.host_allowed("localhost:1"));
     }
 
     #[test]

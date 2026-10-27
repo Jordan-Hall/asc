@@ -120,6 +120,21 @@ fn call_of(msg: &Value) -> Option<Result<Call, (&'static str, Call)>> {
             },
         )))
     };
+    if super::forge::FORGE_TOOLS.contains(&tool.as_str()) {
+        // A forge tool is read-only and always names its repository; the gate answers from this
+        // decision, so a repository the credential cannot read is `NOT_FOUND` before the forge
+        // is asked.
+        return match msg.pointer("/params/arguments/repo") {
+            Some(Value::String(r)) => Some(Ok(Call {
+                repo: Some(r.clone()),
+                tool,
+                mode: Mode::Read,
+                id,
+            })),
+            Some(_) => bad("repo must be a string", tool, id),
+            None => bad("repo (owner/name) is required", tool, id),
+        };
+    }
     let Some(def) = catalogue::find(&tool, McpSurface::Http) else {
         // An unknown tool is refused by the handler and touches nothing.
         return Some(Ok(Call {
@@ -369,4 +384,27 @@ async fn authorise(State(auth): State<McpAuth>, req: Request, next: Next) -> Res
         );
     }
     res
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn forge(args: Value) -> Value {
+        json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+               "params": {"name": "forge_issues", "arguments": args}})
+    }
+
+    #[test]
+    fn a_forge_tool_is_a_read_of_the_repository_it_names() {
+        let c = call_of(&forge(json!({"repo": "acme/app"})))
+            .unwrap()
+            .ok()
+            .unwrap();
+        assert_eq!(c.repo.as_deref(), Some("acme/app"));
+        assert!(matches!(c.mode, Mode::Read));
+        for bad in [json!({}), json!({"repo": 7})] {
+            assert!(call_of(&forge(bad)).unwrap().is_err());
+        }
+    }
 }
