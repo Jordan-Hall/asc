@@ -13,7 +13,7 @@ use std::sync::{Arc, OnceLock};
 
 use asc_core::git::ObjectKind;
 use asc_core::id::{GitOid, RefTarget};
-use asc_git::realgit::RealGit;
+use asc_git::realgit::{RealGit, Resolver};
 use asc_state::state::git_map;
 use asc_state::{AscHome, StateDb};
 use asc_store::refs::RepoKey;
@@ -581,7 +581,15 @@ fn hooks_dir_of(config: &ConfigSnapshot, toplevel: &Path, common_dir: &Path) -> 
 
 /// Real git from `asc.realGit` of the trust-filtered `config`, for the hook shell.
 fn resolve_real_git(config: &ConfigSnapshot, home: &AscHome) -> Option<RealGit> {
-    RealGit::resolve(config.path("asc.realGit"), Some(home.root())).ok()
+    #[cfg_attr(not(test), allow(unused_mut))]
+    let mut resolver = Resolver::from_process(config.path("asc.realGit"), Some(home.root()));
+    // The tests settle where real git comes from through the config alone, whatever `ASC_REAL_GIT`
+    // the run's environment holds (the pinned-git CI job sets it).
+    #[cfg(test)]
+    {
+        resolver.env_override = None;
+    }
+    resolver.resolve().ok()
 }
 
 /// The runner of an admitted workspace, configured only through the filtered `config`.

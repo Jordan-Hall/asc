@@ -521,7 +521,7 @@ mod tests {
                 "sandbox::tests::child_echo".into(),
             ]],
             path_dirs: vec![dir],
-            restricted_wrapper: vec!["env".into(), "ASC_ALLOW={allow}".into()],
+            restricted_wrapper: vec!["/usr/bin/env".into(), "ASC_ALLOW={allow}".into()],
             ..Config::default()
         });
         let mut s = spec(&name, "sandbox::tests::child_echo", &work);

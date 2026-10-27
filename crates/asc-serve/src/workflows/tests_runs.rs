@@ -1376,6 +1376,8 @@ async fn secrets_reach_a_step_only_when_its_code_is_landed_or_the_exact_version_
     put_secrets(&w).await;
     enable(&w, "alice-token", "show", true).await.unwrap();
     let hub = w.wf.as_ref().unwrap();
+    // The first look after switching on fixes what is history.
+    hub.poll_repo("acme/app").await.unwrap();
     // An unapproved change runs with no secrets: the step fails before any is opened.
     push_change(&w, "bob-token", "refs/heads/feature-a", &w.base, "src/a.rs").await;
     hub.poll_repo("acme/app").await.unwrap();
