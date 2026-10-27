@@ -32,6 +32,8 @@ const WORD: &str = "quokka_in_every_repo";
 /// A token is its own name; each is granted the repositories listed for it.
 struct Acl {
     grants: Vec<(&'static str, Vec<&'static str>)>,
+    /// Questions asked of `authorize`.
+    asked: std::sync::atomic::AtomicUsize,
 }
 
 #[async_trait::async_trait]
@@ -43,6 +45,7 @@ impl Authorizer for Acl {
         _access: Access,
     ) -> Result<Principal, AuthError> {
         let token = token.ok_or(AuthError::Unauthenticated)?;
+        self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         for (name, repos) in &self.grants {
             if Credential::bearer(token.clone()) == cred(name) {
                 return if repos.contains(&repo) {
@@ -145,12 +148,23 @@ async fn set_master(r: &Registry, e: &RepoEntry, cs: ChangesetId) {
 
 struct Rig {
     svc: CrossSearchService,
+    acl: Arc<Acl>,
     _dir: tempfile::TempDir,
 }
 
 /// Repositories `o/a`, `o/b`, `o/c` and `p/d`, each with `files` files that hold [`WORD`] and a
 /// word of their own.
 async fn rig(files: usize, limits: Limits, grants: Vec<(&'static str, Vec<&'static str>)>) -> Rig {
+    rig_with(files, 0, limits, grants).await
+}
+
+/// [`rig`] with `extra` empty repositories `big/r<i>` that nobody may read.
+async fn rig_with(
+    files: usize,
+    extra: usize,
+    limits: Limits,
+    grants: Vec<(&'static str, Vec<&'static str>)>,
+) -> Rig {
     let pool = migrate::connect("sqlite::memory:", 1).await.unwrap();
     migrate::migrate(&pool).await.unwrap();
     let registry = Arc::new(Registry::new(pool, "memory:///").unwrap());
@@ -171,13 +185,30 @@ async fn rig(files: usize, limits: Limits, grants: Vec<(&'static str, Vec<&'stat
         let cs = commit(&e, &fs).await;
         set_master(&registry, &e, cs).await;
     }
+    for i in 0..extra {
+        registry
+            .create(
+                &RepoName::parse(&format!("big/r{i:05}")).unwrap(),
+                &Default::default(),
+            )
+            .await
+            .unwrap();
+    }
     let dir = tempfile::tempdir().unwrap();
     let mut settings = Settings::new(dir.path().join("ci"));
     settings.page_key = Some([7; 32]);
     settings.cross = limits;
     let rpc = Arc::new(CodeIntelRpc::new(registry, settings, None).unwrap());
-    let svc = CrossSearchService::new(rpc, Arc::new(Acl { grants }), ServerInfo::default());
-    Rig { svc, _dir: dir }
+    let acl = Arc::new(Acl {
+        grants,
+        asked: Default::default(),
+    });
+    let svc = CrossSearchService::new(rpc, acl.clone(), ServerInfo::default());
+    Rig {
+        svc,
+        acl,
+        _dir: dir,
+    }
 }
 
 fn target(repos: &[&str]) -> wire::CrossSearchTarget {
@@ -416,4 +447,100 @@ async fn more_than_sixty_four_named_repositories_are_refused() {
         .await
         .unwrap_err();
     assert_eq!(e.code(), tonic::Code::InvalidArgument);
+}
+
+/// Thousands of repositories the caller cannot read cost a bounded number of questions to the
+/// authorizer and finish in time, for a search, a symbol lookup and a symbol panel; the walk gives
+/// a token to go on from.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn thousands_of_unreadable_repositories_cost_a_bounded_number_of_authorizer_calls() {
+    let limits = Limits {
+        max_repos: 200,
+        timeout: std::time::Duration::from_secs(60),
+    };
+    let rig = rig_with(1, 5000, limits, grants()).await;
+    let cap = asc_serve::codeintel::cross::MAX_ASKS;
+    let asked = |rig: &Rig| rig.acl.asked.load(std::sync::atomic::Ordering::SeqCst);
+
+    let r = search(
+        &rig,
+        "none",
+        request(scope(wire::OwnerKind::Instance, ""), WORD, 100, ""),
+    )
+    .await
+    .unwrap();
+    assert!(r.repos.is_empty());
+    assert!(r.truncated && !r.next_page_token.is_empty(), "{r:?}");
+    assert!(asked(&rig) <= cap, "{} questions", asked(&rig));
+
+    // The token goes on from there, and still within its own allowance.
+    let before = asked(&rig);
+    let r2 = search(
+        &rig,
+        "none",
+        request(
+            scope(wire::OwnerKind::Instance, ""),
+            WORD,
+            100,
+            &r.next_page_token,
+        ),
+    )
+    .await
+    .unwrap();
+    assert!(r2.truncated);
+    assert!(asked(&rig) - before <= cap);
+
+    let before = asked(&rig);
+    let sym = wire::LookupSymbolRequest {
+        target: Some(scope(wire::OwnerKind::Instance, "")),
+        name: "anything".to_owned(),
+        ..Default::default()
+    };
+    let mut req = Request::new(sym);
+    req.extensions_mut().insert(cred("none"));
+    let out = rig.svc.lookup_symbol(req).await.unwrap().into_inner();
+    assert!(out.hits.is_empty() && out.truncated);
+    assert!(asked(&rig) - before <= cap);
+
+    // The panel's repository is readable; the cross-repository part is bounded all the same.
+    let before = asked(&rig);
+    let panel = wire::SymbolPanelRequest {
+        repo: Some(wire::RepoRef {
+            name: "o/a".to_owned(),
+            id_mode: 0,
+        }),
+        name: "anything".to_owned(),
+        cross_repo: true,
+        ..Default::default()
+    };
+    let mut req = Request::new(panel);
+    req.extensions_mut().insert(cred("some"));
+    let _ = rig.svc.symbol_panel(req).await;
+    assert!(
+        asked(&rig) - before <= 8 * 20 + 1,
+        "{}",
+        asked(&rig) - before
+    );
+}
+
+/// A call past its deadline stops asking and answers `DEADLINE_EXCEEDED`, for the lookup and the
+/// panel as well as the search.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_zero_deadline_stops_every_call() {
+    let limits = Limits {
+        max_repos: 200,
+        timeout: std::time::Duration::from_millis(1),
+    };
+    let rig = rig_with(1, 300, limits, grants()).await;
+    let r = search(
+        &rig,
+        "none",
+        request(scope(wire::OwnerKind::Instance, ""), WORD, 100, ""),
+    )
+    .await;
+    // Either it ran out of time, or it stopped asking and said it was cut short.
+    match r {
+        Err(e) => assert_eq!(e.code(), tonic::Code::DeadlineExceeded),
+        Ok(r) => assert!(r.truncated || r.repos.is_empty()),
+    }
 }
