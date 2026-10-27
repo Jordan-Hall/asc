@@ -48,6 +48,15 @@ cp -R "$work/r123" "$work/tampered"
 printf 'x' >> "$work/tampered/asc-1.2.3-x86_64-unknown-linux-gnu.tar.gz"
 refuse "a tampered archive builds no package" env PATH="$work/fakebin:$PATH" "$SH" "$REL/linux-packages.sh" --release "$work/tampered" --out "$work/pkgs2"
 contains "the refusal names the checksum" "$out" "SHA256SUMS"
+cp -R "$work/r123" "$work/cfgtamper"
+printf 'scripts:
+  postinstall: /tmp/x
+' >> "$work/cfgtamper/nfpm-amd64.yaml"
+refuse "a modified nfpm config builds no package" env PATH="$work/fakebin:$PATH" "$SH" "$REL/linux-packages.sh" --release "$work/cfgtamper" --out "$work/pkgs4"
+contains "the refusal names the config" "$out" "nfpm-amd64.yaml"
+cp -R "$work/r123" "$work/cfgextra"
+rm "$work/cfgextra/nfpm-arm64.yaml"
+refuse "a missing nfpm config builds no package" env PATH="$work/fakebin:$PATH" "$SH" "$REL/linux-packages.sh" --release "$work/cfgextra" --out "$work/pkgs5"
 refuse "a key without a signature file is refused" env PATH="$work/fakebin:$PATH" ASC_RELEASE_PUBKEY=RWQexample "$SH" "$REL/linux-packages.sh" --release "$work/r123" --out "$work/pkgs3"
 
 # ---- rendered manifests parse where a tool exists ------------------------------------------------
