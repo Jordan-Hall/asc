@@ -54,6 +54,8 @@ pub struct Facts {
     pub deps: BTreeMap<String, String>,
     /// The other fields a lock entry carries and an install depends on (engines, platforms, binaries).
     pub traits: BTreeMap<String, String>,
+    /// The independent checks the digests passed, for the proposal to report.
+    pub verified: Vec<String>,
 }
 
 impl Facts {
@@ -318,16 +320,22 @@ pub fn parse_crates_version(body: &[u8], version: &str) -> Result<String, String
     Ok(c.to_owned())
 }
 
-/// The sparse index path of a crate.
-pub fn crates_index_path(name: &str) -> Vec<String> {
+/// The sparse index path of a crate. The name is checked against crates.io's grammar first, and the
+/// slices are taken with `get`, so no name can split a character.
+pub fn crates_index_path(name: &str) -> Result<Vec<String>, String> {
+    super::names::check(super::model::Ecosystem::CratesIo, name)?;
     let n = name.to_ascii_lowercase();
-    match n.len() {
-        0 => Vec::new(),
+    let cut = |a: usize, b: usize| {
+        n.get(a..b)
+            .map(str::to_owned)
+            .ok_or_else(|| "the crate name is not usable".to_owned())
+    };
+    Ok(match n.len() {
         1 => vec!["1".into(), n],
         2 => vec!["2".into(), n],
-        3 => vec!["3".into(), n[..1].to_owned(), n],
-        _ => vec![n[..2].to_owned(), n[2..4].to_owned(), n],
-    }
+        3 => vec!["3".into(), cut(0, 1)?, n],
+        _ => vec![cut(0, 2)?, cut(2, 4)?, n],
+    })
 }
 
 /// The sparse index file of a crate (one JSON object per version, per line): checksum and dependencies
