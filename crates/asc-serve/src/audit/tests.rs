@@ -1305,3 +1305,58 @@ async fn the_hubs_claim_decides_the_scope_for_the_person_and_nothing_wider() {
             .is_ok()
     );
 }
+
+#[tokio::test]
+async fn an_export_made_for_a_person_names_the_person_and_the_relay() {
+    use asc_rpc::forwarded::{ForwardedVerifier, Role};
+    use asc_rpc::services::audit_server::Audit as _;
+    let (_plain, p) = service().await;
+    let registry = Arc::new(Registry::new(p.clone(), "memory:///").unwrap());
+    let audit = Arc::new(Audit::new(registry, AuditConfig::default(), Arc::default()));
+    let auth: Arc<dyn asc_rpc::auth::Authorizer> =
+        Arc::new(crate::authz::forwarded::ForwardedAuthorizer::new(
+            Arc::new(StaticTokens::new().with_token(HOST, "host-service", Access::Admin)),
+            ForwardedVerifier::new(vec![6u8; 32]).unwrap(),
+        ));
+    let svc = AuditService::new(audit, auth, ServerInfo::default());
+    store::record(&p, &push("acme/app", 1)).await.unwrap();
+    let v = ForwardedVerifier::new(vec![6u8; 32]).unwrap();
+    let mut r = req(
+        wire::ExportAuditRequest {
+            scope: scope(wire::OwnerKind::Repo, "acme/app"),
+            format: wire::AuditExportFormat::Jsonl as i32,
+            ..Default::default()
+        },
+        Some(HOST),
+    );
+    for (k, val) in v.sign("7:alice", Role::Admin, "acme/app", crate::ai::clock::now()) {
+        r.metadata_mut().append(k, val.parse().unwrap());
+    }
+    let _ = svc.export(r).await.unwrap();
+    // The export is itself an event of the repository: the person did it, through the host.
+    let events = store::list(
+        &p,
+        &Scope::repo("acme/app"),
+        &Filter::default(),
+        true,
+        50,
+        None,
+    )
+    .await
+    .unwrap()
+    .events;
+    let exported = events
+        .iter()
+        .find(|e| e.action == "audit.exported")
+        .expect("the export is recorded");
+    assert_eq!(
+        (exported.actor.kind.as_str(), exported.actor.name.as_str()),
+        ("user", "alice"),
+        "the person, not the host"
+    );
+    let relay = exported
+        .on_behalf_of
+        .as_ref()
+        .expect("the relay is recorded");
+    assert_eq!(relay.kind, "host");
+}

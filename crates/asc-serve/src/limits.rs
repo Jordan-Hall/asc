@@ -634,6 +634,10 @@ impl Authorizer for RecordingAuthorizer {
         self.inner.forwarded_verifier()
     }
 
+    async fn user_standing(&self, user_id: i64, repo: &str, access: Access) -> Option<bool> {
+        self.inner.user_standing(user_id, repo, access).await
+    }
+
     /// SSH keys are the inner authorizer's to recognise; the listener's own admission limits
     /// them (U86), so this only forwards.
     async fn identify_ssh_key(

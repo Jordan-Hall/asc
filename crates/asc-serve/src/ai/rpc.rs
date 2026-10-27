@@ -43,36 +43,41 @@ impl AiService {
         InterceptedService::new(server, AuthInterceptor)
     }
 
-    /// Whether the caller administers `owner`. A call from the hub with a claim is decided by
-    /// the claim alone (the hub's own verdict on the organisation, account, repository or
-    /// instance); a claim that does not verify is refused; without one the rule of
-    /// [`OwnerAdmin`] applies.
+    /// Whether the caller administers `owner`, and as whom. A call from the hub with a claim is
+    /// decided by the claim alone (the hub's own verdict on the organisation, account, repository
+    /// or instance) and acts as the person of the claim, with the host service as the relay; a
+    /// claim that does not verify is refused; without one the rule of [`OwnerAdmin`] applies.
     async fn administers(
         &self,
-        caller: &Caller,
+        caller: Caller,
         meta: &tonic::metadata::MetadataMap,
         owner: &Owner,
-    ) -> bool {
-        use crate::authz::claim::{HostCall, classify};
+    ) -> Option<Caller> {
+        use crate::authz::claim::{HostCall, classify, subject};
         use asc_rpc::forwarded::Role;
         let (subject, needed) = match owner {
-            Owner::User(n) => (format!("user:{n}"), Role::Write),
-            Owner::Org(n) => (format!("org:{n}"), Role::Admin),
-            Owner::Repo(r) => (r.clone(), Role::Admin),
-            Owner::Instance => ("instance".to_owned(), Role::Admin),
+            Owner::User(n) => (subject::user(n), Role::Write),
+            Owner::Org(n) => (subject::org(n), Role::Admin),
+            Owner::Repo(r) => (subject::repo(r), Role::Admin),
+            Owner::Instance => (subject::INSTANCE.to_owned(), Role::Admin),
         };
         match classify(&*self.authorizer, &caller.principal.id, meta, &subject) {
             HostCall::Person(c) => {
-                c.allows(needed)
-                    && !matches!(owner, Owner::User(n) if !c.login().eq_ignore_ascii_case(n))
+                let own = !matches!(owner, Owner::User(n) if !c.login().eq_ignore_ascii_case(n));
+                (c.allows(needed) && own).then(|| Caller {
+                    replay_key: format!("{}\n{}\n{subject}", caller.principal.id, c.user),
+                    relay: Some(caller.principal.id.clone()),
+                    principal: asc_rpc::auth::Principal { id: c.user },
+                    credential: caller.credential,
+                })
             }
-            HostCall::Refused => false,
-            HostCall::System | HostCall::NotHost => {
-                self.hub
-                    .owners
-                    .can_admin(caller.credential.as_ref(), &caller.principal, owner)
-                    .await
-            }
+            HostCall::Refused => None,
+            HostCall::System | HostCall::NotHost => self
+                .hub
+                .owners
+                .can_admin(caller.credential.as_ref(), &caller.principal, owner)
+                .await
+                .then_some(caller),
         }
     }
 
@@ -84,11 +89,9 @@ impl AiService {
         owner: &Owner,
     ) -> Result<Caller, Status> {
         let caller = authenticate(&self.authorizer, ext).await?;
-        if self.administers(&caller, meta, owner).await {
-            Ok(caller)
-        } else {
-            Err(AiError::NotFound.status())
-        }
+        self.administers(caller, meta, owner)
+            .await
+            .ok_or_else(|| AiError::NotFound.status())
     }
 
     /// The key `id` and the caller, provided they administer its owner; else `NOT_FOUND`.
@@ -100,10 +103,9 @@ impl AiService {
     ) -> Result<(Caller, super::store::KeyRow), Status> {
         let caller = authenticate(&self.authorizer, ext).await?;
         let key = self.hub.get_key(id).await.map_err(|e| e.status())?;
-        if self.administers(&caller, meta, &key.owner).await {
-            Ok((caller, key))
-        } else {
-            Err(AiError::NotFound.status())
+        match self.administers(caller, meta, &key.owner).await {
+            Some(caller) => Ok((caller, key)),
+            None => Err(AiError::NotFound.status()),
         }
     }
 }
@@ -129,7 +131,13 @@ fn audit_repo(o: &Owner) -> &str {
 
 /// Records a key event. Only the provider, the last four characters of the key and the owner
 /// label are written; the key itself is never in memory here.
-async fn audit_key(hub: &AiHub, action: &str, actor: &str, k: &super::store::KeyRow) {
+async fn audit_key(
+    hub: &AiHub,
+    action: &str,
+    actor: &str,
+    relay: Option<&str>,
+    k: &super::store::KeyRow,
+) {
     hub.audit(Entry {
         action,
         target: &k.id,
@@ -140,6 +148,7 @@ async fn audit_key(hub: &AiHub, action: &str, actor: &str, k: &super::store::Key
             ("key_hint", k.key_hint.clone()),
             ("scope", k.owner.label()),
         ],
+        on_behalf: relay,
         ..Entry::new(action, actor)
     })
     .await;
@@ -171,15 +180,16 @@ impl AiProviders for AiService {
         };
         let hub = self.hub.clone();
         let actor = caller.principal.id.clone();
+        let relay = caller.relay.clone();
         once(
             &hub.ops,
             op,
-            &caller.principal.id,
+            &caller.replay_key,
             "AiProviders/CreateKey",
             true,
             || async {
                 let k = hub.create_key(&owner, new).await.map_err(|e| e.status())?;
-                audit_key(&hub, "ai.key.created", &actor, &k).await;
+                audit_key(&hub, "ai.key.created", &actor, relay.as_deref(), &k).await;
                 Ok(wire::CreateAiKeyResponse {
                     key: Some(wire_key(&hub, &k).await),
                 })
@@ -234,15 +244,16 @@ impl AiProviders for AiService {
         let hub = self.hub.clone();
         let id = msg.id;
         let actor = caller.principal.id.clone();
+        let relay = caller.relay.clone();
         once(
             &hub.ops,
             op,
-            &caller.principal.id,
+            &caller.replay_key,
             "AiProviders/UpdateKey",
             true,
             || async {
                 let k = hub.update_key(&id, patch).await.map_err(|e| e.status())?;
-                audit_key(&hub, "ai.key.updated", &actor, &k).await;
+                audit_key(&hub, "ai.key.updated", &actor, relay.as_deref(), &k).await;
                 Ok(wire::UpdateAiKeyResponse {
                     key: Some(wire_key(&hub, &k).await),
                 })
@@ -261,15 +272,16 @@ impl AiProviders for AiService {
         let op = op_id(&meta)?;
         let hub = self.hub.clone();
         let actor = caller.principal.id.clone();
+        let relay = caller.relay.clone();
         once(
             &hub.ops,
             op,
-            &caller.principal.id,
+            &caller.replay_key,
             "AiProviders/DeleteKey",
             true,
             || async {
                 hub.delete_key(&msg.id).await.map_err(|e| e.status())?;
-                audit_key(&hub, "ai.key.deleted", &actor, &key).await;
+                audit_key(&hub, "ai.key.deleted", &actor, relay.as_deref(), &key).await;
                 Ok(wire::DeleteAiKeyResponse {})
             },
         )
@@ -299,6 +311,7 @@ impl AiProviders for AiService {
                     ("provider", t.key.provider.name().to_owned()),
                     ("result", result),
                 ],
+                on_behalf: caller.relay.as_deref(),
                 ..Entry::new("ai.key.tested", &caller.principal.id)
             })
             .await;

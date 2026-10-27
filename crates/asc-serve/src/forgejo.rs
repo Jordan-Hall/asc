@@ -325,9 +325,23 @@ pub struct Decision {
     pub task: Option<TaskInfo>,
     /// `branch_rules.require_signed`: a land must refuse a signed stack it would rewrite.
     pub require_signed: bool,
+    /// The hub's fingerprint of every permission fact behind this answer (K07 `perm_version`);
+    /// 0 from a forge that sends none. It is not a counter: only equality means anything.
+    pub perm_version: u64,
 }
 
 impl Decision {
+    /// The part of an answer that may be kept for the next caller: what is about the repository
+    /// and the asker. The branch rules and the task belong to the request (to its ref), so they
+    /// are cleared; an Actions task is never kept at all.
+    fn reusable(&self) -> Option<Self> {
+        (!self.is_actions_task).then(|| Self {
+            task: None,
+            require_signed: false,
+            ..self.clone()
+        })
+    }
+
     fn internal() -> Self {
         Self {
             principal: Principal {
@@ -338,6 +352,7 @@ impl Decision {
             is_actions_task: false,
             task: None,
             require_signed: false,
+            perm_version: 0,
         }
     }
 
@@ -351,6 +366,7 @@ impl Decision {
             is_actions_task: false,
             task: None,
             require_signed: false,
+            perm_version: 0,
         }
     }
 }
@@ -422,7 +438,11 @@ struct Cached {
     answer: Result<Arc<Decision>, AuthError>,
 }
 
-/// Cache sizes and lifetimes.
+/// The longest an answer of the forge is kept, whatever is configured: a revocation cannot be
+/// seen without asking, so the window stays short.
+pub const MAX_AUTHZ_TTL: Duration = Duration::from_secs(5);
+
+/// Cache sizes and lifetimes. Lifetimes above [`MAX_AUTHZ_TTL`] are cut to it.
 #[derive(Clone, Copy, Debug)]
 pub struct AuthzCacheConfig {
     pub positive: Duration,
@@ -433,8 +453,8 @@ pub struct AuthzCacheConfig {
 impl Default for AuthzCacheConfig {
     fn default() -> Self {
         Self {
-            positive: POSITIVE_TTL,
-            negative: NEGATIVE_TTL,
+            positive: POSITIVE_TTL.min(MAX_AUTHZ_TTL),
+            negative: NEGATIVE_TTL.min(MAX_AUTHZ_TTL),
             entries: CACHE_ENTRIES,
         }
     }
@@ -448,7 +468,9 @@ struct AuthzCore {
 }
 
 impl AuthzCore {
-    fn new(cfg: AuthzCacheConfig, internal: Option<InternalToken>) -> Self {
+    fn new(mut cfg: AuthzCacheConfig, internal: Option<InternalToken>) -> Self {
+        cfg.positive = cfg.positive.min(MAX_AUTHZ_TTL);
+        cfg.negative = cfg.negative.min(MAX_AUTHZ_TTL);
         Self {
             cache: quick_cache::sync::Cache::new(cfg.entries.max(1)),
             cfg,
@@ -456,11 +478,16 @@ impl AuthzCore {
         }
     }
 
+    /// `request_level` is true for a caller that reads the branch rules or the task of the answer:
+    /// it always asks the forge. So does every call that changes something (`write` and `admin`
+    /// access), and every Actions task. Only a plain read decision is reused, for at most
+    /// [`MAX_AUTHZ_TTL`], and what is reused has no branch rules and no task.
     async fn resolve<Fut>(
         &self,
         login: Option<Login<'_>>,
         repo: &str,
         access: Access,
+        request_level: bool,
         fetch: impl FnOnce() -> Fut,
     ) -> Result<Arc<Decision>, AuthError>
     where
@@ -472,28 +499,53 @@ impl AuthzCore {
             return Ok(Arc::new(Decision::internal()));
         }
         let key = cache_key(login, repo, access);
+        let fresh = request_level || access != Access::Read;
+        let mut previous = None;
         if let Some(hit) = self.cache.get(&key) {
             let ttl = if hit.answer.is_ok() {
                 self.cfg.positive
             } else {
                 self.cfg.negative
             };
-            if hit.at.elapsed() < ttl {
+            if !fresh && hit.at.elapsed() < ttl {
                 return hit.answer;
             }
+            previous = hit.answer.ok().map(|d| d.perm_version);
         }
+        // A forge that cannot answer refuses the caller, and nothing it said before is reused.
         let answer = match fetch().await {
             Ok(d) => Ok(Arc::new(d)),
             Err(Fetch::Denied(e)) => Err(e),
-            Err(Fetch::Unavailable) => return Err(AuthError::Forbidden),
+            Err(Fetch::Unavailable) => {
+                self.cache.remove(&key);
+                return Err(AuthError::Forbidden);
+            }
         };
-        self.cache.insert(
-            key,
-            Cached {
-                at: Instant::now(),
-                answer: answer.clone(),
-            },
-        );
+        if let (Ok(d), Some(before)) = (&answer, previous)
+            && before != d.perm_version
+        {
+            tracing::info!(
+                event = "authz.perm_version_changed",
+                repo,
+                "the forge's permission facts changed since the last answer"
+            );
+        }
+        let kept = match &answer {
+            Ok(d) => d.reusable().map(|r| Ok(Arc::new(r))),
+            Err(e) => Some(Err(e.clone())),
+        };
+        match kept {
+            Some(answer) => self.cache.insert(
+                key,
+                Cached {
+                    at: Instant::now(),
+                    answer,
+                },
+            ),
+            None => {
+                self.cache.remove(&key);
+            }
+        }
         answer
     }
 }
@@ -512,7 +564,7 @@ impl AuthzCore {
             return Err(AuthError::Unauthenticated);
         };
         let decision = self
-            .resolve(login, "", Access::Read, || async {
+            .resolve(login, "", Access::Read, false, || async {
                 let req = l.apply(client.http.get(client.url(&["api", "v1", "user"])));
                 let (status, body) = ForgejoClient::send(req)
                     .await
@@ -620,9 +672,23 @@ impl PublicApiAuthz {
         repo: &str,
         access: Access,
     ) -> Result<Arc<Decision>, AuthError> {
+        self.decide_scoped(login, repo, access, true).await
+    }
+
+    /// [`decide_login`](Self::decide_login), with `request_level` false for a caller that needs
+    /// only who the asker is and what they may do.
+    async fn decide_scoped(
+        &self,
+        login: Option<Login<'_>>,
+        repo: &str,
+        access: Access,
+        request_level: bool,
+    ) -> Result<Arc<Decision>, AuthError> {
         let name = parse_repo(repo)?;
         self.core
-            .resolve(login, repo, access, || self.fetch(login, &name, access))
+            .resolve(login, repo, access, request_level, || {
+                self.fetch(login, &name, access)
+            })
             .await
     }
 
@@ -753,7 +819,11 @@ impl Authorizer for PublicApiAuthz {
         repo: &str,
         access: Access,
     ) -> Result<Principal, AuthError> {
-        Ok(self.decide(token, repo, access).await?.principal.clone())
+        Ok(self
+            .decide_scoped(token.map(Login::bearer), repo, access, false)
+            .await?
+            .principal
+            .clone())
     }
 
     async fn authorize_credential(
@@ -763,7 +833,7 @@ impl Authorizer for PublicApiAuthz {
         access: Access,
     ) -> Result<Principal, AuthError> {
         Ok(self
-            .decide_credential(credential, repo, access)
+            .decide_scoped(credential.map(Login::of), repo, access, false)
             .await?
             .principal
             .clone())
@@ -810,6 +880,10 @@ struct AuthzRequest<'a> {
     /// `user:token` as it checks a git client's HTTP Basic credentials.
     #[serde(skip_serializing_if = "Option::is_none")]
     user: Option<&'a str>,
+    /// Answer as if this forge user asked, with no credential of theirs (the internal token
+    /// only): the standing of a person whose agent token is in use.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    as_user_id: Option<i64>,
     owner: &'a str,
     repo: &'a str,
     mode: &'static str,
@@ -843,6 +917,9 @@ struct AuthzAnswer {
     /// The forge's stable id of the repository; 0 from a forge that does not send one.
     #[serde(default)]
     repo_id: u64,
+    /// The hub's fingerprint of the permission facts behind this answer; 0 when absent.
+    #[serde(default)]
+    perm_version: u64,
 }
 
 /// Binds a repository name to the forge's id of it, in the registry's `repos.forge_id`.
@@ -882,6 +959,8 @@ pub struct InternalAuthz {
     grants: Vec<CompositionGrant>,
     ssh: forgejo_ssh::SshLookup,
     binding: Option<RepoIdBinding>,
+    /// What the forge last said a person may do: `(user id, repo, access)` to when and whether.
+    standing: quick_cache::sync::Cache<(i64, String, Access), (Instant, bool)>,
 }
 
 impl InternalAuthz {
@@ -904,6 +983,7 @@ impl InternalAuthz {
             grants,
             ssh: forgejo_ssh::SshLookup::new(cache),
             binding: None,
+            standing: quick_cache::sync::Cache::new(CACHE_ENTRIES),
         }
     }
 
@@ -943,9 +1023,23 @@ impl InternalAuthz {
         repo: &str,
         access: Access,
     ) -> Result<Arc<Decision>, AuthError> {
+        self.decide_scoped(login, repo, access, true).await
+    }
+
+    /// [`decide_login`](Self::decide_login), with `request_level` false for a caller that needs
+    /// only who the asker is and what they may do.
+    async fn decide_scoped(
+        &self,
+        login: Option<Login<'_>>,
+        repo: &str,
+        access: Access,
+        request_level: bool,
+    ) -> Result<Arc<Decision>, AuthError> {
         parse_repo(repo)?;
         self.core
-            .resolve(login, repo, access, || self.fetch(login, repo, access))
+            .resolve(login, repo, access, request_level, || {
+                self.fetch(login, repo, access)
+            })
             .await
     }
 
@@ -955,6 +1049,112 @@ impl InternalAuthz {
         self.grants
             .iter()
             .any(|g| g.parent == parent && g.child == child)
+    }
+
+    /// The identity of a credential: `{token, user, owner: "", repo: "", mode: "read"}`. The
+    /// hub answers `allowed` with the user's id and login when the credential authenticates.
+    /// `{as_user_id, owner, repo, mode}`: what the forge says the person may do. Anything but a
+    /// clear yes is a no; a read is kept for [`MAX_AUTHZ_TTL`] at most, a change is always asked.
+    async fn person_may(&self, user_id: i64, repo: &str, access: Access) -> bool {
+        let key = (user_id, repo.to_owned(), access);
+        if access == Access::Read
+            && let Some((at, yes)) = self.standing.get(&key)
+            && at.elapsed() < self.core.cfg.positive.min(self.core.cfg.negative)
+        {
+            return yes;
+        }
+        let Some((owner, name)) = repo.split_once('/') else {
+            return false;
+        };
+        let mode = match access {
+            Access::Read => "read",
+            Access::Write | Access::Admin => "write",
+        };
+        let body = AuthzRequest {
+            token: None,
+            user: None,
+            as_user_id: Some(user_id),
+            owner,
+            repo: name,
+            mode,
+        };
+        let sent = async {
+            let req = self
+                .client
+                .internal_request(&["api", "internal", "asc", "authz"])
+                .map_err(|e| unavailable(&e))?
+                .json_body(&body)
+                .map_err(|e| unavailable(&e))?;
+            let (status, bytes) = ForgejoClient::send(req)
+                .await
+                .map_err(|e| unavailable(&e))?;
+            if status != StatusCode::OK {
+                return Err(Fetch::Unavailable);
+            }
+            decode::<AuthzAnswer>(&bytes).map_err(|e| unavailable(&e))
+        };
+        let yes = match sent.await {
+            Ok(a) => {
+                let perm = Perm::parse(&a.perm);
+                a.allowed
+                    && a.user_id == user_id
+                    && !a.is_actions_task
+                    && a.task.is_none()
+                    && match access {
+                        Access::Admin => perm.allows(Access::Admin),
+                        other => perm.allows(other),
+                    }
+            }
+            // The forge cannot be reached: the person's standing is not known, so it is no.
+            Err(_) => false,
+        };
+        self.standing.insert(key, (Instant::now(), yes));
+        yes
+    }
+
+    async fn fetch_identity(&self, login: Option<Login<'_>>) -> Result<Decision, Fetch> {
+        let body = AuthzRequest {
+            token: login.map(|l| l.secret.expose()),
+            user: login.and_then(|l| l.user),
+            as_user_id: None,
+            owner: "",
+            repo: "",
+            mode: "read",
+        };
+        let req = self
+            .client
+            .internal_request(&["api", "internal", "asc", "authz"])
+            .map_err(|e| unavailable(&e))?
+            .json_body(&body)
+            .map_err(|e| unavailable(&e))?;
+        let (status, bytes) = ForgejoClient::send(req)
+            .await
+            .map_err(|e| unavailable(&e))?;
+        match status {
+            StatusCode::OK => {}
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::NOT_FOUND => {
+                return Err(Fetch::Denied(AuthError::Unauthenticated));
+            }
+            _ => return Err(Fetch::Unavailable),
+        }
+        let a: AuthzAnswer = decode(&bytes).map_err(|e| unavailable(&e))?;
+        // The same refusals as the SSH lookup: an Actions task or a deploy key is not a person,
+        // and nobody who is not a real account (a negative or zero id) is one either. A task is
+        // modelled only on a repository decision, where it is bound to its repository and never
+        // kept; here it is never a user.
+        if !a.allowed
+            || a.user_id <= 0
+            || a.is_actions_task
+            || a.task.is_some()
+            || a.deploy_key_id != 0
+        {
+            return Err(Fetch::Denied(AuthError::Unauthenticated));
+        }
+        let identity = UserIdentity::new(a.user_id, &a.username, 0)
+            .ok_or(Fetch::Denied(AuthError::Unauthenticated))?;
+        let mut d = Decision::for_identity(identity, Perm::None);
+        d.perm_version = a.perm_version;
+        Ok(d)
     }
 
     async fn fetch(
@@ -975,6 +1175,7 @@ impl InternalAuthz {
         let body = AuthzRequest {
             token: login.map(|l| l.secret.expose()),
             user: login.and_then(|l| l.user),
+            as_user_id: None,
             owner,
             repo: name,
             mode,
@@ -1069,6 +1270,7 @@ impl InternalAuthz {
         d.is_actions_task = a.is_actions_task;
         d.task = task;
         d.require_signed = a.branch_rules.require_signed;
+        d.perm_version = a.perm_version;
         Ok(d)
     }
 }
@@ -1081,7 +1283,11 @@ impl Authorizer for InternalAuthz {
         repo: &str,
         access: Access,
     ) -> Result<Principal, AuthError> {
-        Ok(self.decide(token, repo, access).await?.principal.clone())
+        Ok(self
+            .decide_scoped(token.map(Login::bearer), repo, access, false)
+            .await?
+            .principal
+            .clone())
     }
 
     async fn authorize_credential(
@@ -1091,18 +1297,31 @@ impl Authorizer for InternalAuthz {
         access: Access,
     ) -> Result<Principal, AuthError> {
         Ok(self
-            .decide_credential(credential, repo, access)
+            .decide_scoped(credential.map(Login::of), repo, access, false)
             .await?
             .principal
             .clone())
     }
 
-    /// The public API names the caller as well as the internal route does, and the internal
-    /// route needs a repository.
+    async fn user_standing(&self, user_id: i64, repo: &str, access: Access) -> Option<bool> {
+        Some(self.person_may(user_id, repo, access).await)
+    }
+
+    /// Who the credential is, from the same internal authz endpoint every other decision uses:
+    /// an empty owner and repository ask for the identity alone. The caller's own token is never
+    /// sent to the public API, so it needs no `read:user` scope.
     async fn authenticate(&self, credential: Option<&Credential>) -> Result<Principal, AuthError> {
-        self.core
-            .authenticate(&self.client, credential.map(Login::of))
-            .await
+        let login = credential.map(Login::of);
+        if login.is_none() {
+            return Err(AuthError::Unauthenticated);
+        }
+        let decision = self
+            .core
+            .resolve(login, "", Access::Read, false, || {
+                self.fetch_identity(login)
+            })
+            .await?;
+        Ok(decision.principal.clone())
     }
 
     async fn identify_ssh_key(&self, key: &SshKey) -> Result<Option<SshIdentity>, AuthError> {

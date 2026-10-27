@@ -405,6 +405,15 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     if created_dir {
         std::fs::create_dir_all(&root)?;
     }
+    // A directory deleted by hand leaves its workspace row behind; the path is free again (an
+    // occupied one was refused above), so the stale registration goes before the new one.
+    if let Some(stale) = workspaces::by_path(&db, &root.display().to_string()).await? {
+        if stale.ws.mode == Mode::Virtual {
+            let _ = workspace_factory::unmount_virtual(stale.ws.id).await;
+        }
+        let _ = wt::remove_tree(&home.workspace_dir(stale.ws.id));
+        workspaces::remove(&db, stale.ws.id).await?;
+    }
     let (repo_id, ws_id) = (RepoId::new(), WorkspaceId::new());
     let built = build(
         ctx,
