@@ -102,6 +102,7 @@ pub struct ServerGate {
     policies: Arc<PolicyStore>,
     scanner: Arc<Scanner>,
     signing: Arc<Signing>,
+    deps: Arc<crate::deps::gate::DepsGateSlot>,
 }
 
 /// The first 12 hex characters of a changeset id.
@@ -210,6 +211,50 @@ impl ServerGate {
             policies,
             scanner,
             signing,
+            deps: Arc::default(),
+        }
+    }
+
+    /// Lets the gate ask the dependency scanner (`[deps] block_severity` of the policy).
+    #[must_use]
+    pub fn with_deps(mut self, slot: Arc<crate::deps::gate::DepsGateSlot>) -> Self {
+        self.deps = slot;
+        self
+    }
+
+    /// `[deps] block_severity`: the update adds no dependency with an advisory at or above it, and when
+    /// the advisory source cannot be asked the update is refused as well (an unknown answer is not a
+    /// clean one). Only an update that changes a dependency file is looked at.
+    async fn check_deps(
+        &self,
+        entry: &RepoEntry,
+        base: Option<ChangesetId>,
+        new: ChangesetId,
+        added: &Added,
+        policy: asc_core::policy::DepsPolicy,
+    ) -> Result<(), Status> {
+        let touched = added.paths();
+        if crate::deps::gate::dependency_files(&touched).is_empty() {
+            return Ok(());
+        }
+        let Some(check) = self.deps.get() else {
+            return Err(denied(
+                "the policy blocks vulnerable dependencies, but dependency scanning is switched off on this server ([deps] enabled = false), so this update cannot be checked",
+                [],
+            ));
+        };
+        let lines = check
+            .check(&crate::deps::gate::CheckRequest {
+                entry,
+                new,
+                base,
+                touched: &touched,
+                policy,
+            })
+            .await?;
+        match lines.split_first() {
+            None => Ok(()),
+            Some((reason, rest)) => Err(denied(reason.clone(), rest.iter().cloned())),
         }
     }
 
@@ -602,6 +647,12 @@ impl ServerGate {
             if let Some(status) = truncated_refusal(&sp, &report) {
                 return Err(status);
             }
+        }
+        if let Some(p) = &effective
+            && p.deps.block_severity.is_some()
+        {
+            self.check_deps(entry, old.or(in_force.source), new, &added, p.deps)
+                .await?;
         }
         Ok(())
     }

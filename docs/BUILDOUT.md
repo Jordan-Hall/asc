@@ -148,10 +148,11 @@ Storage credentials (S3 key pairs), AI provider keys and any other stored secret
 | 10 | Agent runs | `asc-serve/src/agents/` (runtime), `asc-mcp` tools | run pages | 4, 9 |
 | 11 | Workflows | `asc-serve/src/workflows/`, `asc-core/src/workflow.rs` | workflow pages | 10 |
 | 12 | Cross-repo search, symbol panel | `asc-serve/src/codeintel/` (`CrossSearch` service) | explore search, JSON API | 0 |
+| 13 | Dependency scanning and update proposals | `asc-serve/src/deps/` (`DepsService`) | security page | 1, 2, 5 |
 
 Numbers 1 and 2 first; 12 is independent. Migration numbers are reserved so parallel units never pick the same file: policy and
 audit `0501`-`0503`, vault `0510`, storage `0511`, AI keys `0512`, secret scan `0520`, signing `0521`, stacks `0530`, merge queue
-`0531`, CI insights `0540`, agent tokens `0550`, agent runs `0551`, workflows `0552`; each in both `migrations/sqlite` and
+`0531`, CI insights `0540`, agent tokens `0550`, agent runs `0551`, workflows `0552`, dependencies `0560`; each in both `migrations/sqlite` and
 `migrations/postgres`. Server config keys go in `crates/asc-serve/src/config.rs` as a section with `deny_unknown_fields` and defaults,
 and in `deploy/asc-serve.toml.example`.
 
@@ -447,6 +448,25 @@ A client calls it with the user's own credential.
 - **Tests:** readable and unreadable repositories mixed (the unreadable one leaves no trace in counts or errors), private repository
   after a permission change, paging stability, budgets, the JSON output shape, rate limiting.
 
+## 15. Dependency scanning and update proposals
+
+- **RPCs** (`deps.proto`, `deps.v1`): `DepsService.Scan`, `ListFindings`, `ListUpdates`, `ProposeUpdate`, `SetConfig`, `GetConfig`, `Dismiss`.
+  Full description: `docs/DEPENDENCIES.md`.
+- **Behaviour:** reads the manifests and lockfiles of a revision (no code of the repository runs), normalises them to ecosystem, name,
+  version, direct or transitive and path, matches them against OSV (api.osv.dev, a self-hosted mirror or an imported advisory file)
+  behind the network guard and an egress allowlist, and asks each public registry for the newest version. A failed lookup is reported
+  as unknown, never as clean. `ProposeUpdate` rewrites the pins it can rewrite without a resolver and records a changeset on
+  `agent/deps/<group>`; trunk is never written. The repository settings are `.asc/deps.toml`; a schedule is the workflow
+  `.asc/workflows/deps.toml` that `GetConfig` renders.
+- **Policy:** `[deps] block_severity` (and `block_unknown`, default true) in `.asc/policy.toml` refuses a landing that adds a dependency
+  with an advisory at or above that severity, or whose lookup failed, with `POLICY_DENIED`.
+- **Data:** `deps_findings`, `deps_cache`, `deps_scans` (migration `0560`).
+- **Config:** `[deps]` of `asc-serve.toml`: `enabled` (true), `osv_url`, `advisory_file`, `egress_allow`, the registry base URLs, cache TTLs
+  and bounds.
+- **Errors:** none of its own (`POLICY_DENIED` from the gate). **Audit:** `deps.finding.updated`, `deps.proposed`, `deps.config.proposed`.
+- **Tests:** a parser fixture per ecosystem, an OSV mock server, range evaluation per version scheme, the egress allowlist and the
+  network guard, cache TTL, fail-closed gate, proposals never touch trunk, the agent allowlist stays closed to the service.
+
 ---
 
 ## Error codes
@@ -493,14 +513,14 @@ All are `ErrorDetail.code` values, registered in `crates/asc-rpc/src/errors.rs` 
 
 Sections of `asc-serve.toml` introduced above, each with `deny_unknown_fields` and defaults that are safe when absent: `[vault]`
 (`key_file`, default next to the state directory; created on first start), `[netguard]`, `[storage]`, `[aikeys]`, `[agents]`, `[workflows]`,
-`[signing]`, `[secrets]`, `[audit]`, `[ci_insights]`, and the `[codeintel]` additions. `deploy/asc-serve.toml.example` documents each key.
+`[signing]`, `[secrets]`, `[deps]`, `[audit]`, `[ci_insights]`, and the `[codeintel]` additions. `deploy/asc-serve.toml.example` documents each key.
 Hub keys (app.ini `[asc]`): none required; the hub reads the features from `Repo.Version` and shows a surface only when its feature
 string is present.
 
 <a id="rpc-index"></a>
 ## RPC index
 
-Every method of the build-out services (83). A test keeps this list equal to the protos.
+Every method of the build-out services (90). A test keeps this list equal to the protos.
 
 <!-- rpc-index:begin -->
 **Policy** (`policy.proto`)
@@ -630,4 +650,14 @@ Every method of the build-out services (83). A test keeps this list equal to the
 - `asc.v1.CrossSearch/Search` — read on each repository searched; expensive; rate class `codeintel`
 - `asc.v1.CrossSearch/LookupSymbol` — read on each repository; cheap (index)
 - `asc.v1.CrossSearch/SymbolPanel` — repo read, plus read on repositories that reference it
+
+**DepsService** (`deps.proto`)
+
+- `asc.v1.DepsService/Scan` — repo maintainer; expensive; records findings
+- `asc.v1.DepsService/ListFindings` — repo read; paged
+- `asc.v1.DepsService/ListUpdates` — repo read; calls the registries
+- `asc.v1.DepsService/ProposeUpdate` — repo maintainer; mutating; never trunk
+- `asc.v1.DepsService/SetConfig` — repo maintainer; mutating; never trunk
+- `asc.v1.DepsService/GetConfig` — repo read
+- `asc.v1.DepsService/Dismiss` — repo maintainer; mutating
 <!-- rpc-index:end -->

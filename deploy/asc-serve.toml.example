@@ -66,3 +66,34 @@ trusted_proxies = []                 # the exact /32 of your TLS proxy, if any
 # [ci_insights]
 # retention_days = 90                    # test cases; 0 keeps them all
 # flaky_window_runs = 100
+
+# Dependency scanning and update proposals (docs/DEPENDENCIES.md). On by default; the endpoints below are
+# the only places it calls, each through the network guard and the egress allowlist.
+# [deps]
+# enabled = true                         # off: a policy with [deps] block_severity refuses what touches a dependency file
+# egress_allow = []                      # hosts it may call, exact or "*.suffix"; empty: the hosts of the URLs below
+# advisory_file = "/var/lib/asc/osv.zip" # OSV records (the zip OSV publishes, a JSON array or JSON lines), read again when it changes
+# advisory_max_bytes = "512MiB"
+# osv_ttl_secs = 21600                   # how long an answer about a package version is reused
+# vuln_ttl_secs = 86400                  # how long an advisory record is reused
+# latest_ttl_secs = 3600                 # how long a registry answer is reused
+# max_manifest_files = 2000              # per scan
+# max_manifest_bytes = "64MiB"
+# max_packages = 100000
+# concurrency = 8
+# max_concurrent_scans = 2
+# gate_timeout_secs = 25                 # the landing check's wait for the advisory source
+# archive_max_bytes = "128MiB"           # the largest download read to verify a lockfile hash (a Go module zip)
+# archive_timeout_secs = 120
+# go_sumdb_key = "sum.golang.org+033de0ae+Ac4zctda0e5eza+HJyk9SxEdh+s3Ux18htTTAD8OuAn8"   # the checksum database's verifier key
+# npm_unsigned = false                   # true: use an npm registry that does not sign its packages (recorded as unverified)
+# artifact_hosts = []                    # hosts besides the registry's own that artifact URLs may name
+# [deps.osv]                             # a self-hosted mirror: url = "https://osv.example.com"; off = true for files only
+# url = "https://api.osv.dev"
+# timeout_secs = 30
+# max_bytes = "16MiB"
+# [deps.registries.npm]                  # also crates_io, pypi, go, maven, nuget, packagist, rubygems, hex, pub, and the
+#                                        # second sources a lockfile hash is checked against: crates_index, go_sumdb
+# url = "https://registry.npmjs.org"
+# timeout_secs = 20
+# max_bytes = "8MiB"

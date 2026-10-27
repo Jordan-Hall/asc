@@ -50,6 +50,7 @@ pub mod commit_tree;
 pub mod count_objects;
 pub mod daemon;
 pub mod debug;
+pub mod deps;
 pub mod describe;
 pub mod diff;
 pub mod diff_tree;
@@ -250,6 +251,7 @@ pub static COMMANDS: &[Command] = &[
     entry!("ci", ci),
     entry!("agent", agent),
     entry!("workflow", workflow),
+    entry!("deps", deps),
     entry!("codeintel", codeintel_cmd),
     entry!("search", search),
     entry!("sym", sym),

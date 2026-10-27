@@ -620,6 +620,8 @@ pub struct Extensions {
     pub insights: crate::ci::insights::InsightsSlot,
     /// Bring-your-own storage and the vault; `build_routes` serves `Storage` and `Vault`.
     pub byos: crate::storage::ByosSlot,
+    /// Dependency scanning and update proposals; `build_grpc` serves `DepsService`.
+    pub deps: crate::deps::DepsSlot,
     /// Policy, secret scanning and signing; `build_routes` serves `Policy`, `SecretScan` and `Signing`.
     pub security: crate::policy::SecuritySlot,
 }
@@ -645,6 +647,7 @@ impl Extensions {
             insights: Default::default(),
             byos: Default::default(),
             security: Default::default(),
+            deps: Default::default(),
         }
     }
 }

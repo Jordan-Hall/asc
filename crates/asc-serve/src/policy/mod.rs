@@ -273,6 +273,8 @@ pub struct Security {
     pub policy: Arc<rpc::PolicyHub>,
     pub secrets: Arc<crate::secretscan::rpc::SecretScanHub>,
     pub signing: Arc<crate::signing::rpc::Signing>,
+    /// Where the dependency scanner puts itself for the gate to find.
+    pub deps_gate: Arc<crate::deps::gate::DepsGateSlot>,
 }
 
 /// The place the server's single [`Security`] is registered, once (read by `build_grpc`).
@@ -336,12 +338,11 @@ pub fn register(
         scanner.clone(),
         policies.clone(),
     ));
-    let gate = Arc::new(gate::ServerGate::new(
-        registry.clone(),
-        policies,
-        scanner,
-        signing_hub.clone(),
-    ));
+    let deps_gate = Arc::new(crate::deps::gate::DepsGateSlot::default());
+    let gate = Arc::new(
+        gate::ServerGate::new(registry.clone(), policies, scanner, signing_hub.clone())
+            .with_deps(deps_gate.clone()),
+    );
     if ext.pipeline.set_gate(gate).is_err() {
         return Err("the ref gate was already set".into());
     }
@@ -352,6 +353,7 @@ pub fn register(
         policy: policy_hub,
         secrets: secret_hub,
         signing: signing_hub,
+        deps_gate,
     }));
     if ok {
         Ok(())

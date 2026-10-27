@@ -34,6 +34,11 @@
 //! severity = "high"            # low | medium | high | critical (default high)
 //! description = "ACME service key"
 //!
+//! [deps]
+//! block_severity = "high"      # refuse a landing that adds a dependency with an advisory at or above this
+//!                              # (low | moderate | high | critical); absent: the policy never blocks on one
+//! block_unknown = true         # and refuse when the advisory lookup failed (default true; fail closed)
+//!
 //! [ci]
 //! flaky_threshold = 0.02       # flips per run at which a test counts as flaky
 //! allow_quarantine = false     # a maintainer may quarantine a flaky test
@@ -577,6 +582,57 @@ impl SecretsPolicy {
     }
 }
 
+/// How serious an advisory about a dependency is, in the order the scale runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DepSeverity {
+    Low,
+    Moderate,
+    High,
+    Critical,
+}
+
+impl DepSeverity {
+    /// `low`, `moderate`, `high` or `critical` (`medium` is read as `moderate`), any case.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "low" => Some(Self::Low),
+            "moderate" | "medium" => Some(Self::Moderate),
+            "high" => Some(Self::High),
+            "critical" => Some(Self::Critical),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Moderate => "moderate",
+            Self::High => "high",
+            Self::Critical => "critical",
+        }
+    }
+}
+
+/// `[deps]`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DepsPolicy {
+    /// A landing that adds a dependency with an advisory at or above this is refused. `None`: the
+    /// policy never blocks on advisories.
+    pub block_severity: Option<DepSeverity>,
+    /// With `block_severity` set, a landing is also refused when the advisory source could not be
+    /// asked, because an unknown answer is not a clean one. On unless the policy says otherwise.
+    pub block_unknown: bool,
+}
+
+impl Default for DepsPolicy {
+    fn default() -> Self {
+        Self {
+            block_severity: None,
+            block_unknown: true,
+        }
+    }
+}
+
 /// `[ci]`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CiPolicy {
@@ -654,6 +710,7 @@ pub struct Policy {
     pub signing: Signing,
     pub paths: Vec<PathRule>,
     pub secrets: SecretsPolicy,
+    pub deps: DepsPolicy,
     pub ci: CiPolicy,
     pub agents: Agents,
     pub strategy: Strategy,
@@ -673,6 +730,8 @@ struct RawPolicy {
     paths: BTreeMap<String, RawPathRule>,
     #[serde(default)]
     secrets: RawSecrets,
+    #[serde(default)]
+    deps: RawDeps,
     #[serde(default)]
     ci: RawCi,
     #[serde(default)]
@@ -744,6 +803,23 @@ struct RawSecretRule {
     severity: Option<String>,
     #[serde(default)]
     description: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawDeps {
+    block_severity: Option<String>,
+    #[serde(default = "yes")]
+    block_unknown: bool,
+}
+
+impl Default for RawDeps {
+    fn default() -> Self {
+        Self {
+            block_severity: None,
+            block_unknown: true,
+        }
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -944,6 +1020,7 @@ impl Policy {
             });
         }
         let secrets = build_secrets(raw.secrets)?;
+        let deps = build_deps(raw.deps)?;
         let ci = build_ci(raw.ci)?;
         if raw.agents.max_runtime_seconds == Some(0)
             || raw
@@ -978,6 +1055,7 @@ impl Policy {
             },
             paths,
             secrets,
+            deps,
             ci,
             agents: Agents {
                 enabled: raw.agents.enabled,
@@ -1183,6 +1261,21 @@ fn build_secrets(raw: RawSecrets) -> Result<SecretsPolicy, Failure> {
         block_on_push: raw.block_on_push,
         allow_paths: globs(&raw.allow_paths)?,
         rules,
+    })
+}
+
+fn build_deps(raw: RawDeps) -> Result<DepsPolicy, Failure> {
+    let block_severity = match raw.block_severity.as_deref() {
+        None => None,
+        Some(s) => Some(DepSeverity::parse(s).ok_or_else(|| {
+            PolicyError(format!(
+                "[deps] block_severity {s:?} is not low, moderate, high or critical"
+            ))
+        })?),
+    };
+    Ok(DepsPolicy {
+        block_severity,
+        block_unknown: raw.block_unknown,
     })
 }
 
@@ -1637,6 +1730,46 @@ revalidate = false
                 queue: false,
                 revalidate: true
             }
+        );
+    }
+
+    #[test]
+    fn the_deps_section_blocks_only_when_it_names_a_severity() {
+        let d = Policy::parse(HEAD.as_bytes()).unwrap().deps;
+        assert_eq!(d, DepsPolicy::default());
+        assert_eq!(d.block_severity, None);
+        assert!(d.block_unknown, "an unknown answer is not a clean one");
+        let p = |extra: &str| Policy::parse(format!("{HEAD}{extra}").as_bytes());
+        let on = p("[deps]
+block_severity = \"High\"
+block_unknown = false
+")
+        .unwrap()
+        .deps;
+        assert_eq!(on.block_severity, Some(DepSeverity::High));
+        assert!(!on.block_unknown);
+        let medium = p("[deps]
+block_severity = \"medium\"
+")
+        .unwrap()
+        .deps;
+        assert_eq!(medium.block_severity, Some(DepSeverity::Moderate));
+        assert!(
+            DepSeverity::Low < DepSeverity::Moderate && DepSeverity::High < DepSeverity::Critical
+        );
+        assert_eq!(DepSeverity::parse("critical").unwrap().name(), "critical");
+        assert!(
+            p("[deps]
+block_severity = \"severe\"
+")
+            .is_err()
+        );
+        assert!(
+            p("[deps]
+block = \"high\"
+")
+            .is_err(),
+            "unknown keys are errors"
         );
     }
 
