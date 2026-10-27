@@ -13,6 +13,27 @@ import {
   useQuery,
 } from "../lib/query";
 import { loadChangeList } from "./changes";
+import {
+  type AgentRunView,
+  type BlameGroup,
+  type ChangeFiles,
+  type CommitDetail,
+  type HistoryView,
+  type JobLogView,
+  type RepoSettingsView,
+  type SearchKind,
+  type SearchView,
+  findFiles,
+  loadAgentRuns,
+  loadBlame,
+  loadChangeFiles,
+  loadCommit,
+  loadHistory,
+  loadJobLog,
+  loadRepoSettings,
+  searchCode,
+} from "./browse";
+import { type CiRunsView, listRuns } from "./ci";
 import { listThreads, type ThreadsView } from "./review";
 import type { InboxCounts, InboxView } from "./inbox";
 import { lastCommit, listRefs, readFile, readTree, resolve } from "./repo";
@@ -43,6 +64,20 @@ export interface Queries {
   inbox(repo: string): Query<InboxView>;
   /** The review threads of one change. */
   threads(repo: string, change: string): Query<ThreadsView>;
+  history(repo: string, rev: string, path: string, limit: number): Query<HistoryView>;
+  commit(repo: string, rev: string): Query<CommitDetail | undefined>;
+  blame(repo: string, rev: string, path: string): Query<BlameGroup[]>;
+  search(repo: string, rev: string, pattern: string, kind: SearchKind): Query<SearchView>;
+  findFiles(
+    repo: string,
+    rev: string,
+    needle: string,
+  ): Query<{ paths: readonly string[]; truncated: boolean }>;
+  runs(repo: string): Query<CiRunsView>;
+  jobLog(repo: string, run: number, job: number): Query<JobLogView>;
+  changeFiles(repo: string, change: string): Query<ChangeFiles>;
+  repoSettings(repo: string, rev: string): Query<RepoSettingsView>;
+  agentRuns(repo: string): Query<AgentRunView[]>;
 }
 
 /**
@@ -150,6 +185,66 @@ export function createQueries(ctx: Ctx): Queries {
       key: keyOf("threads", repo, change),
       opts: { staleMs: 30_000 },
       run: ({ signal }) => listThreads(t, repo, change, {}, { signal }),
+    }),
+
+    history: (repo, rev, path, limit) => ({
+      key: keyOf("history", repo, rev, path, limit),
+      opts: { staleMs: REF_STALE_MS },
+      run: ({ signal }) => loadHistory(t, repo, rev, path, limit, { signal }),
+    }),
+
+    commit: (repo, rev) => ({
+      key: keyOf("commit", repo, rev),
+      opts: { staleMs: Number.POSITIVE_INFINITY },
+      run: ({ signal }) => loadCommit(t, repo, rev, { signal }),
+    }),
+
+    blame: (repo, rev, path) => ({
+      key: keyOf("blame", repo, rev, path),
+      opts: { staleMs: REF_STALE_MS },
+      run: ({ signal }) => loadBlame(t, repo, rev, path, { signal }),
+    }),
+
+    search: (repo, rev, pattern, kind) => ({
+      key: keyOf("search", repo, rev, kind, pattern),
+      opts: { staleMs: 30_000 },
+      run: ({ signal }) => searchCode(t, repo, rev, pattern, kind, { signal }),
+    }),
+
+    findFiles: (repo, rev, needle) => ({
+      key: keyOf("find-files", repo, rev, needle),
+      opts: { staleMs: 30_000 },
+      run: ({ signal }) => findFiles(t, repo, rev, needle, { signal }),
+    }),
+
+    runs: (repo) => ({
+      key: keyOf("runs", repo),
+      opts: { staleMs: 15_000 },
+      run: ({ signal }) => listRuns(t, repo, {}, { signal }),
+    }),
+
+    jobLog: (repo, run, job) => ({
+      key: keyOf("job-log", repo, run, job),
+      opts: { staleMs: 15_000 },
+      run: ({ signal }) => loadJobLog(t, repo, run, job, { signal }),
+    }),
+
+    changeFiles: (repo, change) => ({
+      key: keyOf("change-files", repo, change),
+      opts: { staleMs: 30_000 },
+      run: ({ signal }) => loadChangeFiles(t, repo, change, { signal }),
+    }),
+
+    agentRuns: (repo) => ({
+      key: keyOf("agent-runs", repo),
+      opts: { staleMs: 15_000 },
+      run: ({ signal }) => loadAgentRuns(t, repo, { signal }),
+    }),
+
+    repoSettings: (repo, rev) => ({
+      key: keyOf("repo-settings", repo, rev),
+      opts: { staleMs: 60_000 },
+      run: ({ signal }) => loadRepoSettings(t, repo, rev, { signal }),
     }),
   };
 }
