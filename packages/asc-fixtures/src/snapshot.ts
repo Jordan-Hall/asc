@@ -77,7 +77,7 @@ export function snapshot(fx: Fixture): Snapshot {
 
 /**
  * Whether this asc build mints the same change ids for the same history. Today it does not: ids
- * come from `mint_change_id` (random v4). TODO(C09): a seeded mint (for example an env var that
+ * come from `mint_change_id` (random v4). Known gap (C09): a seeded mint (for example an env var that
  * `Recorder::new` reads) makes this true, and the strict determinism test then runs by itself.
  */
 export function supportsDeterministicChangeIds(bin?: string): boolean {

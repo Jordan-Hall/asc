@@ -18,7 +18,7 @@
 //! * Commits without a `ChangeMeta` get an id by the C01 rule: jj header, Gerrit trailer, then
 //!   the migration-mode derived id (B18a), scoped by the branch ref.
 //!
-//! TODO(C05): the trunk and the range are derived here from `asc.stack.trunk` and first-parent
+//! Known gap (C05): the trunk and the range are derived here from `asc.stack.trunk` and first-parent
 //! ancestry, because the stack derivation context is private to the stack verbs. It agrees with
 //! `asc submit` for a stack on one trunk.
 

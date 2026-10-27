@@ -4,7 +4,7 @@
 //! an empty `authorization_servers` (no `[mcp.oauth]`); a `tools/list` shows no write tool to a
 //! read-only principal; a stale list never grants a call.
 //!
-//! Runs over the static token table. TODO(K19): the same suite against `fake_forgejo`
+//! Runs over the static token table. Known gap (K19): the same suite against `fake_forgejo`
 //! (`PublicApiAuthz`, `InternalAuthz`) once that fake is shared outside `tests/fake_forgejo.rs`.
 
 use std::sync::Arc;

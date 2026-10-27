@@ -264,7 +264,7 @@ fn plain_pushes_follow_the_branchless_rules() {
 /// SPEC §25.6: `git push origin HEAD:refs/for/<trunk>` creates one draft change per commit.
 /// Needs the forge's proc-receive.
 #[test]
-#[ignore = "TODO(C34): AGit refs/for needs Forgejo's proc-receive; the standalone layer refuses it"]
+#[ignore = "Known gap (C34): AGit refs/for needs Forgejo's proc-receive; the standalone layer refuses it"]
 fn agit_refs_for_opens_a_draft_change() {
     let stack = InProc::start();
     let git = Git::new();
@@ -281,7 +281,7 @@ fn agit_refs_for_opens_a_draft_change() {
 
 /// SPEC §25.6: `git push origin :feat` deletes the pusher's user ref.
 #[test]
-#[ignore = "TODO(per-principal advertisement, SPEC 25.6 v1.x): git cannot name a ref it is not shown"]
+#[ignore = "Known gap (per-principal advertisement, SPEC 25.6 v1.x): git cannot name a ref it is not shown"]
 fn deleting_a_user_ref_through_git() {
     let stack = InProc::start();
     let git = Git::new();

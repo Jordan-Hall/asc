@@ -9,7 +9,7 @@
 //! the host's job.
 //!
 //! `Bridge.Run` (verb children) is in `run`. `Bridge.Token` and `StoreToken` are in `auth`.
-//! TODO(M09): per-root routing through `LocalBackend`, see `route`.
+//! Known gap (M09): per-root routing through `LocalBackend`, see `route`.
 
 mod argv_schema;
 mod auth;
@@ -46,8 +46,8 @@ use crate::daemon::lifecycle;
 use crate::remote::server::{ServerRemote, cfg_get, open_for};
 use route::{BridgeMethod, RawCodec, Target};
 
-/// Bridge flags (SPEC §24.2). TODO(P45): add `json-verbs.v1`; TODO(P03): `reorder-todo.v1`;
-/// TODO(P46): `split-hunks.v1`. A flag is advertised only when its unit ships, because the
+/// Bridge flags (SPEC §24.2). Known gap (P45): add `json-verbs.v1`; Known gap (P03): `reorder-todo.v1`;
+/// Known gap (P46): `split-hunks.v1`. A flag is advertised only when its unit ships, because the
 /// plugins gate on it.
 const FLAGS: &[&str] = &["plugin.v1"];
 /// Longest wait for a server when answering `Hello`.
@@ -464,7 +464,7 @@ impl Bridge {
         if let Some(ws) = state.ctx.ws_opt() {
             info.ws_id = ws.workspace.ws.id.to_string();
         }
-        // TODO(B07): the repository's own `branchless` flag; unknown, so the default applies.
+        // Known gap (B07): the repository's own `branchless` flag; unknown, so the default applies.
         info.branchless =
             crate::branchless::mode::Settings::resolve(&state.ctx.config, &state.ctx.env, &|k| {
                 std::env::var(k).ok()

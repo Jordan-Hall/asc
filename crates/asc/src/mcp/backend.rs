@@ -14,7 +14,7 @@
 //! - `worktrees` lists only the worktrees of this repository (the daemon lists every mounted
 //!   repository), from the same verb the daemon runs.
 //! - Tools that need an asc server (`Repo`, `Changes`, `Projects`) answer `NOT_AVAILABLE`.
-//!   TODO(U77): route them through `RpcBackend::with_server` once the resolved credential of the
+//!   Known gap (U77): route them through `RpcBackend::with_server` once the resolved credential of the
 //!   remote is exposed; today `ServerRemote` keeps it private.
 //! - Write tools (M10): `stage` goes to the workspace like a read; the verb tools run as
 //!   [child verbs](super::write). A tool above the configured write level is refused here too.

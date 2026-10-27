@@ -6,7 +6,7 @@
 //! Requests and answers cross the bridge as opaque protobuf bytes, so the codec here copies
 //! them and the bridge never needs the message types of the services it relays.
 //!
-//! TODO(M09): the SPEC asks for "the same `LocalBackend` routing as `asc mcp`". `asc mcp` is still
+//! Known gap (M09): the SPEC asks for "the same `LocalBackend` routing as `asc mcp`". `asc mcp` is still
 //! a stub, so this module routes by service name with the same three targets (daemon IPC, asc
 //! server, in-process); replace `resolve` by the M09 backend when it lands.
 

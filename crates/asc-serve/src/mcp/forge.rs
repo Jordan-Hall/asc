@@ -16,7 +16,7 @@
 //!   content by authors without write access) is built; [`ForgeConfig::lockdown`] is that filter
 //!   for reads and defaults to on.
 //!
-//! TODO(U44): [`ForgejoAdapter`] owns a small HTTP client because `ForgejoClient` exposes only
+//! Known gap (U44): [`ForgejoAdapter`] owns a small HTTP client because `ForgejoClient` exposes only
 //! its internal-API helpers. It applies the same transport policy and never follows redirects.
 
 use std::sync::Arc;

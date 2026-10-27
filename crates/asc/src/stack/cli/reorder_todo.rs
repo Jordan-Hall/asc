@@ -1,6 +1,6 @@
 //! `asc reorder --todo <file>` (SPEC §11.2, §24.3.2): applies a `StackTodo` as one operation.
 //!
-//! The file is the proto3 JSON of `StackTodo { items }` (TODO(M02): the message moves to
+//! The file is the proto3 JSON of `StackTodo { items }` (Known gap (M02): the message moves to
 //! `cli.proto` when M02 lands; the JSON shape is the one it will have). Each item is
 //! `{"action": "pick"|"fold"|"drop"|"reword", "change": "<id prefix>", "message": "..."}`,
 //! ordered bottom to top. Every change of the selected part of the stack (up to the checked-out

@@ -13,7 +13,7 @@
 //! Rules 4 (null stdin) and 5 (rebuilt environment) belong to `run`.
 //!
 //! The table below must agree with `allowlist.json` (SPEC §24.4.5.1); a test checks it.
-//! TODO(P10): the test reads `packages/asc-client-ts/src/transport/allowlist.json` once P10 adds
+//! Known gap (P10): the test reads `packages/asc-client-ts/src/transport/allowlist.json` once P10 adds
 //! it; until then it reads the JSON block of the SPEC.
 
 use std::path::{Component, Path, PathBuf};
