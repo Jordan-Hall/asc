@@ -33,7 +33,13 @@ pub struct Rig {
 
 impl Rig {
     pub fn new() -> Self {
-        let stack = Stack::start();
+        // The 10,000-commit fixture adds more files than the default secret scan reads; a blocking
+        // scan that stopped early refuses the push, which is not what these tests compare.
+        let stack = Stack::start_with(
+            "enabled = true\n",
+            "",
+            "[secrets]\nmax_files = 200000\nmax_scan_bytes = \"1GiB\"\n",
+        );
         for repo in ["acme/web", "acme/lib"] {
             stack.create_repo(repo, "");
         }

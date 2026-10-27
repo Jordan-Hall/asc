@@ -116,6 +116,10 @@ pub(crate) fn git_dir() -> Option<std::path::PathBuf> {
 /// A configuration that runs `git --version` and `git config` in the sandbox, and does not poll.
 pub(crate) fn wcfg() -> WorkflowsConfig {
     WorkflowsConfig {
+        // Working copies of a test never share a directory with another test or another user's.
+        work_dir: Some(
+            std::env::temp_dir().join(format!("asc-workflows-test-{}", uuid::Uuid::new_v4())),
+        ),
         enabled: true,
         poll_interval_secs: 3600,
         sandbox: SandboxConfig {
