@@ -25,7 +25,7 @@ use asc_git::compat::{
 };
 use asc_git::export::{ExportReport, ExportRoot, Exporter};
 use asc_git::odb::Odb;
-use asc_git::realgit::{RealGit, RealGitError};
+use asc_git::realgit::{RealGit, RealGitError, Resolver};
 use asc_rpc::coalesce::Coalesce;
 use asc_store::key::ObjKey;
 use asc_store::objects::Objects;
@@ -111,6 +111,19 @@ pub struct GitViewService {
     pool: AnyPool,
 }
 
+/// Real git from `[git] git_path`, else the environment and `PATH`. Under test the configured
+/// path alone decides, whatever `ASC_REAL_GIT` the run's environment holds (the pinned-git CI job
+/// sets it).
+fn resolve_git(configured: Option<std::path::PathBuf>) -> Result<RealGit, RealGitError> {
+    #[cfg_attr(not(test), allow(unused_mut))]
+    let mut resolver = Resolver::from_process(configured, None);
+    #[cfg(test)]
+    {
+        resolver.env_override = None;
+    }
+    resolver.resolve()
+}
+
 impl GitViewService {
     /// Starts the layer from `[git]` and `[limits.git]`: resolves real git, checks its version,
     /// prepares the asc-owned directories. `Err(Disabled)` carries the reason when the layer
@@ -136,8 +149,8 @@ impl GitViewService {
             .parent()
             .ok_or_else(|| disabled("the git view directory has no parent"))?
             .join(COMPAT_DIR);
-        let git = RealGit::resolve(cfg.git.git_path(), None)
-            .map_err(|e| GitViewError::Disabled(e.to_string()))?;
+        let git =
+            resolve_git(cfg.git.git_path()).map_err(|e| GitViewError::Disabled(e.to_string()))?;
         let limits = cfg.limits.git.to_limits();
         let slots = BuildSlots::new(limits.view_builds_per_replica);
         let server = ServerGit::new(

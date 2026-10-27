@@ -1343,6 +1343,21 @@ secrets = { GIT_CONFIG_COUNT = "count", GIT_CONFIG_KEY_0 = "key", GIT_CONFIG_VAL
 egress = ["registry.example.com"]
 "#;
 
+/// The version log of the review side: `cs` is version `v` of `change`.
+async fn record_version(w: &World, change: &[u8], cs: &[u8], v: i64) {
+    sqlx::query(
+        "INSERT INTO change_versions (ns, change, v, cs, parent_change, at, actor, op_id)          VALUES ($1, $2, $3, $4, NULL, 1, 'bob', $5)",
+    )
+    .bind(w.entry.ns.as_bytes().to_vec())
+    .bind(change.to_vec())
+    .bind(v)
+    .bind(cs.to_vec())
+    .bind(uuid::Uuid::new_v4().as_bytes().to_vec())
+    .execute(&w.pool)
+    .await
+    .unwrap();
+}
+
 async fn put_secrets(w: &World) {
     for (name, value) in [
         ("count", "1"),
@@ -1397,6 +1412,7 @@ async fn secrets_reach_a_step_only_when_its_code_is_landed_or_the_exact_version_
     // An approval of an older version does not count for the version that runs.
     let (cs, change) =
         push_change(&w, "bob-token", "refs/heads/feature-b", &w.base, "src/b.rs").await;
+    record_version(&w, &change, &cs, 8).await;
     let state = wire::ReviewState {
         approvals: 1,
         reviewed_version: 7,
@@ -1420,15 +1436,8 @@ async fn secrets_reach_a_step_only_when_its_code_is_landed_or_the_exact_version_
     // The exact version, approved, runs with its secrets.
     let (cs2, change2) =
         push_change(&w, "bob-token", "refs/heads/feature-c", &w.base, "src/c.rs").await;
-    let version: i64 = sqlx::query_scalar(
-        "SELECT CAST(v AS BIGINT) FROM change_versions WHERE ns = $1 AND change = $2 AND cs = $3",
-    )
-    .bind(w.entry.ns.as_bytes().to_vec())
-    .bind(change2.clone())
-    .bind(cs2.clone())
-    .fetch_one(&w.pool)
-    .await
-    .unwrap();
+    let version: i64 = 1;
+    record_version(&w, &change2, &cs2, version).await;
     let state = wire::ReviewState {
         approvals: 1,
         reviewed_version: u32::try_from(version).unwrap(),
@@ -1449,7 +1458,6 @@ async fn secrets_reach_a_step_only_when_its_code_is_landed_or_the_exact_version_
         .expect("a run for c");
     let row = finished(&w, good.id).await;
     assert_eq!(row.state, RunState::Succeeded, "{row:?}");
-    let _ = cs;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
