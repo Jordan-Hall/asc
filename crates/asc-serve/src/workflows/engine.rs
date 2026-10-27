@@ -192,7 +192,9 @@ impl WorkflowsHub {
     /// Tells live runs to stop (they stay as they are, for another server to take over) and
     /// stops the workers' loops.
     pub fn shutdown(&self) {
-        self.shutdown.cancel();
+        // Every live run learns why before anything is cancelled: a step that wakes on the
+        // token and finds no reason would record itself cancelled instead of leaving itself
+        // for the next server.
         for live in self
             .live
             .lock()
@@ -205,6 +207,7 @@ impl WorkflowsHub {
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(StopWhy::Shutdown);
             live.stop.cancel();
         }
+        self.shutdown.cancel();
     }
 
     async fn dispatch_loop(self: Arc<Self>) {
@@ -358,7 +361,8 @@ impl WorkflowsHub {
                     .ok_or_else(|| Status::not_found("no such run"));
             }
         }
-        self.store.request_cancel(id).await.map_err(sql)?;
+        // The live run learns why before the database says to stop: a run that read the flag
+        // first would end with a reason of its own and drop the one given here.
         if let Some(live) = self.live(id) {
             *live
                 .why
@@ -367,6 +371,7 @@ impl WorkflowsHub {
                 Some(StopWhy::Cancelled(reason.clone()));
             live.stop.cancel();
         }
+        self.store.request_cancel(id).await.map_err(sql)?;
         let _ = by;
         for _ in 0..40 {
             let now = self
@@ -629,6 +634,11 @@ impl WorkflowsHub {
                 Ok(s) => s,
                 Err(e) => return sql_end(&e),
             };
+            // A run told to stop while this pass ran has steps that ended because of it: the
+            // top of the loop gives it its own end, not a verdict on those steps.
+            if live.stop.is_cancelled() {
+                continue;
+            }
             if steps.iter().all(|s| s.state.is_terminal()) {
                 return Self::verdict(&wf, &steps);
             }
