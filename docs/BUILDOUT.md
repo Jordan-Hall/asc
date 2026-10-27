@@ -65,6 +65,16 @@ Rules, all fail closed:
 * An unusable policy can be repaired by the host service only with an `admin` claim for the repository (logged as
   `policy.repair.forwarded_admin`).
 
+**Authorization answers from the hub (K07).** `asc serve` asks `POST /api/internal/asc/authz` and reuses the answer only briefly
+and only in part. The cache key is the credential, the repository and the access; an entry lives at most 5 seconds (a configured
+longer lifetime is cut to it; a revocation cannot be seen without asking). Only a plain `read` decision is reused, and what is
+reused has no branch rules and no task: a caller that reads those (`decide`) asks every time, every `write` and `admin` call
+asks the hub fresh, an Actions task is never kept, and a hub that cannot answer refuses the caller and drops what it held. The
+answer's `perm_version` (a fingerprint of the permission facts, equality only) is kept with the decision and a change is logged
+as `authz.perm_version_changed`. `authenticate()` (who is this credential, with no repository) is the same endpoint with an empty
+`owner` and `repo`: the hub answers `allowed` with `user_id` and `username` when the credential authenticates, so no `read:user`
+scope is needed.
+
 **Fail closed.** A handler that cannot decide (policy unreadable, store down, clock skew) refuses. Reading a resource of an owner the
 caller cannot administer answers `NOT_FOUND`, so identifiers cannot be probed.
 
