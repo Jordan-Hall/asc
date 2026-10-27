@@ -96,6 +96,8 @@ pub const MAX_GLOBS: usize = 64;
 pub const MAX_CHECKS: usize = 32;
 /// Longest glob, subject, role name and check name, in bytes.
 pub const MAX_GLOB_LEN: usize = 256;
+/// Most `/`-separated segments in one path pattern.
+pub const MAX_GLOB_SEGMENTS: usize = 32;
 pub const MAX_SUBJECT_LEN: usize = 128;
 pub const MAX_NAME_LEN: usize = 128;
 /// Most approvals a policy can require, and the largest budget number.
@@ -405,6 +407,11 @@ impl PathGlob {
         if text.chars().any(char::is_control) {
             return bad("a path pattern holds a control character");
         }
+        if text.split('/').count() > MAX_GLOB_SEGMENTS {
+            return bad(format!(
+                "a path pattern has at most {MAX_GLOB_SEGMENTS} segments"
+            ));
+        }
         let mut segments = Vec::new();
         for s in text.split('/') {
             match s {
@@ -439,18 +446,30 @@ impl PathGlob {
     }
 }
 
+/// Whether `pat` matches all of `parts`. `**` swallows zero or more segments. The table
+/// `next[j]` holds "the rest of the pattern matches `parts[j..]`", built from the last pattern
+/// segment backwards, so the work is `segments x parts` and no `**` re-tries what another did.
 fn match_segments(pat: &[Seg], parts: &[&[u8]]) -> bool {
-    match pat.split_first() {
-        None => parts.is_empty(),
-        Some((Seg::Deep, rest)) => {
-            // `**` swallows zero or more segments.
-            (0..=parts.len()).any(|n| match_segments(rest, &parts[n..]))
+    let n = parts.len();
+    let mut next: Vec<bool> = (0..=n).map(|j| j == n).collect();
+    for seg in pat.iter().rev() {
+        let mut cur = vec![false; n + 1];
+        match seg {
+            Seg::Deep => {
+                // Swallow nothing (`next[j]`) or one more segment (`cur[j + 1]`).
+                for j in (0..=n).rev() {
+                    cur[j] = next[j] || (j < n && cur[j + 1]);
+                }
+            }
+            Seg::One(p) => {
+                for j in 0..n {
+                    cur[j] = next[j + 1] && wild(p, parts[j]);
+                }
+            }
         }
-        Some((Seg::One(p), rest)) => match parts.split_first() {
-            Some((first, tail)) => wild(p, first) && match_segments(rest, tail),
-            None => false,
-        },
+        next = cur;
     }
+    next[0]
 }
 
 /// `*` any run, `?` one byte, within one segment.
@@ -1423,6 +1442,30 @@ strategy = "rebase-disjoint"
         assert!(!g("a?c").matches(b"ac"));
         assert!(g("**").matches(b"anything/at/all"));
         assert!(!g("exact").matches(b"exact/child"));
+    }
+
+    #[test]
+    fn many_double_stars_match_in_time_proportional_to_the_input() {
+        let g = |p: &str| PathGlob::parse(p).unwrap();
+        // 30 `**` segments and a path that cannot match used to take exponential time.
+        let pat = format!("{}z", "**/".repeat(30));
+        let deep = vec!["a"; 200].join("/");
+        let started = std::time::Instant::now();
+        assert!(!g(&pat).matches(deep.as_bytes()));
+        assert!(g(&pat).matches(format!("{deep}/z").as_bytes()));
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        // Interleaved with wildcards, still exact.
+        assert!(g("**/a/**/b/**/c").matches(b"x/a/y/b/z/c"));
+        assert!(!g("**/a/**/b/**/c").matches(b"x/a/y/c/z/b"));
+        assert!(g("**/**/x").matches(b"x"));
+    }
+
+    #[test]
+    fn a_path_pattern_has_a_bounded_number_of_segments() {
+        let ok = vec!["a"; MAX_GLOB_SEGMENTS].join("/");
+        assert!(PathGlob::parse(&ok).is_ok());
+        let too_many = vec!["a"; MAX_GLOB_SEGMENTS + 1].join("/");
+        assert!(PathGlob::parse(&too_many).is_err());
     }
 
     #[test]
