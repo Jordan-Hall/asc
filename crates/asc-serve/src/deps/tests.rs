@@ -969,7 +969,7 @@ async fn a_registry_that_fails_or_answers_oddly_is_an_error_naming_the_ecosystem
             .versions(Ecosystem::CratesIo, bad, false)
             .await
             .unwrap_err();
-        assert!(e.contains("not usable"), "{bad}: {e}");
+        assert!(e.contains("crates.io") && e.contains("name"), "{bad}: {e}");
     }
     assert!(
         m.hits()

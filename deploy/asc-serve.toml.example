@@ -85,6 +85,9 @@ trusted_proxies = []                 # the exact /32 of your TLS proxy, if any
 # gate_timeout_secs = 25                 # the landing check's wait for the advisory source
 # archive_max_bytes = "128MiB"           # the largest download read to verify a lockfile hash (a Go module zip)
 # archive_timeout_secs = 120
+# go_sumdb_key = "sum.golang.org+033de0ae+Ac4zctda0e5eza+HJyk9SxEdh+s3Ux18htTTAD8OuAn8"   # the checksum database's verifier key
+# npm_unsigned = false                   # true: use an npm registry that does not sign its packages (recorded as unverified)
+# artifact_hosts = []                    # hosts besides the registry's own that artifact URLs may name
 # [deps.osv]                             # a self-hosted mirror: url = "https://osv.example.com"; off = true for files only
 # url = "https://api.osv.dev"
 # timeout_secs = 30

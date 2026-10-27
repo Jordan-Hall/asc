@@ -48,6 +48,13 @@ pub struct Latest {
     pub(super) archive: Limits,
     /// The registry keys npm signatures are checked against, once per process.
     pub(super) npm_keys: tokio::sync::OnceCell<Vec<(String, String)>>,
+    /// The key the Go checksum database's signed tree head is verified with.
+    pub(super) sumdb_key: super::sumdb::Key,
+    /// A registry that does not sign its npm packages (a private one) may be used, with the facts
+    /// recorded as unverified.
+    pub(super) npm_unsigned_ok: bool,
+    /// Hosts besides the registry's own (and the built-in CDNs) that artifact URLs may name.
+    pub(super) artifact_hosts: Vec<String>,
 }
 
 impl Latest {
@@ -69,7 +76,33 @@ impl Latest {
                 max_bytes: 128 << 20,
             },
             npm_keys: tokio::sync::OnceCell::new(),
+            sumdb_key: super::sumdb::parse_key(super::sumdb::DEFAULT_KEY)
+                .expect("the built-in sumdb key is valid"),
+            npm_unsigned_ok: false,
+            artifact_hosts: Vec::new(),
         }
+    }
+
+    /// The key of the checksum database (`deps.go_sumdb_key`).
+    #[must_use]
+    pub fn with_sumdb_key(mut self, key: super::sumdb::Key) -> Self {
+        self.sumdb_key = key;
+        self
+    }
+
+    /// Whether an npm package without a registry signature may be used, as unverified
+    /// (`deps.npm_unsigned`).
+    #[must_use]
+    pub fn with_npm_unsigned(mut self, ok: bool) -> Self {
+        self.npm_unsigned_ok = ok;
+        self
+    }
+
+    /// Hosts artifact URLs may name besides the registry's (`deps.artifact_hosts`).
+    #[must_use]
+    pub fn with_artifact_hosts(mut self, hosts: Vec<String>) -> Self {
+        self.artifact_hosts = hosts.into_iter().map(|h| h.to_ascii_lowercase()).collect();
+        self
     }
 
     /// The bound on a download that verifies a hash (`archive_max_bytes`, `archive_timeout_secs`).

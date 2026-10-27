@@ -131,11 +131,14 @@ included, so a repository never ends with a manifest and a lock that disagree) w
    | Ecosystem | Digests written | Checked against |
    |---|---|---|
    | crates.io | `checksum` | the sparse index (`index.crates.io`) must give the same `cksum` as the API |
-   | npm | `resolved`, `integrity` (and the SHA-1 of yarn v1) | the registry's ECDSA signature of `name@version:integrity`, verified with the keys it publishes at `/-/npm/v1/keys`, where the version carries one |
+   | npm | `resolved`, `integrity` (and the SHA-1 of yarn v1) | the registry's ECDSA signature of `name@version:integrity`, verified with the keys it publishes at `/-/npm/v1/keys`; a package without a signature, keys that cannot be fetched (not cached, asked again with backoff) and a signature no published key matches all refuse the update |
    | PyPI | every file's URL, SHA-256, size and upload time | the PEP 691 simple index must list every file with the same SHA-256 |
    | RubyGems | `sha256` in `CHECKSUMS` | the compact index (`/info/<gem>`) must give the same checksum as the API |
    | Packagist | the whole package entry (`source`, `dist`, `autoload`, `require`, ...) | |
-   | Go | the `h1:` hashes of the zip and of `go.mod` | the checksum database's record must equal the hash computed from the module zip and `go.mod` the proxy serves |
+   | Go | the `h1:` hashes of the zip and of `go.mod` | the checksum database's answer is believed only after its signed tree head verifies (Ed25519, `deps.go_sumdb_key`, the `golang.org/x/mod/sumdb/note` format) and the record is proven to be in that tree with the log's tiles; the hash computed from the module zip and `go.mod` the proxy serves must then equal the record |
+
+   A registry that signs nothing (a private npm registry) can be used with `npm_unsigned = true`; what it gives
+   is then listed in the proposal as `UNVERIFIED`, never as verified.
 
    A digest the registry did not give, one of the wrong length, or one the second path contradicts refuses
    the update for that package and says which. The old entry is checked too: a lock whose digest for the old
@@ -149,6 +152,15 @@ included, so a repository never ends with a manifest and a lock that disagree) w
    `poetry.lock`); for `Cargo.lock`, `pnpm-lock.yaml`, `uv.lock` and `Pipfile.lock` the registry is asked what
    each dependent declares. A dependent whose requirement cannot be evaluated, or does not admit the new
    version, stops the move and is named. At most 200 dependents are checked per package.
+
+**What is written is checked first.** Registry answers are data, and a hostile registry or mirror must not
+be able to put lines or fields of its choosing into a lockfile. Before anything is written, tarball and file
+URLs have to be https URLs without a user name, fragment, quote, backslash, bracket, brace, `#` or white space,
+on the registry's own host, a CDN it is known to use (`files.pythonhosted.org`; GitHub, GitLab and Bitbucket for
+Composer) or a host listed in `artifact_hosts`; file names, hashes, integrity values, timestamps and Go hashes
+have strict shapes (`sha512-<base64>`, 64 or 40 hex digits, an ISO timestamp, `[A-Za-z0-9._+-]` names,
+`h1:<base64 of 32 bytes>`). A package that fails is refused with the reason. Each writer then escapes what it
+writes for its own format (TOML, YAML flow mapping, JSON, yarn string) as well.
 
 What each rewrite does:
 
@@ -286,6 +298,8 @@ public name, or import its data with `advisory_file`. Redirects are never follow
 Besides the registries of the table above, a lockfile hash is checked against a second source, each its own
 endpoint (`[deps.registries.crates_index]`, `https://index.crates.io`, and `[deps.registries.go_sumdb]`,
 `https://sum.golang.org`; PyPI's simple index and RubyGems' compact index are on the hosts of `pypi` and
-`rubygems`). `archive_max_bytes` (128 MiB) and `archive_timeout_secs` (120) bound the one download a check
+`rubygems`). `go_sumdb_key` is the verifier key of the checksum database (`sum.golang.org` by default; a
+private database's key goes here), `npm_unsigned` allows a registry that does not sign its packages, and
+`artifact_hosts` lists hosts besides the registry's own that artifact URLs may name. `archive_max_bytes` (128 MiB) and `archive_timeout_secs` (120) bound the one download a check
 reads, a Go module zip; a larger module cannot be verified and its `go.sum` is not rewritten. Switching an
 endpoint off (`off = true`) switches off the rewrites that need it, never the check.
