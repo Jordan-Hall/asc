@@ -221,11 +221,12 @@ pub async fn read(
 /// The distinct package versions of `deps` worth asking about, at most `max`; `true` when there were
 /// more.
 pub fn distinct(deps: &[Dep], max: usize) -> (Vec<(Ecosystem, String, String)>, bool) {
+    // Names are compared as written: the advisory source may tell two spellings apart.
     let mut seen: HashSet<(Ecosystem, String, String)> = HashSet::new();
     let mut out = Vec::new();
     let mut more = false;
     for d in deps.iter().filter(|d| !d.version.is_empty()) {
-        if seen.insert(d.key()) {
+        if seen.insert((d.ecosystem, d.name.clone(), d.version.clone())) {
             if out.len() >= max {
                 more = true;
                 break;

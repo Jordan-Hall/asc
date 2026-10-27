@@ -245,13 +245,10 @@ impl Osv {
         self.endpoint.enabled() && eco.osv_covered()
     }
 
+    /// The cache key is exactly what is sent to OSV, so two spellings OSV tells apart never share an
+    /// answer.
     fn cache_key(q: &Query) -> String {
-        format!(
-            "{}|{}|{}",
-            q.eco.osv_name(),
-            q.eco.canonical(&q.name),
-            q.version
-        )
+        format!("{}|{}|{}", q.eco.osv_name(), osv_name(q), q.version)
     }
 
     async fn cached_ids(&self, q: &Query, now: i64) -> Option<Vec<String>> {
@@ -415,7 +412,7 @@ impl Osv {
         let mut unique: Vec<Query> = Vec::new();
         let mut want: Vec<usize> = Vec::with_capacity(queries.len());
         for q in queries {
-            let key = (q.eco, q.eco.canonical(&q.name), q.version.clone());
+            let key = (q.eco, osv_name(q), q.version.clone());
             let i = *slot_of.entry(key).or_insert_with(|| {
                 unique.push(q.clone());
                 unique.len() - 1
@@ -550,5 +547,49 @@ impl Osv {
                 .collect(),
             errors,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn q(eco: Ecosystem, name: &str) -> Query {
+        Query {
+            eco,
+            name: name.to_owned(),
+            version: "1.0.0".to_owned(),
+        }
+    }
+
+    #[test]
+    fn names_osv_tells_apart_never_share_a_cache_entry() {
+        // npm names are case-sensitive: OSV is asked about each spelling separately.
+        for eco in [Ecosystem::Npm, Ecosystem::Go, Ecosystem::Maven, Ecosystem::Packagist, Ecosystem::NuGet, Ecosystem::CratesIo] {
+            assert_ne!(
+                Osv::cache_key(&q(eco, "Foo")),
+                Osv::cache_key(&q(eco, "foo")),
+                "{eco}"
+            );
+        }
+        assert_ne!(
+            Osv::cache_key(&q(Ecosystem::CratesIo, "foo_bar")),
+            Osv::cache_key(&q(Ecosystem::CratesIo, "foo-bar"))
+        );
+        // PyPI names are normalised before they are sent, so their spellings are one query.
+        assert_eq!(
+            Osv::cache_key(&q(Ecosystem::PyPi, "Foo_Bar")),
+            Osv::cache_key(&q(Ecosystem::PyPi, "foo-bar"))
+        );
+        assert_eq!(osv_name(&q(Ecosystem::PyPi, "Foo_Bar")), "foo-bar");
+        assert_eq!(osv_name(&q(Ecosystem::Npm, "Foo_Bar")), "Foo_Bar");
+        // Versions and ecosystems are part of the key.
+        let mut v2 = q(Ecosystem::Npm, "foo");
+        v2.version = "2.0.0".into();
+        assert_ne!(Osv::cache_key(&q(Ecosystem::Npm, "foo")), Osv::cache_key(&v2));
+        assert_ne!(
+            Osv::cache_key(&q(Ecosystem::Npm, "foo")),
+            Osv::cache_key(&q(Ecosystem::Hex, "foo"))
+        );
     }
 }
