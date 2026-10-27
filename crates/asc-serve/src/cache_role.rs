@@ -232,6 +232,17 @@ async fn probe(client: RpcClient) -> Result<(), Deny> {
 
 #[async_trait]
 impl Authorizer for UpstreamAuthorizer {
+    /// The cache role knows tokens by what its upstream says of them, not people: it says nothing,
+    /// which refuses any token tied to a person.
+    async fn user_standing(
+        &self,
+        _user_id: i64,
+        _repo: &str,
+        _access: Access,
+    ) -> asc_rpc::auth::Standing {
+        asc_rpc::auth::Standing::Unknown
+    }
+
     /// Every RPC is checked for read access: the cache serves nothing else, and a write RPC then
     /// reaches its handler and answers `UNIMPLEMENTED`.
     async fn authorize(

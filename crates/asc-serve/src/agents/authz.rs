@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use asc_rpc::auth::{
     Access, AuthError, Authorizer, BearerToken, Credential, Decision, Principal, SshIdentity,
-    SshKey,
+    SshKey, Standing,
 };
 use async_trait::async_trait;
 
@@ -88,8 +88,8 @@ impl AgentAuthorizer {
             Access::Write | Access::Admin => Access::Write,
         };
         match self.inner.user_standing(who.user_id, repo, needed).await {
-            None | Some(true) => Ok(()),
-            Some(false) => Err(AuthError::Forbidden),
+            Standing::NoPeople | Standing::Person(true) => Ok(()),
+            Standing::Person(false) | Standing::Unknown => Err(AuthError::Forbidden),
         }
     }
 
@@ -245,7 +245,12 @@ impl Authorizer for AgentAuthorizer {
         self.inner.forwarded_verifier()
     }
 
-    async fn user_standing(&self, user_id: i64, repo: &str, access: Access) -> Option<bool> {
+    async fn user_standing(
+        &self,
+        user_id: i64,
+        repo: &str,
+        access: Access,
+    ) -> asc_rpc::auth::Standing {
         self.inner.user_standing(user_id, repo, access).await
     }
 
