@@ -166,6 +166,14 @@ pub struct Config {
     pub archive_max_bytes: ByteSize,
     /// Seconds such a download may take.
     pub archive_timeout_secs: u64,
+    /// The verifier key of the Go checksum database, `name+hash+key` (golang.org/x/mod/sumdb/note).
+    pub go_sumdb_key: String,
+    /// Use an npm registry that does not sign its packages; what it gives is recorded as unverified.
+    /// Off: a package without a registry signature is refused.
+    pub npm_unsigned: bool,
+    /// Hosts artifact URLs (npm tarballs, PyPI files, Composer dists) may name besides the registry's own
+    /// host and the public CDNs of the registries.
+    pub artifact_hosts: Vec<String>,
     /// Seconds an advisory answer for a package version is reused.
     pub osv_ttl_secs: u64,
     /// Seconds an advisory record is reused.
@@ -197,6 +205,9 @@ impl Default for Config {
             registries: Registries::default(),
             archive_max_bytes: ByteSize(128 * ByteSize::MIB),
             archive_timeout_secs: 120,
+            go_sumdb_key: super::sumdb::DEFAULT_KEY.to_owned(),
+            npm_unsigned: false,
+            artifact_hosts: Vec::new(),
             osv_ttl_secs: 6 * 3600,
             vuln_ttl_secs: 24 * 3600,
             latest_ttl_secs: 3600,
@@ -349,6 +360,19 @@ impl Config {
         }
         if self.archive_timeout_secs == 0 || self.archive_timeout_secs > 3600 {
             return Err("deps.archive_timeout_secs must be 1 to 3600".into());
+        }
+        super::sumdb::parse_key(&self.go_sumdb_key)
+            .map_err(|e| format!("deps.go_sumdb_key: {e}"))?;
+        if self.artifact_hosts.len() > 64
+            || self.artifact_hosts.iter().any(|h| {
+                h.is_empty()
+                    || h.len() > 253
+                    || !h
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-'))
+            })
+        {
+            return Err("deps.artifact_hosts holds at most 64 plain host names".into());
         }
         if self.max_manifest_files == 0 || self.max_manifest_files > 100_000 {
             return Err("deps.max_manifest_files must be 1 to 100000".into());

@@ -228,7 +228,15 @@ impl DepsHub {
             cfg.latest_ttl_secs,
             clock.clone(),
         )
-        .with_archive(cfg.archive_max_bytes.0, cfg.archive_timeout_secs);
+        .with_archive(cfg.archive_max_bytes.0, cfg.archive_timeout_secs)
+        .with_sumdb_key(
+            super::sumdb::parse_key(&cfg.go_sumdb_key).unwrap_or_else(|_| {
+                super::sumdb::parse_key(super::sumdb::DEFAULT_KEY)
+                    .expect("the built-in key is valid")
+            }),
+        )
+        .with_npm_unsigned(cfg.npm_unsigned)
+        .with_artifact_hosts(cfg.artifact_hosts.clone());
         Arc::new(Self {
             view: RepoView::new(registry.clone()),
             permits: Semaphore::new(cfg.max_concurrent_scans),

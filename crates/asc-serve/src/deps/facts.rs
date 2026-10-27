@@ -60,6 +60,8 @@ pub struct Facts {
     pub traits: BTreeMap<String, String>,
     /// The independent checks the digests passed, for the proposal to report.
     pub verified: Vec<String>,
+    /// What could not be checked and was used anyway because the operator allowed it.
+    pub unverified: Vec<String>,
 }
 
 impl Facts {

@@ -138,6 +138,9 @@ pub(crate) fn parse_ignore(raw: &str) -> Result<wire::DepIgnore> {
         ))
     };
     let (eco, rest) = raw.split_once(':').ok_or_else(usage)?;
+    if eco.is_empty() {
+        return Err(usage());
+    }
     let eco = if eco == "*" { "" } else { eco };
     if !eco.is_empty() {
         ecosystems(&[eco.to_owned()])?;
