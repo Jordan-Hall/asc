@@ -126,7 +126,7 @@ test.describe("interaction", () => {
     await expect(page.locator("html")).not.toHaveClass(/dark/);
   });
 
-  test("sign-in keeps the token out of the URL and local storage", async ({ page }) => {
+  test("sign-in keeps the token out of the URL and local storage", async ({ page, isMobile }) => {
     await page.goto("/ui/signin", { waitUntil: "networkidle" });
     await page.getByLabel("Token").fill("secret-token-value");
     await page.getByRole("button", { name: "Sign in" }).click();
@@ -134,6 +134,10 @@ test.describe("interaction", () => {
     expect(page.url()).not.toContain("secret-token-value");
     const stored = await page.evaluate(() => JSON.stringify({ ...localStorage }));
     expect(stored).not.toContain("secret-token-value");
+    if (isMobile) {
+      await expect(page.getByRole("link", { name: "Your profile" })).toBeVisible();
+      return;
+    }
     await page.getByRole("button", { name: "Account menu" }).click();
     await expect(page.getByRole("menuitem", { name: "Sign out" })).toBeVisible();
   });

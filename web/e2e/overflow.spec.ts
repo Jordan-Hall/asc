@@ -77,17 +77,8 @@ for (const width of WIDTHS) {
         await signedIn(page);
         await page.addInitScript(() => localStorage.setItem("asc-agents", "1"));
         await page.goto("/ui/", { waitUntil: "networkidle" });
-        await expect(page.getByText("Agent work")).toBeVisible();
+        await expect(page.getByRole("region", { name: "Needs you" })).toBeVisible();
         expect((await overflow(page)).page).toBeLessThanOrEqual(0);
-      });
-
-      test("landing with agent features on", async ({ page }) => {
-        await page.addInitScript(() => localStorage.setItem("asc-agents", "1"));
-        await page.goto("/ui/", { waitUntil: "networkidle" });
-        await expect(page.locator("#agents")).toHaveCount(1);
-        const o = await overflow(page);
-        expect(o.page).toBeLessThanOrEqual(0);
-        expect(o.wide).toEqual([]);
       });
     });
   }
@@ -129,7 +120,8 @@ test.describe("touch targets and the palette sheet", () => {
   test("the command palette is a bottom sheet that fits the screen", async ({ page }) => {
     await signedIn(page);
     await page.goto("/ui/", { waitUntil: "networkidle" });
-    await page.getByRole("button", { name: "Search", exact: true }).click();
+    await page.getByRole("button", { name: "Open menu" }).click();
+    await page.getByRole("button", { name: "Search or run a command" }).click();
     const dialog = page.getByRole("dialog", { name: "Command palette" });
     await expect(dialog).toBeVisible();
     await page.waitForTimeout(250);
@@ -147,14 +139,16 @@ test.describe("touch targets and the palette sheet", () => {
     await expect(dialog).toHaveCount(0);
   });
 
-  test("agent features switch shows the agents section", async ({ page }) => {
-    await page.goto("/ui/", { waitUntil: "networkidle" });
-    await expect(page.locator("#agents")).toHaveCount(0);
-    await page.getByRole("switch", { name: "Show agent features" }).click();
-    await expect(page.locator("#agents")).toHaveCount(1);
-    await page.reload({ waitUntil: "networkidle" });
-    await expect(page.locator("#agents")).toHaveCount(1);
-    await page.getByRole("switch", { name: "Show agent features" }).click();
-    await expect(page.locator("#agents")).toHaveCount(0);
+  test("the agent features switch in Settings shows the agent runs page", async ({ page }) => {
+    await signedIn(page);
+    await page.goto("/ui/agents", { waitUntil: "networkidle" });
+    await expect(page.getByText("Agent features are off in this browser.")).toBeVisible();
+    await page.goto("/ui/settings", { waitUntil: "networkidle" });
+    await page.getByRole("checkbox", { name: "Show agent features" }).check();
+    await page.goto("/ui/agents", { waitUntil: "networkidle" });
+    await expect(page.getByRole("heading", { level: 1, name: "Agent runs" })).toBeVisible();
+    await expect(page.getByText("Add retry policy")).toBeVisible();
+    await page.goto("/ui/settings", { waitUntil: "networkidle" });
+    await page.getByRole("checkbox", { name: "Show agent features" }).uncheck();
   });
 });
