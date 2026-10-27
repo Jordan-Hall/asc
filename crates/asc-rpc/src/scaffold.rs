@@ -111,26 +111,6 @@ scaffold! {
         stream {
         }
     }
-    audit_server::Audit = "asc.v1.Audit" {
-        unary {
-            "List" list(ListAuditRequest) -> ListAuditResponse;
-            "VerifyChain" verify_chain(VerifyAuditChainRequest) -> VerifyAuditChainResponse;
-            "ListActions" list_actions(ListAuditActionsRequest) -> ListAuditActionsResponse;
-        }
-        stream {
-            "Export" export(ExportAuditRequest) -> ExportAuditResponse as ExportStream;
-        }
-    }
-    stacks_server::Stacks = "asc.v1.Stacks" {
-        unary {
-            "Restack" restack(RestackStackRequest) -> RestackStackResponse;
-            "RevertLanded" revert_landed(RevertLandedRequest) -> RevertLandedResponse;
-            "ListRefLog" list_ref_log(ListRefLogRequest) -> ListRefLogResponse;
-            "UndoRef" undo_ref(UndoRefRequest) -> UndoRefResponse;
-        }
-        stream {
-        }
-    }
     merge_queue_server::MergeQueue = "asc.v1.MergeQueue" {
         unary {
             "Enqueue" enqueue(EnqueueRequest) -> EnqueueResponse;
@@ -142,18 +122,6 @@ scaffold! {
         }
         stream {
             "Watch" watch(WatchQueueRequest) -> QueueEvent as WatchStream;
-        }
-    }
-    ci_insights_server::CiInsights = "asc.v1.CiInsights" {
-        unary {
-            "ReportTestCases" report_test_cases(ReportTestCasesRequest) -> ReportTestCasesResponse;
-            "ListFailureGroups" list_failure_groups(ListFailureGroupsRequest) -> ListFailureGroupsResponse;
-            "GetFailureGroup" get_failure_group(GetFailureGroupRequest) -> GetFailureGroupResponse;
-            "SetFailureGroupState" set_failure_group_state(SetFailureGroupStateRequest) -> SetFailureGroupStateResponse;
-            "FlakyHistory" flaky_history(FlakyHistoryRequest) -> FlakyHistoryResponse;
-            "ListFlakyTests" list_flaky_tests(ListFlakyTestsRequest) -> ListFlakyTestsResponse;
-        }
-        stream {
         }
     }
     ai_providers_server::AiProviders = "asc.v1.AiProviders" {

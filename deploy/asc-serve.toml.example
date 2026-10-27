@@ -53,3 +53,16 @@ trusted_proxies = []                 # the exact /32 of your TLS proxy, if any
 # repin_secs = 300
 # migration_settle_secs = 5
 # migration_workers = 2
+
+# The audit log and ref undo (docs/AUDIT.md). Events are written in the transaction of the change.
+# [audit]
+# retention_days = 365                   # 0 keeps everything
+# export_max_events = 1000000
+# prune_interval_secs = 3600
+# undo_window_secs = 600                 # a maintainer may undo their own update of a protected ref this long; 0 = off
+# admins = ["alice"]                     # users who may read the instance scope
+
+# CI failure groups, flaky tests and quarantine (docs/CI-INSIGHTS.md).
+# [ci_insights]
+# retention_days = 90                    # test cases; 0 keeps them all
+# flaky_window_runs = 100

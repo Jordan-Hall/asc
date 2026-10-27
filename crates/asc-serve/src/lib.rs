@@ -8,6 +8,7 @@ pub mod actions_store;
 pub mod admin;
 pub mod admin_cli;
 pub mod alt_svc;
+pub mod audit;
 pub mod authn;
 pub mod authz;
 pub mod cache_role;
@@ -295,6 +296,22 @@ pub fn build_grpc(ext: &Extensions, authorizer: Arc<dyn Authorizer>, info: Serve
             .add_service(b.storage_service(authorizer.clone()))
             .add_service(b.vault_service(authorizer.clone()));
     }
+    if let Some(h) = ext.insights.get() {
+        grpc = grpc.add_service(
+            ci::insights::rpc::CiInsightsService::new(h.clone(), authorizer.clone(), info.clone())
+                .into_service(),
+        );
+    }
+    if let Some(a) = ext.audit.get() {
+        grpc = grpc
+            .add_service(
+                audit::rpc::AuditService::new(a.clone(), authorizer.clone(), info.clone()).into_service(),
+            )
+            .add_service(
+                audit::stacks_rpc::StacksService::new(a.clone(), authorizer.clone(), info.clone())
+                    .into_service(),
+            );
+    }
     grpc.add_service(RepoService::new(ext.handlers.clone(), authorizer, info).into_service())
 }
 
@@ -409,6 +426,9 @@ pub async fn serve(
         },
     );
     byos.start().await;
+    // The audit log, the ref log and ref undo (docs/BUILDOUT.md sections 3 and 6).
+    audit::register(&ext, &registry, &cfg.audit);
+    ci::insights::register(&ext, &registry, &cfg.ci_insights);
     let warmer = projects::register(&ext, &registry);
     #[cfg(feature = "forgejo")]
     forgejo::register(&ext, &registry, &outbox, cfg.forgejo.as_ref())
@@ -488,6 +508,9 @@ pub async fn serve(
     #[cfg_attr(not(feature = "git-compat"), allow(unused_mut))]
     let mut features = vec![projects::feature()];
     features.extend(review::features());
+    features.push(audit::FEATURE.to_owned());
+    features.push(audit::STACKS_FEATURE.to_owned());
+    features.push(ci::insights::FEATURE.to_owned());
     features.extend(codeintel::features::features(&ext.codeintel));
     features.extend(storage::features(&ext.byos));
     #[cfg(feature = "git-compat")]
@@ -528,7 +551,12 @@ pub async fn serve(
     // gRPC-Web and Connect unary for browsers, in front of admission and the services.
     let routes = web::grpc_web::wrap(routes, &cfg.web, cfg.public_url.as_deref());
     // The outermost layer: the access log sees every request, whichever listener carries it.
-    let routes = Routes::from(routes.into_axum_router().layer(logging::AccessLogLayer));
+    let routes = Routes::from(
+        routes
+            .into_axum_router()
+            .layer(audit::meta::MetaLayer)
+            .layer(logging::AccessLogLayer),
+    );
 
     // The admin listener is bound before the public one so a bad address fails startup.
     let admin_token = match &cfg.admin.token_file {
@@ -595,6 +623,10 @@ pub async fn serve(
     let warming = warmer.spawn();
     let poller = mirror.as_ref().map(mirror::Mirror::spawn_poller);
     let admin_worker = repo_admin.spawn_worker();
+    // Events older than `[audit] retention_days` are dropped, oldest first.
+    let audit_retention = audit::retention::spawn(registry.pool().clone(), cfg.audit.clone());
+    let insights_retention =
+        ci::insights::retention::spawn(registry.pool().clone(), cfg.ci_insights.clone());
     // Expired agent refs and snapshots are deleted through the normal pipeline (SPEC §8.8).
     let expiry =
         Arc::new(expire::Expirer::new(registry.clone(), ext.pipeline.clone())).spawn_worker();
@@ -639,6 +671,8 @@ pub async fn serve(
         p.abort();
     }
     admin_worker.abort();
+    audit_retention.abort();
+    insights_retention.abort();
     #[cfg(feature = "git-ssh")]
     if let Some(t) = ssh_task {
         t.abort();

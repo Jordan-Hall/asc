@@ -89,7 +89,7 @@ const INDEX_PAGE: i64 = 5000;
 const CHUNK_THRESHOLD: u64 = 4 * 1024 * 1024;
 /// Tables keyed by a namespace; the drop of a deleted repository clears each. A test checks that
 /// every table with an `ns` column is named here.
-const NS_TABLES: [&str; 33] = [
+const NS_TABLES: [&str; 37] = [
     "cs_graph",
     "git_map",
     "file_meta",
@@ -123,12 +123,34 @@ const NS_TABLES: [&str; 33] = [
     "check_runs",
     "check_jobs",
     "check_job_logs",
+    "test_cases",
+    "failure_groups",
+    "flaky_daily",
+    "flaky_tests",
 ];
 
 // ------------------------------------------------------------------------------ statuses
 
 fn invalid(m: impl Into<String>) -> Status {
     Status::invalid_argument(m.into())
+}
+
+/// A repository-scoped audit event of `principal`.
+fn repo_event(action: &str, principal: &str, repo: &RepoName) -> crate::audit::NewEvent {
+    crate::audit::NewEvent::new(action, crate::audit::actor::actor_of(principal))
+        .repo(repo.as_str())
+        .target(repo.as_str())
+}
+
+/// Appends `event` in the transaction of the change it records.
+async fn audit_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    event: crate::audit::NewEvent,
+) -> Result<(), Status> {
+    crate::audit::store::append_in_tx(&mut *tx, &event)
+        .await
+        .map(drop)
+        .map_err(|e| internal("audit", &e))
 }
 
 fn unix_now() -> i64 {
@@ -774,6 +796,14 @@ impl AdminService {
             }
             Err(e) => return Err(sql("repos", e)),
         }
+        audit_in_tx(
+            &mut tx,
+            repo_event("repo.created", &ctx.principal.id, &ctx.repo)
+                .detail("name", ctx.repo.as_str())
+                .detail("mode", mode.as_str())
+                .detail("default_branch", default_branch.as_str()),
+        )
+        .await?;
         tx.commit().await.map_err(|e| sql("repos", e))?;
         self.registry.forget(&ctx.repo);
         // A target left under this name by an earlier repository is not this one's. Cleared
@@ -822,7 +852,18 @@ impl AdminService {
 
     /// Creates the fork's row, not ready, with the copy leased to the caller. Returns the new
     /// repository's id and the lease.
+    #[cfg(test)]
     async fn begin_fork(&self, name: &RepoName, from: &RepoName) -> Result<(i64, i64), Status> {
+        self.begin_fork_by("system:test", name, from).await
+    }
+
+    /// [`Self::begin_fork`] on behalf of principal `actor`, whom the audit log names.
+    async fn begin_fork_by(
+        &self,
+        actor: &str,
+        name: &RepoName,
+        from: &RepoName,
+    ) -> Result<(i64, i64), Status> {
         if name == from {
             return Err(invalid("a repository cannot fork itself"));
         }
@@ -863,6 +904,14 @@ impl AdminService {
             .fetch_one(&mut *tx)
             .await
             .map_err(|e| sql("repos", e))?;
+        audit_in_tx(
+            &mut tx,
+            repo_event("repo.created", actor, name)
+                .detail("name", name.as_str())
+                .detail("mode", "primary")
+                .detail("default_branch", src.default_branch.as_str()),
+        )
+        .await?;
         tx.commit().await.map_err(|e| sql("repos", e))?;
         self.registry.forget(name);
         if let Some(mirror) = &self.mirror {
@@ -1159,6 +1208,11 @@ impl AdminService {
         .execute(&mut *tx)
         .await
         .map_err(|e| sql("repo_drops", e))?;
+        audit_in_tx(
+            &mut tx,
+            repo_event("repo.deleted", &ctx.principal.id, &ctx.repo).detail("name", ctx.repo.as_str()),
+        )
+        .await?;
         tx.commit().await.map_err(|e| sql("repos", e))?;
         self.registry.forget(&ctx.repo);
         crate::authz::token_store::invalidate_grants();
@@ -1278,6 +1332,13 @@ impl AdminService {
         // that already has grants or keys is refused: they would merge with this repository's.
         refuse_leftover_access(&mut tx, to.as_str()).await?;
         move_access(&mut tx, ctx.repo.as_str(), to.as_str()).await?;
+        audit_in_tx(
+            &mut tx,
+            repo_event("repo.renamed", &ctx.principal.id, &to)
+                .detail("from", ctx.repo.as_str())
+                .detail("to", to.as_str()),
+        )
+        .await?;
         tx.commit().await.map_err(|e| sql("repos", e))?;
         self.registry.forget(&ctx.repo);
         self.registry.forget(&to);
@@ -1612,7 +1673,9 @@ impl AdminHandler for AdminService {
             Some(Op::Fork(op)) => {
                 let from = op.from.ok_or_else(|| invalid("missing source"))?;
                 let from = RepoName::parse(&from.name)?;
-                let (id, lease) = self.begin_fork(&ctx.repo, &from).await?;
+                let (id, lease) = self
+                    .begin_fork_by(&ctx.principal.id, &ctx.repo, &from)
+                    .await?;
                 self.spawn_fork(id, lease, ctx.principal.id.clone());
                 Ok(wire::RepoAdminResponse {
                     report: "fork is being prepared".into(),
@@ -3150,6 +3213,45 @@ mod tests {
         );
         // The old name is free.
         f.init("o/src").await;
+    }
+
+    #[tokio::test]
+    async fn creating_renaming_and_deleting_a_repository_are_audited() {
+        let f = fx().await;
+        f.init("o/a").await;
+        // A refused init (the name is taken) writes nothing.
+        let again = f
+            .call(
+                "o/a",
+                Op::Init(wire::InitOp {
+                    default_branch: "master".into(),
+                    ..Default::default()
+                }),
+            )
+            .await;
+        assert!(again.is_err());
+        f.call("o/a", Op::RenameTo("p/b".into())).await.unwrap();
+        f.call("p/b", Op::Delete(true)).await.unwrap();
+        let rows: Vec<(String, String)> = sqlx::query(
+            "SELECT action, actor_name FROM audit_events              WHERE scope_kind = 'instance' AND scope_name = '' ORDER BY seq",
+        )
+        .fetch_all(f.registry.pool())
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| (r.get("action"), r.get("actor_name")))
+        .collect();
+        let actions: Vec<&str> = rows.iter().map(|(a, _)| a.as_str()).collect();
+        assert_eq!(actions, ["repo.created", "repo.renamed", "repo.deleted"]);
+        assert!(rows.iter().all(|(_, who)| who == "alice"));
+        // The renamed repository's event is in its new owner's scope.
+        let owner: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM audit_events WHERE scope_kind = 'owner' AND scope_name = 'p'              AND action = 'repo.renamed'",
+        )
+        .fetch_one(f.registry.pool())
+        .await
+        .unwrap();
+        assert_eq!(owner, 1);
     }
 
     #[tokio::test]

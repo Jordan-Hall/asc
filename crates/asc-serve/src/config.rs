@@ -1002,6 +1002,10 @@ pub struct ServeConfig {
     pub netguard: crate::netguard::NetGuardConfig,
     /// `[storage]`: bring-your-own storage limits and timers.
     pub storage: crate::storage::StorageConfig,
+    /// `[audit]`: retention, export bound, who may read every scope (docs/BUILDOUT.md section 3).
+    pub audit: crate::audit::AuditConfig,
+    /// `[ci_insights]`: retention and the flaky window (docs/BUILDOUT.md section 8).
+    pub ci_insights: crate::ci::insights::InsightsConfig,
     pub composition_grants: Vec<CompositionGrant>,
 }
 
@@ -1045,6 +1049,8 @@ impl ServeConfig {
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
         let read = |source| ConfigError::Read {
             path: path.to_owned(),
+            audit: crate::audit::AuditConfig::default(),
+            ci_insights: crate::ci::insights::InsightsConfig::default(),
             source,
         };
         let file = std::fs::File::open(path).map_err(read)?;
@@ -1180,6 +1186,12 @@ impl ServeConfig {
 
     fn check_listener(&self, policy: Policy) -> Result<(), ConfigError> {
         let behind_https_proxy = self
+        self.audit
+            .validate()
+            .map_err(|e| ConfigError::Invalid(format!("audit: {e}")))?;
+        self.ci_insights
+            .validate()
+            .map_err(|e| ConfigError::Invalid(format!("ci_insights: {e}")))?;
             .public_url
             .as_deref()
             .is_some_and(|u| classify(u, policy) == Ok(Transport::Https));

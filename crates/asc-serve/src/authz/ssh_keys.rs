@@ -514,6 +514,15 @@ impl TokenStore {
             }
             Err(e) => return Err(e.into()),
         }
+        let event = crate::audit::hooks::ssh_key_added(
+            &fp.to_string(),
+            &title,
+            principal.strip_prefix("pat:"),
+            repo.as_deref(),
+        );
+        crate::audit::store::append_in_tx(&mut tx, &event)
+            .await
+            .map_err(super::token_store::audit_failed)?;
         tx.commit().await?;
         self.ssh_cache.clear();
         tracing::info!(
@@ -585,42 +594,73 @@ impl TokenStore {
     /// [`TokenError::NotFound`] when no key matches.
     pub async fn revoke_ssh_key(&self, id_or_fingerprint: &str) -> Result<bool, TokenError> {
         let sel = id_or_fingerprint.trim();
-        let done = if sel.starts_with("SHA256:") {
+        let by_fingerprint = sel.starts_with("SHA256:");
+        let fingerprint = if by_fingerprint {
             let Some(fp) = SshFingerprint::parse(sel) else {
                 return refuse("not a SHA256:<base64> fingerprint");
             };
-            sqlx::query(
-                "UPDATE ssh_keys SET revoked = $1 WHERE fingerprint = $2 AND revoked IS NULL",
-            )
-            .bind(self.now())
-            .bind(fp.as_bytes().to_vec())
-            .execute(&self.pool)
-            .await?
+            Some(fp.as_bytes().to_vec())
         } else {
-            sqlx::query("UPDATE ssh_keys SET revoked = $1 WHERE id = $2 AND revoked IS NULL")
-                .bind(self.now())
-                .bind(sel.to_owned())
-                .execute(&self.pool)
-                .await?
+            None
         };
+        let mut tx = crate::audit::store::begin(&self.pool).await?;
+        let (done, found) = if let Some(fp) = fingerprint {
+            let done = sqlx::query(
+                "UPDATE ssh_keys SET revoked = $2 WHERE fingerprint = $1 AND revoked IS NULL",
+            )
+            .bind(fp.clone())
+            .bind(self.now())
+            .execute(&mut *tx)
+            .await?;
+            let found = sqlx::query(
+                "SELECT fingerprint, title, principal, repo_id FROM ssh_keys WHERE fingerprint = $1",
+            )
+            .bind(fp)
+            .fetch_optional(&mut *tx)
+            .await?;
+            (done, found)
+        } else {
+            let done =
+                sqlx::query("UPDATE ssh_keys SET revoked = $2 WHERE id = $1 AND revoked IS NULL")
+                    .bind(sel.to_owned())
+                    .bind(self.now())
+                    .execute(&mut *tx)
+                    .await?;
+            let found = sqlx::query(
+                "SELECT fingerprint, title, principal, repo_id FROM ssh_keys WHERE id = $1",
+            )
+            .bind(sel.to_owned())
+            .fetch_optional(&mut *tx)
+            .await?;
+            (done, found)
+        };
+        if done.rows_affected() > 0
+            && let Some(row) = &found
+        {
+            let fp: Vec<u8> = row.try_get("fingerprint")?;
+            let fp = <[u8; 32]>::try_from(fp)
+                .map(|b| SshFingerprint::from_bytes(b).to_string())
+                .unwrap_or_default();
+            let title: String = row.try_get("title")?;
+            let principal: String = row.try_get("principal")?;
+            let repo: Option<String> = row.try_get("repo_id")?;
+            let event = crate::audit::hooks::ssh_key_removed(
+                &fp,
+                &title,
+                principal.strip_prefix("pat:"),
+                repo.as_deref(),
+            );
+            crate::audit::store::append_in_tx(&mut tx, &event)
+                .await
+                .map_err(super::token_store::audit_failed)?;
+        }
+        tx.commit().await?;
         self.ssh_cache.clear();
         if done.rows_affected() > 0 {
             tracing::info!(selector = %sel, "ssh key revoked");
             return Ok(true);
         }
-        let exists: i64 = if sel.starts_with("SHA256:") {
-            let fp = SshFingerprint::parse(sel).map(|f| f.as_bytes().to_vec());
-            sqlx::query_scalar("SELECT COUNT(*) FROM ssh_keys WHERE fingerprint = $1")
-                .bind(fp.unwrap_or_default())
-                .fetch_one(&self.pool)
-                .await?
-        } else {
-            sqlx::query_scalar("SELECT COUNT(*) FROM ssh_keys WHERE id = $1")
-                .bind(sel.to_owned())
-                .fetch_one(&self.pool)
-                .await?
-        };
-        if exists == 0 {
+        if found.is_none() {
             Err(TokenError::NotFound)
         } else {
             Ok(false)
