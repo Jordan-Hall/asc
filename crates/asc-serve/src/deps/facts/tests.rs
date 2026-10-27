@@ -185,10 +185,14 @@ fn a_crate_checksum_must_agree_between_the_api_and_the_index() {
             .contains("does not list")
     );
     assert!(parse_crates_index(CRATES_INDEX, "other", "1.0.9").is_err());
-    assert_eq!(crates_index_path("itoa"), ["it", "oa", "itoa"]);
-    assert_eq!(crates_index_path("a"), ["1", "a"]);
-    assert_eq!(crates_index_path("ab"), ["2", "ab"]);
-    assert_eq!(crates_index_path("Abc"), ["3", "a", "abc"]);
+    assert_eq!(crates_index_path("itoa").unwrap(), ["it", "oa", "itoa"]);
+    assert_eq!(crates_index_path("a").unwrap(), ["1", "a"]);
+    assert_eq!(crates_index_path("ab").unwrap(), ["2", "ab"]);
+    assert_eq!(crates_index_path("Abc").unwrap(), ["3", "a", "abc"]);
+    // A name outside crates.io's grammar never reaches a byte slice.
+    for bad in ["", "é", "aé", "日本語", "ab\u{e9}", &"a".repeat(65), "a/b", ".."] {
+        assert!(crates_index_path(bad).is_err(), "{bad:?}");
+    }
 }
 
 #[test]

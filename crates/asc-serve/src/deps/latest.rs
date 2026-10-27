@@ -39,11 +39,15 @@ fn npm_name_ok(s: &str) -> bool {
 }
 
 pub struct Latest {
-    egress: Arc<Egress>,
+    pub(super) egress: Arc<Egress>,
     pool: AnyPool,
-    regs: Registries,
+    pub(super) regs: Registries,
     ttl: u64,
     clock: Clock,
+    /// The largest download read to verify a hash, and the time it may take.
+    pub(super) archive: Limits,
+    /// The registry keys npm signatures are checked against, once per process.
+    pub(super) npm_keys: tokio::sync::OnceCell<Vec<(String, String)>>,
 }
 
 impl Latest {
@@ -60,7 +64,22 @@ impl Latest {
             regs,
             ttl,
             clock,
+            archive: Limits {
+                timeout: Duration::from_secs(120),
+                max_bytes: 128 << 20,
+            },
+            npm_keys: tokio::sync::OnceCell::new(),
         }
+    }
+
+    /// The bound on a download that verifies a hash (`archive_max_bytes`, `archive_timeout_secs`).
+    #[must_use]
+    pub fn with_archive(mut self, max_bytes: u64, timeout_secs: u64) -> Self {
+        self.archive = Limits {
+            timeout: Duration::from_secs(timeout_secs),
+            max_bytes: usize::try_from(max_bytes).unwrap_or(usize::MAX),
+        };
+        self
     }
 
     /// Whether `eco` can be asked.
@@ -117,6 +136,7 @@ impl Latest {
             Some(_) => return Err("lookups are switched off".into()),
             None => return Err("the ecosystem has no registry API".into()),
         };
+        super::names::check(eco, name)?;
         let err = |e: FetchError| e.to_string();
         let bad = |what: &str| format!("the answer is not usable ({what})");
         match eco {
