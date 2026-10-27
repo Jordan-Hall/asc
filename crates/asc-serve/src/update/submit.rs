@@ -4,23 +4,29 @@
 //! is never stored as a ref. It names a change (`asc-<change id>` after the target branch) and a
 //! changeset, and means "publish this changeset as the next version of that change". The request
 //! carries only such updates; they arrive bottom to top, and the change before one is its parent
-//! change. For each update the server
+//! change. A submit goes through the same gates as a push, in the same order:
 //!
-//! * ingests the closure like any push, under the same write access the service already checked;
-//! * requires the changeset to be a version of the named change (the change index says so);
-//! * lets the person who published the change update it, or an administrator of the repository.
-//!   Anyone else gets `CHANGE_NOT_ALLOWED`, so a forged topic cannot take over someone else's change;
-//! * keeps the lease of `versions::append`: the latest version must be in the new changeset's `preds`
-//!   closure, else `CHANGE_DIVERGED`, unless the push option `force-push` is set (which needs the
-//!   same authorisation);
-//! * answers `RefResult{name = the update's name, new = the changeset}` and records the answer
-//!   under the operation id, so a retry returns it.
+//! * write access (the service checked it) and the agent gate;
+//! * the closure is ingested under the shared GC lock, recorded to the submitter;
+//! * the policy gate in [`GateMode::Submit`]: a usable policy, the submitter's path rules, an
+//!   agent's scope and budget, and the secret scan with its fail-closed truncation. Protection,
+//!   approvals and signatures belong to the landing, which a submit never does;
+//! * the push hooks: the bridge quarantine and `pre_receive` (the forge's, with the attributed
+//!   user) unless a caller allowed to skip them says so, and an `abort` when the commit fails;
+//! * one transaction: the owner and lease rules, the versions, the stored answer and the same
+//!   outbox effects a push queues (post-receive, webhooks, fan-out).
 //!
-//! All versions of a request commit in one transaction. A forge, when one is configured, hears of
-//! the new versions through the ordinary push events; creating its pull requests is its own step.
+//! **Who owns a change.** The person who published its first version. That first version is
+//! accepted only from the person who put its changeset on the server (the ingester the byte ledger
+//! recorded for it) or from an administrator, so someone else's changeset cannot be published
+//! under one's own name by being first. The recorded owner is the actor of version 1. Every later version, and a forced one, needs
+//! the recorded owner or an administrator (`CHANGE_NOT_ALLOWED` otherwise); the lease of
+//! `versions::append` still requires the latest version to be in the new changeset's `preds`
+//! closure (`CHANGE_DIVERGED`) unless the push option `force-push` is set.
 
 use super::*;
 use crate::changes::{index, versions};
+use crate::policy::gate::{GateMode, GateRequest, GateUpdate};
 
 /// The longest branch name a `refs/for/` update may name.
 const MAX_BRANCH: usize = 200;
@@ -40,6 +46,10 @@ fn parse_topic(name: &str) -> Option<(String, asc_core::change::ChangeId)> {
     }
     let change = topic.parse().ok()?;
     Some((branch.to_owned(), change))
+}
+
+fn refusal(m: String) -> Status {
+    rpc(RpcError::ChangeNotAllowed(info(vec![m])))
 }
 
 impl ServerRefs {
@@ -89,7 +99,12 @@ impl ServerRefs {
                 cs,
             });
         }
-        let force = req.push_options.iter().any(|o| o == "force-push");
+        let hooks = self.hooks.push_hooks();
+        if req.hooks == wire::HookMode::SkipPre as i32 && !hooks.may_skip_pre(ctx) {
+            return Err(Status::permission_denied(
+                "hooks cannot be skipped by this caller",
+            ));
+        }
         if req.push_options.len() > MAX_PUSH_OPTIONS
             || req
                 .push_options
@@ -98,6 +113,7 @@ impl ServerRefs {
         {
             return Err(bad("too many or too long push options"));
         }
+        let force = req.push_options.iter().any(|o| o == "force-push");
         if let Some(agent) = self.hooks.agent_gate() {
             let refs: Vec<(String, bool)> = subs.iter().map(|s| (s.text.clone(), false)).collect();
             agent.check_refs(ctx, false, &refs).await?;
@@ -119,6 +135,9 @@ impl ServerRefs {
             tracing::warn!(error = %e, "gc fence unavailable");
             Status::unavailable("garbage-collection fence unavailable; retry")
         })?;
+        let submitter = crate::authz::UserIdentity::of(&ctx.principal)
+            .filter(crate::authz::UserIdentity::is_user)
+            .map(|u| u.user_id);
         let targets: Vec<RefTarget> = subs.iter().map(|s| RefTarget::Changeset(s.cs)).collect();
         let windows_safe = self.windows_safe(&entry).await?;
         Ingestor::new(
@@ -127,6 +146,7 @@ impl ServerRefs {
             &entry,
             windows_safe,
         )
+        .by(submitter)
         .ingest(&targets, self.hooks.observer())
         .await
         .map_err(ingest_status)?;
@@ -153,7 +173,113 @@ impl ServerRefs {
             }
         }
 
-        // One transaction: who may update, the lease, the versions, the stored answer.
+        // The policy gate, as for a push (see `GateMode::Submit`).
+        let gate_updates: Vec<GateUpdate> = subs
+            .iter()
+            .map(|s| GateUpdate {
+                name: s.text.clone(),
+                old: None,
+                new: Some(RefTarget::Changeset(s.cs)),
+                user: false,
+            })
+            .collect();
+        if let Some(gate) = self.hooks.gate() {
+            gate.check(&GateRequest {
+                ctx,
+                entry: &entry,
+                updates: &gate_updates,
+                mode: GateMode::Submit,
+            })
+            .await?;
+        }
+
+        // The hook points, as for a push: the bridge quarantine, then the forge's pre-receive.
+        let hook_updates: Vec<HookUpdate> = subs
+            .iter()
+            .map(|s| HookUpdate {
+                name: s.text.clone(),
+                old: None,
+                new: Some(RefTarget::Changeset(s.cs)),
+            })
+            .collect();
+        let hook_req = HookRequest {
+            repo: &ctx.repo,
+            op_id,
+            principal: &ctx.principal,
+            updates: &hook_updates,
+            push_options: &req.push_options,
+        };
+        hooks
+            .bridge_quarantine(&hook_req)
+            .await
+            .map_err(|e| rpc(RpcError::HookRejected(info(vec![e.0]))))?;
+        if req.hooks != wire::HookMode::SkipPre as i32
+            && let Err(e) = hooks.pre_receive(&hook_req).await
+        {
+            hooks.abort(&hook_req).await;
+            return Err(rpc(RpcError::HookRejected(info(vec![e.0]))));
+        }
+
+        // An agent's budget is charged for what it publishes and given back if the commit fails.
+        let agent_updates: Vec<RefChange> = subs
+            .iter()
+            .map(|s| RefChange {
+                name: s.text.clone(),
+                old: None,
+                new: Some(RefTarget::Changeset(s.cs)),
+            })
+            .collect();
+        let charge = match self.hooks.agent_gate() {
+            Some(g) => match g.charge(ctx, &entry, &agent_updates).await {
+                Ok(c) => c,
+                Err(e) => {
+                    hooks.abort(&hook_req).await;
+                    return Err(e);
+                }
+            },
+            None => None,
+        };
+        let committed = self
+            .publish(
+                ctx,
+                &entry,
+                op_id,
+                &subs,
+                force,
+                submitter,
+                &hook_updates,
+                hooks,
+            )
+            .await;
+        if let (Some(g), Some(c)) = (self.hooks.agent_gate(), charge) {
+            g.settle(c, committed.is_ok()).await;
+        }
+        match committed {
+            Ok(response) => Ok(response),
+            Err(e) => {
+                hooks.abort(&hook_req).await;
+                // A retry of the same op that committed in the meantime is not a failure.
+                if let Some(done) = self.stored(&entry, op_id).await? {
+                    return Ok(done);
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// The transaction: owner and lease rules, the versions, the stored answer, the outbox.
+    #[allow(clippy::too_many_arguments)] // the pieces `submit` has already made
+    async fn publish(
+        &self,
+        ctx: &CallCtx,
+        entry: &RepoEntry,
+        op_id: Uuid,
+        subs: &[Submission],
+        force: bool,
+        submitter: Option<i64>,
+        hook_updates: &[HookUpdate],
+        hooks: &dyn PushHooks,
+    ) -> Result<wire::UpdateRefsResponse, Status> {
         let mut tx = self
             .registry
             .refs()
@@ -165,17 +291,45 @@ impl ServerRefs {
         let at = now();
         let mut parent = None;
         let mut results = Vec::with_capacity(subs.len());
-        for s in &subs {
-            if let Some(last) = versions::latest(&mut tx, entry.ns, s.change)
-                .await
-                .map_err(Status::from)?
-                && last.actor != actor
-                && !admin
-            {
-                return Err(rpc(RpcError::ChangeNotAllowed(info(vec![format!(
-                    "not allowed to update change {}",
-                    s.change
-                )]))));
+        for s in subs {
+            // The owner is whoever published version 1.
+            let owner: Option<String> = sqlx::query_scalar(
+                "SELECT actor FROM change_versions WHERE ns = $1 AND change = $2 AND v = 1",
+            )
+            .bind(entry.ns.as_bytes().to_vec())
+            .bind(s.change.as_bytes().to_vec())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| internal("change_versions", &e))?;
+            match owner {
+                // Later versions: the recorded owner, or an administrator.
+                Some(owner) if owner != actor && !admin => {
+                    return Err(refusal(format!(
+                        "not allowed to update change {}",
+                        s.change
+                    )));
+                }
+                Some(_) => {}
+                // The first version: the person who put this changeset on the server, or nobody
+                // in particular (a changeset the ledger has no owner for).
+                None if !admin => {
+                    let ingester: Option<i64> = sqlx::query_scalar(
+                        "SELECT CAST(ingester AS BIGINT) FROM cs_ledger WHERE ns = $1 AND cs = $2",
+                    )
+                    .bind(entry.ns.as_bytes().to_vec())
+                    .bind(s.cs.as_bytes().to_vec())
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .map_err(|e| internal("cs_ledger", &e))?;
+                    let mine = submitter.unwrap_or(0);
+                    if ingester.is_some_and(|i| i != 0 && i != mine) {
+                        return Err(refusal(format!(
+                            "not allowed to publish change {}: its changeset was put here by someone else",
+                            s.change
+                        )));
+                    }
+                }
+                None => {}
             }
             versions::append(
                 &mut tx,
@@ -212,6 +366,30 @@ impl ServerRefs {
             .execute(&mut *tx)
             .await
             .map_err(|e| internal("op_results", &e))?;
+        // The effects a push queues: post-receive and what hangs on it.
+        let outbox = serde_json::to_vec(&OutboxEffects {
+            effects: hooks.outbox_effects(),
+            pusher: &ctx.principal.id,
+            refs: hook_updates
+                .iter()
+                .map(|u| EffectRef {
+                    name: u.name.clone(),
+                    old: u.old.as_ref().map(target_hex),
+                    new: u.new.as_ref().map(target_hex),
+                })
+                .collect(),
+        })
+        .map_err(|e| internal("outbox", &e))?;
+        sqlx::query(
+            "INSERT INTO outbox (repo_id, op_id, effects, next_at) VALUES ($1, $2, $3, $4)",
+        )
+        .bind(entry.key.0)
+        .bind(op_id.as_bytes().to_vec())
+        .bind(outbox)
+        .bind(at)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| internal("outbox", &e))?;
         tx.commit().await.map_err(|e| internal("refs", &e))?;
         Ok(response)
     }
