@@ -756,6 +756,15 @@ fn user_principal(mapped: &str) -> Option<String> {
 
 #[async_trait]
 impl Authorizer for OauthAuthorizer {
+    async fn user_standing(
+        &self,
+        user_id: i64,
+        repo: &str,
+        access: Access,
+    ) -> asc_rpc::auth::Standing {
+        self.inner.user_standing(user_id, repo, access).await
+    }
+
     async fn authorize(
         &self,
         token: Option<&BearerToken>,

@@ -1275,10 +1275,10 @@ async fn a_token_of_another_agent_name_cannot_borrow_the_branch_of_this_one() {
 }
 
 /// An authorizer that knows no tokens and answers what a forge says of a person.
-struct Standing(std::sync::Mutex<std::collections::HashMap<(i64, Access), Option<bool>>>);
+struct Forge(std::sync::Mutex<std::collections::HashMap<(i64, Access), asc_rpc::auth::Standing>>);
 
 #[async_trait::async_trait]
-impl asc_rpc::auth::Authorizer for Standing {
+impl asc_rpc::auth::Authorizer for Forge {
     async fn authorize(
         &self,
         _t: Option<&BearerToken>,
@@ -1288,13 +1288,18 @@ impl asc_rpc::auth::Authorizer for Standing {
         Err(AuthError::Unauthenticated)
     }
 
-    async fn user_standing(&self, user_id: i64, _repo: &str, access: Access) -> Option<bool> {
+    async fn user_standing(
+        &self,
+        user_id: i64,
+        _repo: &str,
+        access: Access,
+    ) -> asc_rpc::auth::Standing {
         self.0
             .lock()
             .unwrap()
             .get(&(user_id, access))
             .copied()
-            .unwrap_or(None)
+            .unwrap_or(asc_rpc::auth::Standing::Unknown)
     }
 }
 
@@ -1323,16 +1328,16 @@ async fn a_token_is_only_as_good_as_the_access_of_the_person_who_made_it() {
     make("7:alice", 7, secret.as_str()).await;
     let plain = super::tokens::new_secret();
     make("pat:alice", 7, plain.as_str()).await;
-    use asc_rpc::auth::Authorizer as _;
-    let forge = std::sync::Arc::new(Standing(Default::default()));
+    use asc_rpc::auth::{Authorizer as _, Standing};
+    let forge = std::sync::Arc::new(Forge(Default::default()));
     let authz = super::authz::AgentAuthorizer::new(forge.clone(), w.hub.core.tokens.clone(), true);
     let bearer = BearerToken::new(secret.as_str()).unwrap();
     let on = |access| authz.authorize(Some(&bearer), "acme/app", access);
     // The forge is asked, and a yes lets the token work.
     {
         let mut m = forge.0.lock().unwrap();
-        m.insert((7, Access::Read), Some(true));
-        m.insert((7, Access::Write), Some(true));
+        m.insert((7, Access::Read), Standing::Person(true));
+        m.insert((7, Access::Write), Standing::Person(true));
     }
     assert!(on(Access::Read).await.is_ok() && on(Access::Write).await.is_ok());
     // The person loses write access: the token still reads, and no longer writes.
@@ -1340,7 +1345,7 @@ async fn a_token_is_only_as_good_as_the_access_of_the_person_who_made_it() {
         .0
         .lock()
         .unwrap()
-        .insert((7, Access::Write), Some(false));
+        .insert((7, Access::Write), Standing::Person(false));
     assert!(on(Access::Read).await.is_ok());
     assert_eq!(on(Access::Write).await.unwrap_err(), AuthError::Forbidden);
     // The person loses every access: the token is dead on the next call.
@@ -1348,23 +1353,94 @@ async fn a_token_is_only_as_good_as_the_access_of_the_person_who_made_it() {
         .0
         .lock()
         .unwrap()
-        .insert((7, Access::Read), Some(false));
+        .insert((7, Access::Read), Standing::Person(false));
     assert_eq!(on(Access::Read).await.unwrap_err(), AuthError::Forbidden);
-    // A forge that cannot say is a refusal only when it was asked and said no; with no forge
-    // behind the server (None) the token stands on its own, as does one with no forge person.
+    // An authorizer that does not say refuses the token: not knowing is not a pass.
     forge.0.lock().unwrap().clear();
+    assert_eq!(on(Access::Write).await.unwrap_err(), AuthError::Forbidden);
+    assert_eq!(on(Access::Read).await.unwrap_err(), AuthError::Forbidden);
+    // A server that has no people to ask (a token store) lets the token stand on its own.
+    {
+        let mut m = forge.0.lock().unwrap();
+        m.insert((7, Access::Read), Standing::NoPeople);
+        m.insert((7, Access::Write), Standing::NoPeople);
+    }
     assert!(on(Access::Write).await.is_ok());
     let anon = BearerToken::new(plain.as_str()).unwrap();
     forge
         .0
         .lock()
         .unwrap()
-        .insert((7, Access::Write), Some(false));
+        .insert((7, Access::Write), Standing::Person(false));
     assert!(
         authz
             .authorize(Some(&anon), "acme/app", Access::Write)
             .await
             .is_ok(),
         "a token with no forge person behind it is not judged by one"
+    );
+}
+
+/// Every wrapper hands the question to what it wraps: a wrapper that forgot would turn a forge's
+/// answer into `Unknown`, which refuses the token.
+#[tokio::test]
+async fn every_wrapper_forwards_the_standing_of_a_person() {
+    use asc_rpc::auth::{Authorizer, Standing};
+    let forge = std::sync::Arc::new(Forge(Default::default()));
+    forge
+        .0
+        .lock()
+        .unwrap()
+        .insert((7, Access::Read), Standing::Person(true));
+    let inner: std::sync::Arc<dyn Authorizer> = forge;
+    let ask = |a: std::sync::Arc<dyn Authorizer>| async move {
+        (
+            a.user_standing(7, "o/r", Access::Read).await,
+            a.user_standing(8, "o/r", Access::Read).await,
+        )
+    };
+    let want = (Standing::Person(true), Standing::Unknown);
+    let logging: std::sync::Arc<dyn Authorizer> =
+        std::sync::Arc::new(crate::logging::LoggingAuthorizer::new(inner.clone()));
+    assert_eq!(ask(logging).await, want, "logging");
+    let verifier = asc_rpc::forwarded::ForwardedVerifier::new(vec![1u8; 32]).unwrap();
+    let forwarded: std::sync::Arc<dyn Authorizer> = std::sync::Arc::new(
+        crate::authz::forwarded::ForwardedAuthorizer::new(inner.clone(), verifier),
+    );
+    assert_eq!(ask(forwarded).await, want, "forwarded");
+    let recording =
+        crate::limits::Admission::new(&crate::config::Limits::default()).recording(inner.clone());
+    assert_eq!(ask(recording).await, want, "recording");
+    let serve: std::sync::Arc<dyn Authorizer> =
+        crate::mcp::backend::ServeAuthorizer::new(inner.clone());
+    assert_eq!(ask(serve).await, want, "mcp");
+    // The agent authorizer itself answers for what it wraps too.
+    let w = World::new().await;
+    let agents: std::sync::Arc<dyn Authorizer> =
+        super::authz::AgentAuthorizer::new(inner, w.hub.core.tokens.clone(), true);
+    assert_eq!(ask(agents).await, want, "agents");
+    // Authorizers without people say so, or say nothing, and neither is a pass for a person's token.
+    assert_eq!(
+        asc_rpc::auth::StaticTokens::new()
+            .user_standing(7, "o/r", Access::Read)
+            .await,
+        Standing::NoPeople
+    );
+    struct Silent;
+    #[async_trait::async_trait]
+    impl Authorizer for Silent {
+        async fn authorize(
+            &self,
+            _t: Option<&BearerToken>,
+            _r: &str,
+            _a: Access,
+        ) -> Result<asc_rpc::auth::Principal, AuthError> {
+            Err(AuthError::Unauthenticated)
+        }
+    }
+    assert_eq!(
+        Silent.user_standing(7, "o/r", Access::Read).await,
+        Standing::Unknown,
+        "the default denies"
     );
 }
