@@ -534,7 +534,13 @@ impl AgentsHub {
 
     /// Takes queued runs while there is room.
     pub async fn dispatch_once(self: &Arc<Self>) -> Result<usize, sqlx::Error> {
-        let queued = self.core.runs.in_states(&[RunState::Queued], 64).await?;
+        // Runs of a repository at its cap are not candidates, so a backlog cannot starve other
+        // repositories.
+        let queued = self
+            .core
+            .runs
+            .dispatchable(self.core.cfg.max_concurrent_per_repo, 64)
+            .await?;
         let mut started = 0;
         for run in queued {
             let Ok(permit) = self.permits.clone().try_acquire_owned() else {
