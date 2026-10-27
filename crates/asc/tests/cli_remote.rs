@@ -310,6 +310,41 @@ fn cloning_an_empty_bucket_warns_and_configures_the_remote() {
 }
 
 #[test]
+fn cloning_again_into_a_path_whose_first_clone_was_deleted_works() {
+    let sb = Sandbox::new();
+    let url = bucket_url(&sb.dir("bucket"));
+    let a = sb.dir("a");
+    ok(&sb, &a, &["init", "-q", "--store", &url]);
+    commit_file(
+        &sb, &a, "f.txt", "base
+",
+    );
+    ok(&sb, &a, &["push", "-q", "-u", "origin", "master"]);
+    let cwd = sb.dir("cwd");
+    ok(&sb, &cwd, &["clone", "-q", &url, "c"]);
+    // A second clone of the same repository beside it.
+    ok(&sb, &cwd, &["clone", "-q", &url, "d"]);
+    // The first is removed by hand, then cloned again into the same path.
+    std::fs::remove_dir_all(cwd.join("c")).unwrap();
+    let again = asc(&sb, &cwd, &["clone", "-q", &url, "c"]);
+    assert!(
+        again.status.success(),
+        "a second clone into the same path failed: {}",
+        text(&again.stderr)
+    );
+    assert_eq!(
+        text(&ok(&sb, &cwd.join("c"), &["show", "HEAD:f.txt"]).stdout),
+        "base
+"
+    );
+    // The clone that is still there is untouched.
+    assert!(cwd.join("d").join("f.txt").exists());
+    // A path that is in use is still refused.
+    let busy = asc(&sb, &cwd, &["clone", "-q", &url, "d"]);
+    assert_eq!(busy.status.code(), Some(128));
+}
+
+#[test]
 fn a_pull_of_divergent_branches_asks_how_to_reconcile() {
     let sb = Sandbox::new();
     let url = bucket_url(&sb.dir("bucket"));
