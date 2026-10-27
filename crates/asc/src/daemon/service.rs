@@ -1621,8 +1621,12 @@ mod tests {
         // Idle: the scheduler ticks several times and nothing else happens.
         tokio::time::sleep(Duration::from_secs(2)).await;
         super::super::metrics::release_freed_memory();
-        let rss = super::super::metrics::rss_bytes().expect("rss is readable on this platform");
-        println!("idle rss {rss}");
+        let total = super::super::metrics::rss_bytes().expect("rss is readable on this platform");
+        // The budget is for what the daemon allocates. This test binary links the whole server and
+        // is a debug build, so its file-backed image pages (shared, evictable, and sized by the
+        // binary, not by the daemon) are left out of the figure it is held to.
+        let rss = super::super::metrics::private_rss_bytes().unwrap_or(total);
+        println!("idle rss {rss} (resident set {total})");
 
         // The same figure is on the metrics endpoint.
         let mut tcp = tokio::net::TcpStream::connect(("127.0.0.1", port))
