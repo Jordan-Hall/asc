@@ -39,7 +39,16 @@ pub const CATALOGUE: &[ActionInfo] = &[
     a(
         "repo.ref.undo",
         "A ref was put back to the value it had before an earlier update.",
-        &["ref", "old", "new", "undone_seq", "undone_actor", "undone_op", "reason", "op_id"],
+        &[
+            "ref",
+            "old",
+            "new",
+            "undone_seq",
+            "undone_actor",
+            "undone_op",
+            "reason",
+            "op_id",
+        ],
     ),
     a(
         "push.refused",
@@ -308,9 +317,7 @@ fn strip_url(value: &str) -> Option<String> {
         return None;
     }
     let (scheme, rest) = value.split_once("://")?;
-    let end = rest
-        .find(['?', '#'])
-        .unwrap_or(rest.len());
+    let end = rest.find(['?', '#']).unwrap_or(rest.len());
     let rest = &rest[..end];
     let (authority, path) = match rest.find('/') {
         Some(i) => (&rest[..i], &rest[i..]),
@@ -321,8 +328,23 @@ fn strip_url(value: &str) -> Option<String> {
 }
 
 const SECRET_PREFIXES: &[&str] = &[
-    "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_", "glpat-", "xoxb-", "xoxp-", "xoxa-",
-    "xoxs-", "sk-", "sk_live_", "rk_live_", "bearer ", "basic ", "token ",
+    "ghp_",
+    "gho_",
+    "ghu_",
+    "ghs_",
+    "ghr_",
+    "github_pat_",
+    "glpat-",
+    "xoxb-",
+    "xoxp-",
+    "xoxa-",
+    "xoxs-",
+    "sk-",
+    "sk_live_",
+    "rk_live_",
+    "bearer ",
+    "basic ",
+    "token ",
 ];
 
 /// Whether `value` looks like a credential: a private key, a well known token prefix, a JWT, an
@@ -340,15 +362,25 @@ pub fn looks_secret(value: &str) -> bool {
     let cloud_id = |s: &str| {
         ((s.starts_with("AKIA") || s.starts_with("ASIA"))
             && s.len() >= 20
-            && s.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit()))
+            && s.bytes()
+                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit()))
             || (s.starts_with("AIza") && s.len() >= 35)
     };
     if value.split_whitespace().any(cloud_id) {
         return true;
     }
     for needle in [
-        "password=", "passwd=", "secret=", "token=", "api_key=", "apikey=", "api-key=",
-        "access_key=", "authorization:", "x-amz-signature=", "signature=",
+        "password=",
+        "passwd=",
+        "secret=",
+        "token=",
+        "api_key=",
+        "apikey=",
+        "api-key=",
+        "access_key=",
+        "authorization:",
+        "x-amz-signature=",
+        "signature=",
     ] {
         if lower.contains(needle) {
             return true;
@@ -474,7 +506,11 @@ mod tests {
     fn only_allowed_keys_survive() {
         let d = sanitize_details(
             "repo.ref.update",
-            &[kv("ref", "refs/heads/main"), kv("password", "x"), kv("via", "git-push")],
+            &[
+                kv("ref", "refs/heads/main"),
+                kv("password", "x"),
+                kv("via", "git-push"),
+            ],
         );
         assert_eq!(d.len(), 2);
         assert_eq!(d["ref"], "refs/heads/main");

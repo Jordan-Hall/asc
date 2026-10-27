@@ -46,7 +46,9 @@ use super::{NewEvent, Outcome, store};
 use crate::mainline;
 use crate::refpolicy::{self, Class, RepoPolicy, USER_NS, UserRefWriter};
 use crate::registry::{Registry, RepoEntry, RepoMode};
-use crate::update::{EffectRef, OutboxEffects, PipelineHooks, conflict, info, internal, rpc, target_hex};
+use crate::update::{
+    EffectRef, OutboxEffects, PipelineHooks, conflict, info, internal, rpc, target_hex,
+};
 
 /// Tag of the `op_results` value of an undo, so another operation's id is not read as one.
 const OP_TAG: &[u8; 4] = b"und1";
@@ -103,7 +105,10 @@ pub fn blocked_reason(
         return Some("the ref changed since");
     }
     if row.name.starts_with(USER_NS) {
-        if !caller.owner.is_some_and(|o| refpolicy::owns_user_ref(o, &row.name)) {
+        if !caller
+            .owner
+            .is_some_and(|o| refpolicy::owns_user_ref(o, &row.name))
+        {
             return Some("not your ref");
         }
         return None;
@@ -211,7 +216,11 @@ impl RefLog {
             0 => DEFAULT_PAGE,
             n => usize::try_from(n).unwrap_or(MAX_PAGE).min(MAX_PAGE),
         };
-        let entry = self.registry.open(&ctx.repo).await.map_err(crate::commit_graph_rpc::registry_status)?;
+        let entry = self
+            .registry
+            .open(&ctx.repo)
+            .await
+            .map_err(crate::commit_graph_rpc::registry_status)?;
         let policy = RepoPolicy::load(self.pool(), entry.key.0).await?;
 
         let mut binds: Vec<Bind> = vec![Bind::Int(entry.key.0)];
@@ -220,14 +229,18 @@ impl RefLog {
         if !req.r#ref.is_empty() {
             if let Some(prefix) = req.r#ref.strip_suffix('/') {
                 let mut alts = vec![format!("{prefix}/")];
-                if let (Some(rest), Some(owner)) = (req.r#ref.strip_prefix("refs/heads/"), caller.owner)
+                if let (Some(rest), Some(owner)) =
+                    (req.r#ref.strip_prefix("refs/heads/"), caller.owner)
                     && policy.branchless()
                 {
                     alts.push(format!("{}heads/{rest}", refpolicy::user_prefix(owner)));
                 }
                 let mut ors = Vec::new();
                 for a in alts {
-                    let len = bind(&mut binds, Bind::Int(i64::try_from(a.chars().count()).unwrap_or(0)));
+                    let len = bind(
+                        &mut binds,
+                        Bind::Int(i64::try_from(a.chars().count()).unwrap_or(0)),
+                    );
                     let text = bind(&mut binds, Bind::Text(a));
                     ors.push(format!("substr(name, 1, CAST({len} AS INTEGER)) = {text}"));
                 }
@@ -242,24 +255,35 @@ impl RefLog {
             }
         }
         // Other users' refs are never listed.
-        let ns_len = bind(&mut binds, Bind::Int(i64::try_from(USER_NS.len()).unwrap_or(0)));
+        let ns_len = bind(
+            &mut binds,
+            Bind::Int(i64::try_from(USER_NS.len()).unwrap_or(0)),
+        );
         let ns = bind(&mut binds, Bind::Text(USER_NS.to_owned()));
         match caller.owner {
             Some(o) => {
                 let own = refpolicy::user_prefix(o);
-                let len = bind(&mut binds, Bind::Int(i64::try_from(own.chars().count()).unwrap_or(0)));
+                let len = bind(
+                    &mut binds,
+                    Bind::Int(i64::try_from(own.chars().count()).unwrap_or(0)),
+                );
                 let text = bind(&mut binds, Bind::Text(own));
                 sql.push_str(&format!(
                     " AND (substr(name, 1, CAST({ns_len} AS INTEGER)) <> {ns} OR substr(name, 1, CAST({len} AS INTEGER)) = {text})"
                 ));
             }
-            None => sql.push_str(&format!(" AND substr(name, 1, CAST({ns_len} AS INTEGER)) <> {ns}")),
+            None => sql.push_str(&format!(
+                " AND substr(name, 1, CAST({ns_len} AS INTEGER)) <> {ns}"
+            )),
         }
         if !req.actor.is_empty() {
             let exact = bind(&mut binds, Bind::Text(req.actor.clone()));
             let suffix = format!(
                 "%:{}",
-                req.actor.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+                req.actor
+                    .replace('\\', "\\\\")
+                    .replace('%', "\\%")
+                    .replace('_', "\\_")
             );
             let like = bind(&mut binds, Bind::Text(suffix));
             let pat = bind(&mut binds, Bind::Text(format!("pat:{}", req.actor)));
@@ -279,8 +303,12 @@ impl RefLog {
             let p = bind(&mut binds, Bind::Int(a));
             sql.push_str(&format!(" AND seq < {p}"));
         }
-        let lim = bind(&mut binds, Bind::Int(i64::try_from(limit + 1).unwrap_or(i64::MAX)));
-        let q = format!("SELECT {ROW_COLUMNS} FROM ref_log WHERE {sql} ORDER BY seq DESC LIMIT {lim}");
+        let lim = bind(
+            &mut binds,
+            Bind::Int(i64::try_from(limit + 1).unwrap_or(i64::MAX)),
+        );
+        let q =
+            format!("SELECT {ROW_COLUMNS} FROM ref_log WHERE {sql} ORDER BY seq DESC LIMIT {lim}");
         let mut query = sqlx::query(sqlx::AssertSqlSafe(q));
         for b in binds {
             query = match b {
@@ -328,7 +356,11 @@ impl RefLog {
     }
 
     /// The newest `ref_log` sequence number of each ref in `rows`.
-    async fn newest_seqs(&self, repo: i64, rows: &[LogRow]) -> Result<HashMap<String, i64>, Status> {
+    async fn newest_seqs(
+        &self,
+        repo: i64,
+        rows: &[LogRow],
+    ) -> Result<HashMap<String, i64>, Status> {
         let mut names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
         names.sort_unstable();
         names.dedup();
@@ -349,8 +381,10 @@ impl RefLog {
                 .map_err(|e| internal("ref_log", &e))?
             {
                 out.insert(
-                    r.try_get::<String, _>("name").map_err(|e| internal("ref_log", &e))?,
-                    r.try_get::<i64, _>("newest").map_err(|e| internal("ref_log", &e))?,
+                    r.try_get::<String, _>("name")
+                        .map_err(|e| internal("ref_log", &e))?,
+                    r.try_get::<i64, _>("newest")
+                        .map_err(|e| internal("ref_log", &e))?,
                 );
             }
         }
@@ -360,20 +394,30 @@ impl RefLog {
     // -------------------------------------------------------------------------- undo
 
     /// A stored answer for `op_id`, if the call already ran.
-    async fn stored(&self, repo: i64, op_id: Uuid) -> Result<Option<wire::UndoRefResponse>, Status> {
+    async fn stored(
+        &self,
+        repo: i64,
+        op_id: Uuid,
+    ) -> Result<Option<wire::UndoRefResponse>, Status> {
         let row = sqlx::query("SELECT repo_id, result FROM op_results WHERE op_id = $1")
             .bind(op_id.as_bytes().to_vec())
             .fetch_optional(self.pool())
             .await
             .map_err(|e| internal("op_results", &e))?;
         let Some(row) = row else { return Ok(None) };
-        let stored_repo: i64 = row.try_get("repo_id").map_err(|e| internal("op_results", &e))?;
-        let result: Vec<u8> = row.try_get("result").map_err(|e| internal("op_results", &e))?;
+        let stored_repo: i64 = row
+            .try_get("repo_id")
+            .map_err(|e| internal("op_results", &e))?;
+        let result: Vec<u8> = row
+            .try_get("result")
+            .map_err(|e| internal("op_results", &e))?;
         match result.strip_prefix(OP_TAG.as_slice()) {
             Some(body) if stored_repo == repo => wire::UndoRefResponse::decode(body)
                 .map(Some)
                 .map_err(|e| internal("op_results", &e)),
-            _ => Err(Status::invalid_argument("op id was used for another operation")),
+            _ => Err(Status::invalid_argument(
+                "op id was used for another operation",
+            )),
         }
     }
 
@@ -415,12 +459,17 @@ impl RefLog {
         if req.reason.len() > MAX_REASON {
             return Err(bad("reason is at most 256 bytes"));
         }
-        if req.r#ref.is_empty() || req.r#ref.len() > 1024 || req.r#ref.chars().any(char::is_control) {
+        if req.r#ref.is_empty() || req.r#ref.len() > 1024 || req.r#ref.chars().any(char::is_control)
+        {
             return Err(bad("invalid ref"));
         }
         let reason = plain(&req.reason);
         let seq = i64::try_from(req.seq).unwrap_or(i64::MAX);
-        let entry = self.registry.open(&ctx.repo).await.map_err(crate::commit_graph_rpc::registry_status)?;
+        let entry = self
+            .registry
+            .open(&ctx.repo)
+            .await
+            .map_err(crate::commit_graph_rpc::registry_status)?;
         if entry.mode == RepoMode::Mirror {
             return Err(rpc(RpcError::MirrorMode(info(vec![ctx.repo.to_string()]))));
         }
@@ -446,13 +495,16 @@ impl RefLog {
             Some(l) if l.name == stored_name => l,
             Some(_) => return Err(Status::not_found("no such ref log entry for this ref")),
             None => {
-                let oldest: Option<i64> = sqlx::query_scalar("SELECT MIN(seq) FROM ref_log WHERE repo_id = $1")
-                    .bind(entry.key.0)
-                    .fetch_one(self.pool())
-                    .await
-                    .map_err(|e| internal("ref_log", &e))?;
+                let oldest: Option<i64> =
+                    sqlx::query_scalar("SELECT MIN(seq) FROM ref_log WHERE repo_id = $1")
+                        .bind(entry.key.0)
+                        .fetch_one(self.pool())
+                        .await
+                        .map_err(|e| internal("ref_log", &e))?;
                 return Err(match oldest {
-                    Some(o) if seq < o => rpc(RpcError::RefLogExpired(info(vec![req.r#ref.clone()]))),
+                    Some(o) if seq < o => {
+                        rpc(RpcError::RefLogExpired(info(vec![req.r#ref.clone()])))
+                    }
                     _ => Status::not_found("no such ref log entry for this ref"),
                 });
             }
@@ -476,7 +528,9 @@ impl RefLog {
             .map_err(|e| internal("refs", &e))?
             .map(|e| e.target);
         if current != log.new {
-            return Err(rpc(RpcError::VersionConflict(info(vec![req.r#ref.clone()]))));
+            return Err(rpc(RpcError::VersionConflict(info(vec![
+                req.r#ref.clone(),
+            ]))));
         }
         let restored = log.old;
         if let Some(RefTarget::Changeset(c)) = restored {
@@ -525,7 +579,15 @@ impl RefLog {
             applied: true,
         };
         match self
-            .commit(&entry, &txn, &log, &reason, seq, &stored_name, &mut response)
+            .commit(
+                &entry,
+                &txn,
+                &log,
+                &reason,
+                seq,
+                &stored_name,
+                &mut response,
+            )
             .await
         {
             Ok(()) => Ok(response),
@@ -563,12 +625,16 @@ impl RefLog {
         .await
         .map_err(|e| internal("ref_log", &e))?;
         if newest != Some(log.seq) {
-            return Err(rpc(RpcError::VersionConflict(info(vec![stored_name.to_owned()]))));
+            return Err(rpc(RpcError::VersionConflict(info(vec![
+                stored_name.to_owned(),
+            ]))));
         }
         match refs.update_in_tx(&mut tx, entry.key, txn).await {
             Ok(()) => {}
             Err(RefError::Conflict(c)) => return Err(conflict(c)),
-            Err(e @ RefError::NonUtf8Name(_)) => return Err(Status::invalid_argument(e.to_string())),
+            Err(e @ RefError::NonUtf8Name(_)) => {
+                return Err(Status::invalid_argument(e.to_string()));
+            }
             Err(e) => return Err(internal("refs", &e)),
         }
         refpolicy::check_user_ref_writes(
@@ -603,7 +669,11 @@ impl RefLog {
             .map_err(|e| internal("op_results", &e))?;
         let shared = !stored_name.starts_with(USER_NS);
         let outbox = serde_json::to_vec(&OutboxEffects {
-            effects: if shared { self.hooks.push_hooks().outbox_effects() } else { &[] },
+            effects: if shared {
+                self.hooks.push_hooks().outbox_effects()
+            } else {
+                &[]
+            },
             pusher: &txn.actor.id,
             refs: if shared {
                 vec![EffectRef {
@@ -616,18 +686,33 @@ impl RefLog {
             },
         })
         .map_err(|e| internal("outbox", &e))?;
-        sqlx::query("INSERT INTO outbox (repo_id, op_id, effects, next_at) VALUES ($1, $2, $3, $4)")
-            .bind(entry.key.0)
-            .bind(txn.op_id.as_bytes().to_vec())
-            .bind(outbox)
-            .bind(at)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| internal("outbox", &e))?;
+        sqlx::query(
+            "INSERT INTO outbox (repo_id, op_id, effects, next_at) VALUES ($1, $2, $3, $4)",
+        )
+        .bind(entry.key.0)
+        .bind(txn.op_id.as_bytes().to_vec())
+        .bind(outbox)
+        .bind(at)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| internal("outbox", &e))?;
         let event = NewEvent::new("repo.ref.undo", actor_of(&txn.actor.id))
             .repo(entry.name.as_str())
-            .target(&response.result.as_ref().map(|r| r.name.clone()).unwrap_or_default())
-            .detail("ref", response.result.as_ref().map(|r| r.name.clone()).unwrap_or_default())
+            .target(
+                &response
+                    .result
+                    .as_ref()
+                    .map(|r| r.name.clone())
+                    .unwrap_or_default(),
+            )
+            .detail(
+                "ref",
+                response
+                    .result
+                    .as_ref()
+                    .map(|r| r.name.clone())
+                    .unwrap_or_default(),
+            )
             .detail("old", log.new.as_ref().map(target_hex).unwrap_or_default())
             .detail("new", log.old.as_ref().map(target_hex).unwrap_or_default())
             .detail("undone_seq", seq.to_string())
@@ -706,7 +791,9 @@ async fn unwind_land(
             .await
             .map_err(|e| internal("mainline", &e))?;
     }
-    if let Some(owner) = refpolicy::owner_of(&asc_rpc::auth::Principal { id: log.actor.clone() }) {
+    if let Some(owner) = refpolicy::owner_of(&asc_rpc::auth::Principal {
+        id: log.actor.clone(),
+    }) {
         sqlx::query(
             "UPDATE user_ref_meta SET landed_at = NULL WHERE ns = $1 AND owner = $2 AND landed_at >= $3",
         )
@@ -761,20 +848,29 @@ mod tests {
         );
         // Alice's own operation on somebody else's ref cannot happen, and is refused anyway.
         let other = row("refs/users/9/heads/x", "7:alice", 100);
-        assert_eq!(blocked_reason(&other, 5, &me(true), 100, 600), Some("not your ref"));
+        assert_eq!(
+            blocked_reason(&other, 5, &me(true), 100, 600),
+            Some("not your ref")
+        );
     }
 
     #[test]
     fn a_moved_ref_is_refused() {
         let r = row("refs/users/7/heads/x", "7:alice", 100);
-        assert_eq!(blocked_reason(&r, 6, &me(false), 100, 600), Some("the ref changed since"));
+        assert_eq!(
+            blocked_reason(&r, 6, &me(false), 100, 600),
+            Some("the ref changed since")
+        );
     }
 
     #[test]
     fn a_noop_has_nothing_to_undo() {
         let mut r = row("refs/users/7/heads/x", "7:alice", 100);
         r.new = r.old;
-        assert_eq!(blocked_reason(&r, 5, &me(false), 100, 600), Some("nothing to undo"));
+        assert_eq!(
+            blocked_reason(&r, 5, &me(false), 100, 600),
+            Some("nothing to undo")
+        );
     }
 
     #[test]
@@ -795,15 +891,24 @@ mod tests {
         );
         // The actor still has to be the caller on a protected ref.
         let theirs = row("refs/heads/master", "8:bob", 1_000);
-        assert_eq!(blocked_reason(&theirs, 5, &me(true), 1_001, 600), Some("not your operation"));
+        assert_eq!(
+            blocked_reason(&theirs, 5, &me(true), 1_001, 600),
+            Some("not your operation")
+        );
     }
 
     #[test]
     fn refs_are_named_to_their_owner() {
-        assert_eq!(client_name(Some(7), "refs/users/7/heads/feat/x").as_deref(), Some("refs/heads/feat/x"));
+        assert_eq!(
+            client_name(Some(7), "refs/users/7/heads/feat/x").as_deref(),
+            Some("refs/heads/feat/x")
+        );
         assert_eq!(client_name(Some(7), "refs/users/8/heads/x"), None);
         assert_eq!(client_name(None, "refs/users/8/heads/x"), None);
-        assert_eq!(client_name(Some(7), "refs/heads/master").as_deref(), Some("refs/heads/master"));
+        assert_eq!(
+            client_name(Some(7), "refs/heads/master").as_deref(),
+            Some("refs/heads/master")
+        );
         assert_eq!(client_name(Some(7), "refs/users/junk"), None);
     }
 }

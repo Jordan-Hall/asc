@@ -244,8 +244,8 @@ fn v6_reason(ip: Ipv6Addr) -> Option<BlockReason> {
     if s[0] & 0xe000 != 0x2000 {
         return Some(BlockReason::Reserved);
     }
-    let special = (s[0] == 0x2001 && (s[1] < 0x0200 || s[1] == 0x0db8))
-        || (s[0] == 0x3fff && s[1] < 0x1000);
+    let special =
+        (s[0] == 0x2001 && (s[1] < 0x0200 || s[1] == 0x0db8)) || (s[0] == 0x3fff && s[1] < 0x1000);
     special.then_some(BlockReason::Reserved)
 }
 
@@ -371,7 +371,10 @@ impl Guard {
 
     /// The syntax rules, with no lookup. Nothing is trusted yet.
     pub fn parse_endpoint(&self, raw: &str, shape: Shape) -> Result<Endpoint, Blocked> {
-        if raw.is_empty() || raw.len() > MAX_URL_LEN || raw.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        if raw.is_empty()
+            || raw.len() > MAX_URL_LEN
+            || raw.chars().any(|c| c.is_control() || c.is_whitespace())
+        {
             return Err(Blocked(BlockReason::Malformed));
         }
         if raw.contains('\\') {
@@ -492,9 +495,9 @@ struct NoDns;
 impl reqwest::dns::Resolve for NoDns {
     fn resolve(&self, _name: reqwest::dns::Name) -> reqwest::dns::Resolving {
         Box::pin(async {
-            Err::<reqwest::dns::Addrs, _>(
-                Box::<dyn std::error::Error + Send + Sync>::from("name resolution is disabled"),
-            )
+            Err::<reqwest::dns::Addrs, _>(Box::<dyn std::error::Error + Send + Sync>::from(
+                "name resolution is disabled",
+            ))
         })
     }
 }
@@ -713,7 +716,10 @@ mod tests {
         assert_eq!(reason(&g, "file:///etc/passwd"), BlockReason::NotHttps);
         assert_eq!(reason(&g, "s3.example.com"), BlockReason::Malformed);
         assert_eq!(reason(&g, ""), BlockReason::Malformed);
-        assert_eq!(reason(&g, "https://a b.example.com"), BlockReason::Malformed);
+        assert_eq!(
+            reason(&g, "https://a b.example.com"),
+            BlockReason::Malformed
+        );
         assert_eq!(reason(&g, "https://exa\\mple.com"), BlockReason::Malformed);
         assert_eq!(
             reason(&g, &format!("https://h.example.com/{}", "a".repeat(3000))),
@@ -735,14 +741,29 @@ mod tests {
             );
         }
         assert_eq!(reason(&g, "https://s3.example.com:0"), BlockReason::Port);
-        for name in ["metadata.google.internal", "METADATA.GOOGLE.INTERNAL.", "instance-data"] {
-            assert_eq!(reason(&g, &format!("https://{name}/")), BlockReason::Metadata);
+        for name in [
+            "metadata.google.internal",
+            "METADATA.GOOGLE.INTERNAL.",
+            "instance-data",
+        ] {
+            assert_eq!(
+                reason(&g, &format!("https://{name}/")),
+                BlockReason::Metadata
+            );
         }
-        let ok = g.parse_endpoint("https://S3.Example.com:9000/base/", Shape::Endpoint).unwrap();
+        let ok = g
+            .parse_endpoint("https://S3.Example.com:9000/base/", Shape::Endpoint)
+            .unwrap();
         assert_eq!(ok.port(), 9000);
         assert_eq!(ok.as_string(), "https://s3.example.com:9000/base");
-        assert!(g.parse_endpoint("https://s3.example.com/?a=b", Shape::Url).is_ok());
-        assert!(g.parse_endpoint("https://s3.example.com/#a", Shape::Url).is_err());
+        assert!(
+            g.parse_endpoint("https://s3.example.com/?a=b", Shape::Url)
+                .is_ok()
+        );
+        assert!(
+            g.parse_endpoint("https://s3.example.com/#a", Shape::Url)
+                .is_err()
+        );
     }
 
     #[test]
@@ -752,19 +773,25 @@ mod tests {
             ..NetGuardConfig::default()
         };
         let g = Guard::new(cfg);
-        assert!(g.parse_endpoint("https://s3.example.com:9200", Shape::Endpoint).is_ok());
+        assert!(
+            g.parse_endpoint("https://s3.example.com:9200", Shape::Endpoint)
+                .is_ok()
+        );
         assert_eq!(reason(&g, "https://s3.example.com:6379"), BlockReason::Port);
     }
 
     #[test]
     fn odd_ip_spellings_are_normalised_before_the_check() {
         let g = Guard::new(NetGuardConfig::default());
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         for url in [
-            "https://2130706433/",          // decimal 127.0.0.1
-            "https://0x7f.1/",              // hex and short forms
-            "https://0177.0.0.1/",          // octal
-            "https://[::ffff:7f00:1]/",     // mapped, hex
+            "https://2130706433/",      // decimal 127.0.0.1
+            "https://0x7f.1/",          // hex and short forms
+            "https://0177.0.0.1/",      // octal
+            "https://[::ffff:7f00:1]/", // mapped, hex
             "https://[::1]/",
             "https://127.1/",
             "https://169.254.169.254/",
@@ -785,20 +812,45 @@ mod tests {
     #[tokio::test]
     async fn one_bad_address_refuses_the_name() {
         let (g, r) = guard(false);
-        r.script("mixed.example.com", vec![vec![ip("93.184.216.34"), ip("10.0.0.7")]]);
-        let err = g.pin("https://mixed.example.com", Shape::Endpoint).await.unwrap_err();
+        r.script(
+            "mixed.example.com",
+            vec![vec![ip("93.184.216.34"), ip("10.0.0.7")]],
+        );
+        let err = g
+            .pin("https://mixed.example.com", Shape::Endpoint)
+            .await
+            .unwrap_err();
         assert_eq!(err.reason(), BlockReason::Private);
         r.script("v6.example.com", vec![vec![ip("::ffff:169.254.169.254")]]);
-        let err = g.pin("https://v6.example.com", Shape::Endpoint).await.unwrap_err();
+        let err = g
+            .pin("https://v6.example.com", Shape::Endpoint)
+            .await
+            .unwrap_err();
         assert_eq!(err.reason(), BlockReason::Metadata);
-        r.script("ok.example.com", vec![vec![ip("93.184.216.34"), ip("93.184.216.34"), ip("2606:4700:4700::1111")]]);
-        let pinned = g.pin("https://ok.example.com", Shape::Endpoint).await.unwrap();
+        r.script(
+            "ok.example.com",
+            vec![vec![
+                ip("93.184.216.34"),
+                ip("93.184.216.34"),
+                ip("2606:4700:4700::1111"),
+            ]],
+        );
+        let pinned = g
+            .pin("https://ok.example.com", Shape::Endpoint)
+            .await
+            .unwrap();
         assert_eq!(pinned.addrs().len(), 2);
         assert_eq!(pinned.host(), "ok.example.com");
-        let err = g.pin("https://gone.example.com", Shape::Endpoint).await.unwrap_err();
+        let err = g
+            .pin("https://gone.example.com", Shape::Endpoint)
+            .await
+            .unwrap_err();
         assert_eq!(err.reason(), BlockReason::Unresolvable);
         r.script("empty.example.com", vec![vec![]]);
-        let err = g.pin("https://empty.example.com", Shape::Endpoint).await.unwrap_err();
+        let err = g
+            .pin("https://empty.example.com", Shape::Endpoint)
+            .await
+            .unwrap_err();
         assert_eq!(err.reason(), BlockReason::Unresolvable);
     }
 
@@ -807,30 +859,55 @@ mod tests {
         let (strict, r) = guard(false);
         r.script("local.example.com", vec![vec![ip("127.0.0.1")]]);
         assert_eq!(
-            strict.pin("https://local.example.com", Shape::Endpoint).await.unwrap_err().reason(),
+            strict
+                .pin("https://local.example.com", Shape::Endpoint)
+                .await
+                .unwrap_err()
+                .reason(),
             BlockReason::Loopback
         );
         assert_eq!(
-            strict.pin("https://127.0.0.1:9000", Shape::Endpoint).await.unwrap_err().reason(),
+            strict
+                .pin("https://127.0.0.1:9000", Shape::Endpoint)
+                .await
+                .unwrap_err()
+                .reason(),
             BlockReason::Loopback
         );
         let (open, r) = guard(true);
         r.script("local.example.com", vec![vec![ip("127.0.0.1")]]);
-        assert!(open.pin("http://local.example.com:9000", Shape::Endpoint).await.is_ok());
-        assert!(open.pin("http://127.0.0.1:9000", Shape::Endpoint).await.is_ok());
+        assert!(
+            open.pin("http://local.example.com:9000", Shape::Endpoint)
+                .await
+                .is_ok()
+        );
+        assert!(
+            open.pin("http://127.0.0.1:9000", Shape::Endpoint)
+                .await
+                .is_ok()
+        );
         assert!(open.pin("http://[::1]:9000", Shape::Endpoint).await.is_ok());
         // The opt-in relaxes nothing else.
         assert_eq!(
-            open.pin("http://10.0.0.1:9000", Shape::Endpoint).await.unwrap_err().reason(),
+            open.pin("http://10.0.0.1:9000", Shape::Endpoint)
+                .await
+                .unwrap_err()
+                .reason(),
             BlockReason::Private
         );
         assert_eq!(
-            open.pin("http://169.254.169.254", Shape::Endpoint).await.unwrap_err().reason(),
+            open.pin("http://169.254.169.254", Shape::Endpoint)
+                .await
+                .unwrap_err()
+                .reason(),
             BlockReason::Metadata
         );
         r.script("public.example.com", vec![vec![ip("93.184.216.34")]]);
         assert_eq!(
-            open.pin("http://public.example.com", Shape::Endpoint).await.unwrap_err().reason(),
+            open.pin("http://public.example.com", Shape::Endpoint)
+                .await
+                .unwrap_err()
+                .reason(),
             BlockReason::NotHttps
         );
     }
@@ -861,21 +938,46 @@ mod tests {
         let (g, r) = guard(true);
         // First answer: the loopback server (allowed by the opt-in). Every later answer: a
         // private address. A client that looked the name up again would be sent there.
-        r.script("rebind.example.com", vec![vec![ip("127.0.0.1")], vec![ip("10.9.9.9")]]);
-        let pinned = g.pin(&format!("http://rebind.example.com:{port}"), Shape::Endpoint).await.unwrap();
+        r.script(
+            "rebind.example.com",
+            vec![vec![ip("127.0.0.1")], vec![ip("10.9.9.9")]],
+        );
+        let pinned = g
+            .pin(
+                &format!("http://rebind.example.com:{port}"),
+                Shape::Endpoint,
+            )
+            .await
+            .unwrap();
         assert_eq!(r.calls(), 1);
         let client = pinned.client(Profile::Api).unwrap();
         for _ in 0..3 {
-            let resp = client.get(format!("http://rebind.example.com:{port}/")).send().await.unwrap();
+            let resp = client
+                .get(format!("http://rebind.example.com:{port}/"))
+                .send()
+                .await
+                .unwrap();
             assert_eq!(resp.status(), 200);
         }
         assert_eq!(hits.load(Ordering::SeqCst), 3);
         assert_eq!(r.calls(), 1, "the client never resolved the name again");
         // A fresh pin sees the rebound answer and refuses it.
-        let err = g.pin(&format!("http://rebind.example.com:{port}"), Shape::Endpoint).await.unwrap_err();
+        let err = g
+            .pin(
+                &format!("http://rebind.example.com:{port}"),
+                Shape::Endpoint,
+            )
+            .await
+            .unwrap_err();
         assert_eq!(err.reason(), BlockReason::Private);
         // The pinned client cannot be pointed at another host either.
-        assert!(client.get(format!("http://other.example.com:{port}/")).send().await.is_err());
+        assert!(
+            client
+                .get(format!("http://other.example.com:{port}/"))
+                .send()
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -892,7 +994,10 @@ mod tests {
         );
         let (port, _srv) = serve(app).await;
         let (g, _) = guard(true);
-        let pinned = g.pin(&format!("http://127.0.0.1:{port}"), Shape::Endpoint).await.unwrap();
+        let pinned = g
+            .pin(&format!("http://127.0.0.1:{port}"), Shape::Endpoint)
+            .await
+            .unwrap();
         let resp = pinned
             .client(Profile::Api)
             .unwrap()
@@ -907,7 +1012,10 @@ mod tests {
     async fn http_is_refused_by_the_client_unless_the_endpoint_is_loopback_http() {
         let (g, r) = guard(false);
         r.script("s3.example.com", vec![vec![ip("93.184.216.34")]]);
-        let pinned = g.pin("https://s3.example.com", Shape::Endpoint).await.unwrap();
+        let pinned = g
+            .pin("https://s3.example.com", Shape::Endpoint)
+            .await
+            .unwrap();
         let err = pinned
             .client(Profile::Api)
             .unwrap()
@@ -921,11 +1029,18 @@ mod tests {
     #[test]
     fn config_bounds() {
         assert!(NetGuardConfig::default().validate().is_ok());
-        let bad = NetGuardConfig { connect_timeout_secs: 0, ..NetGuardConfig::default() };
+        let bad = NetGuardConfig {
+            connect_timeout_secs: 0,
+            ..NetGuardConfig::default()
+        };
         assert!(bad.validate().is_err());
-        let bad = NetGuardConfig { allow_ports: vec![0], ..NetGuardConfig::default() };
+        let bad = NetGuardConfig {
+            allow_ports: vec![0],
+            ..NetGuardConfig::default()
+        };
         assert!(bad.validate().is_err());
-        let toml: Result<NetGuardConfig, _> = toml::from_str("allow_loopback_http = true\nbogus = 1");
+        let toml: Result<NetGuardConfig, _> =
+            toml::from_str("allow_loopback_http = true\nbogus = 1");
         assert!(toml.is_err());
     }
 }

@@ -140,7 +140,10 @@ async fn fixture() -> (Arc<Vault>, AnyPool) {
 async fn seal_and_open_are_bound_to_owner_and_row() {
     let (vault, pool) = fixture().await;
     put(&vault, &pool, "a", "user:alice", b"alice-secret").await;
-    assert_eq!(get(&vault, &pool, "a", "user:alice").await.unwrap(), b"alice-secret");
+    assert_eq!(
+        get(&vault, &pool, "a", "user:alice").await.unwrap(),
+        b"alice-secret"
+    );
     assert!(matches!(
         get(&vault, &pool, "a", "user:bob").await,
         Err(VaultError::Corrupt)
@@ -151,7 +154,14 @@ async fn seal_and_open_are_bound_to_owner_and_row() {
 async fn rotation_reseals_everything_and_keeps_values_readable() {
     let (vault, pool) = fixture().await;
     for i in 0..450 {
-        put(&vault, &pool, &format!("id{i}"), "org:acme", format!("secret-{i}").as_bytes()).await;
+        put(
+            &vault,
+            &pool,
+            &format!("id{i}"),
+            "org:acme",
+            format!("secret-{i}").as_bytes(),
+        )
+        .await;
     }
     let before = vault.status().await;
     assert_eq!(before.generations.len(), 1);
@@ -160,7 +170,10 @@ async fn rotation_reseals_everything_and_keeps_values_readable() {
     assert_eq!(started.to_generation, 2);
     assert_eq!(started.total, 450);
     // A second rotation while one runs is refused.
-    assert!(matches!(vault.rotate(false).await, Err(VaultError::RotationActive)));
+    assert!(matches!(
+        vault.rotate(false).await,
+        Err(VaultError::RotationActive)
+    ));
     vault.wait_idle().await;
     let done = vault.rotation(&started.id).await.unwrap().unwrap();
     assert!(done.finished, "{done:?}");
@@ -168,11 +181,17 @@ async fn rotation_reseals_everything_and_keeps_values_readable() {
     assert_eq!(done.error, "");
     let after = vault.status().await;
     assert!(!after.rotation_active);
-    let by_gen: Vec<_> = after.generations.iter().map(|g| (g.generation, g.active, g.secrets)).collect();
+    let by_gen: Vec<_> = after
+        .generations
+        .iter()
+        .map(|g| (g.generation, g.active, g.secrets))
+        .collect();
     assert_eq!(by_gen, vec![(1, false, 0), (2, true, 450)]);
     for i in [0, 199, 200, 449] {
         assert_eq!(
-            get(&vault, &pool, &format!("id{i}"), "org:acme").await.unwrap(),
+            get(&vault, &pool, &format!("id{i}"), "org:acme")
+                .await
+                .unwrap(),
             format!("secret-{i}").as_bytes()
         );
     }
@@ -187,9 +206,16 @@ async fn rotation_reseals_everything_and_keeps_values_readable() {
     assert!(vault.rotate(true).await.is_ok());
     vault.wait_idle().await;
     let s = vault.status().await;
-    assert_eq!(s.generations.len(), 1, "retire_old dropped the unused generations: {s:?}");
+    assert_eq!(
+        s.generations.len(),
+        1,
+        "retire_old dropped the unused generations: {s:?}"
+    );
     assert_eq!(s.generations[0].generation, 3);
-    assert_eq!(get(&vault, &pool, "id7", "org:acme").await.unwrap(), b"secret-7");
+    assert_eq!(
+        get(&vault, &pool, "id7", "org:acme").await.unwrap(),
+        b"secret-7"
+    );
 }
 
 #[tokio::test]
@@ -206,7 +232,11 @@ async fn retire_keeps_a_generation_that_is_still_in_use() {
     let old = super::crypto::seal(
         g.key(),
         1,
-        &SecretContext { kind: KIND, owner: "user:u", id: "y" },
+        &SecretContext {
+            kind: KIND,
+            owner: "user:u",
+            id: "y",
+        },
         b"y",
     )
     .unwrap();
@@ -218,7 +248,11 @@ async fn retire_keeps_a_generation_that_is_still_in_use() {
     // `retire_unused` runs at the end of a rotation with retire_old; call the last stage.
     vault.retire_unused().await.unwrap();
     let s = vault.status().await;
-    assert_eq!(s.generations.len(), 2, "generation 1 still seals a value: {s:?}");
+    assert_eq!(
+        s.generations.len(),
+        2,
+        "generation 1 still seals a value: {s:?}"
+    );
     assert_eq!(get(&vault, &pool, "y", "user:u").await.unwrap(), b"y");
 }
 
@@ -228,14 +262,23 @@ async fn a_rotation_that_cannot_open_a_value_stops_with_an_error() {
     put(&vault, &pool, "ok", "user:u", b"fine").await;
     // A row sealed under a different owner than the row says: it can never open.
     let (g, blob) = vault
-        .seal(&SecretContext { kind: KIND, owner: "user:other", id: "bad" }, b"nope")
+        .seal(
+            &SecretContext {
+                kind: KIND,
+                owner: "user:other",
+                id: "bad",
+            },
+            b"nope",
+        )
         .unwrap();
-    sqlx::query("INSERT INTO t_secrets (id, owner, sealed, key_gen) VALUES ('bad', 'user:u', $1, $2)")
-        .bind(blob)
-        .bind(i64::from(g))
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT INTO t_secrets (id, owner, sealed, key_gen) VALUES ('bad', 'user:u', $1, $2)",
+    )
+    .bind(blob)
+    .bind(i64::from(g))
+    .execute(&pool)
+    .await
+    .unwrap();
     let r = vault.rotate(false).await.unwrap();
     vault.wait_idle().await;
     let done = vault.rotation(&r.id).await.unwrap().unwrap();
@@ -282,7 +325,10 @@ async fn a_fresh_rotation_row_is_not_taken_over() {
     .await
     .unwrap();
     assert_eq!(vault.resume().await.unwrap(), None);
-    assert!(matches!(vault.rotate(false).await, Err(VaultError::RotationActive)));
+    assert!(matches!(
+        vault.rotate(false).await,
+        Err(VaultError::RotationActive)
+    ));
     assert!(vault.status().await.rotation_active);
 }
 
@@ -297,11 +343,26 @@ async fn the_key_file_is_created_private_and_a_second_start_reads_it() {
     assert!(s.ready, "{s:?}");
     assert_eq!(s.key_file_mode, "0600");
     let (_, blob) = a
-        .seal(&SecretContext { kind: KIND, owner: "user:u", id: "1" }, b"v")
+        .seal(
+            &SecretContext {
+                kind: KIND,
+                owner: "user:u",
+                id: "1",
+            },
+            b"v",
+        )
         .unwrap();
     let b = Vault::open_file(path, pool);
     assert_eq!(
-        &b.open(&SecretContext { kind: KIND, owner: "user:u", id: "1" }, &blob).unwrap()[..],
+        &b.open(
+            &SecretContext {
+                kind: KIND,
+                owner: "user:u",
+                id: "1"
+            },
+            &blob
+        )
+        .unwrap()[..],
         b"v"
     );
 }
@@ -318,13 +379,28 @@ async fn a_replica_that_did_not_rotate_picks_up_the_new_generation() {
     one.rotate(false).await.unwrap();
     one.wait_idle().await;
     let (g, blob) = one
-        .seal(&SecretContext { kind: KIND, owner: "user:u", id: "1" }, b"v")
+        .seal(
+            &SecretContext {
+                kind: KIND,
+                owner: "user:u",
+                id: "1",
+            },
+            b"v",
+        )
         .unwrap();
     assert_eq!(g, 2);
     // `two` has never seen generation 2 and reads the file again to open it, and seals new
     // values under it.
     assert_eq!(
-        &two.open(&SecretContext { kind: KIND, owner: "user:u", id: "1" }, &blob).unwrap()[..],
+        &two.open(
+            &SecretContext {
+                kind: KIND,
+                owner: "user:u",
+                id: "1"
+            },
+            &blob
+        )
+        .unwrap()[..],
         b"v"
     );
     assert_eq!(two.active_generation().unwrap(), 2);
@@ -340,7 +416,14 @@ async fn an_unusable_key_file_leaves_the_vault_locked_with_a_reason() {
     let v = Vault::open_file(path.clone(), pool.clone());
     assert!(!v.ready());
     let err = v
-        .seal(&SecretContext { kind: KIND, owner: "o", id: "i" }, b"x")
+        .seal(
+            &SecretContext {
+                kind: KIND,
+                owner: "o",
+                id: "i",
+            },
+            b"x",
+        )
         .unwrap_err();
     assert!(matches!(err, VaultError::Locked(_)), "{err}");
     let s = v.status().await;
@@ -431,7 +514,10 @@ async fn a_planted_secret_and_the_master_key_never_reach_logs_errors_or_debug_ou
     shown += &format!("{:?}", vault.ring().unwrap());
     // Errors from a wrong owner, a damaged blob and a locked vault.
     shown += &format!("{:?}", get(&vault, &pool, "p", "user:x").await.unwrap_err());
-    shown += &get(&vault, &pool, "p", "user:x").await.unwrap_err().to_string();
+    shown += &get(&vault, &pool, "p", "user:x")
+        .await
+        .unwrap_err()
+        .to_string();
     vault.rotate(true).await.unwrap();
     vault.wait_idle().await;
     shown += &format!("{:?}", vault.status().await);
@@ -450,6 +536,10 @@ async fn a_planted_secret_and_the_master_key_never_reach_logs_errors_or_debug_ou
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert!(!stored.windows(PLANTED.len()).any(|w| w == PLANTED.as_bytes()));
+    assert!(
+        !stored
+            .windows(PLANTED.len())
+            .any(|w| w == PLANTED.as_bytes())
+    );
     let _ = std::io::stdout().flush();
 }

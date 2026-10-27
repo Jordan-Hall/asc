@@ -139,7 +139,12 @@ pub struct Engine {
 }
 
 impl Engine {
-    pub fn new(db: Db, router: Arc<Router>, audit: Arc<dyn Audit>, settings: Settings) -> Arc<Self> {
+    pub fn new(
+        db: Db,
+        router: Arc<Router>,
+        audit: Arc<dyn Audit>,
+        settings: Settings,
+    ) -> Arc<Self> {
         let (events, _) = broadcast::channel(256);
         Arc::new(Self {
             db,
@@ -194,11 +199,7 @@ impl Engine {
             Err(_) => return,
         };
         for row in rows {
-            if self
-                .running
-                .lock()
-                .map_or(true, |r| r.contains(&row.id))
-            {
+            if self.running.lock().map_or(true, |r| r.contains(&row.id)) {
                 continue;
             }
             match self
@@ -416,7 +417,11 @@ impl Engine {
                 // Already switched by an earlier attempt of this migration.
                 Some(r) if r.target_id == row.to_target && r.mirror_to.is_none() => true,
                 None if row.to_target.is_empty() => true,
-                _ => return Err(Stop::new("the repository's route changed during the migration")),
+                _ => {
+                    return Err(Stop::new(
+                        "the repository's route changed during the migration",
+                    ));
+                }
             };
             if ok {
                 return Ok(());
@@ -431,9 +436,8 @@ impl Engine {
         let ns = {
             let repo = self.db.repo(&row.repo_name).await?;
             match repo {
-                Some((id, ns)) if id == row.repo_id => {
-                    Ns::from_bytes(&ns).ok_or_else(|| Stop::new("the repository's namespace is invalid"))?
-                }
+                Some((id, ns)) if id == row.repo_id => Ns::from_bytes(&ns)
+                    .ok_or_else(|| Stop::new("the repository's namespace is invalid"))?,
                 _ => return Err(Stop::new("the repository no longer exists")),
             }
         };
@@ -451,10 +455,14 @@ impl Engine {
                 state::QUEUED => {
                     let sources = self.sources(&row, ns).await?;
                     if sources.iter().any(|s| same_place(s, &dest)) {
-                        return Err(Stop::new("the destination is where the objects already are"));
+                        return Err(Stop::new(
+                            "the destination is where the objects already are",
+                        ));
                     }
                     self.set_mirror(&row).await?;
-                    self.db.migration_mark(&row.id, Mark::MirrorSince, now()).await?;
+                    self.db
+                        .migration_mark(&row.id, Mark::MirrorSince, now())
+                        .await?;
                     let mut total = 0i64;
                     for s in &sources {
                         total += count(s).await?;
@@ -502,7 +510,9 @@ impl Engine {
                     let sources = self.sources(&row, ns).await?;
                     if !row.switched {
                         self.switch(&row).await?;
-                        self.db.migration_mark(&row.id, Mark::Switched, now()).await?;
+                        self.db
+                            .migration_mark(&row.id, Mark::Switched, now())
+                            .await?;
                         self.router.forget_route(ns);
                     }
                     if row.delete_source {
@@ -519,7 +529,9 @@ impl Engine {
                             delete_all(place).await?;
                         }
                     }
-                    self.db.migration_state(&row.id, state::DONE, "", now()).await?;
+                    self.db
+                        .migration_state(&row.id, state::DONE, "", now())
+                        .await?;
                     return Ok(Finish::Done);
                 }
                 state::DONE | state::FAILED | state::CANCELLED => return Ok(Finish::Done),
@@ -680,7 +692,10 @@ fn under(root: &Path, rel: &str) -> Option<Path> {
 
 /// `p` below `root`, as the path relative to it.
 fn relative(p: &Path, root: &Path) -> Option<String> {
-    let parts: Vec<String> = p.prefix_match(root)?.map(|s| s.as_ref().to_owned()).collect();
+    let parts: Vec<String> = p
+        .prefix_match(root)?
+        .map(|s| s.as_ref().to_owned())
+        .collect();
     Some(parts.join("/"))
 }
 
@@ -704,7 +719,8 @@ async fn count(m: &Member) -> Result<i64, Stop> {
 /// Copies one object unless the destination already has one of the same size. Returns the bytes
 /// moved.
 async fn copy_one(src: &Member, dest: &Member, meta: ObjectMeta) -> Result<u64, Stop> {
-    let rel = relative(&meta.location, &src.root).ok_or_else(|| Stop::new("object outside the namespace"))?;
+    let rel = relative(&meta.location, &src.root)
+        .ok_or_else(|| Stop::new("object outside the namespace"))?;
     let to = dest_path(dest, &rel)?;
     if let Ok(h) = dest.store.head(&to).await
         && h.size == meta.size
@@ -728,7 +744,8 @@ async fn copy_one(src: &Member, dest: &Member, meta: ObjectMeta) -> Result<u64, 
 /// Reads the object from both places and compares hashes; on a mismatch copies it again and
 /// compares once more. `Ok(false)` only if it still differs.
 async fn compare_or_repair(src: &Member, dest: &Member, meta: ObjectMeta) -> Result<bool, Stop> {
-    let rel = relative(&meta.location, &src.root).ok_or_else(|| Stop::new("object outside the namespace"))?;
+    let rel = relative(&meta.location, &src.root)
+        .ok_or_else(|| Stop::new("object outside the namespace"))?;
     let to = dest_path(dest, &rel)?;
     for attempt in 0..2 {
         let original = match src.store.get(&meta.location).await {
@@ -742,11 +759,16 @@ async fn compare_or_repair(src: &Member, dest: &Member, meta: ObjectMeta) -> Res
             Err(object_store::Error::NotFound { .. }) => None,
             Err(e) => return Err(e.into()),
         };
-        if copy.as_ref().is_some_and(|c| blake3::hash(c) == blake3::hash(&original)) {
+        if copy
+            .as_ref()
+            .is_some_and(|c| blake3::hash(c) == blake3::hash(&original))
+        {
             return Ok(true);
         }
         if attempt == 0 {
-            dest.store.put(&to, PutPayload::from_bytes(original)).await?;
+            dest.store
+                .put(&to, PutPayload::from_bytes(original))
+                .await?;
         }
     }
     Ok(false)

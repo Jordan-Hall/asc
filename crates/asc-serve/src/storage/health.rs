@@ -68,7 +68,10 @@ impl Health {
         let mut work: Vec<Target> = Vec::new();
         for state in [State::Enabled, State::Failed] {
             match self.db.targets_in(state, PASS_LIMIT).await {
-                Ok(t) => work.extend(t.into_iter().filter(|t| t.state == State::Enabled || t.was_enabled)),
+                Ok(t) => work.extend(
+                    t.into_iter()
+                        .filter(|t| t.state == State::Enabled || t.was_enabled),
+                ),
                 Err(e) => tracing::warn!(error = %e, "storage health pass could not list targets"),
             }
         }
@@ -84,7 +87,9 @@ impl Health {
         };
         let outcome = match live::probe(&self.builder, t, &sealed).await {
             Ok(report) if report.ok() => Ok(()),
-            Ok(report) => Err(report.failure().unwrap_or_else(|| "the check failed".into())),
+            Ok(report) => Err(report
+                .failure()
+                .unwrap_or_else(|| "the check failed".into())),
             // The vault being locked says nothing about the bucket.
             Err(live::RouteError::Vault(_)) => return,
             Err(e) => Err(e.to_string()),

@@ -220,8 +220,8 @@ fn event_of(row: &AnyRow) -> Result<Event, AuditError> {
     let behalf_name: String = row.try_get("on_behalf_name")?;
     let outcome: i64 = row.try_get("outcome")?;
     let details_json: String = row.try_get("details_json")?;
-    let details: BTreeMap<String, String> = serde_json::from_str(&details_json)
-        .map_err(|_| AuditError::Corrupt("details"))?;
+    let details: BTreeMap<String, String> =
+        serde_json::from_str(&details_json).map_err(|_| AuditError::Corrupt("details"))?;
     Ok(Event {
         seq: u64::try_from(seq).map_err(|_| AuditError::Corrupt("sequence number"))?,
         id: row.try_get("id")?,
@@ -299,9 +299,13 @@ impl Where {
 
     /// `substr(col, 1, n) = prefix`: a prefix test that is case sensitive on both databases.
     fn prefix(&mut self, col: &str, prefix: &str) {
-        let len = self.bind(Bind::Int(i64::try_from(prefix.chars().count()).unwrap_or(0)));
+        let len = self.bind(Bind::Int(
+            i64::try_from(prefix.chars().count()).unwrap_or(0),
+        ));
         let text = self.bind(Bind::Text(prefix.to_owned()));
-        self.and(&format!("substr({col}, 1, CAST({len} AS INTEGER)) = {text}"));
+        self.and(&format!(
+            "substr({col}, 1, CAST({len} AS INTEGER)) = {text}"
+        ));
     }
 }
 
@@ -311,7 +315,9 @@ fn filtered(scope: &Scope, f: &Filter) -> Where {
         let mut ors = Vec::new();
         for a in &f.actors {
             let p = w.bind(Bind::Text(a.clone()));
-            ors.push(format!("(actor_name = {p} OR actor_kind || ':' || actor_name = {p})"));
+            ors.push(format!(
+                "(actor_name = {p} OR actor_kind || ':' || actor_name = {p})"
+            ));
         }
         w.and(&format!("({})", ors.join(" OR ")));
     }
@@ -319,9 +325,13 @@ fn filtered(scope: &Scope, f: &Filter) -> Where {
         let mut ors = Vec::new();
         for a in &f.actions {
             if let Some(prefix) = a.strip_suffix('*') {
-                let len = w.bind(Bind::Int(i64::try_from(prefix.chars().count()).unwrap_or(0)));
+                let len = w.bind(Bind::Int(
+                    i64::try_from(prefix.chars().count()).unwrap_or(0),
+                ));
                 let text = w.bind(Bind::Text(prefix.to_owned()));
-                ors.push(format!("substr(action, 1, CAST({len} AS INTEGER)) = {text}"));
+                ors.push(format!(
+                    "substr(action, 1, CAST({len} AS INTEGER)) = {text}"
+                ));
             } else {
                 let p = w.bind(Bind::Text(a.clone()));
                 ors.push(format!("action = {p}"));
@@ -423,7 +433,9 @@ pub async fn scan(
     let mut after = None;
     let mut seen = 0u64;
     loop {
-        let want = usize::try_from(max.saturating_sub(seen)).unwrap_or(usize::MAX).min(SCAN_PAGE);
+        let want = usize::try_from(max.saturating_sub(seen))
+            .unwrap_or(usize::MAX)
+            .min(SCAN_PAGE);
         if want == 0 {
             return Ok(seen);
         }
@@ -443,11 +455,12 @@ pub async fn scan(
 
 /// The newest sequence number and hash of a scope, or `None` when it has no event.
 pub async fn head(pool: &AnyPool, scope: &Scope) -> Result<Option<(u64, [u8; 32])>, AuditError> {
-    let row = sqlx::query("SELECT seq, hash FROM audit_heads WHERE scope_kind = $1 AND scope_name = $2")
-        .bind(scope.kind.as_str())
-        .bind(&scope.name)
-        .fetch_optional(pool)
-        .await?;
+    let row =
+        sqlx::query("SELECT seq, hash FROM audit_heads WHERE scope_kind = $1 AND scope_name = $2")
+            .bind(scope.kind.as_str())
+            .bind(&scope.name)
+            .fetch_optional(pool)
+            .await?;
     row.map(|r| {
         let seq: i64 = r.try_get("seq")?;
         Ok((
@@ -534,7 +547,12 @@ pub async fn verify_chain(
                 prev: hash_of(&r, "hash")?,
             },
             None => {
-                return Ok(bad(start - 1, "the event before the range is missing", GENESIS, 0));
+                return Ok(bad(
+                    start - 1,
+                    "the event before the range is missing",
+                    GENESIS,
+                    0,
+                ));
             }
         }
     };
@@ -588,7 +606,12 @@ pub async fn verify_chain(
     if to_seq == 0 {
         match head {
             None if last_seq >= base_seq => {
-                return Ok(bad(last_seq, "events exist but the scope has no head", anchor.prev, checked));
+                return Ok(bad(
+                    last_seq,
+                    "events exist but the scope has no head",
+                    anchor.prev,
+                    checked,
+                ));
             }
             Some((hseq, hhash)) => {
                 if hseq > last_seq {
@@ -630,9 +653,11 @@ pub async fn verify_chain(
 
 /// Every scope that has events, for the retention worker.
 pub async fn scopes(pool: &AnyPool) -> Result<Vec<Scope>, AuditError> {
-    let rows = sqlx::query("SELECT scope_kind, scope_name FROM audit_heads ORDER BY scope_kind, scope_name")
-        .fetch_all(pool)
-        .await?;
+    let rows = sqlx::query(
+        "SELECT scope_kind, scope_name FROM audit_heads ORDER BY scope_kind, scope_name",
+    )
+    .fetch_all(pool)
+    .await?;
     let mut out = Vec::with_capacity(rows.len());
     for r in rows {
         let kind: String = r.try_get("scope_kind")?;

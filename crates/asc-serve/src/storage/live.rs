@@ -17,9 +17,7 @@ use object_store::path::Path;
 use object_store::{ObjectStore, ObjectStoreExt, PutPayload};
 
 use super::db::Db;
-use super::model::{
-    Credentials, PROBE_DIR, State, Target, secret_context,
-};
+use super::model::{Credentials, PROBE_DIR, State, Target, secret_context};
 use super::routed::{Member, RoutedStore};
 use crate::netguard::{BlockReason, Blocked, Guard, Shape};
 use crate::registry::Ns;
@@ -68,9 +66,15 @@ pub fn sanitize(e: &object_store::Error) -> &'static str {
     }
     // A provider reports a key it does not know, a bad signature and an expired token as a 403
     // like a missing permission; the code in the body tells them apart.
-    if ["invalidaccesskeyid", "signaturedoesnotmatch", "invalidtoken", "expiredtoken", "invalidsecurity"]
-        .iter()
-        .any(|t| hay.contains(t))
+    if [
+        "invalidaccesskeyid",
+        "signaturedoesnotmatch",
+        "invalidtoken",
+        "expiredtoken",
+        "invalidsecurity",
+    ]
+    .iter()
+    .any(|t| hay.contains(t))
     {
         return "the provider rejected the credentials";
     }
@@ -103,7 +107,8 @@ fn classify_text(hay: &str) -> &'static str {
         "the bucket or object was not found"
     } else if has("429") || has("slowdown") || has("slow down") || has("503") || has("throttl") {
         "the provider is rate limiting or unavailable"
-    } else if has("dns") || has("refused") || has("connect") || has("unreachable") || has("resolve") {
+    } else if has("dns") || has("refused") || has("connect") || has("unreachable") || has("resolve")
+    {
         "the endpoint could not be reached"
     } else {
         "the provider returned an unexpected response"
@@ -178,7 +183,8 @@ impl Builder {
 
     /// Resolves and pins the host requests go to (the bucket subdomain for virtual-host style).
     pub async fn pin(&self, cfg: &TargetConfig) -> Result<crate::netguard::Pinned, RouteError> {
-        let url = asc_store::s3::effective_endpoint(cfg).map_err(|e| RouteError::Other(e.to_string()))?;
+        let url =
+            asc_store::s3::effective_endpoint(cfg).map_err(|e| RouteError::Other(e.to_string()))?;
         Ok(self.guard.pin(&url, Shape::Endpoint).await?)
     }
 
@@ -576,7 +582,9 @@ impl Router {
         };
         let mut live_ns = std::collections::HashSet::new();
         for (ns, row) in table {
-            let Some(ns) = Ns::from_bytes(&ns) else { continue };
+            let Some(ns) = Ns::from_bytes(&ns) else {
+                continue;
+            };
             live_ns.insert(*ns.as_bytes());
             if self.route(row.repo_id, ns).await.is_err() {
                 failed += 1;

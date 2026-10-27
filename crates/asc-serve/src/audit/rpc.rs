@@ -13,9 +13,9 @@ use asc_rpc::auth::{Access, AuthError, AuthInterceptor, Authorizer, Credential};
 use asc_rpc::server::{MAX_MESSAGE, RepoName, RpcStream, ServerInfo, wire};
 use asc_rpc::services::audit_server::{Audit as AuditApi, AuditServer};
 use bytes::Bytes;
+use futures::SinkExt;
 use futures::StreamExt;
 use futures::channel::mpsc;
-use futures::SinkExt;
 use sqlx::Row;
 use tonic::service::interceptor::InterceptedService;
 use tonic::{Extensions as TonicExt, Request, Response, Status};
@@ -24,9 +24,7 @@ use super::actor::actor_of;
 use super::chain::Event;
 use super::export::{self, Format};
 use super::store::{self, Filter};
-use super::{
-    Actor, Audit, AuditError, MAX_FILTER_ITEMS, NewEvent, Outcome, Scope, catalogue,
-};
+use super::{Actor, Audit, AuditError, MAX_FILTER_ITEMS, NewEvent, Outcome, Scope, catalogue};
 
 /// Repositories of an organisation the caller may be asked about, at most; an organisation with
 /// more is readable by site administrators only.
@@ -127,7 +125,11 @@ impl AuditService {
                 } else {
                     self.owns_every_repo(credential, &owner.name).await?
                 };
-                if allowed { Ok((scope, who)) } else { Err(not_found()) }
+                if allowed {
+                    Ok((scope, who))
+                } else {
+                    Err(not_found())
+                }
             }
         }
     }
@@ -408,7 +410,9 @@ impl AuditApi for AuditService {
         request: Request<wire::ListAuditActionsRequest>,
     ) -> Result<Response<wire::ListAuditActionsResponse>, Status> {
         let (_, ext, _) = request.into_parts();
-        self.authorizer.authenticate(ext.get::<Credential>()).await?;
+        self.authorizer
+            .authenticate(ext.get::<Credential>())
+            .await?;
         Ok(Response::new(wire::ListAuditActionsResponse {
             actions: catalogue::CATALOGUE
                 .iter()

@@ -16,8 +16,8 @@ use uuid::Uuid;
 
 use super::{
     DEFAULT_FLAKY, DEFAULT_GROUPS, DEFAULT_OCCURRENCES, DEFAULT_WINDOW_DAYS, Insights, MAX_CASES,
-    MAX_FLAKY, MAX_GROUPS, MAX_NAME, MAX_NOTE, MAX_OCCURRENCES, MAX_RECOMPUTE,
-    MAX_REPORT_BYTES, MAX_WINDOW_DAYS,
+    MAX_FLAKY, MAX_GROUPS, MAX_NAME, MAX_NOTE, MAX_OCCURRENCES, MAX_RECOMPUTE, MAX_REPORT_BYTES,
+    MAX_WINDOW_DAYS,
 };
 use crate::audit::{self, NewEvent};
 use crate::registry::{Ns, RepoEntry};
@@ -58,7 +58,8 @@ fn mask_secrets(rules: &RuleSet, text: &str) -> String {
     if scanned.hits.is_empty() {
         return text.to_owned();
     }
-    let mut ranges: Vec<std::ops::Range<usize>> = scanned.hits.into_iter().map(|h| h.value).collect();
+    let mut ranges: Vec<std::ops::Range<usize>> =
+        scanned.hits.into_iter().map(|h| h.value).collect();
     ranges.sort_by_key(|r| r.start);
     let mut out = Vec::with_capacity(text.len());
     let mut at = 0;
@@ -94,7 +95,11 @@ fn outcome_of(n: i32) -> Result<i64, Status> {
 
 /// Validates the cases of a report.
 fn validate(req: &wire::ReportTestCasesRequest) -> Result<(), Status> {
-    if req.run_id == 0 || req.job_id == 0 || i64::try_from(req.run_id).is_err() || i64::try_from(req.job_id).is_err() {
+    if req.run_id == 0
+        || req.job_id == 0
+        || i64::try_from(req.run_id).is_err()
+        || i64::try_from(req.job_id).is_err()
+    {
         return Err(bad("run_id and job_id are required"));
     }
     if req.cases.len() > MAX_CASES {
@@ -110,7 +115,9 @@ fn validate(req: &wire::ReportTestCasesRequest) -> Result<(), Status> {
             return Err(bad("a test name is at most 512 bytes of text"));
         }
         if c.name.is_empty() && !is_failure(outcome_of(c.outcome)?) {
-            return Err(bad("only a failure can have no test name (a job-level failure)"));
+            return Err(bad(
+                "only a failure can have no test name (a job-level failure)",
+            ));
         }
         bytes += c.name.len() + c.message.len() + 16;
     }
@@ -195,11 +202,17 @@ impl Insights {
         };
         let head = req.head.to_vec();
         let threshold = policy.flaky_threshold;
-        let out = retry_conflict(|| self.try_report(&entry, run, job, &head, &prepared, threshold)).await?;
+        let out = retry_conflict(|| self.try_report(&entry, run, job, &head, &prepared, threshold))
+            .await?;
         Ok(out)
     }
 
-    async fn job_of(&self, entry: &RepoEntry, run: i64, job: i64) -> Result<(String, Vec<u8>), Status> {
+    async fn job_of(
+        &self,
+        entry: &RepoEntry,
+        run: i64,
+        job: i64,
+    ) -> Result<(String, Vec<u8>), Status> {
         let mut conn = self.registry.pool().acquire().await.map_err(db)?;
         job_row(&mut conn, entry.ns, run, job).await
     }
@@ -219,11 +232,12 @@ impl Insights {
         let mut tx = self.registry.pool().begin().await?;
         self.registry.guard(&mut tx, entry).await?;
         let (job_name, change) = job_row(&mut tx, ns, run, job).await?;
-        let version: i64 = sqlx::query_scalar("SELECT version FROM check_runs WHERE ns = $1 AND id = $2")
-            .bind(nsb.clone())
-            .bind(run)
-            .fetch_one(&mut *tx)
-            .await?;
+        let version: i64 =
+            sqlx::query_scalar("SELECT version FROM check_runs WHERE ns = $1 AND id = $2")
+                .bind(nsb.clone())
+                .bind(run)
+                .fetch_one(&mut *tx)
+                .await?;
         let head = if !head.is_empty() {
             head.to_vec()
         } else if !change.is_empty() && version > 0 {
@@ -264,7 +278,10 @@ impl Insights {
                     let id = match groups.get(sig) {
                         Some(id) => *id,
                         None => {
-                            let id = upsert_group(&mut tx, ns, sig, title, location, &c.name, &job_name, at).await?;
+                            let id = upsert_group(
+                                &mut tx, ns, sig, title, location, &c.name, &job_name, at,
+                            )
+                            .await?;
                             groups.insert(sig.clone(), id);
                             id
                         }
@@ -309,7 +326,8 @@ impl Insights {
             .execute(&mut *tx)
             .await?;
         }
-        self.recompute_flaky(&mut tx, ns, &job_name, cases, threshold, at).await?;
+        self.recompute_flaky(&mut tx, ns, &job_name, cases, threshold, at)
+            .await?;
         tx.commit().await?;
         Ok(wire::ReportTestCasesResponse {
             stored: u32::try_from(cases.len()).unwrap_or(u32::MAX),
@@ -460,7 +478,10 @@ impl Insights {
         let mut binds: Vec<Bind> = vec![Bind::Blob(nsb.clone())];
         let mut cond = String::from("g.ns = $1");
         if !states.is_empty() {
-            let ps: Vec<String> = states.iter().map(|s| push(&mut binds, Bind::Int(*s))).collect();
+            let ps: Vec<String> = states
+                .iter()
+                .map(|s| push(&mut binds, Bind::Int(*s)))
+                .collect();
             cond.push_str(&format!(" AND g.state IN ({})", ps.join(", ")));
         }
         if !req.job_name.is_empty() {
@@ -482,10 +503,18 @@ impl Insights {
             );
         }
         if let Some(c) = cursor {
-            let (a, b) = (push(&mut binds, Bind::Int(c[0])), push(&mut binds, Bind::Int(c[1])));
-            cond.push_str(&format!(" AND (g.last_seen < {a} OR (g.last_seen = {a} AND g.id < {b}))"));
+            let (a, b) = (
+                push(&mut binds, Bind::Int(c[0])),
+                push(&mut binds, Bind::Int(c[1])),
+            );
+            cond.push_str(&format!(
+                " AND (g.last_seen < {a} OR (g.last_seen = {a} AND g.id < {b}))"
+            ));
         }
-        let lim = push(&mut binds, Bind::Int(i64::try_from(limit + 1).unwrap_or(i64::MAX)));
+        let lim = push(
+            &mut binds,
+            Bind::Int(i64::try_from(limit + 1).unwrap_or(i64::MAX)),
+        );
         let q = format!(
             "SELECT g.id, g.signature, g.title, g.test_name, g.job_name, g.state, g.note, g.first_seen, g.last_seen, \
              CAST(COALESCE((SELECT f.flaky FROM flaky_tests f WHERE f.ns = g.ns AND f.job_name = g.job_name \
@@ -493,7 +522,11 @@ impl Insights {
              FROM failure_groups g WHERE {cond} ORDER BY g.last_seen DESC, g.id DESC LIMIT {lim}"
         );
         let rows = run(self.registry.pool(), q, binds).await.map_err(db)?;
-        let mut groups = rows.iter().map(group_of).collect::<Result<Vec<_>, _>>().map_err(db)?;
+        let mut groups = rows
+            .iter()
+            .map(group_of)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(db)?;
         let next_page_token = if groups.len() > limit {
             groups.truncate(limit);
             groups
@@ -504,7 +537,9 @@ impl Insights {
             String::new()
         };
         let mut conn = self.registry.pool().acquire().await.map_err(db)?;
-        fill_counts(&mut conn, entry.ns, &mut groups).await.map_err(db)?;
+        fill_counts(&mut conn, entry.ns, &mut groups)
+            .await
+            .map_err(db)?;
         Ok(wire::ListFailureGroupsResponse {
             groups,
             next_page_token,
@@ -538,7 +573,10 @@ impl Insights {
                 p[0], p[1], p[2], p[3]
             ));
         }
-        let lim = push(&mut binds, Bind::Int(i64::try_from(limit + 1).unwrap_or(i64::MAX)));
+        let lim = push(
+            &mut binds,
+            Bind::Int(i64::try_from(limit + 1).unwrap_or(i64::MAX)),
+        );
         let q = format!(
             "SELECT run_id, job_id, seq, change, version, head, attempt, at, message FROM test_cases \
              WHERE {cond} ORDER BY at DESC, run_id DESC, job_id DESC, seq DESC LIMIT {lim}"
@@ -585,7 +623,9 @@ impl Insights {
     ) -> Result<wire::SetFailureGroupStateResponse, Status> {
         let id = group_id(req.id)?;
         let state = match wire::FailureGroupState::try_from(req.state) {
-            Ok(wire::FailureGroupState::Unspecified) | Err(_) => return Err(bad("a state is required")),
+            Ok(wire::FailureGroupState::Unspecified) | Err(_) => {
+                return Err(bad("a state is required"));
+            }
             Ok(s) => s as i64,
         };
         if req.note.len() > MAX_NOTE || req.note.chars().any(|c| c.is_control() && c != '\n') {
@@ -624,8 +664,10 @@ impl Insights {
             let repo: i64 = row.try_get("repo_id")?;
             let result: Vec<u8> = row.try_get("result")?;
             return match result.strip_prefix(OP_TAG.as_slice()) {
-                Some(body) if repo == entry.key.0 => wire::SetFailureGroupStateResponse::decode(body)
-                    .map_err(|e| Status::internal(e.to_string()).into()),
+                Some(body) if repo == entry.key.0 => {
+                    wire::SetFailureGroupStateResponse::decode(body)
+                        .map_err(|e| Status::internal(e.to_string()).into())
+                }
                 _ => Err(bad("op id was used for another operation").into()),
             };
         }
@@ -665,14 +707,17 @@ impl Insights {
             .bind(at)
             .execute(&mut *tx)
             .await?;
-        let event = NewEvent::new("ci.failure_group.state", audit::actor::actor_of(&ctx.principal.id))
-            .repo(entry.name.as_str())
-            .target(&id.to_string())
-            .detail("group", id.to_string())
-            .detail("state", state_name(state))
-            .detail("test", group.test_name.clone())
-            .detail("job", group.job_name.clone())
-            .detail("note", note);
+        let event = NewEvent::new(
+            "ci.failure_group.state",
+            audit::actor::actor_of(&ctx.principal.id),
+        )
+        .repo(entry.name.as_str())
+        .target(&id.to_string())
+        .detail("group", id.to_string())
+        .detail("state", state_name(state))
+        .detail("test", group.test_name.clone())
+        .detail("job", group.job_name.clone())
+        .detail("note", note);
         audit::store::append_in_tx(&mut tx, &event)
             .await
             .map_err(|e| crate::review::internal("audit", &e))?;
@@ -737,7 +782,11 @@ impl Insights {
                 flaky_flips: u32::try_from(f).unwrap_or(u32::MAX),
             });
         }
-        let rate = if runs == 0 { 0.0 } else { flips as f64 / runs as f64 };
+        let rate = if runs == 0 {
+            0.0
+        } else {
+            flips as f64 / runs as f64
+        };
         Ok(wire::FlakyHistoryResponse {
             buckets,
             flake_rate: rate,
@@ -775,11 +824,18 @@ impl Insights {
         .map_err(db)?;
         let mut tests = Vec::with_capacity(rows.len());
         for r in &rows {
-            let (runs, flips): (i64, i64) = (r.try_get("runs").map_err(db)?, r.try_get("flips").map_err(db)?);
+            let (runs, flips): (i64, i64) = (
+                r.try_get("runs").map_err(db)?,
+                r.try_get("flips").map_err(db)?,
+            );
             tests.push(wire::FlakyTest {
                 test_name: r.try_get("test").map_err(db)?,
                 job_name: r.try_get("job_name").map_err(db)?,
-                flake_rate: if runs == 0 { 0.0 } else { flips as f64 / runs as f64 },
+                flake_rate: if runs == 0 {
+                    0.0
+                } else {
+                    flips as f64 / runs as f64
+                },
                 runs: u32::try_from(runs).unwrap_or(u32::MAX),
                 last_flip: r.try_get("last_flip").map_err(db)?,
                 group_id: 0,
@@ -811,7 +867,11 @@ impl Insights {
         }
         Ok(wire::ListFlakyTestsResponse {
             tests: page,
-            next_page_token: if more { (offset + limit).to_string() } else { String::new() },
+            next_page_token: if more {
+                (offset + limit).to_string()
+            } else {
+                String::new()
+            },
         })
     }
 }
@@ -849,7 +909,9 @@ fn parse_cursor(token: &str, n: usize) -> Result<Option<Vec<i64>>, Status> {
     let parts: Vec<&str> = token.split(':').collect();
     if token.len() > 100
         || parts.len() != n
-        || parts.iter().any(|p| p.is_empty() || p.len() > 19 || !p.bytes().all(|b| b.is_ascii_digit()))
+        || parts
+            .iter()
+            .any(|p| p.is_empty() || p.len() > 19 || !p.bytes().all(|b| b.is_ascii_digit()))
     {
         return Err(bad("malformed page token"));
     }
@@ -914,11 +976,12 @@ async fn upsert_group(
     at: i64,
 ) -> Result<i64, sqlx::Error> {
     let nsb = ns_bytes(ns);
-    let existing = sqlx::query("SELECT id, state FROM failure_groups WHERE ns = $1 AND signature = $2")
-        .bind(nsb.clone())
-        .bind(signature.to_owned())
-        .fetch_optional(&mut *conn)
-        .await?;
+    let existing =
+        sqlx::query("SELECT id, state FROM failure_groups WHERE ns = $1 AND signature = $2")
+            .bind(nsb.clone())
+            .bind(signature.to_owned())
+            .fetch_optional(&mut *conn)
+            .await?;
     if let Some(row) = existing {
         let id: i64 = row.try_get("id")?;
         // A resolved failure that comes back is open again.
@@ -1002,7 +1065,10 @@ async fn fill_counts(
     if groups.is_empty() {
         return Ok(());
     }
-    let ids: Vec<i64> = groups.iter().map(|g| i64::try_from(g.id).unwrap_or(0)).collect();
+    let ids: Vec<i64> = groups
+        .iter()
+        .map(|g| i64::try_from(g.id).unwrap_or(0))
+        .collect();
     let sql = format!(
         "SELECT group_id, CAST(COUNT(*) AS BIGINT) AS occ, CAST(COUNT(DISTINCT change) AS BIGINT) AS chg, \
          CAST(SUM(CASE WHEN change = $2 THEN 1 ELSE 0 END) AS BIGINT) AS trunk \
@@ -1023,7 +1089,10 @@ async fn fill_counts(
         );
     }
     for g in groups {
-        let (occ, chg, trunk) = by.get(&i64::try_from(g.id).unwrap_or(0)).copied().unwrap_or((0, 0, 0));
+        let (occ, chg, trunk) = by
+            .get(&i64::try_from(g.id).unwrap_or(0))
+            .copied()
+            .unwrap_or((0, 0, 0));
         g.occurrences = u32::try_from(occ).unwrap_or(u32::MAX);
         // The empty change of a trunk run is one of the distinct values.
         g.changes_affected = u32::try_from(chg - i64::from(trunk > 0)).unwrap_or(0);
@@ -1158,18 +1227,28 @@ pub async fn blocking_failures(
     .await?;
     let mut recovered: HashSet<(i64, String, i64)> = HashSet::new();
     for r in &passed {
-        recovered.insert((r.try_get("job_id")?, r.try_get("name")?, r.try_get("attempt")?));
+        recovered.insert((
+            r.try_get("job_id")?,
+            r.try_get("name")?,
+            r.try_get("attempt")?,
+        ));
     }
     let mut out = BTreeMap::new();
     for r in rows {
-        let (job_id, name, attempt): (i64, String, i64) =
-            (r.try_get("job_id")?, r.try_get("name")?, r.try_get("attempt")?);
+        let (job_id, name, attempt): (i64, String, i64) = (
+            r.try_get("job_id")?,
+            r.try_get("name")?,
+            r.try_get("attempt")?,
+        );
         let signature: String = r.try_get("signature")?;
         if quarantined.contains(&signature) {
             continue;
         }
         // Passed on a later attempt.
-        if recovered.iter().any(|(j, n, a)| *j == job_id && *n == name && *a > attempt) {
+        if recovered
+            .iter()
+            .any(|(j, n, a)| *j == job_id && *n == name && *a > attempt)
+        {
             continue;
         }
         out.insert(

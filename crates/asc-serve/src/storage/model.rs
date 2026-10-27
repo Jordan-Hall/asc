@@ -347,9 +347,9 @@ pub fn check_prefix(prefix: &str) -> Result<String, String> {
             && seg != "."
             && seg != ".."
             && seg != PROBE_DIR
-            && seg
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'=' | b'+' | b'@' | b'-'));
+            && seg.bytes().all(|b| {
+                b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'=' | b'+' | b'@' | b'-')
+            });
         if !ok {
             return Err("prefix segments must be non-empty, not '.' or '..', and use only letters, digits and ._=+@-".into());
         }
@@ -391,7 +391,10 @@ pub fn new_id(prefix: &str) -> String {
 pub fn is_id(prefix: &str, id: &str) -> bool {
     id.len() == prefix.len() + 20
         && id.starts_with(prefix)
-        && id.bytes().skip(prefix.len()).all(|b| matches!(b, b'a'..=b'z' | b'2'..=b'7'))
+        && id
+            .bytes()
+            .skip(prefix.len())
+            .all(|b| matches!(b, b'a'..=b'z' | b'2'..=b'7'))
 }
 
 #[cfg(test)]
@@ -413,7 +416,16 @@ mod tests {
         for ok in ["abc", "my.bucket-1_x", &"a".repeat(63)] {
             assert!(check_bucket(ok).is_ok(), "{ok}");
         }
-        for bad in ["ab", "-abc", "abc-", "a..b", "a/b", "a b", &"a".repeat(64), ".abc"] {
+        for bad in [
+            "ab",
+            "-abc",
+            "abc-",
+            "a..b",
+            "a/b",
+            "a b",
+            &"a".repeat(64),
+            ".abc",
+        ] {
             assert!(check_bucket(bad).is_err(), "{bad}");
         }
     }
@@ -436,8 +448,20 @@ mod tests {
         assert_eq!(prefix_out("a/b"), "a/b/");
         assert_eq!(prefix_out(""), "");
         for bad in [
-            "/a", "a//b", "../a", "a/../b", "a/./b", "a/..", ".", "a%2e%2e", "a\\b", "a b", "a?b",
-            ".asc-probe", "x/.asc-probe/y", &"a/".repeat(200),
+            "/a",
+            "a//b",
+            "../a",
+            "a/../b",
+            "a/./b",
+            "a/..",
+            ".",
+            "a%2e%2e",
+            "a\\b",
+            "a b",
+            "a?b",
+            ".asc-probe",
+            "x/.asc-probe/y",
+            &"a/".repeat(200),
         ] {
             assert!(check_prefix(bad).is_err(), "{bad}");
         }
@@ -446,7 +470,10 @@ mod tests {
     #[test]
     fn owners() {
         let u = Owner::new(OwnerKind::User, "Alice").unwrap();
-        assert_eq!((u.name.as_str(), u.scope().as_str()), ("alice", "user:alice"));
+        assert_eq!(
+            (u.name.as_str(), u.scope().as_str()),
+            ("alice", "user:alice")
+        );
         assert!(Owner::new(OwnerKind::Org, "Acme-Co").is_ok());
         let r = Owner::new(OwnerKind::Repo, "acme/app").unwrap();
         assert_eq!(r.scope(), "repo:acme/app");
@@ -465,20 +492,34 @@ mod tests {
 
     #[test]
     fn credentials_pack_hint_and_redaction() {
-        let c = Credentials::new("AKIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "").unwrap();
+        let c = Credentials::new(
+            "AKIAIOSFODNN7EXAMPLE",
+            "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+            "",
+        )
+        .unwrap();
         assert_eq!(c.hint(), "AKIA...MPLE");
         let back = Credentials::unpack(&c.pack().unwrap()).unwrap();
         assert_eq!(*back.access_key_id, "AKIAIOSFODNN7EXAMPLE");
         assert!(back.session_token.is_none());
         let t = Credentials::new("ASIAXXXXXXXX", "secret", "tok").unwrap();
         let back = Credentials::unpack(&t.pack().unwrap()).unwrap();
-        assert_eq!(back.session_token.as_deref().map(String::as_str), Some("tok"));
+        assert_eq!(
+            back.session_token.as_deref().map(String::as_str),
+            Some("tok")
+        );
         let shown = format!("{c:?}{t:?}");
         assert!(!shown.contains("AKIA") && !shown.contains("secret") && !shown.contains("wJal"));
         assert_eq!(hint_of("12345678"), "12...78");
         assert_eq!(hint_of("1234567"), "");
         assert_eq!(hint_of(""), "");
-        for (k, s, t) in [("", "s", ""), ("k", "", ""), ("k k", "s", ""), ("k", "s\n", ""), ("k", "s", "t t")] {
+        for (k, s, t) in [
+            ("", "s", ""),
+            ("k", "", ""),
+            ("k k", "s", ""),
+            ("k", "s\n", ""),
+            ("k", "s", "t t"),
+        ] {
             assert!(Credentials::new(k, s, t).is_err(), "{k:?} {s:?} {t:?}");
         }
         assert!(Credentials::new(&"k".repeat(129), "s", "").is_err());

@@ -52,7 +52,10 @@ pub async fn prune_scope(
     .fetch_optional(&mut *tx)
     .await?;
     let (seg_to, seg_events) = match &segment {
-        Some(r) => (r.try_get::<i64, _>("to_seq")?, r.try_get::<i64, _>("events")?),
+        Some(r) => (
+            r.try_get::<i64, _>("to_seq")?,
+            r.try_get::<i64, _>("events")?,
+        ),
         None => (0, 0),
     };
     if first != seg_to + 1 {

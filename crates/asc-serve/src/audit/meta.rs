@@ -96,7 +96,11 @@ fn request_id(headers: &HeaderMap) -> String {
 
 /// Runs `fut` with `user_agent` and `request_id` as the request facts. Transports without HTTP
 /// headers (the SSH listener) use it to give their commands the same record.
-pub fn scope<F: Future>(user_agent: &str, request_id: &str, fut: F) -> impl Future<Output = F::Output> {
+pub fn scope<F: Future>(
+    user_agent: &str,
+    request_id: &str,
+    fut: F,
+) -> impl Future<Output = F::Output> {
     HTTP.scope(
         Http {
             user_agent: clean_user_agent(user_agent),
@@ -195,7 +199,10 @@ mod tests {
             }
             fn call(&mut self, _: Request<()>) -> Self::Future {
                 let m = current();
-                std::future::ready(Ok(Response::new(format!("{}|{}", m.user_agent, m.request_id))))
+                std::future::ready(Ok(Response::new(format!(
+                    "{}|{}",
+                    m.user_agent, m.request_id
+                ))))
             }
         }
         let mut svc = MetaLayer.layer(Echo);

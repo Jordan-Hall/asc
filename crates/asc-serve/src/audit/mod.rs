@@ -32,11 +32,11 @@ pub mod store;
 pub mod undo;
 
 #[cfg(test)]
+mod credential_tests;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod undo_tests;
-#[cfg(test)]
-mod credential_tests;
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
@@ -107,7 +107,9 @@ impl AuditConfig {
     /// Checks the bounds. The error names the key.
     pub fn validate(&self) -> Result<(), String> {
         if self.retention_days > 36_500 {
-            return Err("retention_days is above 36500 (100 years); use 0 to keep everything".into());
+            return Err(
+                "retention_days is above 36500 (100 years); use 0 to keep everything".into(),
+            );
         }
         if self.export_max_events == 0 || self.export_max_events > 100_000_000 {
             return Err("export_max_events must be 1 to 100000000".into());
@@ -433,7 +435,11 @@ impl AuditSlot {
 
 /// The unit's one line in `register_all`.
 pub fn register(ext: &Extensions, registry: &Arc<Registry>, cfg: &AuditConfig) {
-    let audit = Arc::new(Audit::new(registry.clone(), cfg.clone(), ext.pipeline.clone()));
+    let audit = Arc::new(Audit::new(
+        registry.clone(),
+        cfg.clone(),
+        ext.pipeline.clone(),
+    ));
     assert!(ext.audit.set(audit), "the audit state is registered once");
 }
 

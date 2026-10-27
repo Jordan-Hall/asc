@@ -7,12 +7,12 @@
 
 use std::sync::Arc;
 
+use asc_rpc::RpcError;
 use asc_rpc::auth::{AuthError, AuthInterceptor, Authorizer, Credential};
 use asc_rpc::errors::ErrorInfo;
 use asc_rpc::server::{rpc_status, wire};
 use asc_rpc::services::storage_server::{Storage, StorageServer};
 use asc_rpc::services::vault_server::{Vault as VaultSvc, VaultServer};
-use asc_rpc::RpcError;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use prost::Message;
@@ -26,9 +26,9 @@ use uuid::Uuid;
 use super::audit::{Audit, AuditEvent};
 use super::authority::{Authority, Caller};
 use super::db::MigrationRow;
+use super::live::{Check, Report, Step};
 use super::model::{self, Addressing, Credentials, Owner, OwnerKind, State};
 use super::service::{NewFields, Patch, Service, StorageError, View};
-use super::live::{Check, Report, Step};
 use crate::authz::UserIdentity;
 use crate::vault::{Vault, VaultError};
 
@@ -57,7 +57,9 @@ fn blocked(reason: crate::netguard::BlockReason) -> Status {
 
 /// The status of a [`StorageError`].
 pub fn status_of(e: StorageError) -> Status {
-    let plain = |f: fn(ErrorInfo) -> RpcError, msg: &str| with_message(rpc_status(&f(ErrorInfo::default())), msg);
+    let plain = |f: fn(ErrorInfo) -> RpcError, msg: &str| {
+        with_message(rpc_status(&f(ErrorInfo::default())), msg)
+    };
     match e {
         StorageError::InvalidArgument(m) => Status::invalid_argument(m),
         StorageError::Blocked(r) => blocked(r),
@@ -167,10 +169,14 @@ async fn replay<M: Message + Default>(
         return Ok(None);
     };
     let Some((owner, body)) = raw.split_first_chunk::<32>() else {
-        return Err(Status::invalid_argument("the operation id was used for another call"));
+        return Err(Status::invalid_argument(
+            "the operation id was used for another call",
+        ));
     };
     if *owner != answer_owner(caller) {
-        return Err(Status::invalid_argument("the operation id was used for another call"));
+        return Err(Status::invalid_argument(
+            "the operation id was used for another call",
+        ));
     }
     M::decode(body)
         .map(Some)
@@ -199,7 +205,11 @@ fn owner_of(r: Option<&wire::OwnerRef>) -> Result<Owner, Status> {
         Ok(wire::OwnerKind::User) => OwnerKind::User,
         Ok(wire::OwnerKind::Org) => OwnerKind::Org,
         Ok(wire::OwnerKind::Repo) => OwnerKind::Repo,
-        _ => return Err(Status::invalid_argument("owner kind must be user, org or repo")),
+        _ => {
+            return Err(Status::invalid_argument(
+                "owner kind must be user, org or repo",
+            ));
+        }
     };
     Owner::new(kind, &r.name).map_err(Status::invalid_argument)
 }
@@ -387,7 +397,10 @@ impl Storage for StorageService {
         let caller = self.caller(&ext).await?;
         let op = op_id(&meta)?;
         let owner = owner_of(msg.owner.as_ref())?;
-        self.svc.authorize_owner(&caller, &owner).await.map_err(status_of)?;
+        self.svc
+            .authorize_owner(&caller, &owner)
+            .await
+            .map_err(status_of)?;
         if let Some(prev) = replay(self.pool(), op, &caller).await? {
             return Ok(Response::new(prev));
         }
@@ -428,7 +441,11 @@ impl Storage for StorageService {
         let (_, ext, msg) = request.into_parts();
         let caller = self.caller(&ext).await?;
         let owner = owner_of(msg.owner.as_ref())?;
-        let views = self.svc.list_targets(&caller, &owner).await.map_err(status_of)?;
+        let views = self
+            .svc
+            .list_targets(&caller, &owner)
+            .await
+            .map_err(status_of)?;
         Ok(Response::new(wire::ListStorageTargetsResponse {
             targets: views.iter().map(target_pb).collect(),
         }))
@@ -440,7 +457,11 @@ impl Storage for StorageService {
     ) -> Result<Response<wire::GetStorageTargetResponse>, Status> {
         let (_, ext, msg) = request.into_parts();
         let caller = self.caller(&ext).await?;
-        let v = self.svc.get_target(&caller, &msg.id).await.map_err(status_of)?;
+        let v = self
+            .svc
+            .get_target(&caller, &msg.id)
+            .await
+            .map_err(status_of)?;
         Ok(Response::new(wire::GetStorageTargetResponse {
             target: Some(target_pb(&v)),
         }))
@@ -453,7 +474,10 @@ impl Storage for StorageService {
         let (meta, ext, msg) = request.into_parts();
         let caller = self.caller(&ext).await?;
         let op = op_id(&meta)?;
-        self.svc.authorize_target(&caller, &msg.id).await.map_err(status_of)?;
+        self.svc
+            .authorize_target(&caller, &msg.id)
+            .await
+            .map_err(status_of)?;
         if let Some(prev) = replay(self.pool(), op, &caller).await? {
             return Ok(Response::new(prev));
         }
@@ -484,7 +508,10 @@ impl Storage for StorageService {
     ) -> Result<Response<wire::DeleteStorageTargetResponse>, Status> {
         let (_, ext, msg) = request.into_parts();
         let caller = self.caller(&ext).await?;
-        self.svc.delete_target(&caller, &msg.id).await.map_err(status_of)?;
+        self.svc
+            .delete_target(&caller, &msg.id)
+            .await
+            .map_err(status_of)?;
         Ok(Response::new(wire::DeleteStorageTargetResponse {}))
     }
 
@@ -494,7 +521,11 @@ impl Storage for StorageService {
     ) -> Result<Response<wire::VerifyStorageTargetResponse>, Status> {
         let (_, ext, msg) = request.into_parts();
         let caller = self.caller(&ext).await?;
-        let (report, view) = self.svc.verify_target(&caller, &msg.id).await.map_err(status_of)?;
+        let (report, view) = self
+            .svc
+            .verify_target(&caller, &msg.id)
+            .await
+            .map_err(status_of)?;
         Ok(Response::new(wire::VerifyStorageTargetResponse {
             ok: report.ok(),
             checks: report_pb(&report),
@@ -530,7 +561,9 @@ impl Storage for StorageService {
             .assign_repo(&caller, &repo, &msg.target_id)
             .await
             .map_err(status_of)?;
-        Ok(Response::new(wire::AssignRepoStorageResponse { target_id: id }))
+        Ok(Response::new(wire::AssignRepoStorageResponse {
+            target_id: id,
+        }))
     }
 
     async fn start_migration(
@@ -541,7 +574,10 @@ impl Storage for StorageService {
         let caller = self.caller(&ext).await?;
         let op = op_id(&meta)?;
         let repo = repo_name(msg.repo.as_ref())?;
-        self.svc.authorize_repo(&caller, &repo).await.map_err(status_of)?;
+        self.svc
+            .authorize_repo(&caller, &repo)
+            .await
+            .map_err(status_of)?;
         if let Some(prev) = replay(self.pool(), op, &caller).await? {
             return Ok(Response::new(prev));
         }
@@ -563,7 +599,11 @@ impl Storage for StorageService {
     ) -> Result<Response<wire::GetStorageMigrationResponse>, Status> {
         let (_, ext, msg) = request.into_parts();
         let caller = self.caller(&ext).await?;
-        let m = self.svc.get_migration(&caller, &msg.id).await.map_err(status_of)?;
+        let m = self
+            .svc
+            .get_migration(&caller, &msg.id)
+            .await
+            .map_err(status_of)?;
         Ok(Response::new(wire::GetStorageMigrationResponse {
             migration: Some(migration_pb(&m)),
         }))
@@ -594,7 +634,11 @@ impl Storage for StorageService {
     ) -> Result<Response<wire::CancelStorageMigrationResponse>, Status> {
         let (_, ext, msg) = request.into_parts();
         let caller = self.caller(&ext).await?;
-        let m = self.svc.cancel_migration(&caller, &msg.id).await.map_err(status_of)?;
+        let m = self
+            .svc
+            .cancel_migration(&caller, &msg.id)
+            .await
+            .map_err(status_of)?;
         Ok(Response::new(wire::CancelStorageMigrationResponse {
             migration: Some(migration_pb(&m)),
         }))
@@ -641,7 +685,9 @@ impl VaultService {
         if self.authority.is_site_admin(&caller).await {
             Ok(caller)
         } else {
-            Err(Status::permission_denied("only a site administrator may use the vault"))
+            Err(Status::permission_denied(
+                "only a site administrator may use the vault",
+            ))
         }
     }
 }
@@ -693,7 +739,11 @@ impl VaultSvc for VaultService {
         if let Some(prev) = replay(&self.pool, op, &caller).await? {
             return Ok(Response::new(prev));
         }
-        let rotation = self.vault.rotate(msg.retire_old).await.map_err(|e| vault_status(&e))?;
+        let rotation = self
+            .vault
+            .rotate(msg.retire_old)
+            .await
+            .map_err(|e| vault_status(&e))?;
         self.audit.record(
             AuditEvent::new("vault.rotated")
                 .actor(caller.actor())

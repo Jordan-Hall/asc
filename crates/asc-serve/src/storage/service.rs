@@ -95,7 +95,9 @@ pub enum StorageError {
     Unavailable(String),
     /// The update moves the target (`field` changed) but brings no new credentials, so the stored
     /// ones would be sent to a destination their owner never chose.
-    CredentialsRequired { field: &'static str },
+    CredentialsRequired {
+        field: &'static str,
+    },
     Internal,
 }
 
@@ -110,7 +112,9 @@ impl From<VaultError> for StorageError {
     fn from(e: VaultError) -> Self {
         match e {
             VaultError::Locked(why) => Self::VaultLocked(why),
-            VaultError::Corrupt => Self::VaultLocked("a stored secret does not open with this key file".into()),
+            VaultError::Corrupt => {
+                Self::VaultLocked("a stored secret does not open with this key file".into())
+            }
             other => {
                 tracing::error!(error = %other, "vault error");
                 Self::Internal
@@ -220,11 +224,17 @@ impl Service {
 
     /// Refuses a caller who does not administer `owner`. The RPC layer runs this before it
     /// looks up a stored answer, so an answer never reaches a caller the call would refuse.
-    pub async fn authorize_owner(&self, caller: &Caller, owner: &Owner) -> Result<(), StorageError> {
+    pub async fn authorize_owner(
+        &self,
+        caller: &Caller,
+        owner: &Owner,
+    ) -> Result<(), StorageError> {
         if self.authority.can_admin_owner(caller, owner).await {
             Ok(())
         } else {
-            Err(StorageError::PermissionDenied("you do not administer this owner"))
+            Err(StorageError::PermissionDenied(
+                "you do not administer this owner",
+            ))
         }
     }
 
@@ -264,8 +274,9 @@ impl Service {
             },
             allow_http: false,
         };
-        let effective = asc_store::s3::effective_endpoint(&cfg)
-            .map_err(|_| StorageError::InvalidArgument("the endpoint and bucket do not form a host name".into()))?;
+        let effective = asc_store::s3::effective_endpoint(&cfg).map_err(|_| {
+            StorageError::InvalidArgument("the endpoint and bucket do not form a host name".into())
+        })?;
         self.guard
             .pin(&effective, Shape::Endpoint)
             .await
@@ -282,7 +293,9 @@ impl Service {
                     .owner(&f.owner.scope())
                     .outcome("denied"),
             );
-            return Err(StorageError::PermissionDenied("you do not administer this owner"));
+            return Err(StorageError::PermissionDenied(
+                "you do not administer this owner",
+            ));
         }
         if f.owner.kind == OwnerKind::User && !self.cfg.allow_user_targets {
             return Err(StorageError::PermissionDenied(
@@ -306,7 +319,10 @@ impl Service {
             )));
         }
         let id = model::new_id("st_");
-        let packed = f.credentials.pack().map_err(StorageError::InvalidArgument)?;
+        let packed = f
+            .credentials
+            .pack()
+            .map_err(StorageError::InvalidArgument)?;
         let scope = f.owner.scope();
         let (key_gen, sealed) = self.vault.seal(&secret_context(&scope, &id), &packed)?;
         let hint = f.credentials.hint();
@@ -329,7 +345,9 @@ impl Service {
             })
             .await?;
         if !inserted {
-            return Err(StorageError::AlreadyExists("this owner already has a target with that name"));
+            return Err(StorageError::AlreadyExists(
+                "this owner already has a target with that name",
+            ));
         }
         self.audit.record(
             self.event("storage.target.created", caller)
@@ -342,9 +360,15 @@ impl Service {
         self.view(target).await
     }
 
-    pub async fn list_targets(&self, caller: &Caller, owner: &Owner) -> Result<Vec<View>, StorageError> {
+    pub async fn list_targets(
+        &self,
+        caller: &Caller,
+        owner: &Owner,
+    ) -> Result<Vec<View>, StorageError> {
         if !self.authority.can_admin_owner(caller, owner).await {
-            return Err(StorageError::PermissionDenied("you do not administer this owner"));
+            return Err(StorageError::PermissionDenied(
+                "you do not administer this owner",
+            ));
         }
         let mut out = Vec::new();
         for t in self.db.targets_of(owner).await? {
@@ -358,7 +382,12 @@ impl Service {
         self.view(t).await
     }
 
-    pub async fn update_target(&self, caller: &Caller, id: &str, p: Patch) -> Result<View, StorageError> {
+    pub async fn update_target(
+        &self,
+        caller: &Caller,
+        id: &str,
+        p: Patch,
+    ) -> Result<View, StorageError> {
         let old = self.owned(caller, id).await?;
         let mut new = old.clone();
         if let Some(n) = p.name {
@@ -423,7 +452,9 @@ impl Service {
             .update_target(
                 &old,
                 &new,
-                sealed.as_ref().map(|(b, g, h)| (b.as_slice(), *g, h.as_str())),
+                sealed
+                    .as_ref()
+                    .map(|(b, g, h)| (b.as_slice(), *g, h.as_str())),
                 connection_changed,
                 now(),
             )
@@ -438,20 +469,38 @@ impl Service {
             self.event("storage.target.updated", caller)
                 .owner(&old.owner.scope())
                 .target(&old.id)
-                .detail("connection_changed", if connection_changed { "true" } else { "false" })
-                .detail("credentials_replaced", if p.credentials.is_some() { "true" } else { "false" }),
+                .detail(
+                    "connection_changed",
+                    if connection_changed { "true" } else { "false" },
+                )
+                .detail(
+                    "credentials_replaced",
+                    if p.credentials.is_some() {
+                        "true"
+                    } else {
+                        "false"
+                    },
+                ),
         );
-        let t = self.db.target(&old.id).await?.ok_or(StorageError::Internal)?;
+        let t = self
+            .db
+            .target(&old.id)
+            .await?
+            .ok_or(StorageError::Internal)?;
         self.view(t).await
     }
 
     pub async fn delete_target(&self, caller: &Caller, id: &str) -> Result<(), StorageError> {
         let t = self.owned(caller, id).await?;
         if self.db.repos_using(id).await? > 0 {
-            return Err(StorageError::InUse("repositories still keep objects in this target".into()));
+            return Err(StorageError::InUse(
+                "repositories still keep objects in this target".into(),
+            ));
         }
         if self.db.active_migrations_on(id).await? > 0 {
-            return Err(StorageError::InUse("a migration involves this target".into()));
+            return Err(StorageError::InUse(
+                "a migration involves this target".into(),
+            ));
         }
         self.db.delete_target(id).await?;
         self.router.invalidate(id);
@@ -464,17 +513,27 @@ impl Service {
     }
 
     /// The handshake, rate limited to six a target an hour.
-    pub async fn verify_target(&self, caller: &Caller, id: &str) -> Result<(Report, View), StorageError> {
+    pub async fn verify_target(
+        &self,
+        caller: &Caller,
+        id: &str,
+    ) -> Result<(Report, View), StorageError> {
         let t = self.owned(caller, id).await?;
         if !self.db.take_verify_slot(id, now()).await? {
             return Err(StorageError::RateLimited);
         }
-        let sealed = self.db.sealed(id).await?.ok_or(StorageError::NotFound("no such storage target"))?;
+        let sealed = self
+            .db
+            .sealed(id)
+            .await?
+            .ok_or(StorageError::NotFound("no such storage target"))?;
         let report = live::probe(self.builder(), &t, &sealed).await?;
         let ok = report.ok();
         let (state, was_enabled) = if ok {
             match t.state {
-                State::Enabled | State::Failed if t.was_enabled || t.state == State::Enabled => (State::Enabled, true),
+                State::Enabled | State::Failed if t.was_enabled || t.state == State::Enabled => {
+                    (State::Enabled, true)
+                }
                 State::Disabled => (State::Disabled, false),
                 _ => (State::Verified, false),
             }
@@ -509,16 +568,25 @@ impl Service {
         Ok((report, self.view(fresh).await?))
     }
 
-    pub async fn set_enabled(&self, caller: &Caller, id: &str, enabled: bool) -> Result<View, StorageError> {
+    pub async fn set_enabled(
+        &self,
+        caller: &Caller,
+        id: &str,
+        enabled: bool,
+    ) -> Result<View, StorageError> {
         let t = self.owned(caller, id).await?;
         if enabled {
             match t.state {
                 State::Enabled => {}
                 State::Verified => {
-                    self.db.set_state(id, State::Enabled, Some(true), "", None, now()).await?;
+                    self.db
+                        .set_state(id, State::Enabled, Some(true), "", None, now())
+                        .await?;
                 }
                 State::Disabled if t.verified_at > 0 => {
-                    self.db.set_state(id, State::Enabled, Some(true), "", None, now()).await?;
+                    self.db
+                        .set_state(id, State::Enabled, Some(true), "", None, now())
+                        .await?;
                 }
                 _ => {
                     return Err(StorageError::VerifyFailed(
@@ -529,17 +597,27 @@ impl Service {
         } else if t.state != State::Disabled {
             if self.db.repos_using(id).await? > 0 {
                 return Err(StorageError::InUse(
-                    "repositories keep objects in this target; move them before disabling it".into(),
+                    "repositories keep objects in this target; move them before disabling it"
+                        .into(),
                 ));
             }
-            self.db.set_state(id, State::Disabled, Some(false), "", None, now()).await?;
+            self.db
+                .set_state(id, State::Disabled, Some(false), "", None, now())
+                .await?;
         }
         self.router.invalidate(id);
         self.audit.record(
-            self.event(if enabled { "storage.target.enabled" } else { "storage.target.updated" }, caller)
-                .owner(&t.owner.scope())
-                .target(id)
-                .detail("enabled", if enabled { "true" } else { "false" }),
+            self.event(
+                if enabled {
+                    "storage.target.enabled"
+                } else {
+                    "storage.target.updated"
+                },
+                caller,
+            )
+            .owner(&t.owner.scope())
+            .target(id)
+            .detail("enabled", if enabled { "true" } else { "false" }),
         );
         let t = self.db.target(id).await?.ok_or(StorageError::Internal)?;
         self.view(t).await
@@ -547,14 +625,20 @@ impl Service {
 
     // ------------------------------------------------------------------ repositories
 
-    async fn repo_row(&self, caller: &Caller, repo: &str) -> Result<(i64, crate::registry::Ns), StorageError> {
+    async fn repo_row(
+        &self,
+        caller: &Caller,
+        repo: &str,
+    ) -> Result<(i64, crate::registry::Ns), StorageError> {
         let name = asc_rpc::server::RepoName::parse(repo)
             .map_err(|_| StorageError::InvalidArgument("invalid repository name".into()))?;
         let Some((id, ns)) = self.db.repo(name.as_str()).await? else {
             return Err(StorageError::NotFound("no such repository"));
         };
         if !self.authority.can_admin_repo(caller, name.as_str()).await {
-            return Err(StorageError::PermissionDenied("you do not administer this repository"));
+            return Err(StorageError::PermissionDenied(
+                "you do not administer this repository",
+            ));
         }
         let ns = crate::registry::Ns::from_bytes(&ns).ok_or(StorageError::Internal)?;
         Ok((id, ns))
@@ -562,7 +646,12 @@ impl Service {
 
     /// A target the caller may put a repository into: enabled, caller-administered, and for a
     /// repository-owned target, that repository.
-    async fn usable_target(&self, caller: &Caller, id: &str, repo: &str) -> Result<Target, StorageError> {
+    async fn usable_target(
+        &self,
+        caller: &Caller,
+        id: &str,
+        repo: &str,
+    ) -> Result<Target, StorageError> {
         let t = self.owned(caller, id).await?;
         if t.state != State::Enabled {
             return Err(StorageError::FailedPrecondition(format!(
@@ -571,7 +660,9 @@ impl Service {
             )));
         }
         if t.owner.kind == OwnerKind::Repo && t.owner.name != repo {
-            return Err(StorageError::PermissionDenied("this target belongs to another repository"));
+            return Err(StorageError::PermissionDenied(
+                "this target belongs to another repository",
+            ));
         }
         let assigned = self.db.repos_assigned(id).await?;
         if assigned >= i64::from(self.cfg.max_repos_per_target) {
@@ -595,7 +686,12 @@ impl Service {
 
     /// New objects of `repo` go to `target_id` (`""`: the instance default). Objects already
     /// stored stay where they are, readable through the fallback, until a migration moves them.
-    pub async fn assign_repo(&self, caller: &Caller, repo: &str, target_id: &str) -> Result<String, StorageError> {
+    pub async fn assign_repo(
+        &self,
+        caller: &Caller,
+        repo: &str,
+        target_id: &str,
+    ) -> Result<String, StorageError> {
         let (repo_id, ns) = self.repo_row(caller, repo).await?;
         if !target_id.is_empty() {
             self.usable_target(caller, target_id, repo).await?;
@@ -634,7 +730,14 @@ impl Service {
                 true
             } else {
                 self.db
-                    .put_route(repo_id, target_id, fallback.as_deref(), None, version, now())
+                    .put_route(
+                        repo_id,
+                        target_id,
+                        fallback.as_deref(),
+                        None,
+                        version,
+                        now(),
+                    )
                     .await?
             };
             if ok {
@@ -643,12 +746,17 @@ impl Service {
                     self.event("storage.repo.assigned", caller)
                         .repo(repo)
                         .target(target_id)
-                        .detail("fallback", if fallback.is_some() { "true" } else { "false" }),
+                        .detail(
+                            "fallback",
+                            if fallback.is_some() { "true" } else { "false" },
+                        ),
                 );
                 return Ok(target_id.to_owned());
             }
         }
-        Err(StorageError::Unavailable("the repository's route kept changing; retry".into()))
+        Err(StorageError::Unavailable(
+            "the repository's route kept changing; retry".into(),
+        ))
     }
 
     // ------------------------------------------------------------------ migrations
@@ -672,12 +780,17 @@ impl Service {
             None => (String::new(), None),
         };
         if primary == to_target_id && fallback.is_none() {
-            return Err(StorageError::InvalidArgument("the repository already keeps its objects there".into()));
+            return Err(StorageError::InvalidArgument(
+                "the repository already keeps its objects there".into(),
+            ));
         }
         // Moving between two targets that point at the same bucket and prefix would delete the
         // objects it just "copied" when the source is removed.
         if let Some(to) = &to {
-            for other in std::iter::once(&primary).chain(fallback.iter()).filter(|p| !p.is_empty()) {
+            for other in std::iter::once(&primary)
+                .chain(fallback.iter())
+                .filter(|p| !p.is_empty())
+            {
                 if let Some(o) = self.db.target(other).await?
                     && o.endpoint == to.endpoint
                     && o.bucket == to.bucket
@@ -695,7 +808,14 @@ impl Service {
         let created = self
             .db
             .insert_migration(
-                &NewMigration { id: &id, repo_id, repo_name: repo, from: &from, to: to_target_id, delete_source },
+                &NewMigration {
+                    id: &id,
+                    repo_id,
+                    repo_name: repo,
+                    from: &from,
+                    to: to_target_id,
+                    delete_source,
+                },
                 now_ms(),
             )
             .await?;
@@ -707,7 +827,10 @@ impl Service {
                 .repo(repo)
                 .target(to_target_id)
                 .detail("migration", &id)
-                .detail("delete_source", if delete_source { "true" } else { "false" }),
+                .detail(
+                    "delete_source",
+                    if delete_source { "true" } else { "false" },
+                ),
         );
         self.engine.kick();
         self.db.migration(&id).await?.ok_or(StorageError::Internal)
@@ -728,7 +851,11 @@ impl Service {
         Ok(m)
     }
 
-    pub async fn get_migration(&self, caller: &Caller, id: &str) -> Result<MigrationRow, StorageError> {
+    pub async fn get_migration(
+        &self,
+        caller: &Caller,
+        id: &str,
+    ) -> Result<MigrationRow, StorageError> {
         self.migration_for(caller, id).await
     }
 
@@ -759,11 +886,20 @@ impl Service {
     }
 
     /// Idempotent: a migration that ended, or already switched, comes back unchanged.
-    pub async fn cancel_migration(&self, caller: &Caller, id: &str) -> Result<MigrationRow, StorageError> {
+    pub async fn cancel_migration(
+        &self,
+        caller: &Caller,
+        id: &str,
+    ) -> Result<MigrationRow, StorageError> {
         let m = self.migration_for(caller, id).await?;
-        let over = matches!(m.state.as_str(), state::DONE | state::FAILED | state::CANCELLED);
+        let over = matches!(
+            m.state.as_str(),
+            state::DONE | state::FAILED | state::CANCELLED
+        );
         if !over && !m.switched {
-            self.db.migration_mark(id, super::db::Mark::Cancel, now()).await?;
+            self.db
+                .migration_mark(id, super::db::Mark::Cancel, now())
+                .await?;
             self.audit.record(
                 self.event("storage.migration.finished", caller)
                     .repo(&m.repo_name)
@@ -786,15 +922,35 @@ mod tests {
         assert!(c.validate().is_ok());
         assert_eq!((c.max_targets_per_owner, c.allow_user_targets), (64, true));
         for bad in [
-            StorageConfig { max_targets_per_owner: 0, ..c.clone() },
-            StorageConfig { max_repos_per_target: 0, ..c.clone() },
-            StorageConfig { migration_workers: 0, ..c.clone() },
-            StorageConfig { health_interval_secs: 5, ..c.clone() },
+            StorageConfig {
+                max_targets_per_owner: 0,
+                ..c.clone()
+            },
+            StorageConfig {
+                max_repos_per_target: 0,
+                ..c.clone()
+            },
+            StorageConfig {
+                migration_workers: 0,
+                ..c.clone()
+            },
+            StorageConfig {
+                health_interval_secs: 5,
+                ..c.clone()
+            },
         ] {
             assert!(bad.validate().is_err());
         }
-        assert!(StorageConfig { health_interval_secs: 0, ..c }.validate().is_ok());
-        let parsed: Result<StorageConfig, _> = toml::from_str("max_targets_per_owner = 3\nunknown = 1");
+        assert!(
+            StorageConfig {
+                health_interval_secs: 0,
+                ..c
+            }
+            .validate()
+            .is_ok()
+        );
+        let parsed: Result<StorageConfig, _> =
+            toml::from_str("max_targets_per_owner = 3\nunknown = 1");
         assert!(parsed.is_err());
     }
 }

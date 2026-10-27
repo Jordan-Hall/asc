@@ -184,11 +184,13 @@ impl Db {
     }
 
     pub async fn count_targets(&self, owner: &Owner) -> Result<i64> {
-        sqlx::query_scalar("SELECT COUNT(*) FROM storage_targets WHERE owner_kind = $1 AND owner_name = $2")
-            .bind(owner.kind.as_str())
-            .bind(&owner.name)
-            .fetch_one(&self.pool)
-            .await
+        sqlx::query_scalar(
+            "SELECT COUNT(*) FROM storage_targets WHERE owner_kind = $1 AND owner_name = $2",
+        )
+        .bind(owner.kind.as_str())
+        .bind(&owner.name)
+        .fetch_one(&self.pool)
+        .await
     }
 
     pub async fn target(&self, id: &str) -> Result<Option<Target>> {
@@ -249,7 +251,11 @@ impl Db {
         reset_to_pending: bool,
         now: i64,
     ) -> Result<bool> {
-        let state = if reset_to_pending { State::Pending } else { new.state };
+        let state = if reset_to_pending {
+            State::Pending
+        } else {
+            new.state
+        };
         let hint = sealed.map_or(new.access_key_hint.as_str(), |s| s.2);
         let r = sqlx::query(
             "UPDATE storage_targets SET name = $1, endpoint = $2, region = $3, bucket = $4, prefix = $5, \
@@ -278,12 +284,14 @@ impl Db {
             Err(e) => return Err(e),
         };
         if done && let Some((blob, key_gen, _)) = sealed {
-            sqlx::query("UPDATE storage_targets SET sealed_credentials = $1, key_gen = $2 WHERE id = $3")
-                .bind(blob.to_vec())
-                .bind(i64::from(key_gen))
-                .bind(&old.id)
-                .execute(&self.pool)
-                .await?;
+            sqlx::query(
+                "UPDATE storage_targets SET sealed_credentials = $1, key_gen = $2 WHERE id = $3",
+            )
+            .bind(blob.to_vec())
+            .bind(i64::from(key_gen))
+            .bind(&old.id)
+            .execute(&self.pool)
+            .await?;
         }
         Ok(done)
     }
@@ -497,14 +505,22 @@ impl Db {
             .bind(name)
             .fetch_optional(&self.pool)
             .await?;
-        r.map(|r| Ok((r.try_get("id")?, r.try_get("ns")?))).transpose()
+        r.map(|r| Ok((r.try_get("id")?, r.try_get("ns")?)))
+            .transpose()
     }
 
     // ------------------------------------------------------------------ migrations
 
     /// Inserts a queued migration. `Ok(false)` when the repository already has an active one.
     pub async fn insert_migration(&self, m: &NewMigration<'_>, now_ms: i64) -> Result<bool> {
-        let NewMigration { id, repo_id, repo_name, from, to, delete_source } = *m;
+        let NewMigration {
+            id,
+            repo_id,
+            repo_name,
+            from,
+            to,
+            delete_source,
+        } = *m;
         let r = sqlx::query(
             "INSERT INTO storage_migrations (id, repo_id, repo_name, from_target, to_target, state, delete_source, created_ms, updated) \
              VALUES ($1, $2, $3, $4, $5, 'queued', $6, $7, $8)",
@@ -577,16 +593,24 @@ impl Db {
     }
 
     /// Takes (or renews) the lease on a migration. `false`: another worker holds it.
-    pub async fn claim_migration(&self, id: &str, held_until: i64, now: i64, renew: bool) -> Result<bool> {
+    pub async fn claim_migration(
+        &self,
+        id: &str,
+        held_until: i64,
+        now: i64,
+        renew: bool,
+    ) -> Result<bool> {
         let r = if renew {
             // Renewal: only while we still hold it; `held_until` of the previous claim is not
             // needed because the worker is the only one that renews.
-            sqlx::query("UPDATE storage_migrations SET lease_until = $1 WHERE id = $2 AND lease_until > $3")
-                .bind(held_until)
-                .bind(id)
-                .bind(now)
-                .execute(&self.pool)
-                .await?
+            sqlx::query(
+                "UPDATE storage_migrations SET lease_until = $1 WHERE id = $2 AND lease_until > $3",
+            )
+            .bind(held_until)
+            .bind(id)
+            .bind(now)
+            .execute(&self.pool)
+            .await?
         } else {
             sqlx::query("UPDATE storage_migrations SET lease_until = $1 WHERE id = $2 AND lease_until <= $3")
                 .bind(held_until)
@@ -606,14 +630,22 @@ impl Db {
         Ok(())
     }
 
-    pub async fn migration_state(&self, id: &str, state: &str, error: &str, now: i64) -> Result<()> {
-        sqlx::query("UPDATE storage_migrations SET state = $1, error = $2, updated = $3 WHERE id = $4")
-            .bind(state)
-            .bind(error)
-            .bind(now)
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
+    pub async fn migration_state(
+        &self,
+        id: &str,
+        state: &str,
+        error: &str,
+        now: i64,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE storage_migrations SET state = $1, error = $2, updated = $3 WHERE id = $4",
+        )
+        .bind(state)
+        .bind(error)
+        .bind(now)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -644,10 +676,18 @@ impl Db {
     pub async fn migration_mark(&self, id: &str, column: Mark, now: i64) -> Result<()> {
         let sql = match column {
             Mark::Cancel => "UPDATE storage_migrations SET cancel = 1, updated = $1 WHERE id = $2",
-            Mark::Switched => "UPDATE storage_migrations SET switched = 1, updated = $1 WHERE id = $2",
-            Mark::MirrorSince => "UPDATE storage_migrations SET mirror_since = $1, updated = $1 WHERE id = $2",
+            Mark::Switched => {
+                "UPDATE storage_migrations SET switched = 1, updated = $1 WHERE id = $2"
+            }
+            Mark::MirrorSince => {
+                "UPDATE storage_migrations SET mirror_since = $1, updated = $1 WHERE id = $2"
+            }
         };
-        sqlx::query(sql).bind(now).bind(id).execute(&self.pool).await?;
+        sqlx::query(sql)
+            .bind(now)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
@@ -661,16 +701,21 @@ impl Db {
 
     /// Counts sealed credentials per key generation, for the vault.
     pub async fn sealed_counts(&self) -> Result<Vec<(i64, i64)>> {
-        let rows = sqlx::query("SELECT key_gen, COUNT(*) AS n FROM storage_targets GROUP BY key_gen")
-            .fetch_all(&self.pool)
-            .await?;
+        let rows =
+            sqlx::query("SELECT key_gen, COUNT(*) AS n FROM storage_targets GROUP BY key_gen")
+                .fetch_all(&self.pool)
+                .await?;
         rows.iter()
             .map(|r| Ok((r.try_get("key_gen")?, r.try_get("n")?)))
             .collect()
     }
 
     /// Targets sealed under a generation other than `target`, with their owner scope.
-    pub async fn not_under(&self, target: u32, limit: i64) -> Result<Vec<(String, String, Vec<u8>, i64)>> {
+    pub async fn not_under(
+        &self,
+        target: u32,
+        limit: i64,
+    ) -> Result<Vec<(String, String, Vec<u8>, i64)>> {
         let rows = sqlx::query(
             "SELECT id, owner_kind, owner_name, sealed_credentials, key_gen FROM storage_targets \
              WHERE key_gen <> $1 ORDER BY id LIMIT $2",
@@ -694,7 +739,13 @@ impl Db {
     }
 
     /// Replaces a sealed value only if it still holds `old_gen`.
-    pub async fn replace_sealed(&self, id: &str, blob: &[u8], new_gen: u32, old_gen: i64) -> Result<bool> {
+    pub async fn replace_sealed(
+        &self,
+        id: &str,
+        blob: &[u8],
+        new_gen: u32,
+        old_gen: i64,
+    ) -> Result<bool> {
         let r = sqlx::query(
             "UPDATE storage_targets SET sealed_credentials = $1, key_gen = $2 WHERE id = $3 AND key_gen = $4",
         )

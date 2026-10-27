@@ -102,7 +102,10 @@ impl CiInsights for CiInsightsService {
             .await?;
         let quarantine = msg.state == wire::FailureGroupState::Quarantined as i32;
         let maintainer = quarantine && self.maintainer(&ext, &ctx).await;
-        self.hub.set_state(&ctx, maintainer, msg).await.map(Response::new)
+        self.hub
+            .set_state(&ctx, maintainer, msg)
+            .await
+            .map(Response::new)
     }
 
     async fn flaky_history(

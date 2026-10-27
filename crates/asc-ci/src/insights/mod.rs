@@ -95,10 +95,7 @@ impl Quarantine {
     }
 
     /// The failures of `failing` that are not quarantined: the ones that still block.
-    pub fn blocking<'a>(
-        &self,
-        failing: impl IntoIterator<Item = Failing<'a>>,
-    ) -> Vec<Failing<'a>> {
+    pub fn blocking<'a>(&self, failing: impl IntoIterator<Item = Failing<'a>>) -> Vec<Failing<'a>> {
         failing
             .into_iter()
             .filter(|f| !self.contains(f.signature))
@@ -150,7 +147,11 @@ mod tests {
         q.add("aa");
         q.add("bb");
         assert_eq!(q.len(), 2);
-        let f = |job, test, signature| Failing { job, test, signature };
+        let f = |job, test, signature| Failing {
+            job,
+            test,
+            signature,
+        };
         let failing = [
             f("unit", "suite::flaky_one", "aa"),
             f("unit", "suite::flaky_one", "cc"),

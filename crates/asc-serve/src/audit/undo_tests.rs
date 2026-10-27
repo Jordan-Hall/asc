@@ -52,7 +52,12 @@ async fn fx_with(window: u64) -> Fx {
         let parents: Vec<ChangesetId> = cs.last().copied().into_iter().collect();
         cs.push(commit(&entry, &parents, &[("f.txt", &[n])]).await);
     }
-    Fx { reg, entry, log, cs }
+    Fx {
+        reg,
+        entry,
+        log,
+        cs,
+    }
 }
 
 async fn fx() -> Fx {
@@ -63,7 +68,9 @@ fn ctx(principal: &str) -> CallCtx {
     CallCtx {
         repo: RepoName::parse("o/r").unwrap(),
         id_mode: IdMode::Asc,
-        principal: Principal { id: principal.into() },
+        principal: Principal {
+            id: principal.into(),
+        },
         op_id: Some(Uuid::new_v4()),
         client: None,
     }
@@ -113,12 +120,14 @@ impl Fx {
             )
             .await
             .unwrap();
-        sqlx::query_scalar::<_, i64>("SELECT CAST(MAX(seq) AS BIGINT) FROM ref_log WHERE op_id = $1")
-            .bind(op_id.as_bytes().to_vec())
-            .fetch_one(self.reg.pool())
-            .await
-            .map(|s| s as u64)
-            .unwrap()
+        sqlx::query_scalar::<_, i64>(
+            "SELECT CAST(MAX(seq) AS BIGINT) FROM ref_log WHERE op_id = $1",
+        )
+        .bind(op_id.as_bytes().to_vec())
+        .fetch_one(self.reg.pool())
+        .await
+        .map(|s| s as u64)
+        .unwrap()
     }
 
     async fn value(&self, name: &str) -> Option<RefTarget> {
@@ -134,7 +143,13 @@ impl Fx {
         Some(RefTarget::Changeset(self.cs[i]))
     }
 
-    async fn undo(&self, who: &str, maintainer: bool, name: &str, seq: u64) -> Result<wire::UndoRefResponse, tonic::Status> {
+    async fn undo(
+        &self,
+        who: &str,
+        maintainer: bool,
+        name: &str,
+        seq: u64,
+    ) -> Result<wire::UndoRefResponse, tonic::Status> {
         self.log
             .undo(&ctx(who), &caller(who, maintainer), undo_req(name, seq))
             .await
@@ -145,10 +160,17 @@ impl Fx {
             actions: vec![action.to_owned()],
             ..Filter::default()
         };
-        store::list(self.reg.pool(), &Scope::repo("o/r"), &filter, true, 100, None)
-            .await
-            .unwrap()
-            .events
+        store::list(
+            self.reg.pool(),
+            &Scope::repo("o/r"),
+            &filter,
+            true,
+            100,
+            None,
+        )
+        .await
+        .unwrap()
+        .events
     }
 
     async fn make_old(&self, seq: u64, secs: i64) {
@@ -162,7 +184,9 @@ impl Fx {
 }
 
 fn code_of(e: &tonic::Status) -> String {
-    status_rpc_error(e).map(|r| r.code().to_owned()).unwrap_or_default()
+    status_rpc_error(e)
+        .map(|r| r.code().to_owned())
+        .unwrap_or_default()
 }
 
 #[tokio::test]
@@ -175,7 +199,13 @@ async fn an_own_user_ref_is_put_back_and_the_undo_is_logged() {
     assert!(done.new_seq > seq);
     assert_eq!(f.value(OWN_STORED).await, f.target(0));
     let r = done.result.unwrap();
-    assert_eq!((r.old, r.new), (Some(wire::RefTarget::from(&f.target(1).unwrap())), Some(wire::RefTarget::from(&f.target(0).unwrap()))));
+    assert_eq!(
+        (r.old, r.new),
+        (
+            Some(wire::RefTarget::from(&f.target(1).unwrap())),
+            Some(wire::RefTarget::from(&f.target(0).unwrap()))
+        )
+    );
     // The ref log records the undo as its own row, by the caller, via "undo".
     let row = sqlx::query("SELECT actor, via, old, new FROM ref_log WHERE seq = $1")
         .bind(done.new_seq as i64)
@@ -188,10 +218,18 @@ async fn an_own_user_ref_is_put_back_and_the_undo_is_logged() {
     let events = f.events("repo.ref.undo").await;
     assert_eq!(events.len(), 1);
     let d = &events[0].details;
-    assert_eq!(d.get("undone_seq").map(String::as_str), Some(seq.to_string().as_str()));
+    assert_eq!(
+        d.get("undone_seq").map(String::as_str),
+        Some(seq.to_string().as_str())
+    );
     assert_eq!(d.get("reason").map(String::as_str), Some("oops"));
     assert_eq!(events[0].outcome, super::Outcome::Success);
-    assert!(store::verify_chain(f.reg.pool(), &Scope::repo("o/r"), 0, 0).await.unwrap().ok);
+    assert!(
+        store::verify_chain(f.reg.pool(), &Scope::repo("o/r"), 0, 0)
+            .await
+            .unwrap()
+            .ok
+    );
 }
 
 #[tokio::test]
@@ -241,7 +279,10 @@ async fn a_ref_that_moved_since_is_a_conflict_and_nothing_changes() {
     assert!(f.events("repo.ref.undo").await.is_empty());
     // A ref that moved away and came back is a different entry too, so the old one stays refused.
     f.mv(OWN_STORED, Some(2), Some(1), ALICE).await;
-    assert_eq!(code_of(&f.undo(ALICE, false, OWN, seq).await.unwrap_err()), "VERSION_CONFLICT");
+    assert_eq!(
+        code_of(&f.undo(ALICE, false, OWN, seq).await.unwrap_err()),
+        "VERSION_CONFLICT"
+    );
 }
 
 #[tokio::test]
@@ -250,7 +291,10 @@ async fn the_race_between_the_check_and_the_write_is_closed_by_the_transaction()
     f.mv(OWN_STORED, None, Some(0), ALICE).await;
     let seq = f.mv(OWN_STORED, Some(0), Some(1), ALICE).await;
     // Two undos of the same entry with different op ids: exactly one wins.
-    let (a, b) = tokio::join!(f.undo(ALICE, false, OWN, seq), f.undo(ALICE, false, OWN, seq));
+    let (a, b) = tokio::join!(
+        f.undo(ALICE, false, OWN, seq),
+        f.undo(ALICE, false, OWN, seq)
+    );
     assert_eq!([a.is_ok(), b.is_ok()].iter().filter(|x| **x).count(), 1);
     assert_eq!(f.value(OWN_STORED).await, f.target(0));
     assert_eq!(f.events("repo.ref.undo").await.len(), 1);
@@ -278,11 +322,25 @@ async fn a_user_ref_of_another_user_is_not_undone_or_listed() {
     let theirs = "refs/users/8/heads/work";
     let seq = f.mv(theirs, None, Some(0), BOB).await;
     // Alice cannot even name Bob's namespace ...
-    assert_eq!(f.undo(ALICE, true, theirs, seq).await.unwrap_err().code(), Code::InvalidArgument);
+    assert_eq!(
+        f.undo(ALICE, true, theirs, seq).await.unwrap_err().code(),
+        Code::InvalidArgument
+    );
     // ... nor reach his entry through her own branch of the same name.
-    assert_eq!(f.undo(ALICE, true, OWN, seq).await.unwrap_err().code(), Code::NotFound);
+    assert_eq!(
+        f.undo(ALICE, true, OWN, seq).await.unwrap_err().code(),
+        Code::NotFound
+    );
     // ... and never sees it in the list.
-    let all = f.log.list(&ctx(ALICE), &caller(ALICE, true), wire::ListRefLogRequest::default()).await.unwrap();
+    let all = f
+        .log
+        .list(
+            &ctx(ALICE),
+            &caller(ALICE, true),
+            wire::ListRefLogRequest::default(),
+        )
+        .await
+        .unwrap();
     assert!(all.entries.is_empty());
 }
 
@@ -317,7 +375,10 @@ async fn a_window_of_zero_switches_protected_undo_off_but_not_own_refs() {
     let f = fx_with(0).await;
     f.mv(SHARED, None, Some(0), ALICE).await;
     let shared = f.mv(SHARED, Some(0), Some(1), ALICE).await;
-    assert_eq!(code_of(&f.undo(ALICE, true, SHARED, shared).await.unwrap_err()), "REF_UNDO_PROTECTED");
+    assert_eq!(
+        code_of(&f.undo(ALICE, true, SHARED, shared).await.unwrap_err()),
+        "REF_UNDO_PROTECTED"
+    );
     let own = f.mv(OWN_STORED, None, Some(0), ALICE).await;
     f.undo(ALICE, false, OWN, own).await.unwrap();
 }
@@ -351,7 +412,11 @@ async fn a_dry_run_changes_nothing() {
     let seq = f.mv(OWN_STORED, Some(0), Some(1), ALICE).await;
     let mut req = undo_req(OWN, seq);
     req.dry_run = true;
-    let out = f.log.undo(&ctx(ALICE), &caller(ALICE, false), req).await.unwrap();
+    let out = f
+        .log
+        .undo(&ctx(ALICE), &caller(ALICE, false), req)
+        .await
+        .unwrap();
     assert!(!out.applied);
     assert_eq!(out.new_seq, 0);
     assert_eq!(f.value(OWN_STORED).await, f.target(1));
@@ -365,16 +430,50 @@ async fn bad_requests_are_refused_before_anything_is_read() {
     let me = caller(ALICE, false);
     let mut c = ctx(ALICE);
     c.op_id = None;
-    assert_eq!(f.log.undo(&c, &me, undo_req(OWN, seq)).await.unwrap_err().code(), Code::InvalidArgument);
-    assert_eq!(f.undo(ALICE, false, OWN, 0).await.unwrap_err().code(), Code::InvalidArgument);
-    assert_eq!(f.undo(ALICE, false, "", seq).await.unwrap_err().code(), Code::InvalidArgument);
-    assert_eq!(f.undo(ALICE, false, "refs/heads/a\nb", seq).await.unwrap_err().code(), Code::InvalidArgument);
+    assert_eq!(
+        f.log
+            .undo(&c, &me, undo_req(OWN, seq))
+            .await
+            .unwrap_err()
+            .code(),
+        Code::InvalidArgument
+    );
+    assert_eq!(
+        f.undo(ALICE, false, OWN, 0).await.unwrap_err().code(),
+        Code::InvalidArgument
+    );
+    assert_eq!(
+        f.undo(ALICE, false, "", seq).await.unwrap_err().code(),
+        Code::InvalidArgument
+    );
+    assert_eq!(
+        f.undo(ALICE, false, "refs/heads/a\nb", seq)
+            .await
+            .unwrap_err()
+            .code(),
+        Code::InvalidArgument
+    );
     let mut long = undo_req(OWN, seq);
     long.reason = "x".repeat(257);
-    assert_eq!(f.log.undo(&ctx(ALICE), &me, long).await.unwrap_err().code(), Code::InvalidArgument);
+    assert_eq!(
+        f.log.undo(&ctx(ALICE), &me, long).await.unwrap_err().code(),
+        Code::InvalidArgument
+    );
     // An entry of another ref, and one that does not exist.
-    assert_eq!(f.undo(ALICE, false, "refs/heads/other", seq).await.unwrap_err().code(), Code::NotFound);
-    assert_eq!(f.undo(ALICE, false, OWN, seq + 1000).await.unwrap_err().code(), Code::NotFound);
+    assert_eq!(
+        f.undo(ALICE, false, "refs/heads/other", seq)
+            .await
+            .unwrap_err()
+            .code(),
+        Code::NotFound
+    );
+    assert_eq!(
+        f.undo(ALICE, false, OWN, seq + 1000)
+            .await
+            .unwrap_err()
+            .code(),
+        Code::NotFound
+    );
     assert_eq!(f.value(OWN_STORED).await, f.target(0));
 }
 
@@ -388,7 +487,10 @@ async fn an_entry_older_than_the_log_is_expired() {
         .execute(f.reg.pool())
         .await
         .unwrap();
-    assert_eq!(code_of(&f.undo(ALICE, false, OWN, old).await.unwrap_err()), "REF_LOG_EXPIRED");
+    assert_eq!(
+        code_of(&f.undo(ALICE, false, OWN, old).await.unwrap_err()),
+        "REF_LOG_EXPIRED"
+    );
     f.undo(ALICE, false, OWN, newer).await.unwrap();
 }
 
@@ -399,7 +501,11 @@ async fn a_value_that_left_the_repository_is_not_restored() {
     let seq = f.mv(OWN_STORED, Some(0), Some(1), ALICE).await;
     // Pretend the log entry names a changeset the repository never had.
     sqlx::query("UPDATE ref_log SET old = $1 WHERE seq = $2")
-        .bind(RefTarget::Changeset(ChangesetId::from_bytes([0xee; 32])).to_bytes().to_vec())
+        .bind(
+            RefTarget::Changeset(ChangesetId::from_bytes([0xee; 32]))
+                .to_bytes()
+                .to_vec(),
+        )
         .bind(seq as i64)
         .execute(f.reg.pool())
         .await
@@ -430,12 +536,14 @@ async fn undoing_a_land_removes_what_the_land_recorded() {
         .execute(f.reg.pool())
         .await
         .unwrap();
-    sqlx::query("INSERT INTO user_ref_meta (ns, owner, name, landed_at) VALUES ($1, 7, 'work', $2)")
-        .bind(ns.clone())
-        .bind(crate::update::now())
-        .execute(f.reg.pool())
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT INTO user_ref_meta (ns, owner, name, landed_at) VALUES ($1, 7, 'work', $2)",
+    )
+    .bind(ns.clone())
+    .bind(crate::update::now())
+    .execute(f.reg.pool())
+    .await
+    .unwrap();
     f.undo(ALICE, true, SHARED, land).await.unwrap();
     assert_eq!(f.value(SHARED).await, f.target(0));
     let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM land_map_ref WHERE ns = $1")
@@ -444,11 +552,12 @@ async fn undoing_a_land_removes_what_the_land_recorded() {
         .await
         .unwrap();
     assert_eq!(left, 0);
-    let landed: Option<i64> = sqlx::query_scalar("SELECT landed_at FROM user_ref_meta WHERE ns = $1")
-        .bind(ns)
-        .fetch_one(f.reg.pool())
-        .await
-        .unwrap();
+    let landed: Option<i64> =
+        sqlx::query_scalar("SELECT landed_at FROM user_ref_meta WHERE ns = $1")
+            .bind(ns)
+            .fetch_one(f.reg.pool())
+            .await
+            .unwrap();
     assert_eq!(landed, None, "the stack shows as not landed again");
 }
 
@@ -474,7 +583,11 @@ async fn the_list_marks_what_can_be_undone_and_why_not() {
     let bobs = f.mv(SHARED, Some(0), Some(1), BOB).await;
     let list = f
         .log
-        .list(&ctx(ALICE), &caller(ALICE, true), wire::ListRefLogRequest::default())
+        .list(
+            &ctx(ALICE),
+            &caller(ALICE, true),
+            wire::ListRefLogRequest::default(),
+        )
         .await
         .unwrap();
     // Newest first; Alice's own ref is shown under its client name.
@@ -490,7 +603,12 @@ async fn the_list_marks_what_can_be_undone_and_why_not() {
     assert_eq!(by(bobs).undo_blocked_reason, "not your operation");
     assert_eq!(by(bobs).actor, "bob");
     // Entries that are no longer the newest of their ref say so.
-    let first_of_own = list.entries.iter().filter(|e| e.r#ref == "refs/heads/work").min_by_key(|e| e.seq).unwrap();
+    let first_of_own = list
+        .entries
+        .iter()
+        .filter(|e| e.r#ref == "refs/heads/work")
+        .min_by_key(|e| e.seq)
+        .unwrap();
     assert!(!first_of_own.undoable);
     assert_eq!(first_of_own.undo_blocked_reason, "the ref changed since");
 }
@@ -500,7 +618,8 @@ async fn the_list_filters_and_pages() {
     let f = fx().await;
     for i in 0..5 {
         let (old, new) = (if i == 0 { None } else { Some(i - 1) }, Some(i));
-        f.mv(SHARED, old, new, if i % 2 == 0 { ALICE } else { BOB }).await;
+        f.mv(SHARED, old, new, if i % 2 == 0 { ALICE } else { BOB })
+            .await;
     }
     let me = caller(ALICE, false);
     let page = |req: wire::ListRefLogRequest| {
@@ -508,34 +627,87 @@ async fn the_list_filters_and_pages() {
         let me = me.clone();
         async move { f.log.list(&ctx(ALICE), &me, req).await.unwrap() }
     };
-    let first = page(wire::ListRefLogRequest { limit: 2, ..Default::default() }).await;
+    let first = page(wire::ListRefLogRequest {
+        limit: 2,
+        ..Default::default()
+    })
+    .await;
     assert_eq!(first.entries.len(), 2);
     assert!(!first.next_page_token.is_empty());
-    let second = page(wire::ListRefLogRequest { limit: 2, page_token: first.next_page_token.clone(), ..Default::default() }).await;
+    let second = page(wire::ListRefLogRequest {
+        limit: 2,
+        page_token: first.next_page_token.clone(),
+        ..Default::default()
+    })
+    .await;
     assert!(second.entries[0].seq < first.entries[1].seq);
-    let rest = page(wire::ListRefLogRequest { limit: 10, page_token: second.next_page_token.clone(), ..Default::default() }).await;
-    assert_eq!(first.entries.len() + second.entries.len() + rest.entries.len(), 5);
+    let rest = page(wire::ListRefLogRequest {
+        limit: 10,
+        page_token: second.next_page_token.clone(),
+        ..Default::default()
+    })
+    .await;
+    assert_eq!(
+        first.entries.len() + second.entries.len() + rest.entries.len(),
+        5
+    );
     assert!(rest.next_page_token.is_empty());
-    let bobs = page(wire::ListRefLogRequest { actor: "bob".into(), ..Default::default() }).await;
+    let bobs = page(wire::ListRefLogRequest {
+        actor: "bob".into(),
+        ..Default::default()
+    })
+    .await;
     assert_eq!(bobs.entries.len(), 2);
     assert!(bobs.entries.iter().all(|e| e.actor == "bob"));
-    let by_ref = page(wire::ListRefLogRequest { r#ref: SHARED.into(), ..Default::default() }).await;
+    let by_ref = page(wire::ListRefLogRequest {
+        r#ref: SHARED.into(),
+        ..Default::default()
+    })
+    .await;
     assert_eq!(by_ref.entries.len(), 5);
-    let prefix = page(wire::ListRefLogRequest { r#ref: "refs/heads/".into(), ..Default::default() }).await;
+    let prefix = page(wire::ListRefLogRequest {
+        r#ref: "refs/heads/".into(),
+        ..Default::default()
+    })
+    .await;
     assert_eq!(prefix.entries.len(), 5);
-    let none = page(wire::ListRefLogRequest { r#ref: "refs/tags/".into(), ..Default::default() }).await;
+    let none = page(wire::ListRefLogRequest {
+        r#ref: "refs/tags/".into(),
+        ..Default::default()
+    })
+    .await;
     assert!(none.entries.is_empty());
     // Hostile input is refused.
     for bad in [
-        wire::ListRefLogRequest { page_token: "1; DROP TABLE ref_log".into(), ..Default::default() },
-        wire::ListRefLogRequest { since: 10, until: 5, ..Default::default() },
-        wire::ListRefLogRequest { since: -1, ..Default::default() },
-        wire::ListRefLogRequest { actor: "a\u{0}b".into(), ..Default::default() },
+        wire::ListRefLogRequest {
+            page_token: "1; DROP TABLE ref_log".into(),
+            ..Default::default()
+        },
+        wire::ListRefLogRequest {
+            since: 10,
+            until: 5,
+            ..Default::default()
+        },
+        wire::ListRefLogRequest {
+            since: -1,
+            ..Default::default()
+        },
+        wire::ListRefLogRequest {
+            actor: "a\u{0}b".into(),
+            ..Default::default()
+        },
     ] {
-        assert_eq!(f.log.list(&ctx(ALICE), &me, bad).await.unwrap_err().code(), Code::InvalidArgument);
+        assert_eq!(
+            f.log.list(&ctx(ALICE), &me, bad).await.unwrap_err().code(),
+            Code::InvalidArgument
+        );
     }
     // A LIKE wildcard in the actor filter matches nothing it should not.
-    let wild = page(wire::ListRefLogRequest { actor: "%".into(), ..Default::default() }).await;
+    let wild = page(wire::ListRefLogRequest {
+        actor: "%".into(),
+        ..Default::default()
+    })
+    .await;
     assert!(wild.entries.is_empty());
 }
 
