@@ -14,9 +14,9 @@ PUBLISH="$REL/publish-to-hub.sh"
 have_minisign=0
 command -v minisign >/dev/null 2>&1 && have_minisign=1
 
-check "scripts parse under sh" bash -c "for f in '$REL/sign.sh' '$REL/publish-to-hub.sh' '$ROOT/scripts/install.sh'; do $SH -n \"\$f\" || exit 1; done"
+check "scripts parse under sh" bash -c "for f in '$REL/sign.sh' '$REL/publish-to-hub.sh' '$REL/linux-packages.sh' '$ROOT/scripts/install.sh'; do $SH -n \"\$f\" || exit 1; done"
 if command -v shellcheck >/dev/null 2>&1; then
-  check "shellcheck is clean on the release scripts" shellcheck --severity=warning --shell=sh "$REL/sign.sh" "$REL/publish-to-hub.sh" "$REL/smoke.sh"
+  check "shellcheck is clean on the release scripts" shellcheck --severity=warning --shell=sh "$REL/sign.sh" "$REL/publish-to-hub.sh" "$REL/linux-packages.sh" "$REL/smoke.sh"
 else
   echo "skip shellcheck (not installed)"
 fi
@@ -28,6 +28,51 @@ check "a fresh release verifies" "$PY" "$REL/verify.py" "$work/r123"
 make_release "$work/r123b" 1.2.3 "$work/r123.bins" || exit 1
 if cmp -s "$work/r123/SHA256SUMS" "$work/r123b/SHA256SUMS"; then ok "two assemblies of one input are byte identical"; else bad "two assemblies of one input are byte identical"; fi
 refuse "assemble refuses a non-empty output directory" make_release "$work/r123" 1.2.3 "$work/r123.bins"
+
+# ---- linux packages ----------------------------------------------------------------------------
+
+mkdir -p "$work/fakebin"
+cat > "$work/fakebin/nfpm" <<'FAKE'
+#!/bin/sh
+# Stand-in for nfpm: checks the config and the unpacked files, then writes the package.
+cfg=''; pk=''; tgt=''
+while [ $# -gt 0 ]; do case "$1" in --config) cfg=$2; shift 2 ;; --packager) pk=$2; shift 2 ;; --target) tgt=$2; shift 2 ;; *) shift ;; esac; done
+[ -x ./asc ] && [ -f ./LICENSE-MIT.txt ] || exit 1
+grep -q '^version: "1.2.3"$' "$cfg" || exit 1
+echo package > "${tgt}asc_1.2.3_$(sed -n 's/^arch: //p' "$cfg").$pk"
+FAKE
+chmod +x "$work/fakebin/nfpm"
+check "linux packages build from a verified release" env PATH="$work/fakebin:$PATH" "$SH" "$REL/linux-packages.sh" --release "$work/r123" --out "$work/pkgs"
+[ -f "$work/pkgs/asc_1.2.3_amd64.deb" ] && [ -f "$work/pkgs/asc_1.2.3_arm64.rpm" ] && ok "a deb and an rpm exist for each architecture" || bad "a deb and an rpm exist for each architecture"
+cp -R "$work/r123" "$work/tampered"
+printf 'x' >> "$work/tampered/asc-1.2.3-x86_64-unknown-linux-gnu.tar.gz"
+refuse "a tampered archive builds no package" env PATH="$work/fakebin:$PATH" "$SH" "$REL/linux-packages.sh" --release "$work/tampered" --out "$work/pkgs2"
+contains "the refusal names the checksum" "$out" "SHA256SUMS"
+cp -R "$work/r123" "$work/cfgtamper"
+printf 'scripts:
+  postinstall: /tmp/x
+' >> "$work/cfgtamper/nfpm-amd64.yaml"
+refuse "a modified nfpm config builds no package" env PATH="$work/fakebin:$PATH" "$SH" "$REL/linux-packages.sh" --release "$work/cfgtamper" --out "$work/pkgs4"
+contains "the refusal names the config" "$out" "nfpm-amd64.yaml"
+cp -R "$work/r123" "$work/cfgextra"
+rm "$work/cfgextra/nfpm-arm64.yaml"
+refuse "a missing nfpm config builds no package" env PATH="$work/fakebin:$PATH" "$SH" "$REL/linux-packages.sh" --release "$work/cfgextra" --out "$work/pkgs5"
+refuse "a key without a signature file is refused" env PATH="$work/fakebin:$PATH" ASC_RELEASE_PUBKEY=RWQexample "$SH" "$REL/linux-packages.sh" --release "$work/r123" --out "$work/pkgs3"
+
+# ---- rendered manifests parse where a tool exists ------------------------------------------------
+
+check "the PKGBUILD parses as bash" bash -n "$work/r123/PKGBUILD"
+if command -v ruby >/dev/null 2>&1; then
+  check "the Homebrew formula parses as ruby" ruby -c "$work/r123/asc.rb"
+else
+  echo "skip ruby syntax (ruby not installed)"
+fi
+if "$PY" -c 'import yaml' 2>/dev/null; then
+  check "winget and nfpm files parse as yaml" "$PY" -c 'import sys, yaml
+for f in sys.argv[1:]: yaml.safe_load(open(f, encoding="utf-8"))' "$work"/r123/winget-*.yaml "$work"/r123/nfpm-*.yaml
+else
+  echo "skip yaml syntax (PyYAML not installed)"
+fi
 
 # ---- publish: refusals leave the hub untouched -------------------------------------------------
 

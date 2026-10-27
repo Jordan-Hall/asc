@@ -34,7 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import assemble  # noqa: E402
 
 SHA_LINE = re.compile(r"^([0-9a-f]{64})  ([A-Za-z0-9._-]+)$")
-KINDS = {"cli", "vscode", "jetbrains", "sbom", "homebrew", "scoop", "winget"}
+KINDS = {"cli", "vscode", "jetbrains", "sbom", "homebrew", "scoop", "winget", "nfpm", "aur"}
 
 
 class VerifyError(Exception):

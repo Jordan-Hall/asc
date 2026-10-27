@@ -53,7 +53,9 @@ for (const scheme of ["light", "dark"] as const) {
         await page.goto("/ui/", { waitUntil: "networkidle" });
         await expect(page.locator("main h1")).toHaveCount(1);
         await expect(page.locator("[aria-busy='true']")).toHaveCount(0);
-        if (kind === "dashboard") await expect(page.getByText("Open changes")).toBeVisible();
+        if (kind === "dashboard") {
+          await expect(page.getByRole("region", { name: "Needs you" })).toBeVisible();
+        }
         await page.waitForTimeout(250);
         const overflow = await page.evaluate(
           () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
@@ -93,45 +95,37 @@ test.describe("performance on the mock transport", () => {
 });
 
 test.describe("product page", () => {
-  test("opens a repository by name and remembers it", async ({ page }) => {
-    await page.goto("/ui/", { waitUntil: "networkidle" });
-    await page.getByLabel("Open a repository").fill("not a name");
-    await page.getByRole("button", { name: "Open", exact: true }).click();
-    await expect(page.getByText("Use the form owner/repo.")).toBeVisible();
-    await page.getByLabel("Open a repository").fill("acme/payments");
-    await page.getByRole("button", { name: "Open", exact: true }).click();
-    await expect(page).toHaveURL(/\/ui\/acme\/payments$/);
-    const recent = await page.evaluate(() => localStorage.getItem("asc-recent"));
-    expect(recent).toContain("acme/payments");
-  });
-
   test("section links scroll to their section", async ({ page, isMobile }) => {
-    test.skip(isMobile, "the section links are in a menu on small screens");
+    test.skip(isMobile, "the section links are in the menu on small screens");
     await page.goto("/ui/", { waitUntil: "networkidle" });
-    await page.getByRole("banner").getByRole("link", { name: "Inbox" }).click();
-    await expect(page).toHaveURL(/#inbox$/);
-    await expect(page.locator("#inbox")).toBeInViewport();
+    await page.getByRole("banner").getByRole("link", { name: "Review", exact: true }).click();
+    await expect(page).toHaveURL(/#review$/);
+    await expect(page.locator("#review")).toBeInViewport();
   });
 
-  test("the sections menu on a small screen lists the sections", async ({ page, isMobile }) => {
-    test.skip(!isMobile, "desktop shows the links inline");
+  test("the footer links go to real pages", async ({ page }) => {
     await page.goto("/ui/", { waitUntil: "networkidle" });
-    await page.getByRole("button", { name: "Sections" }).click();
-    // Five sections; the sixth, Agents, appears with "Show agent features".
-    await expect(page.getByRole("menuitem")).toHaveCount(5);
-    await page.keyboard.press("Escape");
-    await expect(page.getByRole("menu")).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "Sections" })).toBeFocused();
+    const footer = page.locator("footer");
+    for (const [name, url, heading] of [
+      ["Docs", /\/ui\/docs$/, "Documentation"],
+      ["Install", /\/ui\/install$/, "Install asc"],
+      ["Licenses", /\/ui\/licenses$/, "Licenses"],
+      ["Privacy", /\/ui\/privacy$/, "Privacy"],
+    ] as const) {
+      await footer.getByRole("link", { name, exact: true }).click();
+      await expect(page).toHaveURL(url);
+      await expect(page.getByRole("heading", { level: 1, name: heading })).toBeVisible();
+      await page.goBack({ waitUntil: "networkidle" });
+    }
   });
 
-  test("the clone command is copyable", async ({ page, context, browserName }) => {
-    test.skip(browserName !== "chromium", "clipboard permissions differ");
-    await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  test("the clone command is shown", async ({ page, isMobile }) => {
     await page.goto("/ui/", { waitUntil: "networkidle" });
-    await page.getByRole("button", { name: "Copy clone command" }).first().click();
-    await expect(page.getByRole("status").filter({ hasText: "Copied" }).first()).toBeAttached();
-    const text = await page.evaluate(() => navigator.clipboard.readText());
-    expect(text).toMatch(/^git clone https?:\/\/.+\/acme\/payments\.git$/);
+    const clone = isMobile
+      ? page.getByRole("region", { name: "Clone command" })
+      : page.getByText("asc clone https://hub.example.com/acme/payments").first();
+    await expect(clone).toBeVisible();
+    await expect(clone).toContainText("asc clone https://hub.example.com/acme/payments");
   });
 });
 
@@ -140,19 +134,30 @@ test.describe("signed in", () => {
     await signedIn(page);
   });
 
-  test("the dashboard shows your turn, changes and repositories with a language", async ({
-    page,
-  }) => {
+  test("the dashboard shows what needs you, your stacks and today", async ({ page }) => {
     await page.goto("/ui/", { waitUntil: "networkidle" });
-    await expect(page.getByRole("region", { name: "Your turn" })).toContainText("Review requested");
-    await expect(page.getByRole("region", { name: "Recent changes" })).toContainText(
-      "Checks failed",
+    await expect(page.getByRole("heading", { level: 1 })).toContainText("Good");
+    await expect(page.getByRole("region", { name: "Needs you" })).toContainText(
+      "Wire retry policy into the client",
     );
-    const repos = page.getByRole("region", { name: "Repositories" });
-    await expect(repos).toContainText("Go");
-    await expect(repos).toContainText("Rust");
-    await repos.getByLabel("Find a repository").fill("ledger");
-    await expect(repos.getByRole("listitem")).toHaveCount(1);
+    await expect(page.getByRole("region", { name: "Your stacks" })).toContainText(
+      "retry-with-backoff",
+    );
+    await expect(page.getByRole("region", { name: "Today" })).toContainText("pushed");
+  });
+
+  test("a repository name is opened from All repositories and remembered", async ({ page }) => {
+    await page.goto("/ui/repos", { waitUntil: "networkidle" });
+    await page.getByLabel("Repository name").fill("not a name");
+    await page.getByRole("button", { name: "Open", exact: true }).click();
+    await expect(page.getByText("Use the form owner/repo.")).toBeVisible();
+    await page.getByLabel("Repository name").fill("acme/ledger");
+    await page.getByRole("button", { name: "Open", exact: true }).click();
+    await expect(page).toHaveURL(/\/ui\/acme\/ledger$/);
+    const recent = await page.evaluate(() =>
+      JSON.parse(localStorage.getItem("asc-recent") ?? "[]"),
+    );
+    expect(recent[0]).toBe("acme/ledger");
   });
 
   test("Ctrl+K opens the palette, filters, and Enter opens a repository", async ({
@@ -186,14 +191,16 @@ test.describe("signed in", () => {
     await expect(page.getByRole("dialog")).toHaveCount(0);
   });
 
-  test("the search icon opens the palette on a small screen", async ({ page, isMobile }) => {
+  test("the menu opens the palette on a small screen", async ({ page, isMobile }) => {
     test.skip(!isMobile, "desktop has the search box");
     await page.goto("/ui/", { waitUntil: "networkidle" });
-    await page.getByRole("button", { name: "Search", exact: true }).click();
+    await page.getByRole("button", { name: "Open menu" }).click();
+    await page.getByRole("button", { name: "Search or run a command" }).click();
     await expect(page.getByRole("dialog", { name: "Command palette" })).toBeVisible();
   });
 
-  test("the account menu: arrow keys, theme, Escape and sign out", async ({ page }) => {
+  test("the account menu: arrow keys, theme, Escape and sign out", async ({ page, isMobile }) => {
+    test.skip(isMobile, "small screens have a profile link and the menu drawer instead");
     await page.goto("/ui/", { waitUntil: "networkidle" });
     const button = page.getByRole("button", { name: "Account menu" });
     await button.focus();
@@ -220,13 +227,12 @@ test.describe("signed in", () => {
 
     await button.click();
     await page.getByRole("menuitem", { name: "Sign out" }).click();
-    await expect(
-      page.getByRole("heading", { name: /Source control for people and their agents/ }),
-    ).toBeVisible();
+    await expect(page.getByRole("heading", { name: /Review code at the speed/ })).toBeVisible();
     expect(await page.evaluate(() => sessionStorage.getItem("asc-token"))).toBeNull();
   });
 
-  test("the create menu opens the palette for a repository", async ({ page }) => {
+  test("the create menu opens the palette for a repository", async ({ page, isMobile }) => {
+    test.skip(isMobile, "the header has no Create menu on small screens");
     await page.goto("/ui/", { waitUntil: "networkidle" });
     await page.getByRole("button", { name: "Create" }).click();
     await page.getByRole("menuitem", { name: /Open a repository/ }).click();
@@ -235,8 +241,11 @@ test.describe("signed in", () => {
 
   test("the inbox badge counts the changes that are your turn", async ({ page }) => {
     await page.goto("/ui/", { waitUntil: "networkidle" });
-    // asc/demo: 3 are your turn and 1 is waiting on others; acme/payments: 1.
-    await expect(page.getByRole("link", { name: "Inbox, 4 waiting" })).toBeVisible();
+    // The count is the number of "Needs you" rows.
+    await expect(
+      page.getByRole("heading", { level: 1 }).locator("xpath=following::*[1]"),
+    ).toContainText("5 things need you");
+    await expect(page.getByRole("link", { name: /Inbox/ }).first()).toContainText("5");
   });
 
   test("a repository you open is added to the dashboard", async ({ page }) => {
@@ -247,13 +256,10 @@ test.describe("signed in", () => {
     expect(recent[0]).toBe("asc/engine");
   });
 
-  test("/ focuses the search box and the footer switches the theme", async ({ page, isMobile }) => {
+  test("/ focuses the search box", async ({ page, isMobile }) => {
     test.skip(isMobile, "no hardware keyboard");
     await page.goto("/ui/", { waitUntil: "networkidle" });
     await page.keyboard.press("/");
     await expect(page.getByRole("searchbox", { name: "Search" })).toBeFocused();
-    await page.getByRole("radio", { name: "Dark" }).click();
-    await expect(page.locator("html")).toHaveClass(/dark/);
-    await page.getByRole("radio", { name: "Match system" }).click();
   });
 });

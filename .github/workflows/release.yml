@@ -281,6 +281,17 @@ jobs:
         run: rm -f "$RUNNER_TEMP/minisign.key"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
+          name: packaging
+          path: |
+            release/asc.rb
+            release/asc.scoop.json
+            release/winget-asc.asc*.yaml
+            release/nfpm-*.yaml
+            release/PKGBUILD
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
           name: release
           path: release
           if-no-files-found: error

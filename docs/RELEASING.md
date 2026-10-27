@@ -101,3 +101,26 @@ ASC_RELEASE_TOKEN=... \
 
 - `cargo test -p asc --test compat` and `cargo test -p asc upgrade::` pass (the gate runs them).
 - `bash -n build/release/local-release.sh` and `bash build/release/local-release.sh --dry-run` succeed.
+
+## Package manager manifests
+
+`scripts/release/assemble.py` renders every template in `packaging/` from the release's version, URL and
+real SHA-256 values; nothing is edited by hand. The rendered files sit in the release directory, are listed in
+`manifest.json` and `SHA256SUMS`, are signed with the rest, and the release workflow also uploads them as the
+`packaging` artifact. Nothing is pushed to a third-party repository.
+
+| File | Kind | Use |
+| --- | --- | --- |
+| `asc.rb` | `homebrew` | Put in a tap as `Formula/asc.rb`. |
+| `asc.scoop.json` | `scoop` | `scoop install ./asc.scoop.json`, or a bucket as `asc.json`. |
+| `winget-asc.asc*.yaml` | `winget` | Drop the `winget-` prefix and submit to a winget source. |
+| `nfpm-amd64.yaml`, `nfpm-arm64.yaml` | `nfpm` | Configuration for the `.deb` and `.rpm`. |
+| `PKGBUILD` | `aur` | Arch User Repository package `asc-bin`. |
+
+Verification matches `install.sh` and `install.ps1`: every manifest pins the archive SHA-256 from `SHA256SUMS`.
+`sh scripts/release/linux-packages.sh --release <dir> --out <dir>` builds the `.deb` and `.rpm` with nfpm
+after checking each archive against `SHA256SUMS`. With `ASC_RELEASE_PUBKEY` set it also requires a valid minisign
+signature on `SHA256SUMS`, and so does the `PKGBUILD` `prepare()` step; without the key it states that only the
+checksum was checked. The tests (`python3 -I scripts/release/test/test_release.py` and
+`bash scripts/release/test/test-release.sh`) render each manifest from a fake release and check its structure,
+and parse the Ruby, YAML and shell files where `ruby`, PyYAML and `bash` exist.

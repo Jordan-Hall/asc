@@ -1,0 +1,37 @@
+# Arch User Repository PKGBUILD, rendered by scripts/release/assemble.py. Both checksums are
+# the release's SHA256SUMS entries, so makepkg verifies what install.sh verifies. When
+# ASC_RELEASE_PUBKEY is set, prepare() also checks the SHA256SUMS signature with minisign and stops
+# if it is missing or wrong.
+pkgname=asc-bin
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc="@DESCRIPTION@"
+arch=('x86_64' 'aarch64')
+url="@HOMEPAGE@"
+license=('MIT' 'Apache-2.0')
+provides=('asc')
+conflicts=('asc')
+optdepends=('minisign: verify the release signature when ASC_RELEASE_PUBKEY is set')
+source_x86_64=("asc-$pkgver-x86_64.tar.gz::@RELEASE_URL@/asc-@VERSION@-x86_64-unknown-linux-gnu.tar.gz")
+source_aarch64=("asc-$pkgver-aarch64.tar.gz::@RELEASE_URL@/asc-@VERSION@-aarch64-unknown-linux-gnu.tar.gz")
+sha256sums_x86_64=('@SHA256:x86_64-unknown-linux-gnu.tar.gz@')
+sha256sums_aarch64=('@SHA256:aarch64-unknown-linux-gnu.tar.gz@')
+noextract=("asc-$pkgver-$CARCH.tar.gz")
+
+prepare() {
+  if [ -n "${ASC_RELEASE_PUBKEY:-}" ]; then
+    command -v minisign >/dev/null || { echo "minisign is required when ASC_RELEASE_PUBKEY is set" >&2; return 1; }
+    curl --fail --silent --show-error --location --proto '=https' -o SHA256SUMS "@RELEASE_URL@/SHA256SUMS"
+    curl --fail --silent --show-error --location --proto '=https' -o SHA256SUMS.minisig "@RELEASE_URL@/SHA256SUMS.minisig"
+    minisign -V -P "$ASC_RELEASE_PUBKEY" -m SHA256SUMS
+    grep -F "$(sha256sum "asc-$pkgver-$CARCH.tar.gz" | cut -d' ' -f1)  asc-$pkgver-$CARCH-unknown-linux-gnu.tar.gz" SHA256SUMS >/dev/null
+  fi
+  mkdir -p unpack
+  bsdtar -xf "asc-$pkgver-$CARCH.tar.gz" -C unpack
+}
+
+package() {
+  install -Dm755 unpack/asc "$pkgdir/usr/bin/asc"
+  install -Dm644 unpack/LICENSE-APACHE.txt "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE.txt"
+  install -Dm644 unpack/LICENSE-MIT.txt "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT.txt"
+}
