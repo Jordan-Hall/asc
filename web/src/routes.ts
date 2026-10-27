@@ -10,6 +10,7 @@ const settings = () => import("./routes/settings");
 const repoPage = () => import("./routes/repo");
 const blob = () => import("./routes/blob");
 const changes = () => import("./routes/changes");
+const info = () => import("./routes/info");
 const lists = () => import("./routes/lists");
 const inbox = () => import("./routes/inbox");
 const search = () => import("./routes/search");
@@ -68,6 +69,10 @@ export function createRoutes(app: AppCtx): RouteDef[] {
     { id: "agents", path: PATTERNS.agents, component: lists },
     { id: "agentsNew", path: PATTERNS.agentsNew, component: lists },
     { id: "reviews", path: PATTERNS.reviews, component: inbox },
+    { id: "install", path: PATTERNS.install, component: info },
+    { id: "docs", path: PATTERNS.docs, component: info },
+    { id: "licenses", path: PATTERNS.licenses, component: info },
+    { id: "privacy", path: PATTERNS.privacy, component: info },
     { id: "newChange", path: PATTERNS.newChange, component: newPage },
     { id: "newRepo", path: PATTERNS.newRepo, component: newPage },
     { id: "repo", path: PATTERNS.repo, component: repoPage, load: loadTree },
