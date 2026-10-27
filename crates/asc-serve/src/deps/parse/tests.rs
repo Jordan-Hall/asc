@@ -827,3 +827,39 @@ fn a_file_with_too_many_dependencies_is_refused_whole() {
         1000
     );
 }
+
+#[test]
+fn property_bombs_in_a_pom_and_a_project_file_leave_the_dependency_unresolved() {
+    // Ten levels of properties that each name the next one ten times: a billion bytes if expanded.
+    let levels = |open: &str, close: &str| -> String {
+        let mut props = String::new();
+        for i in 0..9 {
+            props.push_str(&format!(
+                "<l{i}>{}</l{i}>",
+                format!("{open}l{}{close}", i + 1).repeat(10)
+            ));
+        }
+        props.push_str("<l9>lol</l9>");
+        props
+    };
+    let pom = format!(
+        "<project><properties>{}<self>${{self}}</self></properties><dependencies>         <dependency><groupId>g</groupId><artifactId>bomb</artifactId><version>${{l0}}</version></dependency>         <dependency><groupId>g</groupId><artifactId>cycle</artifactId><version>${{self}}</version></dependency>         <dependency><groupId>g</groupId><artifactId>fine</artifactId><version>1.0</version></dependency>         </dependencies></project>",
+        levels("${", "}")
+    );
+    assert!(pom.len() < 4096);
+    let p = read("pom.xml", &pom);
+    assert_eq!(summary(&p), ["g:fine 1.0 *"]);
+    assert!(p.notes[0].starts_with("2 dependencies"), "{:?}", p.notes);
+
+    let proj = format!(
+        "<Project><PropertyGroup>{}<Self>$(Self)</Self></PropertyGroup><ItemGroup>         <PackageReference Include=\"Bomb\" Version=\"$(l0)\" />         <PackageReference Include=\"Cycle\" Version=\"$(Self)\" />         <PackageReference Include=\"Fine\" Version=\"1.0.0\" />         </ItemGroup></Project>",
+        levels("$(", ")")
+    );
+    let p = read("App.csproj", &proj);
+    assert_eq!(summary(&p), ["Fine 1.0.0 *"]);
+    assert!(
+        p.notes[0].starts_with("2 package references"),
+        "{:?}",
+        p.notes
+    );
+}

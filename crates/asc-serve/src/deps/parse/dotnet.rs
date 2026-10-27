@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use super::Parsed;
+use super::expand::{Budget, expand};
 use super::xml::{self, Node};
 use crate::deps::model::{Dep, Ecosystem};
 use crate::deps::version::{Scheme, Version, requirement_floor};
@@ -55,18 +56,10 @@ fn references<'a>(n: &'a Node, out: &mut Vec<&'a Node>) {
     }
 }
 
-/// Replaces `$(Name)` with a property of the file; `None` when a reference has no value.
-fn resolve(s: &str, props: &HashMap<String, String>) -> Option<String> {
-    let mut cur = s.trim().to_owned();
-    for _ in 0..10 {
-        let Some(start) = cur.find("$(") else {
-            return Some(cur);
-        };
-        let end = cur[start..].find(')')? + start;
-        let value = props.get(&cur[start + 2..end])?;
-        cur = format!("{}{}{}", &cur[..start], value, &cur[end + 1..]);
-    }
-    cur.find("$(").is_none().then_some(cur)
+/// Replaces `$(Name)` with a property of the file; `None` when a reference has no value or the
+/// expansion is cyclic or too large (see [`expand`]).
+fn resolve(s: &str, props: &HashMap<String, String>, budget: &mut Budget) -> Option<String> {
+    expand(s, props, "$(", ')', budget)
 }
 
 pub(super) fn csproj(text: &str, p: &mut Parsed) -> Result<(), String> {
@@ -75,6 +68,7 @@ pub(super) fn csproj(text: &str, p: &mut Parsed) -> Result<(), String> {
         return Err("not an MSBuild project: the root element is not <Project>".into());
     }
     let path = p.path.clone();
+    let mut budget = Budget::new();
     let mut props: HashMap<String, String> = HashMap::new();
     for group in root.named("PropertyGroup") {
         for c in &group.children {
@@ -98,7 +92,7 @@ pub(super) fn csproj(text: &str, p: &mut Parsed) -> Result<(), String> {
             left_out += 1;
             continue;
         };
-        let Some(version) = resolve(&raw, &props) else {
+        let Some(version) = resolve(&raw, &props, &mut budget) else {
             left_out += 1;
             continue;
         };
