@@ -48,6 +48,7 @@ message CiRun {
   int64 finished = 10;
   string url = 11;
   repeated CiJob jobs = 12;
+  bool stale = 13;             // the change has a newer version than the one this run is for
 }
 
 // `change` empty lists runs of every change. `status` unspecified lists all. Newest first. `limit` 0 means 30, at most 100.
