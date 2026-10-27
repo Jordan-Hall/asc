@@ -387,6 +387,55 @@ impl Restacker {
                 .answer_replay(&entry, &engine, ctx, &pairs, committer.time())
                 .await;
         }
+        // Two instances on one database must not restack the same repository at once: the second
+        // is told to retry. The lease frees itself when this call ends.
+        let lease = if writes {
+            match crate::lease::Lease::acquire(self.registry.pool(), entry.ns.as_bytes(), "restack")
+                .await
+                .map_err(|e| internal("database", &e))?
+            {
+                Some(l) => Some(l),
+                None => {
+                    return Err(Status::aborted(
+                        "another restack of this repository is running; retry shortly",
+                    ));
+                }
+            }
+        } else {
+            None
+        };
+        let outcome = self
+            .restack_held(
+                ctx,
+                &req,
+                &parsed,
+                &entry,
+                &engine,
+                &committer,
+                writes,
+                lease.as_ref(),
+            )
+            .await;
+        // Freed now, not at drop, so the caller's next call is not refused.
+        if let Some(l) = lease {
+            l.release().await;
+        }
+        outcome
+    }
+
+    /// The replay and the publication, run while this call holds the repository's lease.
+    #[allow(clippy::too_many_arguments)] // the pieces `restack_changes` has already made
+    async fn restack_held(
+        &self,
+        ctx: &CallCtx,
+        req: &wire::RestackChangesRequest,
+        parsed: &Parsed,
+        entry: &Arc<RepoEntry>,
+        engine: &Arc<Eng>,
+        committer: &Signature,
+        writes: bool,
+        lease: Option<&crate::lease::Lease>,
+    ) -> Result<wire::RestackChangesResponse, Status> {
         let ids = IdCodec::new(ctx.id_mode, &self.registry, &entry).for_viewer(&ctx.principal);
         let onto = self.onto(&ids, &entry, &req.onto).await?;
         let heads = self.heads(&entry, &parsed.items).await?;
@@ -461,6 +510,17 @@ impl Restacker {
                 conflicts,
                 patch_unchanged,
             });
+        }
+        // The replay can take long: write only if this call still holds the repository.
+        if let Some(l) = &lease
+            && !l
+                .ensure_held()
+                .await
+                .map_err(|e| internal("database", &e))?
+        {
+            return Err(Status::aborted(
+                "the restack lost its lock on the repository; retry",
+            ));
         }
         let rewritten = if parsed.with_refs() {
             self.publish_refs(&entry, ctx, &parsed, &steps, &pairs, committer.time())
@@ -1207,6 +1267,45 @@ mod tests {
             );
             assert_eq!(f.count(&q).await, 1);
         }
+    }
+
+    #[tokio::test]
+    async fn two_instances_cannot_restack_the_same_repository_at_once() {
+        let f = fx().await;
+        // Another instance is restacking this repository: it holds the lease.
+        let other = crate::lease::Lease::acquire(f.reg.pool(), f.e.ns.as_bytes(), "restack")
+            .await
+            .unwrap()
+            .unwrap();
+        let e = f
+            .run(forge(msg(f.t, vec![item(1), item(2)])), FORGE)
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), tonic::Code::Aborted, "{e}");
+        assert_eq!(f.latest(1).await.v, 1, "nothing was rewritten");
+        // A dry run writes nothing and needs no lease.
+        let mut dry = msg(f.t, vec![item(1)]);
+        dry.dry_run = true;
+        f.run(forge(dry), FORGE).await.unwrap();
+        other.release().await;
+        let done = f
+            .run(forge(msg(f.t, vec![item(1), item(2)])), FORGE)
+            .await
+            .unwrap();
+        assert_eq!(done.rewritten.len(), 2);
+        // The lease of the finished call is freed, so the next restack is not refused.
+        let mut freed = false;
+        for _ in 0..50 {
+            freed = crate::lease::Lease::acquire(f.reg.pool(), f.e.ns.as_bytes(), "restack")
+                .await
+                .unwrap()
+                .is_some();
+            if freed {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(freed);
     }
 
     #[tokio::test]
