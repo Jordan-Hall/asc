@@ -88,6 +88,10 @@ impl Authorizer for ForwardedAuthorizer {
         Some(&self.verifier)
     }
 
+    async fn user_standing(&self, user_id: i64, repo: &str, access: Access) -> Option<bool> {
+        self.inner.user_standing(user_id, repo, access).await
+    }
+
     async fn identify_ssh_key(&self, key: &SshKey) -> Result<Option<SshIdentity>, AuthError> {
         self.inner.identify_ssh_key(key).await
     }

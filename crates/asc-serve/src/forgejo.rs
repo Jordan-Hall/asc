@@ -880,6 +880,10 @@ struct AuthzRequest<'a> {
     /// `user:token` as it checks a git client's HTTP Basic credentials.
     #[serde(skip_serializing_if = "Option::is_none")]
     user: Option<&'a str>,
+    /// Answer as if this forge user asked, with no credential of theirs (the internal token
+    /// only): the standing of a person whose agent token is in use.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    as_user_id: Option<i64>,
     owner: &'a str,
     repo: &'a str,
     mode: &'static str,
@@ -955,6 +959,8 @@ pub struct InternalAuthz {
     grants: Vec<CompositionGrant>,
     ssh: forgejo_ssh::SshLookup,
     binding: Option<RepoIdBinding>,
+    /// What the forge last said a person may do: `(user id, repo, access)` to when and whether.
+    standing: quick_cache::sync::Cache<(i64, String, Access), (Instant, bool)>,
 }
 
 impl InternalAuthz {
@@ -977,6 +983,7 @@ impl InternalAuthz {
             grants,
             ssh: forgejo_ssh::SshLookup::new(cache),
             binding: None,
+            standing: quick_cache::sync::Cache::new(CACHE_ENTRIES),
         }
     }
 
@@ -1046,10 +1053,70 @@ impl InternalAuthz {
 
     /// The identity of a credential: `{token, user, owner: "", repo: "", mode: "read"}`. The
     /// hub answers `allowed` with the user's id and login when the credential authenticates.
+    /// `{as_user_id, owner, repo, mode}`: what the forge says the person may do. Anything but a
+    /// clear yes is a no; a read is kept for [`MAX_AUTHZ_TTL`] at most, a change is always asked.
+    async fn person_may(&self, user_id: i64, repo: &str, access: Access) -> bool {
+        let key = (user_id, repo.to_owned(), access);
+        if access == Access::Read
+            && let Some((at, yes)) = self.standing.get(&key)
+            && at.elapsed() < self.core.cfg.positive.min(self.core.cfg.negative)
+        {
+            return yes;
+        }
+        let Some((owner, name)) = repo.split_once('/') else {
+            return false;
+        };
+        let mode = match access {
+            Access::Read => "read",
+            Access::Write | Access::Admin => "write",
+        };
+        let body = AuthzRequest {
+            token: None,
+            user: None,
+            as_user_id: Some(user_id),
+            owner,
+            repo: name,
+            mode,
+        };
+        let sent = async {
+            let req = self
+                .client
+                .internal_request(&["api", "internal", "asc", "authz"])
+                .map_err(|e| unavailable(&e))?
+                .json_body(&body)
+                .map_err(|e| unavailable(&e))?;
+            let (status, bytes) = ForgejoClient::send(req)
+                .await
+                .map_err(|e| unavailable(&e))?;
+            if status != StatusCode::OK {
+                return Err(Fetch::Unavailable);
+            }
+            decode::<AuthzAnswer>(&bytes).map_err(|e| unavailable(&e))
+        };
+        let yes = match sent.await {
+            Ok(a) => {
+                let perm = Perm::parse(&a.perm);
+                a.allowed
+                    && a.user_id == user_id
+                    && !a.is_actions_task
+                    && a.task.is_none()
+                    && match access {
+                        Access::Admin => perm.allows(Access::Admin),
+                        other => perm.allows(other),
+                    }
+            }
+            // The forge cannot be reached: the person's standing is not known, so it is no.
+            Err(_) => false,
+        };
+        self.standing.insert(key, (Instant::now(), yes));
+        yes
+    }
+
     async fn fetch_identity(&self, login: Option<Login<'_>>) -> Result<Decision, Fetch> {
         let body = AuthzRequest {
             token: login.map(|l| l.secret.expose()),
             user: login.and_then(|l| l.user),
+            as_user_id: None,
             owner: "",
             repo: "",
             mode: "read",
@@ -1108,6 +1175,7 @@ impl InternalAuthz {
         let body = AuthzRequest {
             token: login.map(|l| l.secret.expose()),
             user: login.and_then(|l| l.user),
+            as_user_id: None,
             owner,
             repo: name,
             mode,
@@ -1233,6 +1301,10 @@ impl Authorizer for InternalAuthz {
             .await?
             .principal
             .clone())
+    }
+
+    async fn user_standing(&self, user_id: i64, repo: &str, access: Access) -> Option<bool> {
+        Some(self.person_may(user_id, repo, access).await)
     }
 
     /// Who the credential is, from the same internal authz endpoint every other decision uses:
