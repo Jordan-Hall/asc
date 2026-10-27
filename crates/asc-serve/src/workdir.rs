@@ -174,8 +174,10 @@ mod tests {
 
     #[test]
     fn the_default_is_under_the_data_directory() {
-        let mut cfg = ServeConfig::default();
-        cfg.db = Some("sqlite:/srv/asc/state/asc.db?mode=rwc".into());
+        let mut cfg = ServeConfig {
+            db: Some("sqlite:/srv/asc/state/asc.db?mode=rwc".into()),
+            ..ServeConfig::default()
+        };
         assert_eq!(
             default_dir(&cfg, "agents"),
             PathBuf::from("/srv/asc/state/agents")
