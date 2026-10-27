@@ -16,6 +16,7 @@ mod cargo;
 mod dart;
 mod dotnet;
 mod elixir;
+mod expand;
 mod golang;
 mod jvm;
 mod npm;

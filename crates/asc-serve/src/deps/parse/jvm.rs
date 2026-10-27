@@ -3,25 +3,17 @@
 use std::collections::HashMap;
 
 use super::Parsed;
+use super::expand::{Budget, expand};
 use super::xml::{self, Node};
 use crate::deps::model::{Dep, Ecosystem};
 use crate::deps::version::{Scheme, Version, requirement_floor};
 
 const ECO: Ecosystem = Ecosystem::Maven;
 
-/// Replaces `${name}` with its value, repeatedly; `None` when a reference has no value.
-fn resolve(s: &str, props: &HashMap<String, String>) -> Option<String> {
-    let mut cur = s.trim().to_owned();
-    for _ in 0..10 {
-        let Some(start) = cur.find("${") else {
-            return Some(cur);
-        };
-        let end = cur[start..].find('}')? + start;
-        let key = &cur[start + 2..end];
-        let value = props.get(key)?;
-        cur = format!("{}{}{}", &cur[..start], value, &cur[end + 1..]);
-    }
-    cur.find("${").is_none().then_some(cur)
+/// Replaces `${name}` with its value; `None` when a reference has no value or the expansion is cyclic
+/// or too large (see [`expand`]).
+fn resolve(s: &str, props: &HashMap<String, String>, budget: &mut Budget) -> Option<String> {
+    expand(s, props, "${", '}', budget)
 }
 
 fn collect<'a>(node: &'a Node, in_management: bool, out: &mut Vec<(&'a Node, bool)>) {
@@ -44,6 +36,7 @@ pub(super) fn pom(text: &str, p: &mut Parsed) -> Result<(), String> {
         return Err("not a pom.xml: the root element is not <project>".into());
     }
     let path = p.path.clone();
+    let mut budget = Budget::new();
     let mut props: HashMap<String, String> = HashMap::new();
     if let Some(ps) = root.child("properties") {
         for c in &ps.children {
@@ -81,9 +74,12 @@ pub(super) fn pom(text: &str, p: &mut Parsed) -> Result<(), String> {
             continue;
         }
         let (Some(g), Some(a), Some(v)) = (
-            d.text_of("groupId").and_then(|g| resolve(&g, &props)),
-            d.text_of("artifactId").and_then(|a| resolve(&a, &props)),
-            d.text_of("version").and_then(|v| resolve(&v, &props)),
+            d.text_of("groupId")
+                .and_then(|g| resolve(&g, &props, &mut budget)),
+            d.text_of("artifactId")
+                .and_then(|a| resolve(&a, &props, &mut budget)),
+            d.text_of("version")
+                .and_then(|v| resolve(&v, &props, &mut budget)),
         ) else {
             continue;
         };
@@ -98,15 +94,17 @@ pub(super) fn pom(text: &str, p: &mut Parsed) -> Result<(), String> {
             continue;
         }
         let (Some(g), Some(a)) = (
-            d.text_of("groupId").and_then(|g| resolve(&g, &props)),
-            d.text_of("artifactId").and_then(|a| resolve(&a, &props)),
+            d.text_of("groupId")
+                .and_then(|g| resolve(&g, &props, &mut budget)),
+            d.text_of("artifactId")
+                .and_then(|a| resolve(&a, &props, &mut budget)),
         ) else {
             left_out += 1;
             continue;
         };
         let declared = d.text_of("version");
         let version = match declared {
-            Some(v) => resolve(&v, &props),
+            Some(v) => resolve(&v, &props, &mut budget),
             None => managed.get(&(g.clone(), a.clone())).cloned(),
         };
         let Some(version) = version else {
