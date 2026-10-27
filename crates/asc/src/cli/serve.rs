@@ -2,6 +2,9 @@
 //!
 //! `migrate` applies the schema and exits; the server itself never migrates at start.
 //!
+//! `asc serve backup --out <dir> [--key-file <f> --include-vault-key] [--no-objects]` writes a backup
+//! and `asc serve restore --from <dir> [--key-file <f>] [--force]` restores one (docs/runbooks/backup.md).
+//!
 //! `asc serve token create|list|revoke` manages the standalone token store (SPEC §15.1, M30):
 //! `create --repo <r>... [--user <u> | --deploy | --ci] [--read|--write|--admin] [--expires 30d]
 //! [--label <text>]` prints the token on stdout once and its details on stderr.
@@ -62,6 +65,33 @@ mod real {
         Admin {
             #[command(subcommand)]
             cmd: AdminCmd,
+        },
+        /// Writes a consistent backup of the database, the bucket's objects and, sealed, the vault key.
+        Backup {
+            /// The directory to write; it must not exist or be empty.
+            #[arg(long)]
+            out: PathBuf,
+            /// A 32-byte key file (mode 0600) the vault key is sealed under.
+            #[arg(long)]
+            key_file: Option<PathBuf>,
+            /// Include the vault master key, sealed under `--key-file`.
+            #[arg(long, requires = "key_file")]
+            include_vault_key: bool,
+            /// Leave the bucket's objects out (the bucket is backed up on its own).
+            #[arg(long)]
+            no_objects: bool,
+        },
+        /// Restores a backup into an empty install; stop the server first.
+        Restore {
+            /// The backup directory.
+            #[arg(long)]
+            from: PathBuf,
+            /// The key file the vault key was sealed under.
+            #[arg(long)]
+            key_file: Option<PathBuf>,
+            /// Write over a database, bucket or vault key that already holds data.
+            #[arg(long)]
+            force: bool,
         },
         /// Manages the standalone token store (`[auth] provider = "token_store"`).
         Token {
@@ -298,6 +328,10 @@ mod real {
             "--label",
             "--key-file",
             "--title",
+            "--out",
+            "--from",
+            "--include-vault-key",
+            "--no-objects",
         ],
         placeholders: &[],
     }];
@@ -389,6 +423,38 @@ mod real {
                 asc_serve::run_migrate(&cfg).await.map_err(fatal)?;
             }
             Some(Sub::Admin { cmd }) => return admin(&cfg, cmd).await,
+            Some(Sub::Backup {
+                out,
+                key_file,
+                include_vault_key,
+                no_objects,
+            }) => {
+                let o = asc_serve::backup::BackupOptions {
+                    out: ctx.cwd.join(out),
+                    key_file: key_file.map(|k| ctx.cwd.join(k)),
+                    include_vault_key,
+                    no_objects,
+                };
+                print!(
+                    "{}",
+                    asc_serve::backup::backup(&cfg, &o).await.map_err(fatal)?
+                );
+            }
+            Some(Sub::Restore {
+                from,
+                key_file,
+                force,
+            }) => {
+                let o = asc_serve::backup::RestoreOptions {
+                    from: ctx.cwd.join(from),
+                    key_file: key_file.map(|k| ctx.cwd.join(k)),
+                    force,
+                };
+                print!(
+                    "{}",
+                    asc_serve::backup::restore(&cfg, &o).await.map_err(fatal)?
+                );
+            }
             Some(Sub::Token { cmd }) => match cmd {
                 TokenCmd::Create(flags) => {
                     let made = token_cli::create(&cfg, flags.into_args())
