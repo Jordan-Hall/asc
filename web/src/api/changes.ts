@@ -11,7 +11,14 @@ import {
 import { Changes, type ChangeInfo } from "@asc/asc-client/changes";
 import { Repo } from "@asc/asc-client/repo";
 import { listRefs, shortId } from "./repo";
-import type { ChangeListView, ChangeRow, ReviewBadge, StackView } from "./types";
+import type {
+  ChangeDescription,
+  ChangeListView,
+  ChangeRow,
+  DiffTotals,
+  ReviewBadge,
+  StackView,
+} from "./types";
 
 const MAX_STACKS = 50;
 const CONCURRENCY = 6;
@@ -30,15 +37,50 @@ function badge(info: ChangeInfo): ReviewBadge | undefined {
   };
 }
 
-/** Titles of a stack's changes, by change id, from the log between trunk and the stack head. */
-async function titles(
+/**
+ * Reads a change description: the first line is the title; the lines after it are the intent,
+ * until the trailer block at the end (`Risk:`, `Risk-area:`, `Agent:`, one per line, like the
+ * trailers of a commit message).
+ */
+export function parseDescription(message: string): ChangeDescription {
+  const lines = message.replace(/\r\n?/g, "\n").split("\n");
+  const title = (lines.shift() ?? "").trim();
+  const trailers = new Map<string, string>();
+  let end = lines.length;
+  while (end > 0 && (lines[end - 1] ?? "").trim() === "") end--;
+  let start = end;
+  while (start > 0) {
+    const m = /^(Risk|Risk-area|Agent):[ \t]*(.*)$/.exec(lines[start - 1] ?? "");
+    if (!m) break;
+    trailers.set((m[1] ?? "").toLowerCase(), (m[2] ?? "").trim());
+    start--;
+  }
+  const intent = lines.slice(0, start).join("\n").trim();
+  return {
+    title,
+    intent,
+    risk: trailers.get("risk") ?? "",
+    riskArea: trailers.get("risk-area") ?? "",
+    agent: trailers.get("agent") ?? "",
+  };
+}
+
+interface LogInfo {
+  description: ChangeDescription;
+  author: string;
+  time: number;
+  stat: DiffTotals | undefined;
+}
+
+/** The newest version's log entry of every change in a stack, by change id. */
+async function details(
   t: BridgeTransport,
   repo: string,
   head: string,
   trunk: string,
   p?: CallParams,
-): Promise<Map<string, string>> {
-  const out = new Map<string, string>();
+): Promise<Map<string, LogInfo>> {
+  const out = new Map<string, LogInfo>();
   const stream = callStream(
     t,
     Repo.method.log,
@@ -48,7 +90,20 @@ async function titles(
   for await (const batch of stream) {
     for (const e of batch.entries) {
       if (e.change.length === 0) continue;
-      out.set(changeIdToString(e.change), text.decode(e.message).split("\n", 1)[0] ?? "");
+      const files = e.stats?.files ?? [];
+      out.set(changeIdToString(e.change), {
+        description: parseDescription(text.decode(e.message)),
+        author: e.author ? text.decode(e.author.name) : "",
+        time: e.author ? Number(e.author.time) : 0,
+        stat:
+          files.length === 0
+            ? undefined
+            : {
+                added: files.reduce((n, f) => n + f.added, 0),
+                removed: files.reduce((n, f) => n + f.removed, 0),
+                files: files.length,
+              },
+      });
     }
   }
   return out;
@@ -68,14 +123,19 @@ async function loadStack(
     p,
   );
   if (res.changes.length === 0) return undefined;
-  const names = await titles(t, repo, ref, trunk, p);
+  const info = await details(t, repo, ref, trunk, p);
   const size = res.changes.length;
   const changes: ChangeRow[] = res.changes.map((c, i) => {
     const id = changeIdToString(c.change);
+    const d = info.get(id);
     return {
       id,
       short: id.slice(0, 8),
-      title: names.get(id) ?? shortId(id),
+      title: d?.description.title || shortId(id),
+      author: d?.author ?? "",
+      time: d?.time ?? 0,
+      description: d?.description ?? parseDescription(""),
+      stat: d?.stat,
       version: c.version,
       position: i,
       stackSize: size,

@@ -243,6 +243,7 @@ pub const ASC_ONLY_VERBS: &[&str] = &[
     "unhide",
     "cloud",
     "upgrade",
+    "self-update",
     "internal",
     "ws-api",
     "create",
@@ -611,9 +612,22 @@ fn report_env_error(prog: Program, err: EnvError) -> ExitCode {
     ExitCode::from(if usage { 129 } else { msg.exit_code() })
 }
 
-/// The version line (SPEC §11.4): `git version <real>.asc.<semver>` or `asc <semver> (git <real>)`.
+/// The commit this binary was built from (`unknown` outside a checkout), set by `build.rs`.
+pub const BUILD_COMMIT: &str = env!("ASC_BUILD_COMMIT");
+
+/// The version line text (SPEC §11.4). `git version <real>.asc.<semver>` is what git-speaking tools
+/// parse, so it carries no commit; `asc --version` says `asc <semver> (git <real>, commit <sha>)`.
+fn version_text(prog: Program, semver: &str, commit: &str, real: Option<&str>) -> Option<String> {
+    match (prog, real) {
+        (Program::Git, Some(real)) => Some(format!("git version {real}.asc.{semver}")),
+        (Program::Git, None) => None,
+        (Program::Asc, Some(real)) => Some(format!("asc {semver} (git {real}, commit {commit})")),
+        (Program::Asc, None) => Some(format!("asc {semver} (commit {commit})")),
+    }
+}
+
+/// The version line (SPEC §11.4).
 fn version_line(prog: Program) -> Result<String> {
-    let semver = env!("CARGO_PKG_VERSION");
     let real = asc_git::realgit::RealGit::resolve(None, None)
         .ok()
         .and_then(|g| {
@@ -621,15 +635,18 @@ fn version_line(prog: Program) -> Result<String> {
             let text = String::from_utf8(out.stdout).ok()?;
             text.trim().strip_prefix("git version ").map(str::to_owned)
         });
-    match (prog, real) {
-        (Program::Git, Some(real)) => Ok(format!("git version {real}.asc.{semver}")),
-        (Program::Git, None) => Err(CliError::Raw(
+    version_text(
+        prog,
+        env!("CARGO_PKG_VERSION"),
+        BUILD_COMMIT,
+        real.as_deref(),
+    )
+    .ok_or_else(|| {
+        CliError::Raw(
             "fatal: asc: real git not found; set asc.realGit".into(),
             128,
-        )),
-        (Program::Asc, Some(real)) => Ok(format!("asc {semver} (git {real})")),
-        (Program::Asc, None) => Ok(format!("asc {semver}")),
-    }
+        )
+    })
 }
 
 /// Runs the invocation `args` (argv, including argv[0]) as `prog`.
@@ -1070,5 +1087,32 @@ mod tests {
         let found = find_in([a.clone(), b].into_iter(), "git-x").unwrap();
         assert_eq!(found, a.join(name));
         assert!(find_in([a].into_iter(), "git-nope").is_none());
+    }
+
+    #[test]
+    fn version_text_names_the_commit_for_asc_and_not_for_git() {
+        assert_eq!(
+            version_text(Program::Asc, "1.2.3", "0123456789ab", Some("2.55.0")).unwrap(),
+            "asc 1.2.3 (git 2.55.0, commit 0123456789ab)"
+        );
+        assert_eq!(
+            version_text(Program::Asc, "1.2.3", "unknown", None).unwrap(),
+            "asc 1.2.3 (commit unknown)"
+        );
+        assert_eq!(
+            version_text(Program::Git, "1.2.3", "0123456789ab", Some("2.55.0")).unwrap(),
+            "git version 2.55.0.asc.1.2.3"
+        );
+        assert!(version_text(Program::Git, "1.2.3", "0123456789ab", None).is_none());
+    }
+
+    #[test]
+    fn the_build_commit_is_short_hex_or_unknown() {
+        assert!(
+            BUILD_COMMIT == "unknown"
+                || ((7..=12).contains(&BUILD_COMMIT.len())
+                    && BUILD_COMMIT.bytes().all(|b| b.is_ascii_hexdigit())),
+            "{BUILD_COMMIT}"
+        );
     }
 }

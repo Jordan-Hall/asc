@@ -158,8 +158,8 @@
 
 @layer base {
   html {
-    scrollbar-gutter: stable;
     background: rgb(var(--color-background-rgb));
+    -webkit-font-smoothing: antialiased;
     color: rgb(var(--color-text-base));
     font-family: var(--font-sans);
     -webkit-text-size-adjust: 100%;
@@ -177,9 +177,6 @@
   }
   ::selection {
     background: rgb(var(--color-primary) / 0.28);
-  }
-  :where(h1, h2, h3) {
-    text-wrap: balance;
   }
 }
 

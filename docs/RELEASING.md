@@ -1,4 +1,8 @@
-# Releasing asc
+# Releasing asc (Forgejo flow)
+
+This page describes the Forgejo workflow and generic packages. The GitHub workflow (five platforms, SBOM,
+manifest, installers, `asc self-update` against any download host) is in [`RELEASE.md`](RELEASE.md); the files
+of both flows are accepted by `asc self-update`.
 
 Source of truth: SPEC 16.2, `.forgejo/workflows/release.yml`, `build/release/local-release.sh`.
 

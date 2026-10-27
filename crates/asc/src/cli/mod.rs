@@ -101,6 +101,7 @@ pub mod revert;
 pub mod revlist;
 pub mod revparse;
 pub mod rm;
+pub mod self_update;
 pub mod serve;
 #[cfg(all(feature = "serve", feature = "git-compat"))]
 pub mod serve_git_hook;
@@ -263,6 +264,7 @@ pub static COMMANDS: &[Command] = &[
     entry!("mcp", mcp),
     entry!("migrate", migrate_ignore),
     entry!("upgrade", upgrade),
+    entry!("self-update", self_update),
     entry!("install-shim", install_shim),
     entry!("internal", claude_hook),
 ];

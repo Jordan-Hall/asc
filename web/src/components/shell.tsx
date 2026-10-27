@@ -7,61 +7,10 @@ import { useToken } from "../lib/auth";
 import { BINDINGS, useShortcuts } from "../lib/keys";
 import { openPalette, usePalette } from "../lib/palette";
 import { remember } from "../lib/recent";
-import { Link, useLocation, useNavigate, useParams, useRouteId } from "../lib/router";
-import { Footer } from "./footer";
-import { Header } from "./header";
+import { useLocation, useNavigate, useParams, useRouteId } from "../lib/router";
+import { AppFrame } from "./chrome";
 
 const Palette = lazy(() => import("./palette"));
-
-function Tab(props: { to: string; current: boolean; children: ReactNode }): ReactNode {
-  return (
-    <Link
-      to={props.to}
-      aria-current={props.current ? "page" : undefined}
-      className={`inline-flex h-11 items-center border-b-2 px-3 text-sm no-underline ${
-        props.current
-          ? "border-accent font-semibold text-fg-strong"
-          : "border-transparent text-fg-muted hover:text-fg-strong"
-      }`}
-    >
-      {props.children}
-    </Link>
-  );
-}
-
-function RepoTabs(props: { owner: string; repo: string }): ReactNode {
-  const { pathname } = useLocation();
-  const base = `/${props.owner}/${props.repo}`;
-  const section = pathname.slice(base.length).split("/")[1] ?? "";
-  const is = (...names: string[]) => names.includes(section);
-  return (
-    <nav aria-label="Repository" className="border-b border-line bg-surface">
-      <div
-        className="mx-auto flex w-full max-w-7xl items-center gap-1 overflow-x-auto px-4 sm:px-6"
-        style={{ minHeight: 44 }}
-      >
-        <span className="mr-3 whitespace-nowrap text-sm font-semibold text-fg-strong">
-          {props.owner} / {props.repo}
-        </span>
-        <Tab to={base} current={is("", "tree", "blob", "blame", "commits", "commit")}>
-          Code
-        </Tab>
-        <Tab to={`${base}/changes`} current={is("changes")}>
-          Changes
-        </Tab>
-        <Tab to={`${base}/actions`} current={is("actions")}>
-          Actions
-        </Tab>
-        <Tab to={`${base}/search`} current={is("search")}>
-          Search
-        </Tab>
-        <Tab to={`${base}/settings`} current={is("settings")}>
-          Settings
-        </Tab>
-      </div>
-    </nav>
-  );
-}
 
 /** Adds a repository to the recent list once it has loaded (so a 404 is never remembered). */
 function RememberRepo(props: { name: string }): ReactNode {
@@ -214,17 +163,15 @@ export function Shell(props: { children: ReactNode }): ReactNode {
       >
         Skip to content
       </a>
-      <Header marketing={marketing} searchRef={search} repoPath={repoPath} onHelp={showHelp} />
-      {owner && repo ? (
-        <>
-          <RepoTabs owner={owner} repo={repo} />
-          <RememberRepo name={`${owner}/${repo}`} />
-        </>
-      ) : null}
-      <main id="main" ref={main} tabIndex={-1} className="flex-1 outline-none">
-        {props.children}
-      </main>
-      <Footer rich={marketing} onHelp={showHelp} />
+      {owner && repo ? <RememberRepo name={`${owner}/${repo}`} /> : null}
+      {marketing ? (
+        // The product page draws its own header, main landmark and footer.
+        props.children
+      ) : (
+        <AppFrame searchRef={search} repoPath={repoPath} onHelp={showHelp} mainRef={main}>
+          {props.children}
+        </AppFrame>
+      )}
       <div role="status" aria-live="polite" className="sr-only">
         {announce}
       </div>
