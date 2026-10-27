@@ -454,7 +454,7 @@ impl SigningService {
             .await?
             .id;
         let acting =
-            crate::authz::claim::acting_principal(&*self.env.authorizer, &id, meta, needed);
+            crate::authz::claim::acting_principal(&*self.env.authorizer, &id, meta, needed)?;
         // The host service stays on the record as the relay of a call made for a person.
         let relay = (acting != id).then_some(id);
         Ok((acting, relay))
