@@ -3,10 +3,10 @@
 Every `asc` command with one example you can run. The table of contents is the list of groups. Two
 rules cover the whole page:
 
-- A command that has a git name behaves like git's. Output, flags, exit codes, `--porcelain`, `-z`
-  and `--format` match git (see [`CHEATSHEET.md`](CHEATSHEET.md) for what differs). Its row here shows
-  one common use; `asc help <command>` shows asc's notes and then git's manual.
-- A command that git does not have (the stack verbs, `agent`, `ci`, `workflow`, `search`, `serve` ...)
+- The everyday commands (`clone`, `status`, `commit`, `log`, `push` ...) have stable flags, output,
+  exit codes, `--porcelain`, `-z` and `--format` (see [`CHEATSHEET.md`](CHEATSHEET.md)). Its row here
+  shows one common use; `asc help <command>` shows asc's notes and then the compatibility manual.
+- The other commands (the stack verbs, `agent`, `ci`, `workflow`, `search`, `serve` ...)
   is described by its own flags below. Most of them take `--json`, which prints one JSON object
   (or JSON lines for streams) instead of text. The `--remote <name|url>` flag, where a command has
   it, picks the server; the default is `origin`.
@@ -34,13 +34,13 @@ Configuration keys are in [`CONFIG.md`](CONFIG.md). Getting started is in
 | `config` | Reads and writes git config, with git's flags. asc's own keys are in [`CONFIG.md`](CONFIG.md). | `asc config --global asc.live.update true` |
 | `clone` | Clones lazily: file contents download when first read. `--mode plain` writes real files. | `asc clone https://asc.example.org/acme/payments` |
 | `auth status` | Names the source that would supply a credential for a URL, never the secret. | `asc auth status https://asc.example.org` |
-| `auth login` | Stores a token through git's credential helpers. The token is read from standard input, never from an argument. | `printf '%s' "$TOKEN" \| asc auth login --host https://asc.example.org --token-stdin` |
+| `auth login` | Stores a token through the system credential helpers. The token is read from standard input, never from an argument. | `printf '%s' "$TOKEN" \| asc auth login --host https://asc.example.org --token-stdin` |
 | `auth logout` | Forgets the stored token for a host. | `asc auth logout --host https://asc.example.org` |
 | `doctor` | Checks the install, git and the store. `--fix` repairs what needs no administrator rights; `--workflows` lists push triggers on non-shared branches. | `asc doctor --json` |
-| `install-shim` | Puts a `git` next to `asc` so `git` is asc inside an asc workspace and real git elsewhere. | `asc install-shim` |
+| `install-shim` | Optional git compatibility: puts a `git` next to `asc` so `git` is asc inside an asc workspace and real git elsewhere. | `asc install-shim` |
 | `upgrade` | Signature-verified upgrade, side by side. The release source is `asc.releasesUrl`, `ASC_DOWNLOAD_BASE_URL` or `--from <dir>`. | `asc upgrade --check` |
 | `self-update` | The same as `upgrade`, under the name the installers use. | `asc self-update --check` |
-| `help` | asc's notes for a command, then git's manual; `asc help git` prints the git to asc cheat sheet. | `asc help git` |
+| `help` | asc's notes for a command, then git's manual; `asc help git` prints the compatibility command map. | `asc help git` |
 | `daemon start`, `stop`, `status` | Starts, stops or reports the background daemon (uploads, live updates, the virtual file system). | `asc daemon status` |
 | `debug stats` | The size of the cache and the store and the bytes each workspace holds. | `asc debug stats --json` |
 | `debug hydrations` | Which processes made files download. `--by-process` groups them. | `asc debug hydrations --by-process` |
@@ -82,7 +82,7 @@ Configuration keys are in [`CONFIG.md`](CONFIG.md). Getting started is in
 |---|---|---|
 | `fetch` | Downloads refs and missing objects. | `asc fetch origin` |
 | `pull` | Fetches and integrates. | `asc pull --ff-only` |
-| `push` | Exactly git's push. In a branchless repository `git push origin feat` also submits the stack as draft changes. `--land` or `-o land` asks the server to land onto the default branch. | `asc push --land` |
+| `push` | Pushes refs. In a branchless repository `asc push origin feat` also submits the stack as draft changes. `--land` or `-o land` asks the server to land onto the default branch. | `asc push --land` |
 | `remote` | Lists, adds and removes remotes. | `asc remote add origin https://asc.example.org/acme/payments` |
 | `ls-remote` | Lists refs of a remote. | `asc ls-remote --heads origin` |
 | `submodule` | Submodules are composed read-only from the nested repository. | `asc submodule status` |
