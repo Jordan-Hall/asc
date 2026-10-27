@@ -75,6 +75,16 @@ as `authz.perm_version_changed`. `authenticate()` (who is this credential, with 
 `owner` and `repo`: the hub answers `allowed` with `user_id` and `username` when the credential authenticates, so no `read:user`
 scope is needed.
 
+**Tokens with a hub.** Behind a hub (`auth.provider = "forgejo"`) the hub's own access tokens, with their scopes, are the credential:
+asc stores none of them. An agent token (`ascat_`) is the hub's scoped-token idea applied to one repository, one agent and a budget,
+and it is only as good as the person who made it: on every use the hub is asked (`as_user_id`, internal token only, the answer must
+name that person) whether they may still read, or for a write still write, the repository; a person who lost access, a hub that
+cannot answer, and an answer about someone else all refuse the token (a read is kept for 5 seconds at most). The parallel systems
+that remain, and what each is for: the standalone token store (`provider = "token_store"`, `asc serve token ...`, `token_key_file`)
+exists for a server with no hub and is unused behind one, as are the SSH keys of that store; the vault key file seals stored
+secrets and is not a credential; the MCP HMAC keys seal cursors; `forwarded_key_file` signs the hub's claims. Remove the token store
+key from a hub deployment's config: nothing reads it.
+
 **Fail closed.** A handler that cannot decide (policy unreadable, store down, clock skew) refuses. Reading a resource of an owner the
 caller cannot administer answers `NOT_FOUND`, so identifiers cannot be probed.
 

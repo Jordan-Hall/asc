@@ -432,6 +432,14 @@ pub trait Authorizer: Send + Sync {
         Err(AuthError::Unauthenticated)
     }
 
+    /// Whether the person with the forge's id `user_id` may do `access` on `repo` right now, asked
+    /// of the forge that owns the permissions. `None`: this authorizer has no such source (a token
+    /// store knows tokens, not people). A token made by a person is only as good as that person's
+    /// access, so the agent authorizer asks this on every use. A wrapper must forward it.
+    async fn user_standing(&self, _user_id: i64, _repo: &str, _access: Access) -> Option<bool> {
+        None
+    }
+
     /// The key a host service signs forwarded administrator claims with, when this server takes
     /// them. The default takes none. A wrapper must forward this method to its inner authorizer.
     fn forwarded_verifier(&self) -> Option<&crate::forwarded::ForwardedVerifier> {

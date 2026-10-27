@@ -1273,3 +1273,98 @@ async fn a_token_of_another_agent_name_cannot_borrow_the_branch_of_this_one() {
     .unwrap_err();
     assert_eq!(code(&e), "AGENT_SCOPE_DENIED");
 }
+
+/// An authorizer that knows no tokens and answers what a forge says of a person.
+struct Standing(std::sync::Mutex<std::collections::HashMap<(i64, Access), Option<bool>>>);
+
+#[async_trait::async_trait]
+impl asc_rpc::auth::Authorizer for Standing {
+    async fn authorize(
+        &self,
+        _t: Option<&BearerToken>,
+        _repo: &str,
+        _a: Access,
+    ) -> Result<asc_rpc::auth::Principal, AuthError> {
+        Err(AuthError::Unauthenticated)
+    }
+
+    async fn user_standing(&self, user_id: i64, _repo: &str, access: Access) -> Option<bool> {
+        self.0
+            .lock()
+            .unwrap()
+            .get(&(user_id, access))
+            .copied()
+            .unwrap_or(None)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_token_is_only_as_good_as_the_access_of_the_person_who_made_it() {
+    let w = World::new().await;
+    let secret = super::tokens::new_secret();
+    let make = |created_by: &str, owner_id: i64, secret: &str| {
+        let n = super::tokens::NewToken {
+            repo: "acme/app".into(),
+            name: "t".into(),
+            agent: "fixer".into(),
+            paths: vec![],
+            max_changes_per_run: 0,
+            created_by: created_by.into(),
+            owner_id,
+            created: 0,
+            expires_at: clock::now() + 600,
+            limits: super::tokens::Budget::default(),
+            run_id: 0,
+        };
+        let tokens = w.hub.core.tokens.clone();
+        let secret = secret.to_owned();
+        async move { tokens.create(&n, &secret).await.unwrap().unwrap() }
+    };
+    make("7:alice", 7, secret.as_str()).await;
+    let plain = super::tokens::new_secret();
+    make("pat:alice", 7, plain.as_str()).await;
+    use asc_rpc::auth::Authorizer as _;
+    let forge = std::sync::Arc::new(Standing(Default::default()));
+    let authz = super::authz::AgentAuthorizer::new(forge.clone(), w.hub.core.tokens.clone(), true);
+    let bearer = BearerToken::new(secret.as_str()).unwrap();
+    let on = |access| authz.authorize(Some(&bearer), "acme/app", access);
+    // The forge is asked, and a yes lets the token work.
+    {
+        let mut m = forge.0.lock().unwrap();
+        m.insert((7, Access::Read), Some(true));
+        m.insert((7, Access::Write), Some(true));
+    }
+    assert!(on(Access::Read).await.is_ok() && on(Access::Write).await.is_ok());
+    // The person loses write access: the token still reads, and no longer writes.
+    forge
+        .0
+        .lock()
+        .unwrap()
+        .insert((7, Access::Write), Some(false));
+    assert!(on(Access::Read).await.is_ok());
+    assert_eq!(on(Access::Write).await.unwrap_err(), AuthError::Forbidden);
+    // The person loses every access: the token is dead on the next call.
+    forge
+        .0
+        .lock()
+        .unwrap()
+        .insert((7, Access::Read), Some(false));
+    assert_eq!(on(Access::Read).await.unwrap_err(), AuthError::Forbidden);
+    // A forge that cannot say is a refusal only when it was asked and said no; with no forge
+    // behind the server (None) the token stands on its own, as does one with no forge person.
+    forge.0.lock().unwrap().clear();
+    assert!(on(Access::Write).await.is_ok());
+    let anon = BearerToken::new(plain.as_str()).unwrap();
+    forge
+        .0
+        .lock()
+        .unwrap()
+        .insert((7, Access::Write), Some(false));
+    assert!(
+        authz
+            .authorize(Some(&anon), "acme/app", Access::Write)
+            .await
+            .is_ok(),
+        "a token with no forge person behind it is not judged by one"
+    );
+}

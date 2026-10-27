@@ -143,6 +143,7 @@ mod forgejo {
             &[
                 ("token", is_str),
                 ("user", is_str),
+                ("as_user_id", is_int),
                 ("key_id", is_int),
                 ("ssh_key", is_obj),
                 ("owner", is_str),
@@ -168,6 +169,9 @@ mod forgejo {
                 return Err("ssh_key excludes token, user and key_id");
             }
             return strict_key(k).map(|_| ()).ok_or("invalid key");
+        }
+        if o.contains_key("as_user_id") && (o.contains_key("token") || o.contains_key("user")) {
+            return Err("as_user_id excludes token and user");
         }
         if !s("user").is_empty() && s("token").is_empty() {
             return Err("user needs a token");
@@ -289,6 +293,18 @@ mod forgejo {
                 };
             }
             if path == "/api/internal/asc/authz" {
+                // The standing of a person, asked with the internal token alone.
+                if let Some(id) = json["as_user_id"].as_i64() {
+                    let r = format!(
+                        "{}/{}",
+                        json["owner"].as_str().unwrap_or(""),
+                        json["repo"].as_str().unwrap_or("")
+                    );
+                    return match i.authz.get(&(format!("as_user:{id}"), r)) {
+                        Some(v) => reply(200, v.clone()),
+                        None => reply(200, zero_denial()),
+                    };
+                }
                 // K07, K07b: `{token, user, owner, repo, mode}`.
                 let mut t = json["token"].as_str().unwrap_or("").to_owned();
                 if let Some(user) = json["user"].as_str().filter(|u| !u.is_empty()) {
@@ -936,6 +952,68 @@ mod forgejo {
             fake.calls("/api/internal/asc/authz").len(),
             before + 2,
             "an Actions task answer is never reused"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_standing_of_a_person_is_asked_of_the_hub_with_the_internal_token_alone() {
+        let (fake, url) = start().await;
+        fake.with(|i| {
+            i.authz.insert(
+                ("as_user:7".into(), "o/r".into()),
+                json!({"allowed": true, "user_id": 7, "username": "alice", "perm": "write"}),
+            );
+            i.authz.insert(
+                ("as_user:8".into(), "o/r".into()),
+                json!({"allowed": true, "user_id": 8, "username": "bob", "perm": "read"}),
+            );
+            // An answer about another person than the one asked is not believed.
+            i.authz.insert(
+                ("as_user:9".into(), "o/r".into()),
+                json!({"allowed": true, "user_id": 1, "username": "root", "perm": "admin"}),
+            );
+        });
+        let authz = internal_authz(&url, Vec::new());
+        assert_eq!(
+            authz.user_standing(7, "o/r", Access::Write).await,
+            Some(true)
+        );
+        assert_eq!(
+            authz.user_standing(7, "o/r", Access::Read).await,
+            Some(true)
+        );
+        assert_eq!(
+            authz.user_standing(8, "o/r", Access::Read).await,
+            Some(true)
+        );
+        assert_eq!(
+            authz.user_standing(8, "o/r", Access::Write).await,
+            Some(false)
+        );
+        assert_eq!(
+            authz.user_standing(9, "o/r", Access::Read).await,
+            Some(false)
+        );
+        assert_eq!(
+            authz.user_standing(10, "o/r", Access::Read).await,
+            Some(false)
+        );
+        let calls = fake.calls("/api/internal/asc/authz");
+        assert_eq!(calls[0].auth.as_deref(), Some(INTERNAL));
+        assert_eq!(
+            calls[0].body,
+            json!({"as_user_id": 7, "owner": "o", "repo": "r", "mode": "write"})
+        );
+        // A read is kept for seconds; a write is asked every time; an outage is a no.
+        let n = fake.calls("/api/internal/asc/authz").len();
+        authz.user_standing(7, "o/r", Access::Read).await;
+        assert_eq!(fake.calls("/api/internal/asc/authz").len(), n);
+        authz.user_standing(7, "o/r", Access::Write).await;
+        assert_eq!(fake.calls("/api/internal/asc/authz").len(), n + 1);
+        fake.with(|i| i.authz_status = Some(503));
+        assert_eq!(
+            authz.user_standing(7, "o/r", Access::Write).await,
+            Some(false)
         );
     }
 
