@@ -166,11 +166,13 @@ impl ProjectsService {
             ext.get::<Credential>().cloned(),
             name.as_str(),
         )
-        .with_forwarded(crate::auth::AdminProof::forwarded_in(
+        .with_forwarded(crate::auth::AdminProof::forwarded_for_call(
             &*self.authorizer,
+            &principal,
             meta,
             name.as_str(),
-        ));
+            Access::Read,
+        )?);
         Ok(CallCtx {
             repo: name,
             id_mode,
