@@ -231,6 +231,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "asc-bench-codeintel"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
+name = "asc-bench-codeintel-eval"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "asc-ci"
 version = "0.1.0"
 dependencies = [

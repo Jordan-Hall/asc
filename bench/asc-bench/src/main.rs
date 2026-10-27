@@ -50,10 +50,61 @@ fn sibling_asc() -> Option<PathBuf> {
     p.is_file().then_some(p)
 }
 
+/// The `codeintel-*` suites live in the `asc-bench-codeintel` binary next to this one: run it with
+/// the options that mean the same there and return its exit code.
+fn forward_codeintel(o: &Opts) -> ExitCode {
+    let name = if cfg!(windows) {
+        "asc-bench-codeintel.exe"
+    } else {
+        "asc-bench-codeintel"
+    };
+    let Some(bin) = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|d| d.join(name)))
+        .filter(|p| p.is_file())
+    else {
+        eprintln!("{name} is not next to this executable (cargo build -p asc-bench-codeintel)");
+        return ExitCode::from(2);
+    };
+    let mut cmd = std::process::Command::new(bin);
+    cmd.arg("--suite").arg(&o.suite).arg("--git").arg(&o.git);
+    if let Some(a) = &o.asc {
+        cmd.arg("--asc").arg(a);
+    }
+    if let Some(j) = &o.json {
+        cmd.arg("--json").arg(j);
+    }
+    if let Some(r) = &o.release {
+        cmd.arg("--release").arg(r);
+    }
+    if let Some(w) = &o.work {
+        cmd.arg("--work").arg(w);
+    }
+    if o.allow_unsupported {
+        cmd.arg("--allow-unsupported");
+    }
+    match cmd.status() {
+        Ok(st) => st
+            .code()
+            .and_then(|c| u8::try_from(c).ok())
+            .map_or(ExitCode::from(2), ExitCode::from),
+        Err(e) => {
+            eprintln!("cannot run {name}: {e}");
+            ExitCode::from(2)
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let o = Opts::parse();
+    if o.suite.starts_with("codeintel-") {
+        return forward_codeintel(&o);
+    }
     let Some(workloads) = suite(&o.suite) else {
-        eprintln!("unknown suite {:?} (quick, full)", o.suite);
+        eprintln!(
+            "unknown suite {:?} (quick, full, codeintel-quick, codeintel-full)",
+            o.suite
+        );
         return ExitCode::from(2);
     };
     let scratch = match &o.work {

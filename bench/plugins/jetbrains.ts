@@ -6,8 +6,9 @@
 // Read from a probe report: activation time and JVM heap delta. A test-only IDE run measures those (forced GC,
 // used heap with the plugin enabled minus the same IDE with it disabled, median of 5) and writes JSON to
 // ASC_JB_PROBE_REPORT or plugins/jetbrains/build/reports/asc-budget/probe.json.
-// TODO(P44b-probe): the Gradle probe task belongs in plugins/jetbrains/build.gradle.kts, which another unit owns.
-// TODO(P44a): wire `collectJetbrains` and `checkJetbrains` into bench/plugins/collect.ts when it lands.
+// Not yet measured: plugins/jetbrains/build.gradle.kts has no task that writes that probe report, so until one does
+// the three probe metrics read "not measured" and `--check` fails on them rather than passing on missing data.
+// `bench/plugins/collect.ts --target jetbrains` runs this file's `runJetbrains`.
 import { spawn } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -128,7 +129,7 @@ export async function collectJetbrains(): Promise<Metrics> {
   };
 }
 
-async function main(argv: string[]): Promise<number> {
+export async function runJetbrains(argv: readonly string[]): Promise<number> {
   const known = new Set(["--check", "--update-baseline", "--target", "jetbrains"]);
   for (const a of argv) if (!known.has(a)) throw new Error(`unknown argument: ${a}`);
   const baseline = loadBaseline();
@@ -149,7 +150,7 @@ async function main(argv: string[]): Promise<number> {
 }
 
 if (import.meta.main) {
-  main(process.argv.slice(2)).then(
+  runJetbrains(process.argv.slice(2)).then(
     (c) => process.exit(c),
     (e) => {
       process.stderr.write(`${e instanceof Error ? e.message : String(e)}

@@ -18,6 +18,8 @@ members = [
     "crates/asc-codeintel",
     "crates/asc",
     "bench/asc-bench",
+    "bench/codeintel",
+    "bench/codeintel/eval",
     "tests/turbo",
 ]
 

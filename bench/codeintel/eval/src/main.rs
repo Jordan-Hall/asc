@@ -1,6 +1,6 @@
 //! `asc-bench-codeintel-eval`: builds the ASC eval set from history and scores the model
 //! bake-off (PLAN I28). It runs git with fixed arguments and never a shell.
-//! TODO(O05): `asc-bench --suite codeintel-eval` forwards to this binary.
+//! It takes subcommands (`build`, `score`) rather than a suite, so `asc-bench` does not forward to it.
 
 use asc_bench_codeintel_eval::{
     EvalQuery, LOG_ARGS, Results, TARGET_QUERIES, decide, label, parse_log,
