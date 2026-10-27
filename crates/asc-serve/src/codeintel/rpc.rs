@@ -212,6 +212,8 @@ pub struct Settings {
     /// The embedding model of `Semantic` (`[codeintel.embed] dir`); `None` leaves it
     /// unavailable, with the message that says how to configure it.
     pub embed: Option<super::embedder::Setup>,
+    /// The bounds of `CrossSearch`.
+    pub cross: super::cross::Limits,
 }
 
 impl Settings {
@@ -221,6 +223,7 @@ impl Settings {
             vector_cache_bytes: DEFAULT_VECTOR_BYTES,
             page_key: None,
             embed: None,
+            cross: super::cross::Limits::default(),
         }
     }
 }
@@ -344,6 +347,25 @@ pub struct Caller {
     id_mode: IdMode,
 }
 
+impl Caller {
+    /// A caller for `repo`, authorised by `authorizer` for `credential` as `principal`.
+    pub(super) fn new(
+        authorizer: Arc<dyn Authorizer>,
+        credential: Option<Credential>,
+        principal: Principal,
+        repo: RepoName,
+        id_mode: IdMode,
+    ) -> Self {
+        Self {
+            authorizer,
+            credential,
+            principal,
+            repo,
+            id_mode,
+        }
+    }
+}
+
 /// One namespace of a query.
 struct Target {
     name: RepoName,
@@ -404,6 +426,7 @@ pub struct CodeIntelRpc {
     semantic: Arc<Semaphore>,
     uploads: Arc<Semaphore>,
     scans: Arc<ScanGate>,
+    cross: super::cross::Limits,
 }
 
 fn under(path: &[u8], dir: &[u8]) -> bool {
@@ -634,11 +657,20 @@ impl CodeIntelRpc {
             key,
             semantic: Arc::new(Semaphore::new(MAX_SEMANTIC)),
             uploads: Arc::new(Semaphore::new(MAX_UPLOADS)),
+            cross: settings.cross,
             scans: Arc::new(ScanGate {
                 total: Arc::new(Semaphore::new(MAX_SCANS)),
                 per: Mutex::new(HashMap::new()),
             }),
         })
+    }
+
+    pub(super) fn registry(&self) -> &Arc<Registry> {
+        &self.registry
+    }
+
+    pub(super) fn cross_limits(&self) -> super::cross::Limits {
+        self.cross
     }
 
     fn pool(&self) -> &AnyPool {
@@ -665,6 +697,19 @@ impl CodeIntelRpc {
     }
 
     // -------------------------------------------------------------------------- tokens
+
+    /// A page token of the cross-repository walk, sealed with this handler's key.
+    pub(super) fn seal_token<T: Serialize>(&self, kind: u8, v: &T) -> Result<String, Status> {
+        self.seal(kind, v)
+    }
+
+    pub(super) fn open_token<T: for<'de> Deserialize<'de>>(
+        &self,
+        kind: u8,
+        token: &str,
+    ) -> Result<T, Status> {
+        self.open(kind, token)
+    }
 
     fn seal<T: Serialize>(&self, kind: u8, v: &T) -> Result<String, Status> {
         let mut raw = postcard::to_stdvec(v).map_err(|e| internal("page token", &e))?;

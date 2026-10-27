@@ -8,11 +8,14 @@ use super::rpc::CodeIntelSlot;
 /// The `Version.features` entry that lists the MCP `search` tool.
 pub const SEARCH_FEATURE: &str = "search.v1";
 
-/// What `Version.features` adds for `CodeIntel`: `search.v1` while a handler is registered,
-/// nothing otherwise.
+/// The `Version.features` entry of the `CrossSearch` service.
+pub const CROSS_SEARCH_FEATURE: &str = "cross-search.v1";
+
+/// What `Version.features` adds for `CodeIntel`: `search.v1` and `cross-search.v1` (the
+/// `CrossSearch` service is mounted beside it) while a handler is registered, nothing otherwise.
 pub fn features(slot: &CodeIntelSlot) -> Vec<String> {
     if slot.get().is_some() {
-        vec![SEARCH_FEATURE.to_owned()]
+        vec![SEARCH_FEATURE.to_owned(), CROSS_SEARCH_FEATURE.to_owned()]
     } else {
         Vec::new()
     }
@@ -25,6 +28,11 @@ mod tests {
     #[test]
     fn absent_without_a_registered_service() {
         assert!(features(&CodeIntelSlot::default()).is_empty());
+    }
+
+    #[test]
+    fn cross_search_is_advertised_with_search() {
+        assert_eq!(CROSS_SEARCH_FEATURE, "cross-search.v1");
     }
 
     #[test]

@@ -1037,6 +1037,8 @@ max_inflight_per_principal = 8
 enabled = false
 memory = "2GiB"
 workers = 4
+cross_search_max_repos = 200      # CrossSearch: readable repositories one scope search visits (1 to 5000)
+cross_search_timeout_secs = 20     # CrossSearch: DEADLINE_EXCEEDED after this long
 [codeintel.embed]
 model = "jina-embeddings-v2-base-code"
 device = "cpu"
@@ -3825,6 +3827,8 @@ The server adds `search.v1` to `Version.features` when the `CodeIntel` service i
 enabled = false             # true by default once I21 has landed
 memory = "2GiB"             # one budget with fixed shares (§23.2.4); startup fails when the shares exceed it
 workers = 4                 # default: cores / 2; workers run at nice 10
+cross_search_max_repos = 200    # CrossSearch (cross-search.v1): readable repositories one scope search visits, 1 to 5000
+cross_search_timeout_secs = 20   # CrossSearch: DEADLINE_EXCEEDED after this long
 [codeintel.embed]
 model = "jina-embeddings-v2-base-code"
 device = "cpu"              # or "cuda" (ort CUDA EP)

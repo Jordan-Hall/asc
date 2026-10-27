@@ -213,6 +213,10 @@ fn codeintel_settings(cfg: &config::ServeConfig) -> Option<codeintel::rpc::Setti
     };
     let mut settings = codeintel::rpc::Settings::new(dir.join("ci"));
     settings.embed = codeintel::embedder::Setup::from_config(&cfg.codeintel.embed);
+    settings.cross = codeintel::cross::Limits {
+        max_repos: cfg.codeintel.cross_search_max_repos as usize,
+        timeout: std::time::Duration::from_secs(u64::from(cfg.codeintel.cross_search_timeout_secs)),
+    };
     Some(settings)
 }
 
@@ -308,10 +312,19 @@ pub fn build_grpc(ext: &Extensions, authorizer: Arc<dyn Authorizer>, info: Serve
             );
     }
     if let Some(h) = ext.codeintel.get() {
-        grpc = grpc.add_service(
-            codeintel::rpc::CodeIntelService::new(h.clone(), authorizer.clone(), info.clone())
+        grpc = grpc
+            .add_service(
+                codeintel::rpc::CodeIntelService::new(h.clone(), authorizer.clone(), info.clone())
+                    .into_service(),
+            )
+            .add_service(
+                codeintel::cross::CrossSearchService::new(
+                    h.clone(),
+                    authorizer.clone(),
+                    info.clone(),
+                )
                 .into_service(),
-        );
+            );
     }
     // `Storage` and `Vault` (bring-your-own storage): present once the feature is registered.
     if let Some(b) = ext.byos.get() {

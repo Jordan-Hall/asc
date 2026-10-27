@@ -532,7 +532,7 @@ impl AuthzCore {
         }
         let kept = match &answer {
             Ok(d) => d.reusable().map(|r| Ok(Arc::new(r))),
-            Err(e) => Some(Err(e.clone())),
+            Err(e) => Some(Err(*e)),
         };
         match kept {
             Some(answer) => self.cache.insert(

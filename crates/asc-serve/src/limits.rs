@@ -194,6 +194,7 @@ pub fn class_of(path: &str) -> Option<Class> {
         ("Ci", "ListRuns" | "JobLog") => Class::Cheap,
         ("Inbox" | "Review" | "Ci", _) => Class::Background,
         ("CodeIntel", "Search" | "Symbols") => Class::Codeintel,
+        ("CrossSearch", _) => Class::Codeintel,
         ("CodeIntel", "Semantic") => Class::Semantic,
         ("CodeIntel", "IndexStatus") => Class::Cheap,
         ("CodeIntel", _) => Class::Expensive,
@@ -1405,6 +1406,12 @@ mod tests {
             Some(Class::Semantic)
         );
         assert_eq!(class_of("/asc.v1.CodeIntel/Search"), Some(Class::Codeintel));
+        for m in ["Search", "LookupSymbol", "SymbolPanel"] {
+            assert_eq!(
+                class_of(&format!("/asc.v1.CrossSearch/{m}")),
+                Some(Class::Codeintel)
+            );
+        }
         assert_eq!(
             class_of("/asc.v1.CodeIntel/IndexStatus"),
             Some(Class::Cheap)

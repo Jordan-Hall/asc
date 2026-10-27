@@ -352,6 +352,11 @@ pub struct CodeIntelConfig {
     pub memory: ByteSize,
     pub workers: u32,
     pub embed: EmbedConfig,
+    /// Readable repositories one `CrossSearch` call over a scope visits (named repositories are
+    /// at most 64 either way).
+    pub cross_search_max_repos: u32,
+    /// Seconds one `CrossSearch` call may run before it answers `DEADLINE_EXCEEDED`.
+    pub cross_search_timeout_secs: u32,
 }
 
 impl Default for CodeIntelConfig {
@@ -361,6 +366,8 @@ impl Default for CodeIntelConfig {
             memory: ByteSize(2 * ByteSize::GIB),
             workers: 4,
             embed: EmbedConfig::default(),
+            cross_search_max_repos: 200,
+            cross_search_timeout_secs: 20,
         }
     }
 }
@@ -1238,6 +1245,14 @@ impl ServeConfig {
             return invalid("mcp.max_tokens and mcp.max_inflight_per_principal must be positive");
         }
         self.mcp.validate_exposure()?;
+        if self.codeintel.cross_search_max_repos == 0
+            || self.codeintel.cross_search_max_repos > 5_000
+            || self.codeintel.cross_search_timeout_secs == 0
+        {
+            return invalid(
+                "codeintel.cross_search_max_repos is 1 to 5000 and codeintel.cross_search_timeout_secs is at least 1",
+            );
+        }
         if self.codeintel.enabled && (self.codeintel.workers == 0 || self.codeintel.memory.0 == 0) {
             return invalid("codeintel.workers and codeintel.memory must be positive");
         }
