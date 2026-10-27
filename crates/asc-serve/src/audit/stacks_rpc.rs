@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use asc_rpc::auth::{Access, AuthInterceptor, Authorizer};
 use asc_rpc::errors::{ErrorInfo, RpcError};
-use asc_rpc::scaffold::not_available;
+use asc_rpc::unavailable::not_available;
 use asc_rpc::server::{CallCtx, MAX_MESSAGE, ServerInfo, rpc_status, wire};
 use asc_rpc::services::stacks_server::{Stacks, StacksServer};
 use async_trait::async_trait;

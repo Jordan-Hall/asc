@@ -19,7 +19,7 @@ pub mod limits;
 pub mod log_meta;
 pub mod projects;
 pub mod retry;
-pub mod scaffold;
+pub mod unavailable;
 pub mod server;
 pub mod watch_refs;
 

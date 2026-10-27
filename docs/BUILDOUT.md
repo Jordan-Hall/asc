@@ -9,8 +9,8 @@ Rules for every unit:
 
 - A feature is "available" in the README table of the hub, and in `docs/STATUS.md` here, only when its code, its tests and its docs
   are in. A feature page below says what "done" means for it.
-- No scaffold survives. [Scaffolds](#scaffolds) lists the temporary ones; a unit that implements a service deletes its scaffold
-  group and its lines in that list, and `cargo test -p asc-rpc --test scaffold_registry` keeps the list and the code in step.
+- No scaffold survives. A service is served or it is not mounted (the router answers `UNIMPLEMENTED` for a method nobody serves), and
+  `cargo test -p asc-rpc --test scaffold_registry` keeps the RPC index below in step with the protos and fails if a scaffold list returns.
 - Within `asc.v1` the protocol only grows. A unit that needs a field or a method adds it to the proto in the same commit, runs the
   generators below and says so in its commit message; it never renumbers or removes a field.
 - No secret is ever logged, put in an error, put in an audit event or returned after it was set. Section [Secrets](#secrets) says how.
@@ -230,7 +230,8 @@ and evaluated through the API and the hub shows it; every key below is parsed st
 
 ## 7. Merge queue
 
-*Today:* the hub queue lands the largest ready prefix; `TODO(C52)`: revalidation after a content merge fails closed.
+*Today:* the hub queue lands the largest ready prefix; revalidation after a content merge fails closed. `asc serve` does not mount
+the `MergeQueue` service: its methods answer `UNIMPLEMENTED` from the router until it is built, and no client calls it.
 
 - **RPCs** (`mergequeue.proto`, `mergequeue.v1`): `MergeQueue.Enqueue`, `Dequeue`, `List`, `Get`, `Revalidate`, `SetPaused`, `Watch`.
   `Changes.RequestMerge` stays and calls `Enqueue`.
@@ -242,7 +243,7 @@ and evaluated through the API and the hub shows it; every key below is parsed st
   landed_at, removed_reason)` and `merge_queue_pause(repo, target, paused, reason, by)`.
 - **Errors:** `QUEUE_PAUSED`, `QUEUE_ENTRY_EXISTS`, `REVALIDATION_FAILED`, existing `LAND_NEEDS_CONTENT_MERGE`, `CHANGE_FROZEN`.
 - **Audit:** `queue.enqueued`, `queue.dequeued`, `queue.landed`, `queue.paused`.
-- **Hub:** send `no_content_merge=false` and handle `LAND_NEEDS_CONTENT_MERGE` through `Revalidate`, remove `TODO(C52)`; a
+- **Hub:** send `no_content_merge=false` and handle `LAND_NEEDS_CONTENT_MERGE` through `Revalidate`, a
   "Merge when ready" button and queue panel on the pull request page, a queue page per branch (`Watch` through a hub event stream).
 - **Tests:** order and prefix landing, pause, revalidation reasons one by one (stale approval, stale checks, signature, secret
   finding, policy), content merge triggers revalidation, concurrent enqueue of the same change, restart recovery of an entry in `LANDING`.
@@ -376,7 +377,8 @@ and evaluated through the API and the hub shows it; every key below is parsed st
 ## 14. Cross-repository search and symbol panel
 
 *Today:* per-repository search at `/<owner>/<repo>/asc/search`; cross-repo search, the symbol panel and the JSON API exist as hub handlers
-without routes.
+without routes. `asc serve` does not mount the `CrossSearch` service: its methods answer `UNIMPLEMENTED` from the router until it is
+built, and no client calls it.
 
 - **RPCs** (`crosssearch.proto`, `cross-search.v1`): `CrossSearch.Search` (stream), `LookupSymbol`, `SymbolPanel`.
 - **Behaviour:** `target.repos` (at most 64) or a `scope` (user, organisation, instance) expands to the repositories the caller may read;
@@ -578,26 +580,3 @@ Every method of the build-out services (83). A test keeps this list equal to the
 - `asc.v1.CrossSearch/LookupSymbol` — read on each repository; cheap (index)
 - `asc.v1.CrossSearch/SymbolPanel` — repo read, plus read on repositories that reference it
 <!-- rpc-index:end -->
-
-<a id="scaffolds"></a>
-## Scaffolds
-
-Unit 0 implements each service below with `asc_rpc::scaffold::Scaffold`, which answers every method `UNIMPLEMENTED` and names the method in
-the `x-asc-unimplemented` header. **Nothing registers a scaffold on a listener**; it only keeps the trait impls compiled until the real
-service exists. A unit deletes its service's group from `scaffold!` in `crates/asc-rpc/src/scaffold.rs` and its lines here, in the same commit
-that mounts the real service. When this list is empty, delete `scaffold.rs`, the `scaffold` line in `lib.rs`, this section and the
-scaffold part of `crates/asc-rpc/tests/scaffold_registry.rs`.
-
-<!-- scaffolds:begin -->
-- `asc.v1.MergeQueue/Enqueue`
-- `asc.v1.MergeQueue/Dequeue`
-- `asc.v1.MergeQueue/List`
-- `asc.v1.MergeQueue/Get`
-- `asc.v1.MergeQueue/Revalidate`
-- `asc.v1.MergeQueue/SetPaused`
-- `asc.v1.MergeQueue/Watch`
-
-- `asc.v1.CrossSearch/Search`
-- `asc.v1.CrossSearch/LookupSymbol`
-- `asc.v1.CrossSearch/SymbolPanel`
-<!-- scaffolds:end -->
