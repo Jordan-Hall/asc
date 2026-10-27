@@ -11,6 +11,7 @@ pub mod agents;
 pub mod ai;
 pub mod alt_svc;
 pub mod audit;
+pub mod backup;
 pub mod authn;
 pub mod authz;
 pub mod cache_role;

@@ -33,15 +33,38 @@ fn data_dir(cfg: &ServeConfig) -> Option<PathBuf> {
     if let Some(d) = &cfg.cache.disk_dir {
         return Some(d.clone());
     }
-    let rest = cfg.db.as_deref()?.strip_prefix("sqlite:")?;
+    sqlite_file(cfg.db.as_deref()?)?
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+}
+
+/// The file a `sqlite:` database URL names; `None` for memory databases and other schemes.
+#[must_use]
+pub fn sqlite_file(db: &str) -> Option<PathBuf> {
+    let rest = db.strip_prefix("sqlite:")?;
     let file = rest.trim_start_matches("//").split('?').next()?;
     if file.is_empty() || file.starts_with(':') {
         return None;
     }
-    Path::new(file)
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .map(Path::to_path_buf)
+    Some(PathBuf::from(file))
+}
+
+/// Creates `dir` and its parents; `dir` itself gets mode 0700.
+///
+/// # Errors
+/// The directory cannot be made.
+pub fn create_private_all(dir: &Path) -> io::Result<()> {
+    if let Some(parent) = dir.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+    match create_private(dir) {
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists && dir.is_dir() => {}
+        other => return other,
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
