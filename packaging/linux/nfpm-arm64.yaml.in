@@ -1,0 +1,28 @@
+# nfpm configuration for the arm64 .deb and .rpm, rendered by scripts/release/assemble.py.
+# Build with scripts/release/linux-packages.sh, which verifies the archive below against
+# SHA256SUMS (and its signature when ASC_RELEASE_PUBKEY is set) before nfpm sees the binary.
+#   archive: @RELEASE_URL@/asc-@VERSION@-aarch64-unknown-linux-gnu.tar.gz
+#   sha256:  @SHA256:aarch64-unknown-linux-gnu.tar.gz@
+name: asc
+arch: arm64
+platform: linux
+version: "@VERSION@"
+section: devel
+priority: optional
+maintainer: "asc maintainers <noreply@invalid>"
+description: "@DESCRIPTION@"
+homepage: "@HOMEPAGE@"
+license: "MIT OR Apache-2.0"
+contents:
+  - src: ./asc
+    dst: /usr/bin/asc
+    file_info:
+      mode: 0755
+  - src: ./LICENSE-APACHE.txt
+    dst: /usr/share/doc/asc/LICENSE-APACHE.txt
+    file_info:
+      mode: 0644
+  - src: ./LICENSE-MIT.txt
+    dst: /usr/share/doc/asc/LICENSE-MIT.txt
+    file_info:
+      mode: 0644
