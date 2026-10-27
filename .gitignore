@@ -8,3 +8,4 @@ dist/
 .turbo/
 src/gen/
 *.vsix
+__pycache__/
