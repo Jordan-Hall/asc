@@ -629,3 +629,33 @@ async fn the_policy_in_force_shapes_the_rules_and_allowed_paths() {
         .into_inner();
     assert_eq!(resp.findings.len(), 1, "{:?}", resp.findings);
 }
+
+#[tokio::test]
+async fn a_tree_walk_cut_short_says_the_scan_was_truncated() {
+    let mut s = svc().await;
+    let scanner = Arc::new(super::Scanner::new(
+        s.f.reg.clone(),
+        super::Config {
+            max_files: 1,
+            ..super::Config::default()
+        },
+    ));
+    let hub = Arc::new(SecretScanHub::new(
+        s.f.reg.clone(),
+        scanner,
+        s.f.policies.clone(),
+    ));
+    s.svc = SecretScanService::new(hub, tokens(), ServerInfo::default());
+    let names: Vec<String> = (0..6).map(|i| format!("f{i}.txt")).collect();
+    let files: Vec<(&str, &[u8])> = names.iter().map(|n| (n.as_str(), &b"x
+"[..])).collect();
+    let c = commit(&s.f.e, &[], &files).await;
+    s.f.set_master(c).await;
+    let resp = s
+        .svc
+        .scan(call(scan_rev("master"), Some("admin"), false))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(resp.truncated, "a scan that left files unvisited must say so");
+}

@@ -201,7 +201,7 @@ impl SecretScanHub {
             .acquire()
             .await
             .map_err(|e| internal("permits", &e))?;
-        // Set when the named range had more changesets than one scan reads.
+        // Set when the walk or the named range had more than one scan reads.
         let mut cut = false;
         let files: Vec<FileRef> = match req.at {
             Some(At::Rev(rev)) => {
@@ -227,6 +227,8 @@ impl SecretScanHub {
                         });
                         // The scan stops at its own limits; do not walk a tree of millions.
                         if out.len() > self.scanner.cfg.max_files.saturating_mul(4) {
+                            // Files are left unvisited: say so, so the gate refuses what it could not scan.
+                            cut = true;
                             break;
                         }
                     }
