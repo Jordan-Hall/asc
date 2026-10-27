@@ -21,6 +21,9 @@ pub struct AuditEvent {
     pub action: String,
     /// The principal that acted (`7:alice`, `host-service`).
     pub actor: String,
+    /// The host service that relayed the call for the person in `actor`; empty when the actor
+    /// acted directly.
+    pub on_behalf: String,
     /// `user:alice`, `org:acme`, `repo:acme/app`.
     pub owner: String,
     /// The id of the thing acted on.
@@ -54,6 +57,11 @@ impl AuditEvent {
 
     pub fn actor(mut self, actor: &str) -> Self {
         self.actor = clean(actor);
+        self
+    }
+
+    pub fn on_behalf(mut self, relay: &str) -> Self {
+        self.on_behalf = clean(relay);
         self
     }
 
@@ -104,6 +112,7 @@ impl Audit for TracingAudit {
             target: "asc::audit",
             action = %e.action,
             actor = %e.actor,
+            on_behalf = %e.on_behalf,
             owner = %e.owner,
             target_id = %e.target,
             repo = %e.repo,

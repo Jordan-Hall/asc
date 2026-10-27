@@ -2110,3 +2110,68 @@ async fn the_hubs_claim_decides_who_administers_an_organisations_or_the_instance
             .is_err()
     );
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn an_answer_made_for_one_person_never_replays_to_another_through_the_host() {
+    use asc_rpc::forwarded::{ForwardedVerifier, Role};
+    let f = fx().await;
+    let v = ForwardedVerifier::new(vec![8u8; 32]).unwrap();
+    let authz: Arc<dyn Authorizer> = Arc::new(crate::authz::forwarded::ForwardedAuthorizer::new(
+        f.authorizer.clone(),
+        v.clone(),
+    ));
+    let svc = AiService::new(f.hub.clone(), authz, ServerInfo::default());
+    #[derive(Default)]
+    struct Rec(std::sync::Mutex<Vec<(String, String, Option<String>)>>);
+    #[async_trait::async_trait]
+    impl super::audit::Audit for Rec {
+        async fn record(&self, e: super::audit::Entry<'_>) {
+            self.0.lock().unwrap().push((
+                e.action.to_owned(),
+                e.actor.to_owned(),
+                e.on_behalf.map(str::to_owned),
+            ));
+        }
+    }
+    let rec = Arc::new(Rec::default());
+    assert!(f.hub.set_audit(rec.clone()));
+    let now = crate::ai::clock::now();
+    let create = |user: &str, subject: &str, owner: &str| {
+        let mut r = req(
+            create_msg(owner_ref(wire::OwnerKind::Org, owner), "k", &f.fake.url()),
+            "host-token",
+            Some(OP1),
+        );
+        for (k, val) in v.sign(user, Role::Admin, subject, now) {
+            r.metadata_mut().append(k, val.parse().unwrap());
+        }
+        svc.create_key(r)
+    };
+    let first = create("7:alice", "org:acme", "acme")
+        .await
+        .unwrap()
+        .into_inner();
+    let first = first.key.unwrap();
+    // The same person retrying gets the same key.
+    let again = create("7:alice", "org:acme", "acme")
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(again.key.unwrap().id, first.id);
+    // Another owner of the same organisation, with the same operation id through the same host
+    // principal, is not handed alice's answer.
+    let other = create("8:bob", "org:acme", "acme").await;
+    assert!(other.is_err(), "bob got alice's stored answer");
+    // The same person on another subject with that operation id is not served it either.
+    let elsewhere = create("7:alice", "org:zed", "zed").await;
+    assert!(elsewhere.is_err());
+    // The key is recorded as made by the person, with the host as the relay.
+    let seen = rec.0.lock().unwrap().clone();
+    assert!(
+        seen.iter()
+            .any(|(action, actor, relay)| action == "ai.key.created"
+                && actor == "7:alice"
+                && relay.as_deref() == Some("host-service")),
+        "{seen:?}"
+    );
+}

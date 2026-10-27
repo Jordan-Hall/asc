@@ -16,6 +16,12 @@ use super::ops::{OpState, Ops};
 pub struct Caller {
     pub principal: Principal,
     pub credential: Option<Credential>,
+    /// The host service, when the call was made by it for the person in `principal` (the hub's
+    /// claim): audit events name it as the relay.
+    pub relay: Option<String>,
+    /// What an operation id is bound to: the principal, and for a call made on a claim the
+    /// relay, the person and the subject, so an answer made for one never replays to another.
+    pub replay_key: String,
 }
 
 /// Authenticates the credential of a request; an anonymous or unknown caller is `UNAUTHENTICATED`.
@@ -26,8 +32,10 @@ pub async fn authenticate(
     let credential = ext.get::<Credential>().cloned();
     let principal = authorizer.authenticate(credential.as_ref()).await?;
     Ok(Caller {
+        replay_key: principal.id.clone(),
         principal,
         credential,
+        relay: None,
     })
 }
 

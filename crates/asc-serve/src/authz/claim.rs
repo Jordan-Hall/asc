@@ -10,6 +10,33 @@ use tonic::metadata::MetadataMap;
 
 use super::is_host_service;
 
+/// The subjects of the hub's claims, defined once for every service. Each takes the canonical
+/// name the service stores and does not fold case: the claim must carry exactly that spelling, so
+/// a claim for `acme/app` is never a claim for a distinct `acme/APP`. Users and organisations are
+/// stored lower case everywhere; a repository is the name as the registry holds it.
+pub mod subject {
+    /// The whole server.
+    pub const INSTANCE: &str = "instance";
+
+    /// The account of a person.
+    #[must_use]
+    pub fn user(login: &str) -> String {
+        format!("user:{login}")
+    }
+
+    /// An organisation.
+    #[must_use]
+    pub fn org(name: &str) -> String {
+        format!("org:{name}")
+    }
+
+    /// A repository, `owner/name`.
+    #[must_use]
+    pub fn repo(name: &str) -> String {
+        name.to_owned()
+    }
+}
+
 /// The claim in `meta` for `subject`, when `principal_id` is the host service and the claim
 /// verifies. Any other caller has no claim, whatever its metadata says.
 pub fn host_claim(

@@ -34,6 +34,7 @@ fn caller(id: &str) -> Caller {
         principal: Principal { id: id.into() },
         credential: None,
         forwarded: Default::default(),
+        acted_for: Default::default(),
     }
 }
 
