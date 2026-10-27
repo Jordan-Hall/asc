@@ -250,6 +250,32 @@ impl PartialEq for Version {
 
 impl Eq for Version {}
 
+/// Whether `s` may be written into a file as a version: an optional `v`, then letters, digits and
+/// `. + _ -` only, at most 128 bytes, starting with a letter or digit, and when there is a `+` exactly one
+/// followed by dot-separated non-empty build identifiers. Quotes, spaces, line breaks, markup and
+/// backslashes are not versions, whatever a registry says.
+pub fn is_safe_literal(s: &str) -> bool {
+    let body = s.strip_prefix(['v', 'V']).unwrap_or(s);
+    if s.len() > 128 || !body.starts_with(|c: char| c.is_ascii_alphanumeric()) {
+        return false;
+    }
+    if !body
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'+' | b'_' | b'-'))
+    {
+        return false;
+    }
+    match body.split_once('+') {
+        None => true,
+        Some((_, build)) => {
+            !build.contains('+')
+                && build.split('.').all(|id| {
+                    !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                })
+        }
+    }
+}
+
 /// The order of two version strings, or `None` when either is not a version.
 pub fn compare(scheme: Scheme, a: &str, b: &str) -> Option<Ordering> {
     Some(Version::parse(scheme, a)?.cmp(&Version::parse(scheme, b)?))
@@ -508,6 +534,52 @@ mod tests {
             UpdateKind::between(&p("2.0"), &p("1!1.0")),
             Some(UpdateKind::Major)
         );
+    }
+
+    #[test]
+    fn only_plain_literals_are_safe_to_write_into_a_file() {
+        for ok in [
+            "1.0.0",
+            "v1.2.3",
+            "1.0.0-rc.1",
+            "1.0.0+build.5",
+            "2.0.0+incompatible",
+            "31.1-jre",
+            "1.0_1",
+            "V2",
+        ] {
+            assert!(is_safe_literal(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            "v",
+            "-1",
+            ".1",
+            "1.0.0\"x",
+            "1.0.0'x",
+            "1 0",
+            "1.0\n2",
+            "1.0\r",
+            "1.0\\",
+            "1.0<x>",
+            "1.0&amp;",
+            "1.0;rm",
+            "1.0`x`",
+            "1.0$(x)",
+            "1.0.0+",
+            "1.0.0+a+b",
+            "1.0.0+a..b",
+            "1.0.0+.a",
+            "1!0.5",
+            "1.0\0",
+            "${x}",
+            "1.0/../..",
+            "\u{e9}1.0",
+        ] {
+            assert!(!is_safe_literal(bad), "{bad:?}");
+        }
+        assert!(!is_safe_literal(&"1".repeat(129)));
+        assert!(is_safe_literal(&"1".repeat(128)));
     }
 
     #[test]

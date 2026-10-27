@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::parse::xml;
-use super::version::{Scheme, Version};
+use super::version::{Scheme, Version, is_safe_literal};
 
 /// Most versions kept, the newest ones.
 pub const KEEP: usize = 400;
@@ -36,6 +36,8 @@ pub struct Versions {
 fn finish(scheme: Scheme, raw: Vec<(String, Meta)>, hint: Option<&str>) -> Versions {
     let mut v: Vec<(Version, String, Meta)> = raw
         .into_iter()
+        // A registry's text is written into manifests, so only plain literals pass.
+        .filter(|(s, _)| is_safe_literal(s))
         .filter_map(|(s, m)| Version::parse(scheme, &s).map(|p| (p, s, m)))
         .filter(|(p, _, _)| !p.is_prerelease())
         .collect();
@@ -408,6 +410,40 @@ mod tests {
         )
         .unwrap();
         assert_eq!(got.versions, v(&["0.13.4", "0.13.5"]));
+    }
+
+    #[test]
+    fn a_version_that_is_not_a_plain_literal_is_dropped_whatever_the_registry_says() {
+        let evil = [
+            "1.0.1\"
+malicious = true",
+            "1.0.2'; rm -rf /",
+            "1.0.3</version><version>9",
+            "1.0.4 ",
+            "1.0.5\\",
+            "1.0.6+build..x",
+        ];
+        let mut doc = String::from(r#"{"versions":[{"num":"1.0.0"},{"num":"1.1.0"}"#);
+        for e in evil {
+            doc.push_str(&format!(
+                r#",{{"num":{}}}"#,
+                serde_json::to_string(e).unwrap()
+            ));
+        }
+        doc.push_str("]}");
+        let got = parse_crates(doc.as_bytes()).unwrap();
+        assert_eq!(got.versions, v(&["1.0.0", "1.1.0"]));
+        assert_eq!(got.latest.as_deref(), Some("1.1.0"));
+        let got = parse_maven(
+            b"<metadata><versioning><release>1.0.1&lt;x</release><versions><version>1.0.0</version><version>1.0.1&lt;x</version></versions></versioning></metadata>",
+        )
+        .unwrap();
+        assert_eq!(got.versions, v(&["1.0.0"]));
+        assert_eq!(
+            got.latest.as_deref(),
+            Some("1.0.0"),
+            "a hint that was dropped is not the latest"
+        );
     }
 
     #[test]
