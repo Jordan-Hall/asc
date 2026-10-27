@@ -436,9 +436,9 @@ impl Restacker {
         writes: bool,
         lease: Option<&crate::lease::Lease>,
     ) -> Result<wire::RestackChangesResponse, Status> {
-        let ids = IdCodec::new(ctx.id_mode, &self.registry, &entry).for_viewer(&ctx.principal);
-        let onto = self.onto(&ids, &entry, &req.onto).await?;
-        let heads = self.heads(&entry, &parsed.items).await?;
+        let ids = IdCodec::new(ctx.id_mode, &self.registry, entry).for_viewer(&ctx.principal);
+        let onto = self.onto(&ids, entry, &req.onto).await?;
+        let heads = self.heads(entry, &parsed.items).await?;
 
         // Parents come first, and a caller that names a head other than the change's is stale.
         let pos: HashMap<ChangeId, usize> = parsed
@@ -479,18 +479,10 @@ impl Restacker {
             .map_err(|_| {
                 Status::resource_exhausted("text memory budget exhausted; retry shortly")
             })?;
-        let windows_safe = self.refs.windows_safe(&entry).await?;
+        let windows_safe = self.refs.windows_safe(entry).await?;
 
         let (steps, conflicts) = self
-            .replay(
-                &engine,
-                &parsed,
-                &heads,
-                &pos,
-                onto,
-                &committer,
-                windows_safe,
-            )
+            .replay(engine, parsed, &heads, &pos, onto, committer, windows_safe)
             .await?;
         if req.atomic && !conflicts.is_empty() {
             return Ok(wire::RestackChangesResponse {
@@ -523,10 +515,10 @@ impl Restacker {
             ));
         }
         let rewritten = if parsed.with_refs() {
-            self.publish_refs(&entry, ctx, &parsed, &steps, &pairs, committer.time())
+            self.publish_refs(entry, ctx, parsed, &steps, &pairs, committer.time())
                 .await?
         } else {
-            self.publish_plain(&entry, ctx, &pairs, windows_safe, committer.time())
+            self.publish_plain(entry, ctx, &pairs, windows_safe, committer.time())
                 .await?;
             wire_pairs(&pairs)
         };

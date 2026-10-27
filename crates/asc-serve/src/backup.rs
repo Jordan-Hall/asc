@@ -285,7 +285,7 @@ fn percent_decode(s: &str) -> String {
     while i < b.len() {
         let hex2 = |h: u8, l: u8| -> Option<u8> {
             let d = |c: u8| (c as char).to_digit(16);
-            Some(u8::try_from(d(h)? * 16 + d(l)?).ok()?)
+            u8::try_from(d(h)? * 16 + d(l)?).ok()
         };
         if b[i] == b'%'
             && i + 2 < b.len()
@@ -852,9 +852,11 @@ mod tests {
         fn site(root: &Path, name: &str) -> Site {
             let dir = root.join(name);
             std::fs::create_dir_all(&dir).unwrap();
-            let mut cfg = ServeConfig::default();
-            cfg.db = Some(format!("sqlite:{}/asc.db?mode=rwc", dir.display()));
-            cfg.store = Some(format!("file://{}/bucket", dir.display()));
+            let mut cfg = ServeConfig {
+                db: Some(format!("sqlite:{}/asc.db?mode=rwc", dir.display())),
+                store: Some(format!("file://{}/bucket", dir.display())),
+                ..ServeConfig::default()
+            };
             cfg.vault.key_file = Some(dir.join("vault.keys"));
             std::fs::create_dir_all(dir.join("bucket")).unwrap();
             Site { cfg, dir }
