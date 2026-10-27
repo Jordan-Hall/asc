@@ -2350,3 +2350,261 @@ async fn a_failing_case_outside_every_group_blocks_and_so_does_a_run_with_no_fai
     f.failing_case(run, 1, 1, 1, true).await;
     assert_eq!(code(&f.land(ALICE, b).await.unwrap_err()), "POLICY_DENIED");
 }
+
+// ------------------------------------------------------------------------------ submit parity
+
+impl Fx {
+    /// The index knows `cs` as a version of change `n`, without a published version.
+    async fn known_change(&self, cs: ChangesetId, n: u8) {
+        let idx = ChangeIndex::new(self.reg.clone());
+        let mut tx = self.reg.refs().begin().await.unwrap();
+        idx.write_meta(
+            &mut tx,
+            self.e.key,
+            &ChangeMeta::new(cs, cid(n), vec![], RewriteOp::New),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    /// `asc submit` of change `n` at `cs` to master.
+    async fn submit(
+        &self,
+        who: &str,
+        n: u8,
+        cs: ChangesetId,
+    ) -> Result<wire::UpdateRefsResponse, Status> {
+        let req = update_req(
+            &format!("refs/for/master/asc-{}", cid(n)),
+            wire::ref_update::Expect::Any(true),
+            cs,
+            wire::UpdateMode::FastForward,
+        );
+        self.gated.update_refs(&ctx(who), req).await
+    }
+
+    async fn published(&self, n: u8) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM change_versions WHERE change = $1")
+            .bind(cid(n).as_bytes().to_vec())
+            .fetch_one(self.reg.pool())
+            .await
+            .unwrap()
+    }
+}
+
+/// A push to the protected branch and a submit of the same content meet the same gate: the same
+/// refusal for a policy violation, a secret in the diff and an unusable policy, and the same
+/// pass for clean content. The submit never moves the branch.
+#[tokio::test]
+async fn a_submit_meets_the_gate_a_push_to_the_branch_meets() {
+    let f = fx().await;
+    let a = commit(
+        &f.e,
+        &[],
+        &[
+            (
+                POLICY_PATH,
+                policy_text("[paths.\"src/**\"]\nwrite = [\"role:maintainer\"]\n").as_bytes(),
+            ),
+            ("base", b"0"),
+        ],
+    )
+    .await;
+    f.set_master(a).await;
+    let t = token();
+    let secret = format!("name = \"svc\"\ngithub = \"{t}\"\n");
+    let cases: [(&str, &[(&str, &[u8])], &str, Option<&str>); 4] = [
+        // A path the pusher may not write (bob is not a maintainer).
+        ("src/x", &[("src/x", b"1")], BOB, Some("POLICY_DENIED")),
+        // A secret in the diff.
+        (
+            "secret",
+            &[("conf/app.toml", secret.as_bytes())],
+            ALICE,
+            Some("SECRET_DETECTED"),
+        ),
+        // The same path by a maintainer, and clean content: both pass.
+        ("maintainer", &[("src/y", b"1")], ALICE, None),
+        ("clean", &[("docs/readme", b"hi")], BOB, None),
+    ];
+    for (n, (label, files, who, refused)) in (1u8..).zip(cases) {
+        let cs = commit(&f.e, &[a], files).await;
+        f.known_change(cs, n).await;
+        let pushed = f
+            .push(
+                who,
+                &format!("refs/heads/push-{label}"),
+                wire::ref_update::Expect::Any(true),
+                cs,
+                wire::UpdateMode::FastForward,
+            )
+            .await;
+        let trunk_push = f
+            .push(
+                who,
+                "refs/heads/master",
+                wire::ref_update::Expect::Value(wire::RefTarget::from(&RefTarget::Changeset(a))),
+                cs,
+                wire::UpdateMode::FastForward,
+            )
+            .await;
+        let submitted = f.submit(who, n, cs).await;
+        match refused {
+            Some(want) => {
+                assert_eq!(code(&trunk_push.unwrap_err()), want, "{label}: push");
+                assert_eq!(code(&submitted.unwrap_err()), want, "{label}: submit");
+                assert_eq!(f.published(n).await, 0, "{label}: nothing was published");
+            }
+            None => {
+                trunk_push.unwrap();
+                submitted.unwrap();
+                assert_eq!(f.published(n).await, 1, "{label}");
+                // Put the branch back for the next case.
+                f.set_master(a).await;
+            }
+        }
+        let _ = pushed;
+        assert_eq!(
+            f.rows("SELECT COUNT(*) FROM refs WHERE name LIKE 'refs/for/%'")
+                .await,
+            0,
+            "refs/for is never stored"
+        );
+    }
+    // An unusable policy refuses a submit as it refuses a push.
+    let broken = commit(
+        &f.e,
+        &[],
+        &[(POLICY_PATH, b"this is not toml ["), ("x", b"1")],
+    )
+    .await;
+    f.set_master(broken).await;
+    let next = commit(&f.e, &[broken], &[("docs/y", b"2")]).await;
+    f.known_change(next, 9).await;
+    let e = f.submit(ALICE, 9, next).await.unwrap_err();
+    assert_eq!(code(&e), "POLICY_DENIED");
+    assert_eq!(f.published(9).await, 0);
+}
+
+/// A submit queues what a push queues, so the forge and the indexing workers hear of it.
+#[tokio::test]
+async fn a_submit_queues_the_effects_a_push_queues() {
+    struct Hooks;
+    #[async_trait::async_trait]
+    impl crate::update::PushHooks for Hooks {
+        fn outbox_effects(&self) -> &'static [&'static str] {
+            &["post_receive"]
+        }
+        async fn pre_receive(
+            &self,
+            req: &crate::update::HookRequest<'_>,
+        ) -> Result<(), crate::update::HookRejected> {
+            if req.updates.iter().any(|u| u.name.contains("/asc-")) && req.principal.id == BOB {
+                return Err(crate::update::HookRejected("the forge says no".into()));
+            }
+            Ok(())
+        }
+    }
+    let f = fx().await;
+    let hooks = Arc::new(PipelineHooks::default());
+    hooks.set_gate(f.gate.clone()).ok().unwrap();
+    hooks.set_push_hooks(Arc::new(Hooks)).ok().unwrap();
+    let gated = ServerRefs::new(f.reg.clone(), hooks);
+    let a = commit(&f.e, &[], &[("base", b"0")]).await;
+    f.set_master(a).await;
+    let b = commit(&f.e, &[a], &[("docs/y", b"2")]).await;
+    let bobs = commit(&f.e, &[a], &[("docs/z", b"3")]).await;
+    f.known_change(b, 1).await;
+    f.known_change(bobs, 2).await;
+    let req = |cs| {
+        update_req(
+            &format!("refs/for/master/asc-{}", cid(1)),
+            wire::ref_update::Expect::Any(true),
+            cs,
+            wire::UpdateMode::FastForward,
+        )
+    };
+    // The forge's pre-receive sees the submit with the attributed user and can refuse it.
+    let e = gated
+        .update_refs(
+            &ctx(BOB),
+            update_req(
+                &format!("refs/for/master/asc-{}", cid(2)),
+                wire::ref_update::Expect::Any(true),
+                bobs,
+                wire::UpdateMode::FastForward,
+            ),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(code(&e), "HOOK_REJECTED");
+    assert_eq!(
+        f.rows("SELECT COUNT(*) FROM outbox WHERE op_id IS NOT NULL")
+            .await,
+        1,
+        "only the set-up push"
+    );
+    gated.update_refs(&ctx(ALICE), req(b)).await.unwrap();
+    let effects: Vec<u8> =
+        sqlx::query_scalar("SELECT effects FROM outbox ORDER BY id DESC LIMIT 1")
+            .fetch_one(f.reg.pool())
+            .await
+            .unwrap();
+    let doc: serde_json::Value = serde_json::from_slice(&effects).unwrap();
+    assert_eq!(doc["effects"], serde_json::json!(["post_receive"]));
+    assert_eq!(doc["pusher"], ALICE);
+    assert!(
+        doc["refs"][0]["name"]
+            .as_str()
+            .unwrap()
+            .starts_with("refs/for/master/asc-")
+    );
+}
+
+/// The first version of a change is published by the person who put its changeset on the server,
+/// and every later one by that owner: someone else's changeset cannot be published as one's own by
+/// being first.
+#[tokio::test]
+async fn nobody_claims_a_change_by_being_first_to_publish_it() {
+    let f = fx().await;
+    let a = commit(&f.e, &[], &[("base", b"0")]).await;
+    f.set_master(a).await;
+    let alices = commit(&f.e, &[a], &[("docs/a", b"a")]).await;
+    f.known_change(alices, 1).await;
+    // Alice (user 7) put her changeset on the server; the ledger names her.
+    sqlx::query(
+        "INSERT INTO cs_ledger (ns, cs, bytes, ingester, shared) VALUES ($1, $2, 10, 7, 0)",
+    )
+    .bind(f.e.ns.as_bytes().to_vec())
+    .bind(alices.as_bytes().to_vec())
+    .execute(f.reg.pool())
+    .await
+    .unwrap();
+    // Bob (user 8) submits her changeset as his before she does.
+    let e = f.submit("8:bob", 1, alices).await.unwrap_err();
+    assert_eq!(code(&e), "CHANGE_NOT_ALLOWED", "{e:?}");
+    assert_eq!(f.published(1).await, 0);
+    // He may submit a change of his own, and Alice her own.
+    let mine = commit(&f.e, &[a], &[("docs/c", b"c")]).await;
+    f.known_change(mine, 2).await;
+    f.submit("8:bob", 2, mine).await.unwrap();
+    f.submit("7:alice", 1, alices).await.unwrap();
+    assert_eq!(f.published(1).await, 1);
+    // Later versions are for the recorded owner (the actor of version 1), whoever published last.
+    let next = commit(&f.e, &[alices], &[("docs/a", b"a2")]).await;
+    let idx = ChangeIndex::new(f.reg.clone());
+    let mut tx = f.reg.refs().begin().await.unwrap();
+    idx.write_meta(
+        &mut tx,
+        f.e.key,
+        &ChangeMeta::new(next, cid(1), vec![alices], RewriteOp::Amend),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let e = f.submit("8:bob", 1, next).await.unwrap_err();
+    assert_eq!(code(&e), "CHANGE_NOT_ALLOWED");
+    f.submit("7:alice", 1, next).await.unwrap();
+    assert_eq!(f.published(1).await, 2);
+}

@@ -74,6 +74,11 @@ pub enum GateMode {
     Land {
         rewrites: Vec<(ChangesetId, ChangesetId)>,
     },
+    /// `refs/for/<branch>/asc-<change>`: a changeset published for review. Nothing moves a ref, so
+    /// protection, approvals and signatures are for the landing; what a push to the branch would
+    /// meet before them still applies: the policy must be usable, the pusher's path rules, an
+    /// agent's scope, and the secret scan with its fail-closed truncation.
+    Submit,
 }
 
 /// What the gate is asked.
@@ -363,6 +368,83 @@ impl ServerGate {
         Ok(())
     }
 
+    // -------------------------------------------------------------------------- submitted changes
+
+    async fn check_submitted(&self, req: &GateRequest<'_>, who: &Who) -> Result<(), Status> {
+        let in_force = self.policies.in_force(req.entry).await?;
+        for u in req.updates {
+            let checked = if who.is_agent() {
+                // An agent's output is a draft under review: its scope and its run budget.
+                self.check_draft(req, who, u, &in_force).await
+            } else {
+                self.check_submitted_one(req, who, u, &in_force).await
+            };
+            if let Err(status) = checked {
+                return Err(self.refuse(req.ctx, &u.name, status).await);
+            }
+        }
+        Ok(())
+    }
+
+    async fn check_submitted_one(
+        &self,
+        req: &GateRequest<'_>,
+        who: &Who,
+        u: &GateUpdate,
+        in_force: &Loaded,
+    ) -> Result<(), Status> {
+        let entry = req.entry;
+        let Some(RefTarget::Changeset(new)) = u.new else {
+            return Ok(());
+        };
+        // While the policy in force cannot be read nothing is judged by what the update brings.
+        if let Some(d) = in_force.error() {
+            return Err(unusable(d));
+        }
+        let sp = in_force
+            .policy()
+            .map(|p| p.secrets.clone())
+            .unwrap_or_default();
+        let mut limit = if in_force.policy().is_some() {
+            MAX_ADDED
+        } else {
+            self.scanner.config().max_files.clamp(1, MAX_ADDED)
+        };
+        if sp.enabled {
+            limit = limit.min(MAX_CHANGESETS);
+        }
+        let added = self.added(entry, in_force.source, new, limit).await?;
+        if let Some(p) = in_force.policy() {
+            let mut refused = Vec::new();
+            let mut first: Option<Denial> = None;
+            for path in added.paths() {
+                if let Err(d) = p.check_write(who, &path) {
+                    refused.push(d.path.clone());
+                    first.get_or_insert(d);
+                }
+            }
+            if let Some(d) = first {
+                return Err(from_denial(&d, &refused));
+            }
+        }
+        if sp.enabled {
+            let report = self
+                .scanner
+                .scan_changesets(entry.backend.engine(), entry.key.0, &sp, &added.ids)
+                .await?;
+            if !report.found.is_empty() {
+                if sp.block_on_push {
+                    return Err(self.secret_refusal(req.ctx, &u.name, &report).await);
+                }
+                self.record_findings(entry, &report).await?;
+            }
+            if let Some(status) = truncated_refusal(&sp, &report) {
+                return Err(status);
+            }
+        }
+        Ok(())
+    }
+
     // -------------------------------------------------------------------------- protected refs
 
     async fn check_protected(
@@ -465,7 +547,7 @@ impl ServerGate {
 
         let rewrites: HashMap<ChangesetId, ChangesetId> = match &req.mode {
             GateMode::Land { rewrites } => rewrites.iter().map(|(o, n)| (*n, *o)).collect(),
-            GateMode::Push { .. } => HashMap::new(),
+            GateMode::Push { .. } | GateMode::Submit => HashMap::new(),
         };
 
         // The repair of an unusable policy: an administrator, or an update of trunk that touches
@@ -829,6 +911,9 @@ fn status_word(s: wire::VerificationStatus) -> &'static str {
 impl RefGate for ServerGate {
     async fn check(&self, req: &GateRequest<'_>) -> Result<(), Status> {
         let who = who_of(&req.ctx.principal.id);
+        if matches!(req.mode, GateMode::Submit) {
+            return self.check_submitted(req, &who).await;
+        }
         let trunk = format!("refs/heads/{}", req.entry.default_branch);
         let mut protected: Vec<&GateUpdate> = Vec::new();
         let mut drafts: Vec<&GateUpdate> = Vec::new();
