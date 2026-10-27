@@ -388,6 +388,18 @@ impl fmt::Debug for AdminProof {
     }
 }
 
+/// What an authorizer knows of a person's access, see [`Authorizer::user_standing`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Standing {
+    /// This authorizer has no people to ask about (a standalone token store): a token made by a
+    /// person there stands on its own.
+    NoPeople,
+    /// The forge said: this is what the person may do.
+    Person(bool),
+    /// The authorizer does not say. It is a refusal, never a pass.
+    Unknown,
+}
+
 /// What a call needs on a repository, in increasing order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Access {
@@ -433,11 +445,13 @@ pub trait Authorizer: Send + Sync {
     }
 
     /// Whether the person with the forge's id `user_id` may do `access` on `repo` right now, asked
-    /// of the forge that owns the permissions. `None`: this authorizer has no such source (a token
-    /// store knows tokens, not people). A token made by a person is only as good as that person's
-    /// access, so the agent authorizer asks this on every use. A wrapper must forward it.
-    async fn user_standing(&self, _user_id: i64, _repo: &str, _access: Access) -> Option<bool> {
-        None
+    /// of the forge that owns the permissions. A token made by a person is only as good as that
+    /// person's access, so the agent authorizer asks this on every use. The answer is one of three
+    /// things, and the default is the one that denies: [`Standing::Unknown`]. An authorizer that has
+    /// no people (a token store) says so with [`Standing::NoPeople`]; one that does must answer for
+    /// real. A wrapper must forward it.
+    async fn user_standing(&self, _user_id: i64, _repo: &str, _access: Access) -> Standing {
+        Standing::Unknown
     }
 
     /// The key a host service signs forwarded administrator claims with, when this server takes
@@ -666,6 +680,11 @@ impl StaticTokens {
 
 #[async_trait]
 impl Authorizer for StaticTokens {
+    /// A fixed table has tokens and no people.
+    async fn user_standing(&self, _user_id: i64, _repo: &str, _access: Access) -> Standing {
+        Standing::NoPeople
+    }
+
     async fn authorize(
         &self,
         token: Option<&BearerToken>,

@@ -1003,6 +1003,16 @@ impl TokenStoreAuthz {
 
 #[async_trait]
 impl Authorizer for TokenStoreAuthz {
+    /// A token store has tokens and no people: a token stands on its own.
+    async fn user_standing(
+        &self,
+        _user_id: i64,
+        _repo: &str,
+        _access: Access,
+    ) -> asc_rpc::auth::Standing {
+        asc_rpc::auth::Standing::NoPeople
+    }
+
     async fn authorize(
         &self,
         token: Option<&BearerToken>,
