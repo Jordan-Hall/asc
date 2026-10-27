@@ -330,9 +330,9 @@
   cursor: pointer;
 }
 .btn-primary {
-  background: var(--c-125469);
+  background: #125469;
   color: #ffffff;
-  border: 1px solid var(--c-125469);
+  border: 1px solid #125469;
   border-radius: 10px;
   min-height: 48px;
   display: flex;

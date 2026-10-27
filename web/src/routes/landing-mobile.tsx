@@ -113,7 +113,7 @@ export default function LandingMobile() {
               </a>
             </div>
           </section>
-          <section className="mland15">
+          <section className="mland15" tabIndex={0} aria-label="Clone command">
             <div className="mono mland16">
               <span className="mland17">$</span> asc clone https://hub.example.com/acme/payments
             </div>
@@ -150,7 +150,7 @@ export default function LandingMobile() {
               <b>Intent.</b> Use the retry policy for every outbound call so a flaky provider cannot
               fail a payment. <b>Risk:</b> touches 3 call sites in billing.
             </div>
-            <div className="mland31">
+            <div className="mland31" tabIndex={0} role="region" aria-label="Example diff">
               <div className="ln del">
                 <span className="n">-</span>
                 <span className="c">let res = http.post(url).send().await?;</span>
@@ -257,7 +257,7 @@ export default function LandingMobile() {
             </div>
             <div className="mland52">
               <div className="mono mland53">
-                <span className="mland17">$</span> git push origin HEAD:refs/for/main
+                <span className="mland17">$</span> git push origin HEAD:refs/for/master
               </div>
             </div>
           </section>
@@ -271,30 +271,27 @@ export default function LandingMobile() {
           <footer className="mland58">
             <div className="mland59">ASC Hub · Based on Forgejo</div>
             <div className="mland60">
-              <a href="#docs" className="tap mland61">
+              <Link to="/docs" className="tap mland61">
                 Docs
-              </a>
-              <a href="#api" className="tap mland61">
-                API
-              </a>
-              <a href="#status" className="tap mland61">
-                Status
-              </a>
-              <a href="#licenses" className="tap mland61">
+              </Link>
+              <Link to="/install" className="tap mland61">
+                Install
+              </Link>
+              <Link to="/licenses" className="tap mland61">
                 Licenses
-              </a>
-              <a href="#privacy" className="tap mland62">
+              </Link>
+              <Link to="/privacy" className="tap mland62">
                 Privacy
-              </a>
+              </Link>
             </div>
           </footer>
         </main>
         <div className="mland63">
-          <div className="mland64">
+          <section className="mland64" aria-label="Get started">
             <Link to="/signin" className="tap mland13">
               Start free
             </Link>
-          </div>
+          </section>
           <nav className="mland65" aria-label="Primary">
             <Link to="/" className="tap mland66" aria-current="page">
               <span className="mland67">
