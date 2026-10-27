@@ -11,9 +11,9 @@
 //! apply. An `asc://ws/{ws}/...` URI names a worktree, which must be one of
 //! [`McpBackend::worktrees`]; anything else is refused before the backend is called.
 //!
-//! TODO(M12a): the server backend scopes `owner/name` URIs through a `repo` argument that the
+//! Known gap (M12a): the server backend scopes `owner/name` URIs through a `repo` argument that the
 //! HTTP `ServeBackend` consumes; the local backend ignores it and serves the launch repository.
-//! TODO(M05): `Handler::dispatch` does not yet route `resources/*` and `completion/complete`;
+//! Known gap (M05): `Handler::dispatch` does not yet route `resources/*` and `completion/complete`;
 //! [`list`], [`templates`], [`read`] and [`complete`] are the entry points for that wiring.
 
 use std::path::Path;

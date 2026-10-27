@@ -15,7 +15,7 @@
 //! `FAILED_PRECONDITION` before a child starts.
 //! `create`, `modify`, `reword`, `abort` and `stack rename` print an `OpResult` of their own
 //! (`stack::cli::json_op`), so the decode needs no mapping for them.
-//! TODO(P45): `continue` has no `--json` form yet; it prints human text and the decode then
+//! Known gap (P45): `continue` has no `--json` form yet; it prints human text and the decode then
 //! fails with `INTERNAL`.
 
 use std::ffi::OsString;

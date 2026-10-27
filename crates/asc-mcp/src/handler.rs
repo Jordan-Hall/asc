@@ -90,7 +90,7 @@ impl HandlerConfig {
 }
 
 /// Decides whether a call that needs confirmation may go on.
-// TODO(M06): the MRTR elicitation and sealed `requestState` implementation replaces `RefuseConfirm`.
+// Known gap (M06): the MRTR elicitation and sealed `requestState` implementation replaces `RefuseConfirm`.
 #[async_trait::async_trait]
 pub trait ConfirmGate: Send + Sync + 'static {
     /// `Ok` lets the call run; an error is returned to the client as the call's result.
@@ -500,7 +500,7 @@ impl<B: McpBackend> Handler<B> {
                 Outcome::Err(e) => return Err(e),
             },
             Reply::Messages(mut stream) => {
-                // The text block repeats the structure (TODO(M04a): git-format renderers), so the
+                // The text block repeats the structure (Known gap (M04a): git-format renderers), so the
                 // pool pays for both.
                 let mut budget = Budget::new(max_tokens);
                 let mut merged = Value::Null;
@@ -746,7 +746,7 @@ fn merge_json(dst: &mut Value, src: Value) {
     }
 }
 
-/// The text block. TODO(M04a): git-format renderers (patch, `--oneline`, porcelain v2) from
+/// The text block. Known gap (M04a): git-format renderers (patch, `--oneline`, porcelain v2) from
 /// `asc-engine::render`; until then both modes serialise the structure.
 fn render_text(structured: &Value, mode: TextMode) -> String {
     match mode {

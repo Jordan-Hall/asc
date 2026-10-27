@@ -4,7 +4,7 @@
 //! query-string token is a 400, the credential never leaks, and every call is audited.
 //!
 //! The same suite runs over the static token table and over a counting authorizer that fronts it.
-//! TODO(K19): the same tests against `fake_forgejo` (`PublicApiAuthz`, `InternalAuthz`) once that
+//! Known gap (K19): the same tests against `fake_forgejo` (`PublicApiAuthz`, `InternalAuthz`) once that
 //! fake is shared outside `tests/fake_forgejo.rs`.
 
 use std::sync::atomic::{AtomicUsize, Ordering};

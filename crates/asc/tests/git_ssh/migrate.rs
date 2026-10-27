@@ -646,7 +646,7 @@ fn branchless_pushes_over_ssh_follow_the_spec() {
 }
 
 #[test]
-#[ignore = "TODO(C34): AGit refs/for needs Forgejo's proc-receive; the standalone layer refuses it"]
+#[ignore = "Known gap (C34): AGit refs/for needs Forgejo's proc-receive; the standalone layer refuses it"]
 fn agit_refs_for_opens_a_draft_change_over_ssh() {
     let tools = need_tools!();
     let srv = InProc::start(quiet(), "");

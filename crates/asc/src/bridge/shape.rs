@@ -14,7 +14,7 @@
 //! an `OpLogResponse`. `RunEvent` carries only an `OpResult`, so [`reads_elsewhere`] names the
 //! reason and the bridge ends the call with `FAILED_PRECONDITION` instead of an undecodable
 //! `INTERNAL`.
-//! TODO: `op log` needs a typed `RunEvent` field (or its own method) before a plugin can read it.
+//! Known gap: `op log` needs a typed `RunEvent` field (or its own method) before a plugin can read it.
 
 use serde_json::{Value, json};
 

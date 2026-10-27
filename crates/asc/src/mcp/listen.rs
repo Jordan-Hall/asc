@@ -23,7 +23,7 @@
 //! The protocol layer (`asc-mcp`'s `Handler`) does not route `subscriptions/listen` yet, so
 //! [`serve`] is the stdio loop of `asc mcp`: it answers that method here and passes everything else
 //! to `Handler::handle_message`.
-//! TODO(M12a): move the method into `asc-mcp` beside `resources/*` when its dispatch exists.
+//! Known gap (M12a): move the method into `asc-mcp` beside `resources/*` when its dispatch exists.
 
 use std::collections::{BTreeMap, HashMap};
 use std::io;

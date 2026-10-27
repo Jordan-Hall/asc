@@ -4,7 +4,7 @@
 // fixture directory: `asc serve` never migrates at start, and a token created by the separate
 // `asc serve token create` process has to be visible to the server, and neither is possible with
 // a private in-memory database.
-// TODO(K-track): move to the in-process server when it has a bootstrap-token entry point.
+// Known gap (K-track): move to the in-process server when it has a bootstrap-token entry point.
 //
 // The server speaks plain http on the loopback interface only, so the client runs with
 // ASC_ALLOW_LOOPBACK_HTTP=1 (the opt-in of the transport rule); nothing leaves the machine.
