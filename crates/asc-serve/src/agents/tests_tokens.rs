@@ -516,6 +516,7 @@ async fn with_agents_off_a_token_authenticates_nothing_and_the_services_say_so()
                 max_changes_per_run: 0,
                 created_by: "7:alice".into(),
                 owner_id: 7,
+                created: 0,
                 expires_at: clock::now() + 600,
                 limits: super::tokens::Budget::default(),
                 run_id: 0,

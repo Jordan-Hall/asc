@@ -885,6 +885,7 @@ impl AgentsHub {
                     max_changes_per_run: 0,
                     created_by: run.created_by.clone(),
                     owner_id: run.owner_id,
+                    created: now,
                     expires_at: now + i64::try_from(ttl).unwrap_or(i64::MAX),
                     limits: run.limits,
                     run_id: run.id,
