@@ -21,6 +21,8 @@ ascs admin verify-import --repo asc/dds --repo asc/soma
 
 Notes:
 
+* `asc serve backup` and `asc serve restore` take and restore a whole-install backup: [backup.md](backup.md).
+
 * The bucket is the source of objects; Postgres holds refs, the graph and the git map. A restore
   to T therefore loses ref moves after T but never objects; objects newer than T are unreachable
   until GC (`asc.gc.pitrDays`) and can be re-referenced from the ref log.

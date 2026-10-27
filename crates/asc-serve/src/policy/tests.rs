@@ -2201,3 +2201,40 @@ async fn only_the_admin_credential_of_the_call_may_repair_an_unusable_policy_wit
         .unwrap();
     assert_eq!(f.tip().await, fix);
 }
+
+#[tokio::test]
+async fn the_host_service_repairs_an_unusable_policy_only_for_a_forwarded_administrator() {
+    let f = fx().await;
+    let a = commit(
+        &f.e,
+        &[],
+        &[(POLICY_PATH, b"this is not toml ["), ("x", b"1")],
+    )
+    .await;
+    f.set_master(a).await;
+    let fix = commit(
+        &f.e,
+        &[a],
+        &[(POLICY_PATH, policy_text("").as_bytes()), ("y", b"2")],
+    )
+    .await;
+    // With no verified claim the host service's own credential repairs nothing.
+    let host = admin_ctx(crate::authz::HOST_SERVICE_PRINCIPAL, "host");
+    assert_eq!(
+        code(&f.land_with(&host, fix).await.unwrap_err()),
+        "POLICY_DENIED"
+    );
+    // A claim rides on the call only after `forwarded_in` verified it; a claim on a call of any
+    // other principal is not the host service's and gives nothing.
+    let mut other = admin_ctx("pat:dana", "dana-read");
+    other.admin = other.admin.with_forwarded(Some("7:alice".into()));
+    assert_eq!(
+        code(&f.land_with(&other, fix).await.unwrap_err()),
+        "POLICY_DENIED"
+    );
+    assert_eq!(f.tip().await, a);
+    let mut forwarded = admin_ctx(crate::authz::HOST_SERVICE_PRINCIPAL, "host");
+    forwarded.admin = forwarded.admin.with_forwarded(Some("7:alice".into()));
+    f.land_with(&forwarded, fix).await.unwrap();
+    assert_eq!(f.tip().await, fix);
+}

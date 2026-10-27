@@ -36,9 +36,36 @@ SPEC section 16.1 fixes these names. `crates/asc/src/telemetry.rs` holds the sam
 | `asc_ci_query_seconds` | histogram | server | rpc | Code-intelligence query latency. |
 | `asc_ci_candidates_ratio` | gauge | server | - | Candidate ratio of code-intelligence queries. |
 | `asc_ci_coverage` | gauge | server | - | Indexed share of the tree. |
+| `asc_requests_total` | counter | server | kind,class | Requests on the public listener; kind is grpc, mcp, ui, git or http, class is 2xx to 5xx or error (a failed RPC). |
+| `asc_queue_depth` | gauge | server | queue | Work waiting: queue is outbox, agent_runs or workflow_runs. |
+| `asc_workflow_runs_active` | gauge | server | state | Workflow runs not finished, by state (queued, running, waiting_approval). |
+| `asc_workflow_runs_total` | counter | server | state | Finished workflow runs by state (succeeded, failed, cancelled). |
+| `asc_agent_runs_active` | gauge | server | state | Agent runs not finished, by state (queued, running, waiting_input). |
+| `asc_agent_runs_total` | counter | server | state | Finished agent runs by state (succeeded, failed, cancelled, budget_exceeded, expired). |
+| `asc_storage_targets` | gauge | server | state | Bring-your-own storage targets by state. |
+| `asc_storage_migrations` | gauge | server | state | Storage migrations by state. |
 | `asc_client_retries_total` | counter | cli,daemon | - | Client RPC retries. |
 | `asc_warm_lag_seconds` | gauge | warmer | - | Age of the trunk tip in the host cache. |
 | `asc_warm_objects_total` | counter | warmer | - | Objects warmed. |
 | `asc_warm_failures_total` | counter | warmer | - | Warm failures. |
 | `host_asc_rpc_seconds` | histogram | host | method | Host-side asc RPC latency. |
 | `host_asc_shadow_mismatch_total` | counter | host | method | Shadow-mode mismatches. |
+
+## Server scrape
+
+`asc serve` exposes these on the admin listener, never on the public one: `[admin] listen` (default `127.0.0.1:9464`) serves
+`GET /metrics` (OpenMetrics text) and the detailed `/readyz`. A listener that is not on loopback is refused at startup unless
+`[admin] token_file` is set; with a token file every admin route, loopback or not, needs `Authorization: Bearer <token>` (or Basic
+with the token as the password). A scrape job:
+
+```yaml
+- job_name: asc
+  authorization: { credentials_file: /etc/prometheus/asc-admin-token }
+  static_configs: [{ targets: ["asc-admin.internal:9464"] }]
+```
+
+`asc_requests_total` and `asc_rpc_duration_seconds` (rpc is `<package.Service>/<Method>`, `other` beyond 512 distinct names; code is
+`OK`, `grpc-<n>` or `http-<n>`) are counted as requests finish, per instance. The queue, run and storage series are read from the
+database when the scrape arrives, so any instance reports the whole deployment (read them from one target, not summed over the
+replicas). The `_total` series of runs are totals over the rows that still exist: a retention prune can lower them.
+

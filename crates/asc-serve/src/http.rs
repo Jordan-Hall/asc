@@ -225,6 +225,7 @@ pub struct HttpState {
     metrics: Arc<Metrics>,
     well_known: Arc<WellKnown>,
     probes: Arc<Mutex<Vec<Arc<dyn Probe>>>>,
+    stats: Option<Arc<crate::obs::Stats>>,
 }
 
 impl HttpState {
@@ -240,7 +241,15 @@ impl HttpState {
             metrics,
             well_known: Arc::new(well_known.bounded()),
             probes: Arc::default(),
+            stats: None,
         }
+    }
+
+    /// Has `/metrics` also read the queue, run and storage metrics from the database.
+    #[must_use]
+    pub fn with_stats(mut self, stats: Arc<crate::obs::Stats>) -> Self {
+        self.stats = Some(stats);
+        self
     }
 
     /// Adds a dependency check to `/readyz`.
@@ -321,6 +330,9 @@ async fn metrics(State(s): State<HttpState>) -> Response {
             s.metrics.outbox_lag.set(lag);
         }
         Err(e) => tracing::warn!(event = "metrics.outbox_lag", error = %e),
+    }
+    if let Some(stats) = &s.stats {
+        stats.refresh(&s.pool).await;
     }
     ([(header::CONTENT_TYPE, OPENMETRICS)], s.metrics.render()).into_response()
 }

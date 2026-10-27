@@ -3,6 +3,7 @@
 //! [`authorizer`] builds the one [`Authorizer`] the `[auth] provider` key names; every surface of
 //! the server (RPC, `/v8`, `/seeds`, admin and `/mcp`) is handed that one value.
 
+pub mod forwarded;
 pub mod identity;
 pub(crate) mod key_file;
 #[cfg(feature = "git-ssh")]
@@ -29,6 +30,20 @@ const TOKEN_DB_CONNECTIONS: u32 = 4;
 /// The authorizer for `cfg`: the token store, forge delegation, or (neither configured) one that
 /// refuses every credential. Only the primary role authorises locally.
 pub async fn authorizer(cfg: &ServeConfig) -> Result<Arc<dyn Authorizer>, ServeError> {
+    let inner = provider(cfg).await?;
+    match &cfg.auth.forwarded_key_file {
+        Some(path) if cfg.role == Role::Primary => {
+            let verifier = forwarded::load_verifier(path)
+                .map_err(|e| ServeError::Config(ConfigError::Invalid(e)))?;
+            Ok(Arc::new(forwarded::ForwardedAuthorizer::new(
+                inner, verifier,
+            )))
+        }
+        _ => Ok(inner),
+    }
+}
+
+async fn provider(cfg: &ServeConfig) -> Result<Arc<dyn Authorizer>, ServeError> {
     if cfg.role != Role::Primary {
         return Ok(Arc::new(DenyAll));
     }

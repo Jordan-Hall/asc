@@ -425,6 +425,10 @@ impl Authorizer for LoggingAuthorizer {
         self.observe(answer)
     }
 
+    fn forwarded_verifier(&self) -> Option<&asc_rpc::forwarded::ForwardedVerifier> {
+        self.inner.forwarded_verifier()
+    }
+
     async fn identify_ssh_key(
         &self,
         key: &asc_rpc::auth::SshKey,
