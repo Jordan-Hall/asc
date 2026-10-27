@@ -450,7 +450,7 @@ mod tests {
         assert_eq!(i.kinds.len(), 2);
         let i = parse_ignore("maven:org.apache.commons:commons-lang3").unwrap();
         assert_eq!(i.name, "org.apache.commons:commons-lang3");
-        for bad in ["npm", "cobol:x", ":x", "npm:", "npm:x:huge"] {
+        for bad in ["npm", "cobol:x", ":x", "npm:", "npm:x:major:huge"] {
             assert!(parse_ignore(bad).is_err(), "{bad:?}");
         }
     }

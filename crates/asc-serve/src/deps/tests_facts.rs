@@ -150,7 +150,13 @@ async fn a_pypi_release_must_agree_with_the_simple_index_on_every_file() {
     assert_eq!(f.files.len(), 2);
     assert!(f.verified[0].contains("every file digest"));
     let doc: serde_json::Value = serde_json::from_str(PYPI_SIMPLE).unwrap();
-    let sha = doc["files"][0]["hashes"]["sha256"]
+    // The fixture also lists the files of the version before; change a file of this one.
+    let sha = doc["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["filename"].as_str().unwrap().contains("1.16.0"))
+        .unwrap()["hashes"]["sha256"]
         .as_str()
         .unwrap()
         .to_owned();
