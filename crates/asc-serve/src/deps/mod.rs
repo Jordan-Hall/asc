@@ -31,6 +31,7 @@ pub mod model;
 pub mod osv;
 pub mod parse;
 pub mod plan;
+pub mod ranges;
 pub mod repo_config;
 pub mod requirement;
 pub mod rewrite;
