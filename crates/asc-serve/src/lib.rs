@@ -52,6 +52,7 @@ pub mod mirror;
 pub mod mutations;
 pub mod netguard;
 pub mod objects;
+pub mod obs;
 pub mod outbox;
 pub mod policy;
 pub mod projects;
@@ -567,7 +568,9 @@ pub async fn serve(
         server: cfg.public_url.clone(),
         ..http::WellKnown::default()
     };
-    let http_state = http::HttpState::new(pool, outbox.clone(), metrics.clone(), well_known);
+    let stats = obs::Stats::register(&metrics);
+    let http_state = http::HttpState::new(pool, outbox.clone(), metrics.clone(), well_known)
+        .with_stats(stats.clone());
     http::register(&ext, http_state.clone());
     web::register(&ext, &cfg.web)?;
     let turbo = Arc::new(
@@ -680,6 +683,7 @@ pub async fn serve(
         routes
             .into_axum_router()
             .layer(audit::meta::MetaLayer)
+            .layer(axum::middleware::from_fn_with_state(stats, obs::observe))
             .layer(logging::AccessLogLayer),
     );
 
