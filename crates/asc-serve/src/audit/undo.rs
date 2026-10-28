@@ -207,11 +207,8 @@ impl RefLog {
         if req.r#ref.len() > 1024 || req.r#ref.chars().any(char::is_control) {
             return Err(bad("invalid ref"));
         }
-        let after = match req.page_token.as_str() {
-            "" => None,
-            t if t.len() <= 19 && t.bytes().all(|b| b.is_ascii_digit()) => t.parse::<i64>().ok(),
-            _ => return Err(bad("malformed page token")),
-        };
+        let page_scope = format!("Stacks.ListRefLog|{}", ctx.repo);
+        let after = crate::pagetoken::open_id(&page_scope, &ctx.principal.id, &req.page_token)?;
         let limit = match req.limit {
             0 => DEFAULT_PAGE,
             n => usize::try_from(n).unwrap_or(MAX_PAGE).min(MAX_PAGE),
@@ -323,7 +320,9 @@ impl RefLog {
         let mut logs = rows.iter().map(row_of).collect::<Result<Vec<_>, _>>()?;
         let next_page_token = if logs.len() > limit {
             logs.truncate(limit);
-            logs.last().map(|r| r.seq.to_string()).unwrap_or_default()
+            logs.last()
+                .map(|r| crate::pagetoken::seal(&page_scope, &ctx.principal.id, &r.seq.to_string()))
+                .unwrap_or_default()
         } else {
             String::new()
         };

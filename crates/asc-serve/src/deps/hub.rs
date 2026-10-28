@@ -33,7 +33,7 @@ use crate::audit::actor::actor_of;
 use crate::idmode::IdCodec;
 use crate::mutations::ServerMutations;
 use crate::registry::{Registry, RepoEntry};
-use crate::review::{internal, page_limit, parse_after, registry_status, sql};
+use crate::review::{after_token, internal, page_limit, parse_after, registry_status, sql};
 
 /// Findings in one `ListFindings` page when the request names no limit.
 pub const DEFAULT_PAGE: usize = 50;
@@ -523,7 +523,8 @@ impl DepsHub {
             .collect();
         let min = store::severity_code(sev_from_wire(req.min_severity)?);
         let limit = page_limit(req.limit, DEFAULT_PAGE, MAX_PAGE);
-        let after = parse_after(&req.page_token)?;
+        let scope = format!("Deps.ListFindings|{}", ctx.repo);
+        let after = parse_after(&scope, &ctx.principal.id, &req.page_token)?;
         let entry = self.entry(ctx).await?;
         let pool = self.registry.pool();
         let filter = store::Filter {
@@ -537,7 +538,9 @@ impl DepsHub {
             .map_err(sql)?;
         let next_page_token = if rows.len() > limit {
             rows.truncate(limit);
-            rows.last().map(|r| r.id.to_string()).unwrap_or_default()
+            rows.last()
+                .map(|r| after_token(&scope, &ctx.principal.id, r.id))
+                .unwrap_or_default()
         } else {
             String::new()
         };

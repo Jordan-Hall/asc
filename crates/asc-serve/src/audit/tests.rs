@@ -1166,6 +1166,22 @@ async fn list_filters_and_tokens_arrive_through_the_service() {
         .await
         .unwrap_err();
     assert_eq!(bad.code(), tonic::Code::InvalidArgument);
+    // A bare number is no longer a token: only what the server sealed opens.
+    let bare = svc
+        .list(req(
+            wire::ListAuditRequest {
+                scope: Some(wire::OwnerRef {
+                    kind: wire::OwnerKind::Repo as i32,
+                    name: "acme/app".into(),
+                }),
+                page_token: "5".into(),
+                ..Default::default()
+            },
+            Some(ALICE_ADMIN),
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(bare.message(), "invalid page token");
 }
 
 #[tokio::test]

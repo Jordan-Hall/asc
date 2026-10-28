@@ -288,20 +288,9 @@ impl Agents for AgentService {
                 "an agent name is 1 to 40 characters of a-z, 0-9 and -",
             ));
         }
-        let before = if msg.page_token.is_empty() {
-            None
-        } else {
-            Some(
-                msg.page_token
-                    .parse::<u64>()
-                    .ok()
-                    .filter(|_| {
-                        msg.page_token.len() <= 19
-                            && msg.page_token.bytes().all(|b| b.is_ascii_digit())
-                    })
-                    .ok_or_else(|| Status::invalid_argument("malformed page token"))?,
-            )
-        };
+        let scope = format!("Agents.ListRuns|{}", ctx.repo);
+        let before = crate::pagetoken::open_id(&scope, &ctx.principal.id, &msg.page_token)?
+            .map(|n| u64::try_from(n).unwrap_or(0));
         let mut rows = self
             .hub
             .core
@@ -318,7 +307,9 @@ impl Agents for AgentService {
             .map_err(|e| db(&e))?;
         let next = if rows.len() > limit {
             rows.truncate(limit);
-            rows.last().map(|r| r.id.to_string()).unwrap_or_default()
+            rows.last()
+                .map(|r| crate::pagetoken::seal(&scope, &ctx.principal.id, &r.id.to_string()))
+                .unwrap_or_default()
         } else {
             String::new()
         };
@@ -708,15 +699,16 @@ impl AgentTokens for TokenService {
                     .map_err(|_| Status::invalid_argument("unknown state"))?,
             );
         }
+        let scope = format!("AgentTokens.ListTokens|{}", ctx.repo);
         let after = if msg.page_token.is_empty() {
             None
         } else {
-            let (c, id) = msg
-                .page_token
+            let plain = crate::pagetoken::open(&scope, &ctx.principal.id, &msg.page_token)?;
+            let (c, id) = plain
                 .split_once(':')
                 .and_then(|(c, id)| Some((c.parse::<i64>().ok()?, id.to_owned())))
                 .filter(|(_, id)| id.len() <= 32 && id.starts_with("at_"))
-                .ok_or_else(|| Status::invalid_argument("malformed page token"))?;
+                .ok_or_else(|| Status::invalid_argument("invalid page token"))?;
             Some((c, id))
         };
         let now = clock::now();
@@ -736,7 +728,13 @@ impl AgentTokens for TokenService {
         let next = if rows.len() > limit {
             rows.truncate(limit);
             rows.last()
-                .map(|t| format!("{}:{}", t.created, t.id))
+                .map(|t| {
+                    crate::pagetoken::seal(
+                        &scope,
+                        &ctx.principal.id,
+                        &format!("{}:{}", t.created, t.id),
+                    )
+                })
                 .unwrap_or_default()
         } else {
             String::new()
