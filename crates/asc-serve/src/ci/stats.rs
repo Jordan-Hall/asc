@@ -208,7 +208,7 @@ impl Reviews {
         let main_failing: std::collections::HashSet<(String, String)> = ours
             .iter()
             .filter(|r| failing(r))
-            .map(|r| key(r))
+            .map(&key)
             .collect::<Result<_, _>>()?;
         let main_ms: std::collections::HashMap<(String, String), i64> = ours
             .iter()
