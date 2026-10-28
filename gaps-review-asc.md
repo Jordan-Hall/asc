@@ -5,7 +5,7 @@ Branch feat/asc-review (worktree D:/tmp/feat-asc-review), based on master 09452f
 
 ## Status: stopped before any RPC family (coordinator order: UI first, RPC families in Phase 3)
 
-Rows done: none. Rows not done: all 49 data rows listed below (rows 60 to 313). No proto or server code was changed.
+Rows done: none. Rows not done: all 45 rows (4 needs-asc-backend, 41 needs-both) listed below. No proto or server code was changed.
 
 ## Findings for Phase 3 (from reading the code)
 
@@ -18,7 +18,6 @@ Rows done: none. Rows not done: all 49 data rows listed below (rows 60 to 313). 
 - Build: wsl script at scratchpad w.sh (CARGO_TARGET_DIR=/mnt/e/cgt/shared); `check -p asc-serve -p asc-rpc --lib` passes on the base (2m22s).
 
 ## Rows not done
-- row 18: Board | done | ui-only-missing
 - row 60: Review | Intent, 'Where to look' pointers (file:line), Size, Files, Risk summary block | needs-both
 - row 67: Review | Threads visible to asc clients: hub comments are not written to the asc Review service (ListThreads/AddComment | needs-both
 - row 69: Review | Suggested change block in a comment, 'Apply as v5' (creates a version, undoable op, resets approvals), 'Ask co | needs-both
