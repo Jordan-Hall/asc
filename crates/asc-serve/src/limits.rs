@@ -172,27 +172,78 @@ fn git_refusal(status: &Status) -> Response<Body> {
 /// (a test walks the compiled protos and refuses one that is not), so a new RPC is a decision made in
 /// review, not a default. [`class_of`] still falls back to `Expensive` for a path that is not listed.
 const TABLE: &[(&str, Class, &[&str])] = &[
-    ("Repo", Class::Objects, &["GetObjects", "PutObjects", "ReadFile"]),
+    (
+        "Repo",
+        Class::Objects,
+        &["GetObjects", "PutObjects", "ReadFile"],
+    ),
     ("Repo", Class::UpdateRefs, &["UpdateRefs"]),
     ("Repo", Class::Background, &["Ingest"]),
     (
         "Repo",
         Class::Cheap,
         &[
-            "Version", "ListRefs", "Resolve", "GitMap", "HasObjects", "Stat", "MergeBase", "IsAncestor",
-            "ReadChangeset", "FindLanding", "RepoConfig", "CheckAttr", "LastCommits", "ReadTree", "Compare",
+            "Version",
+            "ListRefs",
+            "Resolve",
+            "GitMap",
+            "HasObjects",
+            "Stat",
+            "MergeBase",
+            "IsAncestor",
+            "ReadChangeset",
+            "FindLanding",
+            "RepoConfig",
+            "CheckAttr",
+            "LastCommits",
+            "ReadTree",
+            "Compare",
         ],
     ),
     (
         "Repo",
         Class::Expensive,
         &[
-            "Apply", "Archive", "Blame", "Classify", "Commit", "CommitGraph", "CopyClosure", "Diff", "GetPolicy",
-            "Grep", "ImportGitPush", "LineHistory", "Log", "Merge", "Rebase", "RepoAdmin", "WatchRefs",
+            "Apply",
+            "Archive",
+            "Blame",
+            "Classify",
+            "Commit",
+            "CommitGraph",
+            "CopyClosure",
+            "Diff",
+            "GetPolicy",
+            "Grep",
+            "ImportGitPush",
+            "LineHistory",
+            "Log",
+            "Merge",
+            "Rebase",
+            "RepoAdmin",
+            "WatchRefs",
         ],
     ),
-    ("Changes", Class::Cheap, &["ResolveChanges", "Stack", "Versions", "Overlaps", "SetReviewState"]),
-    ("Changes", Class::Expensive, &["InterDiff", "Mergeability", "RequestMerge", "RestackChanges"]),
+    (
+        "Changes",
+        Class::Cheap,
+        &[
+            "ResolveChanges",
+            "Stack",
+            "Versions",
+            "Overlaps",
+            "SetReviewState",
+        ],
+    ),
+    (
+        "Changes",
+        Class::Expensive,
+        &[
+            "InterDiff",
+            "Mergeability",
+            "RequestMerge",
+            "RestackChanges",
+        ],
+    ),
     ("Cloud", Class::Cheap, &["GetWorkspace", "ListWorkspaces"]),
     ("Cloud", Class::Background, &["Purge", "UpdateWorkspace"]),
     ("Inbox", Class::Cheap, &["List", "Count"]),
@@ -201,16 +252,33 @@ const TABLE: &[(&str, Class, &[&str])] = &[
         "Review",
         Class::Cheap,
         &[
-            "ListThreads", "ListOverrides", "SetBrief", "RecordApproval", "RecordGateDecision",
-            "MarkSuggestionApplied", "GrantOverride", "RevokeOverride",
+            "ListThreads",
+            "ListOverrides",
+            "SetBrief",
+            "RecordApproval",
+            "RecordGateDecision",
+            "MarkSuggestionApplied",
+            "GrantOverride",
+            "RevokeOverride",
         ],
     ),
-    ("Review", Class::Background, &["AddComment", "ResolveThread", "RequestReview"]),
+    (
+        "Review",
+        Class::Background,
+        &["AddComment", "ResolveThread", "RequestReview"],
+    ),
     // These read trees, diff stats or many rows.
     (
         "Review",
         Class::Expensive,
-        &["GetBrief", "CompareVersions", "PrepareSuggestion", "SuggestReviewers", "GetGateStats", "HunkContext"],
+        &[
+            "GetBrief",
+            "CompareVersions",
+            "PrepareSuggestion",
+            "SuggestReviewers",
+            "GetGateStats",
+            "HunkContext",
+        ],
     ),
     ("Ci", Class::Cheap, &["ListRuns", "JobLog"]),
     ("Ci", Class::Background, &["ReportRun", "AppendJobLog"]),
@@ -218,14 +286,24 @@ const TABLE: &[(&str, Class, &[&str])] = &[
     (
         "CiInsights",
         Class::Cheap,
-        &["FlakyHistory", "GetFailureGroup", "ListFailureGroups", "ListFlakyTests", "SetFailureGroupState"],
+        &[
+            "FlakyHistory",
+            "GetFailureGroup",
+            "ListFailureGroups",
+            "ListFlakyTests",
+            "SetFailureGroupState",
+        ],
     ),
     ("CiInsights", Class::Background, &["ReportTestCases"]),
     ("CodeIntel", Class::Codeintel, &["Search", "Symbols"]),
     ("CodeIntel", Class::Semantic, &["Semantic"]),
     ("CodeIntel", Class::Cheap, &["IndexStatus"]),
     ("CodeIntel", Class::Expensive, &["UploadScip"]),
-    ("CrossSearch", Class::Codeintel, &["LookupSymbol", "Search", "SymbolPanel"]),
+    (
+        "CrossSearch",
+        Class::Codeintel,
+        &["LookupSymbol", "Search", "SymbolPanel"],
+    ),
     ("Projects", Class::Cheap, &["ProjectGraph", "ProjectHashes"]),
     ("Projects", Class::Expensive, &["Affected"]),
     // Agents start model runs and read events and spend.
@@ -233,58 +311,152 @@ const TABLE: &[(&str, Class, &[&str])] = &[
         "Agents",
         Class::Cheap,
         &[
-            "ListRuns", "GetRun", "CancelRun", "SendInput", "WatchRun", "ListRequests", "DecideRequest", "PauseRun",
-            "ListCheckpoints", "RollbackRun", "SetRunLimits", "GetEstimate", "RecentTasks", "SetMonthlyBudget",
+            "ListRuns",
+            "GetRun",
+            "CancelRun",
+            "SendInput",
+            "WatchRun",
+            "ListRequests",
+            "DecideRequest",
+            "PauseRun",
+            "ListCheckpoints",
+            "RollbackRun",
+            "SetRunLimits",
+            "GetEstimate",
+            "RecentTasks",
+            "SetMonthlyBudget",
         ],
     ),
-    ("Agents", Class::Expensive, &["CreateRun", "ContinueRun", "GetRunLog", "ListAgents", "GetSpend"]),
+    (
+        "Agents",
+        Class::Expensive,
+        &[
+            "CreateRun",
+            "ContinueRun",
+            "GetRunLog",
+            "ListAgents",
+            "GetSpend",
+        ],
+    ),
     (
         "AgentTokens",
         Class::Cheap,
-        &["CreateToken", "GetToken", "ListTokens", "ReportUsage", "RevokeToken", "SetBudget"],
+        &[
+            "CreateToken",
+            "GetToken",
+            "ListTokens",
+            "ReportUsage",
+            "RevokeToken",
+            "SetBudget",
+        ],
     ),
     (
         "MergeQueue",
         Class::Cheap,
-        &["Enqueue", "Dequeue", "List", "Get", "SetPaused", "ReportEntry", "Watch"],
+        &[
+            "Enqueue",
+            "Dequeue",
+            "List",
+            "Get",
+            "SetPaused",
+            "ReportEntry",
+            "Watch",
+        ],
     ),
     ("MergeQueue", Class::Expensive, &["Revalidate", "Preview"]),
     (
         "AiProviders",
         Class::Cheap,
-        &["CreateKey", "DeleteKey", "GetKey", "ListKeys", "ListModels", "UpdateKey", "Usage"],
+        &[
+            "CreateKey",
+            "DeleteKey",
+            "GetKey",
+            "ListKeys",
+            "ListModels",
+            "UpdateKey",
+            "Usage",
+        ],
     ),
     ("AiProviders", Class::Expensive, &["TestKey"]),
     ("Audit", Class::Cheap, &["List", "ListActions"]),
     ("Audit", Class::Expensive, &["Export", "VerifyChain"]),
-    ("Bridge", Class::Cheap, &["Events", "Hello", "Run", "StoreToken", "Token"]),
-    ("DepsService", Class::Cheap, &["Dismiss", "GetConfig", "ListFindings", "SetConfig"]),
-    ("DepsService", Class::Expensive, &["ListUpdates", "ProposeUpdate", "Scan"]),
+    (
+        "Bridge",
+        Class::Cheap,
+        &["Events", "Hello", "Run", "StoreToken", "Token"],
+    ),
+    (
+        "DepsService",
+        Class::Cheap,
+        &["Dismiss", "GetConfig", "ListFindings", "SetConfig"],
+    ),
+    (
+        "DepsService",
+        Class::Expensive,
+        &["ListUpdates", "ProposeUpdate", "Scan"],
+    ),
     ("Policy", Class::Cheap, &["GetSource"]),
-    ("Policy", Class::Expensive, &["Evaluate", "Propose", "Validate"]),
-    ("SecretScan", Class::Cheap, &["ListFindings", "ListRules", "UpdateFinding"]),
+    (
+        "Policy",
+        Class::Expensive,
+        &["Evaluate", "Propose", "Validate"],
+    ),
+    (
+        "SecretScan",
+        Class::Cheap,
+        &["ListFindings", "ListRules", "UpdateFinding"],
+    ),
     ("SecretScan", Class::Expensive, &["Scan"]),
-    ("Signing", Class::Cheap, &["AddKey", "GetServerKey", "ListKeys", "RevokeKey", "Verify"]),
+    (
+        "Signing",
+        Class::Cheap,
+        &["AddKey", "GetServerKey", "ListKeys", "RevokeKey", "Verify"],
+    ),
     ("Signing", Class::Expensive, &["SubmitSignature"]),
     ("Stacks", Class::Cheap, &["ListRefLog"]),
-    ("Stacks", Class::Expensive, &["Restack", "RevertLanded", "UndoRef"]),
+    (
+        "Stacks",
+        Class::Expensive,
+        &["Restack", "RevertLanded", "UndoRef"],
+    ),
     (
         "Storage",
         Class::Cheap,
         &[
-            "AssignRepo", "CancelMigration", "CreateTarget", "DeleteTarget", "GetMigration", "GetTarget",
-            "ListMigrations", "ListTargets", "SetEnabled", "UpdateTarget",
+            "AssignRepo",
+            "CancelMigration",
+            "CreateTarget",
+            "DeleteTarget",
+            "GetMigration",
+            "GetTarget",
+            "ListMigrations",
+            "ListTargets",
+            "SetEnabled",
+            "UpdateTarget",
         ],
     ),
-    ("Storage", Class::Expensive, &["StartMigration", "VerifyTarget"]),
+    (
+        "Storage",
+        Class::Expensive,
+        &["StartMigration", "VerifyTarget"],
+    ),
     ("Vault", Class::Cheap, &["GetRotation", "Status"]),
     ("Vault", Class::Expensive, &["Rotate"]),
     (
         "Workflows",
         Class::Cheap,
         &[
-            "CancelRun", "DecideApproval", "DeleteSecret", "GetDefinition", "GetRun", "ListDefinitions", "ListRuns",
-            "ListSecrets", "SetEnabled", "SetSecret", "WatchRun",
+            "CancelRun",
+            "DecideApproval",
+            "DeleteSecret",
+            "GetDefinition",
+            "GetRun",
+            "ListDefinitions",
+            "ListRuns",
+            "ListSecrets",
+            "SetEnabled",
+            "SetSecret",
+            "WatchRun",
         ],
     ),
     ("Workflows", Class::Expensive, &["Trigger", "Validate"]),
@@ -293,14 +465,39 @@ const TABLE: &[(&str, Class, &[&str])] = &[
         "Workspace",
         Class::Cheap,
         &[
-            "ClearJournal", "Dehydrate", "IndexStatus", "Journal", "Mount", "Ping", "Prefetch", "Shutdown", "Stage",
-            "Status", "Switch", "Unmount", "Watch", "Worktrees", "Conflicts", "Stacks",
+            "ClearJournal",
+            "Dehydrate",
+            "IndexStatus",
+            "Journal",
+            "Mount",
+            "Ping",
+            "Prefetch",
+            "Shutdown",
+            "Stage",
+            "Status",
+            "Switch",
+            "Unmount",
+            "Watch",
+            "Worktrees",
+            "Conflicts",
+            "Stacks",
         ],
     ),
     (
         "Workspace",
         Class::Expensive,
-        &["Affected", "Blame", "CommitGraph", "Diff", "Log", "ReadFile", "Search", "Semantic", "Stats", "Symbols"],
+        &[
+            "Affected",
+            "Blame",
+            "CommitGraph",
+            "Diff",
+            "Log",
+            "ReadFile",
+            "Search",
+            "Semantic",
+            "Stats",
+            "Symbols",
+        ],
     ),
 ];
 
@@ -1512,7 +1709,10 @@ mod tests {
         use prost_reflect::DescriptorPool;
         let pool = DescriptorPool::decode(asc_rpc::DESCRIPTOR_SET).unwrap();
         let mut seen = 0;
-        for s in pool.services().filter(|s| s.full_name().starts_with("asc.v1.")) {
+        for s in pool
+            .services()
+            .filter(|s| s.full_name().starts_with("asc.v1."))
+        {
             let svc = s.name().to_owned();
             for m in s.methods() {
                 seen += 1;
@@ -1530,21 +1730,36 @@ mod tests {
                 .get_service_by_name(&format!("asc.v1.{svc}"))
                 .unwrap_or_else(|| panic!("no service {svc}"));
             for m in *methods {
-                assert!(s.methods().any(|x| x.name() == *m), "{svc}/{m} is listed but not in the protos");
+                assert!(
+                    s.methods().any(|x| x.name() == *m),
+                    "{svc}/{m} is listed but not in the protos"
+                );
             }
         }
         for svc in ["Agents", "MergeQueue", "Workflows", "NoSuchService"] {
-            assert_eq!(class_of(&format!("/asc.v1.{svc}/SomethingNew")), Some(Class::Expensive));
+            assert_eq!(
+                class_of(&format!("/asc.v1.{svc}/SomethingNew")),
+                Some(Class::Expensive)
+            );
         }
         assert_eq!(class_of("/grpc.health.v1.Health/Check"), None);
         assert_eq!(class_of("/asc.v1.Review/GetBrief"), Some(Class::Expensive));
-        assert_eq!(class_of("/asc.v1.Review/HunkContext"), Some(Class::Expensive));
+        assert_eq!(
+            class_of("/asc.v1.Review/HunkContext"),
+            Some(Class::Expensive)
+        );
         assert_eq!(class_of("/asc.v1.Ci/Stats"), Some(Class::Expensive));
         assert_eq!(class_of("/asc.v1.Agents/CreateRun"), Some(Class::Expensive));
         assert_eq!(class_of("/asc.v1.Agents/PauseRun"), Some(Class::Cheap));
-        assert_eq!(class_of("/asc.v1.MergeQueue/Revalidate"), Some(Class::Expensive));
+        assert_eq!(
+            class_of("/asc.v1.MergeQueue/Revalidate"),
+            Some(Class::Expensive)
+        );
         assert_eq!(class_of("/asc.v1.MergeQueue/Enqueue"), Some(Class::Cheap));
-        assert_eq!(class_of("/asc.v1.Workflows/Trigger"), Some(Class::Expensive));
+        assert_eq!(
+            class_of("/asc.v1.Workflows/Trigger"),
+            Some(Class::Expensive)
+        );
         assert_eq!(class_of("/asc.v1.Audit/Export"), Some(Class::Expensive));
     }
 

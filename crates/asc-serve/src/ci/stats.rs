@@ -27,12 +27,20 @@ fn median(v: &mut [i64]) -> i64 {
 }
 
 fn permille(num: u32, den: u32) -> u32 {
-    if den == 0 { 0 } else { u32::try_from(u64::from(num) * 1000 / u64::from(den)).unwrap_or(1000) }
+    if den == 0 {
+        0
+    } else {
+        u32::try_from(u64::from(num) * 1000 / u64::from(den)).unwrap_or(1000)
+    }
 }
 
 impl Reviews {
     /// `Ci.Stats`.
-    pub async fn ci_stats(&self, ctx: &CallCtx, req: wire::CiStatsRequest) -> Result<wire::CiStatsResponse, Status> {
+    pub async fn ci_stats(
+        &self,
+        ctx: &CallCtx,
+        req: wire::CiStatsRequest,
+    ) -> Result<wire::CiStatsResponse, Status> {
         let days = match req.days {
             0 => 14,
             n => i64::from(n.min(90)),
@@ -86,8 +94,14 @@ impl Reviews {
                 query = query.bind(*id);
             }
             for r in query.fetch_all(self.registry.pool()).await.map_err(sql)? {
-                let (s, f): (i64, i64) = (r.try_get("started").map_err(sql)?, r.try_get("finished").map_err(sql)?);
-                by_job.entry(r.try_get("name").map_err(sql)?).or_default().push(f - s);
+                let (s, f): (i64, i64) = (
+                    r.try_get("started").map_err(sql)?,
+                    r.try_get("finished").map_err(sql)?,
+                );
+                by_job
+                    .entry(r.try_get("name").map_err(sql)?)
+                    .or_default()
+                    .push(f - s);
             }
         }
         let slowest = by_job
@@ -95,16 +109,20 @@ impl Reviews {
             .map(|(n, v)| (n.clone(), median(v)))
             .max_by_key(|(_, m)| *m)
             .unwrap_or_default();
-        let open: i64 = sqlx::query_scalar("SELECT CAST(COUNT(*) AS BIGINT) FROM failure_groups WHERE ns = $1 AND state = 1")
-            .bind(ns.clone())
-            .fetch_one(self.registry.pool())
-            .await
-            .map_err(sql)?;
-        let flaky: i64 = sqlx::query_scalar("SELECT CAST(COUNT(*) AS BIGINT) FROM flaky_tests WHERE ns = $1 AND flaky = 1")
-            .bind(ns)
-            .fetch_one(self.registry.pool())
-            .await
-            .map_err(sql)?;
+        let open: i64 = sqlx::query_scalar(
+            "SELECT CAST(COUNT(*) AS BIGINT) FROM failure_groups WHERE ns = $1 AND state = 1",
+        )
+        .bind(ns.clone())
+        .fetch_one(self.registry.pool())
+        .await
+        .map_err(sql)?;
+        let flaky: i64 = sqlx::query_scalar(
+            "SELECT CAST(COUNT(*) AS BIGINT) FROM flaky_tests WHERE ns = $1 AND flaky = 1",
+        )
+        .bind(ns)
+        .fetch_one(self.registry.pool())
+        .await
+        .map_err(sql)?;
         Ok(wire::CiStatsResponse {
             days: u32::try_from(days).unwrap_or(0),
             runs: cur_total,
@@ -150,10 +168,14 @@ impl Reviews {
         let main = newest(Vec::new()).await.map_err(sql)?;
         let mut out = wire::CompareWithMainResponse::default();
         let id_of = |r: &Option<sqlx::any::AnyRow>| -> Result<Option<i64>, Status> {
-            r.as_ref().map(|r| r.try_get::<i64, _>("id").map_err(sql)).transpose()
+            r.as_ref()
+                .map(|r| r.try_get::<i64, _>("id").map_err(sql))
+                .transpose()
         };
         out.main_status = match &main {
-            Some(r) if r.try_get::<i64, _>("status").map_err(sql)? == SUCCESS => wire::CiStatus::Success as i32,
+            Some(r) if r.try_get::<i64, _>("status").map_err(sql)? == SUCCESS => {
+                wire::CiStatus::Success as i32
+            }
             Some(_) => wire::CiStatus::Failure as i32,
             None => wire::CiStatus::Unspecified as i32,
         };
@@ -176,11 +198,18 @@ impl Reviews {
             None => Vec::new(),
         };
         let key = |r: &sqlx::any::AnyRow| -> Result<(String, String), Status> {
-            Ok((r.try_get("job_name").map_err(sql)?, r.try_get("name").map_err(sql)?))
+            Ok((
+                r.try_get("job_name").map_err(sql)?,
+                r.try_get("name").map_err(sql)?,
+            ))
         };
-        let failing = |r: &sqlx::any::AnyRow| -> bool { matches!(r.try_get::<i64, _>("outcome"), Ok(2 | 4)) };
-        let main_failing: std::collections::HashSet<(String, String)> =
-            ours.iter().filter(|r| failing(r)).map(|r| key(r)).collect::<Result<_, _>>()?;
+        let failing =
+            |r: &sqlx::any::AnyRow| -> bool { matches!(r.try_get::<i64, _>("outcome"), Ok(2 | 4)) };
+        let main_failing: std::collections::HashSet<(String, String)> = ours
+            .iter()
+            .filter(|r| failing(r))
+            .map(|r| key(r))
+            .collect::<Result<_, _>>()?;
         let main_ms: std::collections::HashMap<(String, String), i64> = ours
             .iter()
             .map(|r| Ok((key(r)?, r.try_get::<i64, _>("duration_ms").map_err(sql)?)))
@@ -192,7 +221,10 @@ impl Reviews {
             if failing(r) {
                 out.failing += 1;
                 if !main_failing.contains(&k) && out.new_failures.len() < 100 {
-                    out.new_failures.push(wire::TestRef { job: k.0.clone(), name: k.1.clone() });
+                    out.new_failures.push(wire::TestRef {
+                        job: k.0.clone(),
+                        name: k.1.clone(),
+                    });
                 }
             }
             if slowest.as_ref().is_none_or(|(m, _)| ms > *m) {
@@ -200,7 +232,11 @@ impl Reviews {
             }
         }
         out.new_failure_count = u32::try_from(
-            theirs.iter().filter(|r| failing(r)).filter(|r| key(r).is_ok_and(|k| !main_failing.contains(&k))).count(),
+            theirs
+                .iter()
+                .filter(|r| failing(r))
+                .filter(|r| key(r).is_ok_and(|k| !main_failing.contains(&k)))
+                .count(),
         )
         .unwrap_or(u32::MAX);
         if let Some((ms, k)) = slowest {
@@ -208,7 +244,9 @@ impl Reviews {
                 job: k.0.clone(),
                 name: k.1.clone(),
                 duration_ms: u64::try_from(ms).unwrap_or(0),
-                main_duration_ms: main_ms.get(&k).map_or(0, |m| u64::try_from(*m).unwrap_or(0)),
+                main_duration_ms: main_ms
+                    .get(&k)
+                    .map_or(0, |m| u64::try_from(*m).unwrap_or(0)),
             });
         }
         out.compared = true;

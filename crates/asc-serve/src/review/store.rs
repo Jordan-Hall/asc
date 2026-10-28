@@ -140,7 +140,8 @@ async fn comments_of(
                     created: r.try_get("created")?,
                     external_id: r.try_get("external_id")?,
                     suggestion: r.try_get("suggestion")?,
-                    applied_version: u32::try_from(r.try_get::<i64, _>("applied_version")?).unwrap_or(0),
+                    applied_version: u32::try_from(r.try_get::<i64, _>("applied_version")?)
+                        .unwrap_or(0),
                     applied_by: r.try_get("applied_by")?,
                 });
         }

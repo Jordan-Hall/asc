@@ -130,7 +130,10 @@ async fn a_hub_comment_is_written_as_the_person_and_audited_with_the_relay() {
     assert_eq!(t.comments[0].external_id, "hub:c:1");
     assert_eq!(handle_of("42:alice").as_deref(), Some("alice"));
     let ev = audited(f.reg.pool(), "review.comment.added").await;
-    assert!(ev.contains(&("alice".to_owned(), "host".to_owned())), "{ev:?}");
+    assert!(
+        ev.contains(&("alice".to_owned(), "host".to_owned())),
+        "{ev:?}"
+    );
 }
 
 #[tokio::test]
@@ -139,12 +142,26 @@ async fn mirroring_a_comment_twice_stores_it_once_and_an_id_cannot_cross_changes
     let (a, v) = claimkit::authorizer();
     let s = svc(&f, a);
     let first = s
-        .add_comment(host(&v, add("x", "hub:c:9", 0), "42:alice", Role::Write, "o/r", true))
+        .add_comment(host(
+            &v,
+            add("x", "hub:c:9", 0),
+            "42:alice",
+            Role::Write,
+            "o/r",
+            true,
+        ))
         .await
         .unwrap()
         .into_inner();
     let again = s
-        .add_comment(host(&v, add("x", "hub:c:9", 0), "42:alice", Role::Write, "o/r", true))
+        .add_comment(host(
+            &v,
+            add("x", "hub:c:9", 0),
+            "42:alice",
+            Role::Write,
+            "o/r",
+            true,
+        ))
         .await
         .unwrap()
         .into_inner();
@@ -160,7 +177,14 @@ async fn mirroring_a_comment_twice_stores_it_once_and_an_id_cannot_cross_changes
     assert_eq!(e.code(), Code::AlreadyExists);
     // A malformed id is refused.
     let e = s
-        .add_comment(host(&v, add("x", "bad id!", 0), "42:alice", Role::Write, "o/r", true))
+        .add_comment(host(
+            &v,
+            add("x", "bad id!", 0),
+            "42:alice",
+            Role::Write,
+            "o/r",
+            true,
+        ))
         .await
         .unwrap_err();
     assert_eq!(e.code(), Code::InvalidArgument);
@@ -216,7 +240,10 @@ async fn the_claim_is_the_whole_authority_and_fails_closed() {
     );
     assert!(s.request_review(ask(Role::Write)).await.is_ok());
     let ev = audited(f.reg.pool(), "review.requested").await;
-    assert!(ev.contains(&("alice".to_owned(), "host".to_owned())), "{ev:?}");
+    assert!(
+        ev.contains(&("alice".to_owned(), "host".to_owned())),
+        "{ev:?}"
+    );
     // A forged claim (another key) is refused, never treated as system work.
     let forged = ForwardedVerifier::new(vec![1u8; 32]).unwrap();
     let r = host(
@@ -237,7 +264,14 @@ async fn the_claim_is_the_whole_authority_and_fails_closed() {
     );
     // A resolve by a read claim of a stranger is refused; by a write claim it works and is audited.
     let c = s
-        .add_comment(host(&v, add("t", "", 0), "42:alice", Role::Read, "o/r", true))
+        .add_comment(host(
+            &v,
+            add("t", "", 0),
+            "42:alice",
+            Role::Read,
+            "o/r",
+            true,
+        ))
         .await
         .unwrap()
         .into_inner();

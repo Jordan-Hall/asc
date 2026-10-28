@@ -17,13 +17,18 @@ pub const MAX_SOURCE_BYTES: u64 = 256 * 1024;
 
 /// Whether a file called `name` is a source this module scans.
 pub fn is_source(name: &str) -> bool {
-    name.rsplit_once('.')
-        .is_some_and(|(stem, ext)| !stem.is_empty() && SOURCE_EXTS.contains(&ext.to_ascii_lowercase().as_str()))
+    name.rsplit_once('.').is_some_and(|(stem, ext)| {
+        !stem.is_empty() && SOURCE_EXTS.contains(&ext.to_ascii_lowercase().as_str())
+    })
 }
 
 /// The package a specifier names, if it names one.
 pub fn package_of(spec: &str) -> Option<String> {
-    if spec.is_empty() || spec.starts_with(['.', '/', '#']) || spec.contains(':') || spec.contains('\\') {
+    if spec.is_empty()
+        || spec.starts_with(['.', '/', '#'])
+        || spec.contains(':')
+        || spec.contains('\\')
+    {
         return None;
     }
     let mut parts = spec.split('/');
@@ -81,9 +86,15 @@ mod tests {
     #[test]
     fn tsrx_imports_count_like_typescript_and_template_text_does_not() {
         let src = b"import { signal } from '@tsrx/signals';\nimport Card from './Card.tsrx';\nimport 'normalize.css';\nexport function A() @{\n  <p>import x from 'not-a-package'</p>\n}\n";
-        assert_eq!(package_imports("src/A.tsrx", src), ["@tsrx/signals", "normalize.css"]);
+        assert_eq!(
+            package_imports("src/A.tsrx", src),
+            ["@tsrx/signals", "normalize.css"]
+        );
         let ts = b"import a from 'lodash';\nconst b = require('chalk');\nexport * from 'zod';\nconst c = import('left-pad');\n";
-        assert_eq!(package_imports("x.ts", ts), ["chalk", "left-pad", "lodash", "zod"]);
+        assert_eq!(
+            package_imports("x.ts", ts),
+            ["chalk", "left-pad", "lodash", "zod"]
+        );
         assert!(package_imports("README.md", ts).is_empty());
     }
 

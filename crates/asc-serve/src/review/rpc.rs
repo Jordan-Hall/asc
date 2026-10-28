@@ -218,7 +218,9 @@ impl Reviews {
         let external = external_of(&req.external_id)?;
         let suggestion = req.suggestion.as_str();
         if suggestion.len() > MAX_BODY || suggestion.contains('\0') {
-            return Err(Status::invalid_argument("a suggestion is at most 64 KiB of text"));
+            return Err(Status::invalid_argument(
+                "a suggestion is at most 64 KiB of text",
+            ));
         }
         let op_id = ctx
             .op_id
@@ -284,12 +286,15 @@ impl Reviews {
         // U48c: the namespace must still belong to this repository id and name.
         self.registry.guard(&mut tx, entry).await?;
         if !external.is_empty()
-            && let Some((thread, comment)) = store::comment_by_external(&mut tx, ns, external).await?
+            && let Some((thread, comment)) =
+                store::comment_by_external(&mut tx, ns, external).await?
         {
             let head = store::thread_head(&mut tx, ns, thread).await?;
             return match head {
                 Some((c, _, _)) if c == change.as_bytes() => Ok((thread, comment)),
-                _ => Err(Status::already_exists("this external id belongs to another change").into()),
+                _ => {
+                    Err(Status::already_exists("this external id belongs to another change").into())
+                }
             };
         }
         if !store::change_known(&mut tx, ns, change).await? {
@@ -342,14 +347,17 @@ impl Reviews {
             (None, None) => return Err(Status::invalid_argument("missing anchor").into()),
         };
         if !suggestion.is_empty() {
-            let on_lines: Option<(Vec<u8>, i64)> =
-                sqlx::query_as("SELECT path, start_line FROM review_threads WHERE ns = $1 AND id = $2")
-                    .bind(ns.as_bytes().to_vec())
-                    .bind(thread)
-                    .fetch_optional(&mut *tx)
-                    .await?;
+            let on_lines: Option<(Vec<u8>, i64)> = sqlx::query_as(
+                "SELECT path, start_line FROM review_threads WHERE ns = $1 AND id = $2",
+            )
+            .bind(ns.as_bytes().to_vec())
+            .bind(thread)
+            .fetch_optional(&mut *tx)
+            .await?;
             if on_lines.is_none_or(|(p, l)| p.is_empty() || l == 0) {
-                return Err(Status::invalid_argument("a suggestion needs a thread on lines").into());
+                return Err(
+                    Status::invalid_argument("a suggestion needs a thread on lines").into(),
+                );
             }
         }
         let comment = next_id(&mut tx, "review_comments", ns.as_bytes()).await?;
@@ -602,7 +610,10 @@ impl Review for ReviewService {
             .await?;
         let handle = require_handle(&ctx)?;
         let can_write = self.env.has(&ext, &ctx, Access::Write).await;
-        self.hub.set_brief(&ctx, &handle, can_write, msg).await.map(Response::new)
+        self.hub
+            .set_brief(&ctx, &handle, can_write, msg)
+            .await
+            .map(Response::new)
     }
 
     async fn record_approval(
@@ -615,7 +626,10 @@ impl Review for ReviewService {
             .context(&meta, &ext, msg.repo.as_ref(), Access::Write, false)
             .await?;
         let handle = require_handle(&ctx)?;
-        self.hub.record_approval(&ctx, &handle, msg).await.map(Response::new)
+        self.hub
+            .record_approval(&ctx, &handle, msg)
+            .await
+            .map(Response::new)
     }
 
     async fn compare_versions(
@@ -627,7 +641,10 @@ impl Review for ReviewService {
             .env
             .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
             .await?;
-        self.hub.compare_versions(&ctx, msg).await.map(Response::new)
+        self.hub
+            .compare_versions(&ctx, msg)
+            .await
+            .map(Response::new)
     }
 
     async fn prepare_suggestion(
@@ -639,7 +656,10 @@ impl Review for ReviewService {
             .env
             .context(&meta, &ext, msg.repo.as_ref(), Access::Write, false)
             .await?;
-        self.hub.prepare_suggestion(&ctx, msg).await.map(Response::new)
+        self.hub
+            .prepare_suggestion(&ctx, msg)
+            .await
+            .map(Response::new)
     }
 
     async fn mark_suggestion_applied(
@@ -652,7 +672,10 @@ impl Review for ReviewService {
             .context(&meta, &ext, msg.repo.as_ref(), Access::Write, false)
             .await?;
         let handle = require_handle(&ctx)?;
-        self.hub.mark_suggestion_applied(&ctx, &handle, msg).await.map(Response::new)
+        self.hub
+            .mark_suggestion_applied(&ctx, &handle, msg)
+            .await
+            .map(Response::new)
     }
 
     async fn suggest_reviewers(
@@ -664,7 +687,10 @@ impl Review for ReviewService {
             .env
             .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
             .await?;
-        self.hub.suggest_reviewers(&ctx, msg).await.map(Response::new)
+        self.hub
+            .suggest_reviewers(&ctx, msg)
+            .await
+            .map(Response::new)
     }
     async fn record_gate_decision(
         &self,
@@ -676,7 +702,10 @@ impl Review for ReviewService {
             .env
             .context(&meta, &ext, msg.repo.as_ref(), Access::Admin, false)
             .await?;
-        self.hub.record_gate_decision(&ctx, msg).await.map(Response::new)
+        self.hub
+            .record_gate_decision(&ctx, msg)
+            .await
+            .map(Response::new)
     }
 
     async fn get_gate_stats(
@@ -701,7 +730,10 @@ impl Review for ReviewService {
             .context(&meta, &ext, msg.repo.as_ref(), Access::Admin, true)
             .await?;
         let handle = require_handle(&ctx)?;
-        self.hub.grant_override(&ctx, &handle, msg).await.map(Response::new)
+        self.hub
+            .grant_override(&ctx, &handle, msg)
+            .await
+            .map(Response::new)
     }
 
     async fn revoke_override(
@@ -714,7 +746,10 @@ impl Review for ReviewService {
             .context(&meta, &ext, msg.repo.as_ref(), Access::Admin, false)
             .await?;
         let handle = require_handle(&ctx)?;
-        self.hub.revoke_override(&ctx, &handle, msg).await.map(Response::new)
+        self.hub
+            .revoke_override(&ctx, &handle, msg)
+            .await
+            .map(Response::new)
     }
 
     async fn list_overrides(
@@ -740,5 +775,4 @@ impl Review for ReviewService {
             .await?;
         self.hub.hunk_context(&ctx, msg).await.map(Response::new)
     }
-
 }
