@@ -481,9 +481,12 @@ impl Restacker {
             })?;
         let windows_safe = self.refs.windows_safe(entry).await?;
 
-        let (steps, conflicts) = self
+        let (steps, conflicts, conflicted) = self
             .replay(engine, parsed, &heads, &pos, onto, committer, windows_safe)
             .await?;
+        if writes {
+            self.tell_conflicts(ctx, entry, &conflicted).await;
+        }
         if req.atomic && !conflicts.is_empty() {
             return Ok(wire::RestackChangesResponse {
                 conflicts,
@@ -626,9 +629,10 @@ impl Restacker {
         onto: ChangesetId,
         committer: &Signature,
         windows_safe: bool,
-    ) -> Result<(Vec<Step>, Vec<wire::Conflict>), Status> {
+    ) -> Result<(Vec<Step>, Vec<wire::Conflict>, Vec<ChangeId>), Status> {
         let mut steps = Vec::new();
         let mut conflicts = Vec::new();
+        let mut conflicted = Vec::new();
         let mut new_head: HashMap<ChangeId, ChangesetId> = HashMap::new();
         let mut blocked: HashSet<ChangeId> = HashSet::new();
         for (i, (item, head)) in parsed.items.iter().zip(heads).enumerate() {
@@ -662,6 +666,7 @@ impl Restacker {
                 Rebased::Done { id, .. } => id,
                 Rebased::Conflicts(found) => {
                     blocked.insert(item.change);
+                    conflicted.push(item.change);
                     let room = MAX_CONFLICTS.saturating_sub(conflicts.len());
                     conflicts.extend(found.iter().take(room).map(|c| conflict_wire(head.cs, c)));
                     continue;
@@ -680,7 +685,33 @@ impl Restacker {
             });
             new_head.insert(item.change, new);
         }
-        Ok((steps, conflicts))
+        Ok((steps, conflicts, conflicted))
+    }
+
+    /// The hub's `restack_conflict`: the people who made a change whose rebase hit a conflict are told
+    /// (the person who asked for the restack has the answer in hand).
+    async fn tell_conflicts(&self, ctx: &CallCtx, entry: &RepoEntry, conflicted: &[ChangeId]) {
+        let repo = entry.name.as_str();
+        let pool = self.registry.pool();
+        for change in conflicted {
+            let people =
+                crate::notify::authors_of(pool, entry.ns.as_bytes(), change.as_bytes()).await;
+            let asker = crate::review::handle_of(&ctx.principal.id).unwrap_or_default();
+            let hex = crate::review::rpc::hex_change(change.as_bytes());
+            crate::notify::emit(
+                pool,
+                repo,
+                crate::notify::Event::new(
+                    crate::notify::Kind::RestackConflict,
+                    "A restack stopped on a conflict",
+                )
+                .users(people)
+                .except(&asker)
+                .detail("Resolve the conflict, then restack the stack again.")
+                .path(crate::notify::paths::change(repo, &hex)),
+            )
+            .await;
+        }
     }
 
     /// `stored` again with the call's committer; the same changeset when it already has it.

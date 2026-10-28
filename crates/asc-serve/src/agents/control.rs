@@ -378,6 +378,7 @@ impl AgentsHub {
         let (repo, agent, run_id, now) =
             (run.repo.clone(), run.agent.clone(), i(run.id), clock::now());
         let (summary, detail) = (summary.to_owned(), detail.to_owned());
+        let detail_text = detail.clone();
         let id = self
             .insert_with_id(
                 "agent_run_requests",
@@ -417,6 +418,24 @@ impl AgentsHub {
                 ),
                 ("summary", summary_cut(&summary)),
             ],
+        )
+        .await;
+        let what = if kind == KIND_PLAN {
+            "wants its plan approved"
+        } else {
+            "asks for permission"
+        };
+        crate::notify::emit(
+            &self.core.pool,
+            &run.repo,
+            crate::notify::Event::new(
+                crate::notify::Kind::AgentQuestion,
+                format!("Agent {} {what}: {}", run.agent, summary_cut(&summary)),
+            )
+            .users(run_people(run))
+            .detail(detail_text.as_str())
+            .path(crate::notify::paths::run(&run.repo, run.id))
+            .dedup(format!("request:{id}")),
         )
         .await;
         Ok(u(id))
@@ -1527,6 +1546,17 @@ const MAX_NESTING: usize = 4;
 /// (`env`, `nice`, `timeout`, `sudo`, `xargs`, ...) is looked through at every position, so an option
 /// or a value of the wrapper does not hide the command; a shell or an interpreter always asks, and so
 /// does a command too long or too deeply wrapped to examine. Over-asking is the safe error.
+/// The people a run's notices are for: the person who started it, else the person it was created
+/// for. A workflow or a system principal has no login and gives nobody.
+pub(crate) fn run_people(run: &RunRow) -> Vec<String> {
+    [&run.starter, &run.created_by]
+        .into_iter()
+        .find(|h| crate::review::valid_handle(h))
+        .cloned()
+        .into_iter()
+        .collect()
+}
+
 pub fn needs_permission(argv: &[String], ask_before: &[Vec<String>]) -> bool {
     if ask_before.is_empty() {
         return false;

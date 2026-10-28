@@ -644,6 +644,12 @@ impl AgentsHub {
                         ],
                     )
                     .await;
+                    self.tell_finished(
+                        &fresh,
+                        RunState::Failed,
+                        "the server restarted while the run was running",
+                    )
+                    .await;
                 }
             }
         }
@@ -780,11 +786,43 @@ impl AgentsHub {
             ],
         )
         .await;
+        self.tell_finished(&fresh, state, &message).await;
         self.live
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&id);
         self.wake.notify_one();
+    }
+
+    /// Tells the person who started the run that it ended (the hub's `agent_finished`). A run the
+    /// person cancelled themself needs no notice.
+    async fn tell_finished(&self, run: &RunRow, state: RunState, message: &str) {
+        let how = match state {
+            RunState::Succeeded => "finished",
+            RunState::Cancelled => return,
+            RunState::Failed => "failed",
+            RunState::Expired => "ran out of time",
+            RunState::BudgetExceeded => "used up its budget",
+            _ => return,
+        };
+        let subject = if run.title.is_empty() {
+            &run.task
+        } else {
+            &run.title
+        };
+        crate::notify::emit(
+            &self.core.pool,
+            &run.repo,
+            crate::notify::Event::new(
+                crate::notify::Kind::AgentFinished,
+                format!("Agent {} {how}: {subject}", run.agent),
+            )
+            .users(super::control::run_people(run))
+            .detail(message)
+            .path(crate::notify::paths::run(&run.repo, run.id))
+            .dedup(format!("run:{}:finished", run.id)),
+        )
+        .await;
     }
 
     /// Watches one run: the cancel flag in the database, the deadline, the token, the heartbeat.
@@ -1432,6 +1470,22 @@ impl AgentsHub {
                                 .await;
                             self.event(&w, EventKind::State, "waiting_input", "", &[], "")
                                 .await;
+                            crate::notify::emit(
+                                &core.pool,
+                                &w.repo,
+                                crate::notify::Event::new(
+                                    crate::notify::Kind::AgentQuestion,
+                                    format!("Agent {} asks: {question}", w.agent),
+                                )
+                                .users(super::control::run_people(&w))
+                                .path(crate::notify::paths::run(&w.repo, w.id))
+                                .dedup(format!(
+                                    "run:{}:ask:{}",
+                                    w.id,
+                                    clock::now()
+                                )),
+                            )
+                            .await;
                         }
                         let answer = self.wait_input(run.id, live).await;
                         let _ = core.runs.set_question(run.id, "").await;

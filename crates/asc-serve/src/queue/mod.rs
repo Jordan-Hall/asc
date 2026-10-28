@@ -24,6 +24,7 @@ use bytes::Bytes;
 use sqlx::Row;
 use tonic::Status;
 
+use crate::registry::RepoEntry;
 use crate::review::acting;
 use crate::review::{
     Reviews, WriteError, after_token, change_of, next_id, now, page_limit, parse_after,
@@ -637,9 +638,21 @@ impl Reviews {
             tx.commit().await.map_err(sql)?;
             acting::record(
                 self.registry.pool(),
-                acting::event(ctx, "queue.dequeued", &id.to_string()).detail("reason", req.reason),
+                acting::event(ctx, "queue.dequeued", &id.to_string())
+                    .detail("reason", req.reason.clone()),
             )
             .await;
+            if row.enqueued_by != by {
+                let after = self.q_get(&ns, id).await?;
+                self.tell_queue(
+                    &entry,
+                    &after,
+                    "was dropped",
+                    &req.reason,
+                    &format!("{id}:7"),
+                )
+                .await;
+            }
         }
         let row = self.q_get(&ns, id).await?;
         Ok(wire::DequeueResponse {
@@ -951,15 +964,44 @@ impl Reviews {
             self.registry.pool(),
             acting::event(ctx, "queue.entry.reported", &id.to_string())
                 .detail("state", to.to_string())
-                .detail("detail", req.detail),
+                .detail("detail", req.detail.clone()),
         )
         .await;
         let row = self.q_get(&ns, id).await?;
+        let how = match to {
+            LANDED => Some("landed"),
+            BLOCKED => Some("is blocked"),
+            REMOVED => Some("was dropped"),
+            _ => None,
+        };
+        if let Some(how) = how {
+            self.tell_queue(&entry, &row, how, &req.detail, &format!("{id}:{to}"))
+                .await;
+        }
         let e = self.q_entry(&ns, &row).await?;
         Ok(wire::ReportQueueEntryResponse {
             timing: e.timing.clone(),
             entry: Some(e),
         })
+    }
+
+    /// The hub's `merge_queue`: the person who queued the entry is told when it lands, is blocked
+    /// or is dropped. `key` makes a repeated report tell once.
+    async fn tell_queue(&self, entry: &RepoEntry, row: &Entry, how: &str, why: &str, key: &str) {
+        let repo = entry.name.as_str();
+        crate::notify::emit(
+            self.registry.pool(),
+            repo,
+            crate::notify::Event::new(
+                crate::notify::Kind::MergeQueue,
+                format!("Your change in the merge queue for {} {how}", row.target),
+            )
+            .users([row.enqueued_by.as_str()])
+            .detail(why)
+            .path(crate::notify::paths::queue(repo))
+            .dedup(format!("queue:{key}")),
+        )
+        .await;
     }
 
     /// The entries named by events after `cursor`, oldest first, and the new cursor.

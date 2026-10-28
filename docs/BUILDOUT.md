@@ -535,6 +535,25 @@ A client calls it with the user's own credential.
 - **Estimates and stream.** `QueueEntry.timing` has `eta_seconds`, `starts_in_seconds`, the stage, the progress and the detail the host reported;
   the median comes from the last 20 landings. `Watch` starts with the live entries, then streams every change from a cursor.
 
+## 21. Notification events for the hub
+
+- `asc-serve/src/notify/` (migration `0576`, table `notify_events`, in `NS_TABLES`). asc serve tells the hub when something happens that a person has
+  to know about; the hub decides who may be told and how (inbox, email, quiet hours). The call is `POST /api/internal/asc/event` on the `[forgejo]`
+  url with the internal token, body `{event, repo, users, title, detail, path}`, answer `{notified}`.
+- **Events.** `agent_question` (a permission, a plan or an `ask_user` question), `agent_finished` (not for a run the person cancelled), `checks_failed`
+  (a failed check run of a change, to its authors), `restack_conflict` (to the authors of the change that conflicted), `merge_queue` (landed, blocked or
+  dropped, to the person who queued it), `policy_changed` (an update of trunk changed `.asc/policy.toml`, an outbox effect `notify.policy`, to the
+  recent contributors), `review_requested` (to the people newly asked) and `mentioned` (an `@login` in a comment, once per comment).
+  The hub today ingests the first six (`IngestEvents`); it sends the last two itself for reviews made on the hub, and answers `400` to them, which asc
+  records as rejected and does not retry.
+- **Limits, enforced here before the hub enforces them.** At most 50 logins per call (a longer list becomes several rows), title 200 bytes, detail
+  500 bytes, one line (control characters become spaces), path local to the hub (`/...`, not `//`, no spaces), a repository name `owner/name`.
+- **Outbox and retry.** `emit` writes a row and returns; it never fails the operation that caused the event. The dispatcher leases due rows, posts
+  them and records the outcome: delivered; refused (a `4xx` except 408, 425 and 429, or an answer it cannot read) is final; anything else backs off
+  from 1 s to 5 min. A row older than a day is given up; finished rows are deleted after a week. Each post carries `x-asc-event-id`, so a hub can drop a
+  redelivery. A key (`dedup`) makes a cause tell once per repository; a repository holds at most 2000 undelivered rows.
+- Without `[forgejo]` and its internal token the rows are written and given up after a day; nothing is posted.
+
 ## Error codes
 
 All are `ErrorDetail.code` values, registered in `crates/asc-rpc/src/errors.rs` and mapped in `server.rs`; the test

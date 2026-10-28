@@ -111,9 +111,14 @@ pub trait PushHooks: Send + Sync {
 
     /// Effects the step-8 transaction queues in the outbox, in order: the forge's `post_receive`,
     /// then `codeintel.enqueue`, which queues the update's new files for the indexing workers
-    /// (a no-op unless `[codeintel]` is enabled, see `outbox::Outbox`).
+    /// (a no-op unless `[codeintel]` is enabled, see `outbox::Outbox`), then `notify.policy`,
+    /// which tells the contributors when the update of trunk changed the policy.
     fn outbox_effects(&self) -> &'static [&'static str] {
-        &["post_receive", crate::codeintel::queue::EFFECT]
+        &[
+            "post_receive",
+            crate::codeintel::queue::EFFECT,
+            crate::notify::policy::EFFECT,
+        ]
     }
 }
 
