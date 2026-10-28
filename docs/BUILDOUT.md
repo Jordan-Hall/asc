@@ -469,6 +469,28 @@ A client calls it with the user's own credential.
 
 ---
 
+## 16. Calls the host makes for a person (review feature gaps)
+
+- **Claim-aware repository calls.** `Env::context` (`asc-serve/src/review/acting.rs`) is the one place a repository RPC of the `Review`, `Inbox`,
+  `Ci` and `Agents` services learns who is calling. The host service (the hub) may attach the signed claim of `asc_rpc::forwarded`
+  (`x-asc-forwarded-*`, subject = `owner/name`, role `read`, `write` or `admin`). A claim that verifies and covers the access the RPC needs
+  makes the call act as the person (`ctx.principal`) with that role and no more; a claim that does not verify, is for another subject
+  (another tenant), is too old or too small is `PERMISSION_DENIED`, never system work; a caller that is not the host ignores the metadata.
+  Audit events of such a call name the person as the actor and `host` as `on_behalf_of` (`acting::event`).
+- **Hub comments.** `Review.AddComment` takes `external_id` (the hub's own comment id, at most 128 bytes of `[A-Za-z0-9._:/-]`): mirroring
+  the same id twice stores it once, and an id never names a comment of another change (`ALREADY_EXISTS`). `ReviewComment.external_id`
+  returns it. New audit actions: `review.comment.added`, `review.thread.resolved`, `review.requested`. Migration `0570`.
+- **Not built yet** (rows of `docs/asc/feature-gaps/review.md` in the hub): suggested changes and apply-as-vN, the review brief and
+  provenance, approval carry-over, agent plan/permission/pause/checkpoint/limit RPCs, spend and monthly budgets, gate statistics and
+  overrides, the merge queue server, and the settings/repo/shell rows. See `gaps-review-asc.md`.
+
+## 17. TSRX in code intelligence
+
+- Language `tsrx` (extension `.tsrx`); see SPEC section 23.6. Kinds `component` and `scope` are added to the tag kinds (additive: a
+  client that does not know them shows the name). Golden tags: `asc-codeintel/tests/fixtures/tags/sample.tsrx.golden`; scanner tests in
+  `asc-codeintel/src/tsrx/tests.rs`.
+- `asc stack submit|sync|restack|share` run the same commands as the top-level verbs (they answered "not supported yet").
+
 ## Error codes
 
 All are `ErrorDetail.code` values, registered in `crates/asc-rpc/src/errors.rs` and mapped in `server.rs`; the test
