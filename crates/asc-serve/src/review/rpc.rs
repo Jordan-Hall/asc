@@ -728,4 +728,16 @@ impl Review for ReviewService {
         self.hub.list_overrides(&ctx, msg).await.map(Response::new)
     }
 
+    async fn hunk_context(
+        &self,
+        request: Request<wire::HunkContextRequest>,
+    ) -> Result<Response<wire::HunkContextResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
+            .await?;
+        self.hub.hunk_context(&ctx, msg).await.map(Response::new)
+    }
+
 }

@@ -762,4 +762,28 @@ impl Ci for CiService {
             .await?;
         self.hub.ci_append_log(&ctx, msg).await.map(Response::new)
     }
+    async fn stats(
+        &self,
+        request: Request<wire::CiStatsRequest>,
+    ) -> Result<Response<wire::CiStatsResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
+            .await?;
+        self.hub.ci_stats(&ctx, msg).await.map(Response::new)
+    }
+
+    async fn compare_with_main(
+        &self,
+        request: Request<wire::CompareWithMainRequest>,
+    ) -> Result<Response<wire::CompareWithMainResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
+            .await?;
+        self.hub.ci_compare_with_main(&ctx, msg).await.map(Response::new)
+    }
+
 }

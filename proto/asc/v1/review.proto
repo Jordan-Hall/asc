@@ -28,6 +28,7 @@ service Review {
   rpc GrantOverride(GrantOverrideRequest) returns (GrantOverrideResponse);        // repo admin; reason required; audited; x-asc-op-id
   rpc RevokeOverride(RevokeOverrideRequest) returns (RevokeOverrideResponse);     // repo admin; idempotent
   rpc ListOverrides(ListOverridesRequest) returns (ListOverridesResponse);        // repo read; paged
+  rpc HunkContext(HunkContextRequest) returns (HunkContextResponse);              // repo read; the definitions around the lines a hunk starts at
 }
 
 enum ThreadStatus {
@@ -415,4 +416,29 @@ message ListOverridesRequest {
 message ListOverridesResponse {
   repeated GateOverride overrides = 1;   // newest first
   string next_page_token = 2;
+}
+
+// ---------------------------------------------------------------------------------------------------- hunk context
+
+// For each line a hunk starts at, the chain of definitions around it, outermost first: `["UserList", "@for (const user of users)",
+// "@if (user.bio)"]` in a TSRX file, `["Parser", "parse"]` in Rust. Repo read. `version` 0 means the newest. At most 200 lines. A
+// file with no grammar answers empty chains. (Git's own hunk header rule stays in `asc diff`, so its output matches git's.)
+message HunkContextRequest {
+  RepoRef repo = 1;
+  bytes change = 2 [(asc.v1.json) = JSON_KIND_CHANGE];
+  uint32 version = 3;
+  bytes path = 4 [(asc.v1.json) = JSON_KIND_PATH];
+  repeated uint32 lines = 5;             // 1-based lines of the version
+}
+message HunkContextEntry {
+  string name = 1;
+  string kind = 2;                       // function, method, class, module, component, scope, ...
+}
+message HunkContextLine {
+  uint32 line = 1;
+  repeated HunkContextEntry chain = 2;
+}
+message HunkContextResponse {
+  string language = 1;
+  repeated HunkContextLine lines = 2;
 }

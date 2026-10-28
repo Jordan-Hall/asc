@@ -38,7 +38,7 @@ async fn run(f: &Fx, id: &str, change: u8, status: C, jobs: &[(&str, i64)], secs
         .await
         .unwrap()
         .into_inner();
-    let rid = i64::try_from(r.id).unwrap();
+    let rid = i64::try_from(r.run.unwrap().id).unwrap();
     let now = crate::review::now() - age_days * 86_400;
     sqlx::query("UPDATE check_runs SET created = $2, started = $3, finished = $4 WHERE id = $1 AND ns = $5")
         .bind(rid)
