@@ -122,7 +122,7 @@ async fn comments_of(
     let mut out: HashMap<i64, Vec<wire::ReviewComment>> = HashMap::new();
     for chunk in threads.chunks(100) {
         let q = format!(
-            "SELECT id, thread, author, body, created, external_id FROM review_comments \
+            "SELECT id, thread, author, body, created, external_id, suggestion, applied_version, applied_by FROM review_comments \
              WHERE ns = $1 AND thread IN ({}) ORDER BY id",
             placeholders(2, chunk.len())
         );
@@ -139,6 +139,9 @@ async fn comments_of(
                     body: r.try_get("body")?,
                     created: r.try_get("created")?,
                     external_id: r.try_get("external_id")?,
+                    suggestion: r.try_get("suggestion")?,
+                    applied_version: u32::try_from(r.try_get::<i64, _>("applied_version")?).unwrap_or(0),
+                    applied_by: r.try_get("applied_by")?,
                 });
         }
     }
@@ -287,6 +290,7 @@ pub(crate) struct NewComment<'a> {
     pub at: i64,
     /// The host's own id of the comment, or empty.
     pub external_id: &'a str,
+    pub suggestion: &'a str,
 }
 
 /// The `(thread, comment)` already stored under the host's `external_id`, if any.
@@ -312,7 +316,7 @@ pub(crate) async fn insert_comment(
     c: &NewComment<'_>,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO review_comments (ns, id, thread, author, body, created, external_id)          VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        "INSERT INTO review_comments (ns, id, thread, author, body, created, external_id, suggestion) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
     .bind(ns_of(ns))
     .bind(c.id)
@@ -321,6 +325,7 @@ pub(crate) async fn insert_comment(
     .bind(c.body.to_owned())
     .bind(c.at)
     .bind(c.external_id.to_owned())
+    .bind(c.suggestion.to_owned())
     .execute(&mut *conn)
     .await?;
     sqlx::query("UPDATE review_threads SET updated = $3 WHERE ns = $1 AND id = $2")

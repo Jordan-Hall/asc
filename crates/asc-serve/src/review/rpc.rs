@@ -216,6 +216,10 @@ impl Reviews {
         let change = change_of(&req.change)?;
         let body = body_of(&req.body)?;
         let external = external_of(&req.external_id)?;
+        let suggestion = req.suggestion.as_str();
+        if suggestion.len() > MAX_BODY || suggestion.contains('\0') {
+            return Err(Status::invalid_argument("a suggestion is at most 64 KiB of text"));
+        }
         let op_id = ctx
             .op_id
             .ok_or_else(|| Status::invalid_argument("mutating calls need x-asc-op-id"))?;
@@ -239,6 +243,7 @@ impl Reviews {
                 anchor.as_ref(),
                 op_id,
                 external,
+                suggestion,
             )
         })
         .await?;
@@ -267,6 +272,7 @@ impl Reviews {
         anchor: Option<&Anchor>,
         op_id: Uuid,
         external: &str,
+        suggestion: &str,
     ) -> Result<(i64, i64), WriteError> {
         // A retry of a call that already committed answers with the first result.
         if let Some(done) = self.stored(entry, op_id).await? {
@@ -335,6 +341,17 @@ impl Reviews {
             }
             (None, None) => return Err(Status::invalid_argument("missing anchor").into()),
         };
+        if !suggestion.is_empty() {
+            let on_lines: Option<(Vec<u8>, i64)> =
+                sqlx::query_as("SELECT path, start_line FROM review_threads WHERE ns = $1 AND id = $2")
+                    .bind(ns.as_bytes().to_vec())
+                    .bind(thread)
+                    .fetch_optional(&mut *tx)
+                    .await?;
+            if on_lines.is_none_or(|(p, l)| p.is_empty() || l == 0) {
+                return Err(Status::invalid_argument("a suggestion needs a thread on lines").into());
+            }
+        }
         let comment = next_id(&mut tx, "review_comments", ns.as_bytes()).await?;
         store::insert_comment(
             &mut tx,
@@ -346,6 +363,7 @@ impl Reviews {
                 body,
                 at,
                 external_id: external,
+                suggestion,
             },
         )
         .await?;
@@ -559,5 +577,93 @@ impl Review for ReviewService {
             .request_review(&ctx, &handle, msg)
             .await
             .map(Response::new)
+    }
+
+    async fn get_brief(
+        &self,
+        request: Request<wire::GetBriefRequest>,
+    ) -> Result<Response<wire::GetBriefResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
+            .await?;
+        self.hub.get_brief(&ctx, msg).await.map(Response::new)
+    }
+
+    async fn set_brief(
+        &self,
+        request: Request<wire::SetBriefRequest>,
+    ) -> Result<Response<wire::SetBriefResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
+            .await?;
+        let handle = require_handle(&ctx)?;
+        let can_write = self.env.has(&ext, &ctx, Access::Write).await;
+        self.hub.set_brief(&ctx, &handle, can_write, msg).await.map(Response::new)
+    }
+
+    async fn record_approval(
+        &self,
+        request: Request<wire::RecordApprovalRequest>,
+    ) -> Result<Response<wire::RecordApprovalResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Write, false)
+            .await?;
+        let handle = require_handle(&ctx)?;
+        self.hub.record_approval(&ctx, &handle, msg).await.map(Response::new)
+    }
+
+    async fn compare_versions(
+        &self,
+        request: Request<wire::CompareVersionsRequest>,
+    ) -> Result<Response<wire::CompareVersionsResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
+            .await?;
+        self.hub.compare_versions(&ctx, msg).await.map(Response::new)
+    }
+
+    async fn prepare_suggestion(
+        &self,
+        request: Request<wire::PrepareSuggestionRequest>,
+    ) -> Result<Response<wire::PrepareSuggestionResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Write, false)
+            .await?;
+        self.hub.prepare_suggestion(&ctx, msg).await.map(Response::new)
+    }
+
+    async fn mark_suggestion_applied(
+        &self,
+        request: Request<wire::MarkSuggestionAppliedRequest>,
+    ) -> Result<Response<wire::MarkSuggestionAppliedResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Write, false)
+            .await?;
+        let handle = require_handle(&ctx)?;
+        self.hub.mark_suggestion_applied(&ctx, &handle, msg).await.map(Response::new)
+    }
+
+    async fn suggest_reviewers(
+        &self,
+        request: Request<wire::SuggestReviewersRequest>,
+    ) -> Result<Response<wire::SuggestReviewersResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
+            .await?;
+        self.hub.suggest_reviewers(&ctx, msg).await.map(Response::new)
     }
 }
