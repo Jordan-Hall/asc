@@ -834,16 +834,9 @@ impl Reviews {
             .map_err(sql)?;
         acting::record(
             self.registry.pool(),
-            acting::event(
-                ctx,
-                if req.paused {
-                    "queue.paused"
-                } else {
-                    "queue.resumed"
-                },
-                &target,
-            )
-            .detail("reason", req.reason),
+            acting::event(ctx, "queue.paused", &target)
+                .detail("paused", req.paused.to_string())
+                .detail("reason", req.reason),
         )
         .await;
         Ok(wire::SetQueuePausedResponse { paused: req.paused })

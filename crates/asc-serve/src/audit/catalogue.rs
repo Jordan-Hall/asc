@@ -275,7 +275,7 @@ pub const CATALOGUE: &[ActionInfo] = &[
     a(
         "review.brief.set",
         "The brief of a change (what, why, how, where to look) was written.",
-        &[],
+        &["change"],
     ),
     a(
         "review.approval.recorded",
@@ -295,27 +295,7 @@ pub const CATALOGUE: &[ActionInfo] = &[
     a(
         "review.override.revoked",
         "An exception to a rule of the policy gate was withdrawn.",
-        &[],
-    ),
-    a(
-        "queue.enqueued",
-        "A change was added to the merge queue.",
-        &["change", "target"],
-    ),
-    a(
-        "queue.dequeued",
-        "An entry was removed from the merge queue.",
-        &["reason"],
-    ),
-    a(
-        "queue.paused",
-        "The merge queue of a branch was paused.",
-        &["reason"],
-    ),
-    a(
-        "queue.resumed",
-        "The merge queue of a branch was resumed.",
-        &["reason"],
+        &["override"],
     ),
     a(
         "queue.entry.reported",
