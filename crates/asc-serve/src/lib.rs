@@ -657,6 +657,11 @@ pub async fn serve(
     #[cfg_attr(not(feature = "git-compat"), allow(unused_mut))]
     let mut features = vec![projects::feature()];
     features.extend(review::features());
+    // `changes.v1` tells a client to upload the `m/` change metadata with its closure; without it
+    // a submitted changeset gets a change id of the server's own and no topic can name it.
+    if ext.changes.get().is_some() {
+        features.push(asc_engine::sync::changes::FEATURE.to_owned());
+    }
     features.push(audit::FEATURE.to_owned());
     features.push(audit::STACKS_FEATURE.to_owned());
     features.push(ci::insights::FEATURE.to_owned());
