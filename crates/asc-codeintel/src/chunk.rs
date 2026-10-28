@@ -226,7 +226,7 @@ fn language_of(lang: Lang) -> Language {
     match lang {
         Lang::Rust => tree_sitter_rust::LANGUAGE.into(),
         Lang::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-        Lang::Tsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
+        Lang::Tsx | Lang::Tsrx => tree_sitter_typescript::LANGUAGE_TSX.into(),
         Lang::JavaScript => tree_sitter_javascript::LANGUAGE.into(),
         Lang::Python => tree_sitter_python::LANGUAGE.into(),
         Lang::CSharp => tree_sitter_c_sharp::LANGUAGE.into(),
@@ -244,6 +244,7 @@ fn collapsible(k: Kind) -> bool {
             | Kind::Trait
             | Kind::Impl
             | Kind::Function
+            | Kind::Component
             | Kind::Method
             | Kind::Module
     )
@@ -467,8 +468,16 @@ fn ast_chunks(lang: Lang, src: &[u8], lines: &Lines) -> Option<Vec<Chunk>> {
             ControlFlow::Continue(())
         }
     };
+    // A TSRX file is parsed with its template regions blanked; offsets and rows are unchanged.
+    let masked;
+    let parse_src: &[u8] = if lang == Lang::Tsrx {
+        masked = crate::tsrx::analyze(src).masked;
+        &masked
+    } else {
+        src
+    };
     let tree = parser.parse_with_options(
-        &mut |i, _| if i < src.len() { &src[i..] } else { &[][..] },
+        &mut |i, _| if i < parse_src.len() { &parse_src[i..] } else { &[][..] },
         None,
         Some(ParseOptions::new().progress_callback(&mut cancel)),
     )?;

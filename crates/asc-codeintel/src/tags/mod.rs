@@ -4,6 +4,7 @@
 
 mod grammar;
 mod text;
+mod tsrx;
 
 use std::cell::Cell;
 use std::collections::HashSet;
@@ -68,10 +69,14 @@ pub enum Kind {
     Property,
     Macro,
     Call,
+    /// A TSRX component: a function whose body is a `@{` container.
+    Component,
+    /// A TSRX control-flow body: `@for (...) { }`, `@if (...) { }`, ...
+    Scope,
 }
 
 impl Kind {
-    const ALL: [Kind; 17] = [
+    const ALL: [Kind; 19] = [
         Kind::Function,
         Kind::Method,
         Kind::Class,
@@ -89,6 +94,8 @@ impl Kind {
         Kind::Property,
         Kind::Macro,
         Kind::Call,
+        Kind::Component,
+        Kind::Scope,
     ];
 
     pub fn name(self) -> &'static str {
@@ -110,6 +117,8 @@ impl Kind {
             Kind::Property => "property",
             Kind::Macro => "macro",
             Kind::Call => "call",
+            Kind::Component => "component",
+            Kind::Scope => "scope",
         }
     }
 
@@ -166,6 +175,11 @@ pub fn extract_within(lang: Lang, src: &[u8], budget: Duration) -> Result<Vec<Ta
     if src.len() > MAX_BYTES {
         return Err(TagsError::TooLarge);
     }
+    // A TSRX file is parsed with its template regions blanked (same offsets, same rows); the
+    // template's own names come from the analysis and are added at the end.
+    let analysis = (lang == Lang::Tsrx).then(|| crate::tsrx::analyze(src));
+    let original = src;
+    let src: &[u8] = analysis.as_ref().map_or(src, |a| a.masked.as_slice());
     let language = grammar::language(lang)?;
     let query = grammar::query(lang)?;
     let deadline = Instant::now() + budget;
@@ -256,7 +270,11 @@ pub fn extract_within(lang: Lang, src: &[u8], budget: Duration) -> Result<Vec<Ta
     if cancelled.get() {
         return Err(TagsError::Cancelled);
     }
-    Ok(finish(raw))
+    let mut tags = finish(raw);
+    if let Some(a) = &analysis {
+        tsrx::add(&mut tags, a, original);
+    }
+    Ok(tags)
 }
 
 fn range_of(n: Node) -> Range {

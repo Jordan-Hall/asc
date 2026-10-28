@@ -16,7 +16,7 @@ fn language_of(lang: Lang) -> Language {
     match lang {
         Lang::Rust => tree_sitter_rust::LANGUAGE.into(),
         Lang::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-        Lang::Tsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
+        Lang::Tsx | Lang::Tsrx => tree_sitter_typescript::LANGUAGE_TSX.into(),
         Lang::JavaScript => tree_sitter_javascript::LANGUAGE.into(),
         Lang::Python => tree_sitter_python::LANGUAGE.into(),
         Lang::CSharp => tree_sitter_c_sharp::LANGUAGE.into(),
@@ -28,7 +28,7 @@ fn language_of(lang: Lang) -> Language {
 pub fn query_source(lang: Lang) -> &'static str {
     match lang {
         Lang::Rust => include_str!("../../queries/rust/tags.scm"),
-        Lang::TypeScript | Lang::Tsx => include_str!("../../queries/typescript/tags.scm"),
+        Lang::TypeScript | Lang::Tsx | Lang::Tsrx => include_str!("../../queries/typescript/tags.scm"),
         Lang::JavaScript => include_str!("../../queries/javascript/tags.scm"),
         Lang::Python => include_str!("../../queries/python/tags.scm"),
         Lang::CSharp => include_str!("../../queries/csharp/tags.scm"),
@@ -37,7 +37,7 @@ pub fn query_source(lang: Lang) -> &'static str {
 }
 
 fn slot(lang: Lang) -> &'static OnceLock<Result<Compiled, String>> {
-    static SLOTS: [OnceLock<Result<Compiled, String>>; 7] = [const { OnceLock::new() }; 7];
+    static SLOTS: [OnceLock<Result<Compiled, String>>; 8] = [const { OnceLock::new() }; 8];
     let i = match lang {
         Lang::Rust => 0,
         Lang::TypeScript => 1,
@@ -46,6 +46,7 @@ fn slot(lang: Lang) -> &'static OnceLock<Result<Compiled, String>> {
         Lang::Python => 4,
         Lang::CSharp => 5,
         Lang::Go => 6,
+        Lang::Tsrx => 7,
     };
     &SLOTS[i]
 }

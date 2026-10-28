@@ -17,4 +17,5 @@ pub mod secrets;
 pub mod skip;
 pub mod symbols;
 pub mod tags;
+pub mod tsrx;
 pub mod vectors;
