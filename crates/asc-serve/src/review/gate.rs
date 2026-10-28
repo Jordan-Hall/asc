@@ -16,7 +16,10 @@ use sha2::{Digest, Sha256};
 use sqlx::Row;
 use tonic::Status;
 
-use super::{Reviews, WriteError, after_token, change_of, next_id, now, page_limit, parse_after, retry_conflict, sql, store};
+use super::{
+    Reviews, WriteError, after_token, change_of, next_id, now, page_limit, parse_after,
+    retry_conflict, sql, store,
+};
 
 /// Evaluations a statistics call reads, and rules one decision holds.
 pub const MAX_ROWS: i64 = 20_000;
@@ -34,11 +37,26 @@ fn day_of(secs: i64) -> String {
     crate::agents::control::day_of(secs)
 }
 
-fn proof_of(prev: &[u8], id: i64, change: &[u8], rule: &str, reason: &str, by: &str, at: i64) -> Vec<u8> {
+fn proof_of(
+    prev: &[u8],
+    id: i64,
+    change: &[u8],
+    rule: &str,
+    reason: &str,
+    by: &str,
+    at: i64,
+) -> Vec<u8> {
     let mut h = Sha256::new();
     h.update(b"asc-override-v1\n");
     h.update(prev);
-    for part in [id.to_string().as_bytes(), change, rule.as_bytes(), reason.as_bytes(), by.as_bytes(), at.to_string().as_bytes()] {
+    for part in [
+        id.to_string().as_bytes(),
+        change,
+        rule.as_bytes(),
+        reason.as_bytes(),
+        by.as_bytes(),
+        at.to_string().as_bytes(),
+    ] {
         h.update((part.len() as u64).to_be_bytes());
         h.update(part);
     }
@@ -60,7 +78,8 @@ fn override_of(r: &sqlx::any::AnyRow) -> Result<wire::GateOverride, Status> {
     })
 }
 
-const OVERRIDE_COLS: &str = "id, change, rule, reason, granted_by, granted_at, revoked_by, revoked_at, prev, proof";
+const OVERRIDE_COLS: &str =
+    "id, change, rule, reason, granted_by, granted_at, revoked_by, revoked_at, prev, proof";
 
 impl Reviews {
     /// `Review.RecordGateDecision`.
@@ -70,12 +89,20 @@ impl Reviews {
         req: wire::RecordGateDecisionRequest,
     ) -> Result<wire::RecordGateDecisionResponse, Status> {
         let change = change_of(&req.change)?;
-        if req.rules.len() > MAX_RULES || req.rules.iter().any(|r| r.rule.is_empty() || r.rule.len() > MAX_RULE) {
-            return Err(Status::invalid_argument("at most 64 rules of 1 to 120 bytes"));
+        if req.rules.len() > MAX_RULES
+            || req
+                .rules
+                .iter()
+                .any(|r| r.rule.is_empty() || r.rule.len() > MAX_RULE)
+        {
+            return Err(Status::invalid_argument(
+                "at most 64 rules of 1 to 120 bytes",
+            ));
         }
         let entry = self.open(ctx).await?;
         let ns = entry.ns;
-        let rules: Vec<(String, bool)> = req.rules.iter().map(|r| (r.rule.clone(), r.held)).collect();
+        let rules: Vec<(String, bool)> =
+            req.rules.iter().map(|r| (r.rule.clone(), r.held)).collect();
         let passed = !rules.iter().any(|r| r.1);
         let json = serde_json::to_string(&rules).unwrap_or_else(|_| "[]".to_owned());
         let at = now();
@@ -85,7 +112,11 @@ impl Reviews {
             return Err(Status::not_found("unknown change"));
         }
         let latest = store::latest_version(&mut tx, ns, change).await?;
-        let version = if req.version == 0 { latest } else { req.version };
+        let version = if req.version == 0 {
+            latest
+        } else {
+            req.version
+        };
         if version == 0 || version > latest {
             return Err(Status::invalid_argument("unknown version"));
         }
@@ -111,7 +142,10 @@ impl Reviews {
                 (passed, false)
             }
             Some(r) => {
-                let (first, was): (i64, i64) = (r.try_get("first_passed").map_err(sql)?, r.try_get("passed").map_err(sql)?);
+                let (first, was): (i64, i64) = (
+                    r.try_get("first_passed").map_err(sql)?,
+                    r.try_get("passed").map_err(sql)?,
+                );
                 let cleared_at: i64 = r.try_get("cleared_at").map_err(sql)?;
                 let clears = was == 0 && passed;
                 let new_cleared = if clears {
@@ -136,11 +170,19 @@ impl Reviews {
             }
         };
         tx.commit().await.map_err(sql)?;
-        Ok(wire::RecordGateDecisionResponse { passed, first_time, cleared })
+        Ok(wire::RecordGateDecisionResponse {
+            passed,
+            first_time,
+            cleared,
+        })
     }
 
     /// `Review.GetGateStats`.
-    pub async fn get_gate_stats(&self, ctx: &CallCtx, req: wire::GetGateStatsRequest) -> Result<wire::GetGateStatsResponse, Status> {
+    pub async fn get_gate_stats(
+        &self,
+        ctx: &CallCtx,
+        req: wire::GetGateStatsRequest,
+    ) -> Result<wire::GetGateStatsResponse, Status> {
         let days = match req.days {
             0 => 30,
             n => i64::from(n.min(365)),
@@ -160,7 +202,10 @@ impl Reviews {
         .await
         .map_err(sql)?;
         let truncated = rows.len() as i64 > MAX_ROWS;
-        let mut out = wire::GetGateStatsResponse { truncated, ..Default::default() };
+        let mut out = wire::GetGateStatsResponse {
+            truncated,
+            ..Default::default()
+        };
         let mut per_day: BTreeMap<String, (u32, u32)> = BTreeMap::new();
         for i in 0..=days {
             per_day.insert(day_of(end - (days - i) * DAY), (0, 0));
@@ -190,7 +235,9 @@ impl Reviews {
             } else {
                 out.passed_first_time += 1;
             }
-            let rules: Vec<(String, bool)> = serde_json::from_str(&r.try_get::<String, _>("rules_json").map_err(sql)?).unwrap_or_default();
+            let rules: Vec<(String, bool)> =
+                serde_json::from_str(&r.try_get::<String, _>("rules_json").map_err(sql)?)
+                    .unwrap_or_default();
             for (rule, held) in rules {
                 let c = per_rule.entry(rule).or_default();
                 c.0 += 1;
@@ -200,26 +247,58 @@ impl Reviews {
             }
         }
         clear_times.sort_unstable();
-        out.median_clear_seconds = clear_times.get(clear_times.len() / 2).map_or(0, |s| u32_of(*s));
-        out.per_day = per_day.into_iter().map(|(day, (checked, held))| wire::GateDay { day, checked, held }).collect();
+        out.median_clear_seconds = clear_times
+            .get(clear_times.len() / 2)
+            .map_or(0, |s| u32_of(*s));
+        out.per_day = per_day
+            .into_iter()
+            .map(|(day, (checked, held))| wire::GateDay { day, checked, held })
+            .collect();
         let mut rules: Vec<(String, (u32, u32))> = per_rule.into_iter().collect();
-        rules.sort_by(|a, b| b.1.1.cmp(&a.1.1).then_with(|| b.1.0.cmp(&a.1.0)).then_with(|| a.0.cmp(&b.0)));
-        out.per_rule = rules.into_iter().map(|(rule, (checked, held))| wire::GateRuleCount { rule, checked, held }).collect();
-        let active: i64 = sqlx::query_scalar("SELECT CAST(COUNT(*) AS BIGINT) FROM gate_overrides WHERE ns = $1 AND revoked_at = 0")
-            .bind(ns)
-            .fetch_one(self.registry.pool())
-            .await
-            .map_err(sql)?;
+        rules.sort_by(|a, b| {
+            b.1.1
+                .cmp(&a.1.1)
+                .then_with(|| b.1.0.cmp(&a.1.0))
+                .then_with(|| a.0.cmp(&b.0))
+        });
+        out.per_rule = rules
+            .into_iter()
+            .map(|(rule, (checked, held))| wire::GateRuleCount {
+                rule,
+                checked,
+                held,
+            })
+            .collect();
+        let active: i64 = sqlx::query_scalar(
+            "SELECT CAST(COUNT(*) AS BIGINT) FROM gate_overrides WHERE ns = $1 AND revoked_at = 0",
+        )
+        .bind(ns)
+        .fetch_one(self.registry.pool())
+        .await
+        .map_err(sql)?;
         out.overrides_active = u32_of(active);
         Ok(out)
     }
 
     /// `Review.GrantOverride`. `by` is the verified maintainer.
-    pub async fn grant_override(&self, ctx: &CallCtx, by: &str, req: wire::GrantOverrideRequest) -> Result<wire::GrantOverrideResponse, Status> {
+    pub async fn grant_override(
+        &self,
+        ctx: &CallCtx,
+        by: &str,
+        req: wire::GrantOverrideRequest,
+    ) -> Result<wire::GrantOverrideResponse, Status> {
         let change = change_of(&req.change)?;
         let (rule, reason) = (req.rule.trim().to_owned(), req.reason.trim().to_owned());
-        if rule.is_empty() || rule.len() > MAX_RULE || reason.is_empty() || reason.len() > MAX_REASON || reason.contains('\0') || rule.contains('\0') {
-            return Err(Status::invalid_argument("an override needs a rule (up to 120 bytes) and a reason (up to 500 bytes)"));
+        if rule.is_empty()
+            || rule.len() > MAX_RULE
+            || reason.is_empty()
+            || reason.len() > MAX_REASON
+            || reason.contains('\0')
+            || rule.contains('\0')
+        {
+            return Err(Status::invalid_argument(
+                "an override needs a rule (up to 120 bytes) and a reason (up to 500 bytes)",
+            ));
         }
         let entry = self.open(ctx).await?;
         let ns = entry.ns;
@@ -260,10 +339,16 @@ impl Reviews {
                 .detail("reason", reason),
         )
         .await;
-        Ok(wire::GrantOverrideResponse { r#override: Some(self.override_row(&entry, id).await?) })
+        Ok(wire::GrantOverrideResponse {
+            r#override: Some(self.override_row(&entry, id).await?),
+        })
     }
 
-    async fn override_row(&self, entry: &crate::registry::RepoEntry, id: i64) -> Result<wire::GateOverride, Status> {
+    async fn override_row(
+        &self,
+        entry: &crate::registry::RepoEntry,
+        id: i64,
+    ) -> Result<wire::GateOverride, Status> {
         let q = format!("SELECT {OVERRIDE_COLS} FROM gate_overrides WHERE ns = $1 AND id = $2");
         let r = sqlx::query(sqlx::AssertSqlSafe(q))
             .bind(entry.ns.as_bytes().to_vec())
@@ -276,8 +361,16 @@ impl Reviews {
     }
 
     /// `Review.RevokeOverride`.
-    pub async fn revoke_override(&self, ctx: &CallCtx, by: &str, req: wire::RevokeOverrideRequest) -> Result<wire::RevokeOverrideResponse, Status> {
-        let id = i64::try_from(req.id).ok().filter(|n| *n > 0).ok_or_else(|| Status::invalid_argument("invalid id"))?;
+    pub async fn revoke_override(
+        &self,
+        ctx: &CallCtx,
+        by: &str,
+        req: wire::RevokeOverrideRequest,
+    ) -> Result<wire::RevokeOverrideResponse, Status> {
+        let id = i64::try_from(req.id)
+            .ok()
+            .filter(|n| *n > 0)
+            .ok_or_else(|| Status::invalid_argument("invalid id"))?;
         let entry = self.open(ctx).await?;
         self.override_row(&entry, id).await?;
         sqlx::query("UPDATE gate_overrides SET revoked_by = $3, revoked_at = $4 WHERE ns = $1 AND id = $2 AND revoked_at = 0")
@@ -288,12 +381,22 @@ impl Reviews {
             .execute(self.registry.pool())
             .await
             .map_err(sql)?;
-        super::acting::record(self.registry.pool(), super::acting::event(ctx, "review.override.revoked", &id.to_string())).await;
-        Ok(wire::RevokeOverrideResponse { r#override: Some(self.override_row(&entry, id).await?) })
+        super::acting::record(
+            self.registry.pool(),
+            super::acting::event(ctx, "review.override.revoked", &id.to_string()),
+        )
+        .await;
+        Ok(wire::RevokeOverrideResponse {
+            r#override: Some(self.override_row(&entry, id).await?),
+        })
     }
 
     /// `Review.ListOverrides`.
-    pub async fn list_overrides(&self, ctx: &CallCtx, req: wire::ListOverridesRequest) -> Result<wire::ListOverridesResponse, Status> {
+    pub async fn list_overrides(
+        &self,
+        ctx: &CallCtx,
+        req: wire::ListOverridesRequest,
+    ) -> Result<wire::ListOverridesResponse, Status> {
         let entry = self.open(ctx).await?;
         let limit = page_limit(req.limit, 50, 200);
         let scope = format!("Review.ListOverrides|{}", ctx.repo);
@@ -320,13 +423,22 @@ impl Reviews {
             q = q.bind(change_of(&req.change)?.as_bytes().to_vec());
         }
         let rows = q.fetch_all(self.registry.pool()).await.map_err(sql)?;
-        let mut overrides = rows.iter().map(override_of).collect::<Result<Vec<_>, _>>()?;
+        let mut overrides = rows
+            .iter()
+            .map(override_of)
+            .collect::<Result<Vec<_>, _>>()?;
         let next = if overrides.len() > limit {
             overrides.truncate(limit);
-            overrides.last().map(|o| after_token(&scope, &ctx.principal.id, o.id)).unwrap_or_default()
+            overrides
+                .last()
+                .map(|o| after_token(&scope, &ctx.principal.id, o.id))
+                .unwrap_or_default()
         } else {
             String::new()
         };
-        Ok(wire::ListOverridesResponse { overrides, next_page_token: next })
+        Ok(wire::ListOverridesResponse {
+            overrides,
+            next_page_token: next,
+        })
     }
 }

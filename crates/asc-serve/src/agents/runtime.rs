@@ -1395,9 +1395,15 @@ impl AgentsHub {
                     .await;
                 }
                 for k in before..committed.len() {
-                    let all: Vec<Vec<u8>> = committed[..=k].iter().map(|c| c.change.clone()).collect();
+                    let all: Vec<Vec<u8>> =
+                        committed[..=k].iter().map(|c| c.change.clone()).collect();
                     let _ = self
-                        .add_checkpoint(run.id, &committed[k].message, &all, &committed[k].changeset)
+                        .add_checkpoint(
+                            run.id,
+                            &committed[k].message,
+                            &all,
+                            &committed[k].changeset,
+                        )
                         .await;
                 }
                 match outcome {

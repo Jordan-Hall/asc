@@ -34,7 +34,10 @@ where
 {
     let end = std::time::Instant::now() + Duration::from_secs(60);
     while !f().await {
-        assert!(std::time::Instant::now() < end, "gave up waiting for: {what}");
+        assert!(
+            std::time::Instant::now() < end,
+            "gave up waiting for: {what}"
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
@@ -96,10 +99,19 @@ async fn a_plan_first_run_waits_for_a_decision_and_the_decision_is_authorised_an
     w.script(vec![
         // A tool before the plan is refused and the model is told so.
         tools(vec![("list_files", json!({"path": "src"}))]),
-        tools(vec![("propose_plan", json!({"steps": ["Write the file", "Commit it"]}))]),
-        tools(vec![("propose_plan", json!({"steps": ["Write the greeting", "Commit it", "Finish"]}))]),
+        tools(vec![(
+            "propose_plan",
+            json!({"steps": ["Write the file", "Commit it"]}),
+        )]),
+        tools(vec![(
+            "propose_plan",
+            json!({"steps": ["Write the greeting", "Commit it", "Finish"]}),
+        )]),
         tools(vec![
-            ("write_file", json!({"path": "src/greeting.rs", "content": "pub const G: &str = \"hi\";\n"})),
+            (
+                "write_file",
+                json!({"path": "src/greeting.rs", "content": "pub const G: &str = \"hi\";\n"}),
+            ),
             ("commit", json!({"message": "Add the greeting"})),
             ("complete_step", json!({"step": 1})),
             ("complete_step", json!({"step": 2})),
@@ -116,7 +128,14 @@ async fn a_plan_first_run_waits_for_a_decision_and_the_decision_is_authorised_an
     assert_eq!(req[0].plan.len(), 2);
     let got = w
         .svc
-        .get_run(w.request(wire::GetAgentRunRequest { repo: repo_ref(), id: run.id }, "carol-token", None))
+        .get_run(w.request(
+            wire::GetAgentRunRequest {
+                repo: repo_ref(),
+                id: run.id,
+            },
+            "carol-token",
+            None,
+        ))
         .await
         .unwrap()
         .into_inner()
@@ -125,41 +144,115 @@ async fn a_plan_first_run_waits_for_a_decision_and_the_decision_is_authorised_an
     assert_eq!(got.pending_requests, 1);
     // Reader, a writer who did not start the run, and a decision that does not fit the request.
     for who in ["carol-token", "bob-token"] {
-        let e = decide(&w, who, req[0].id, wire::AgentDecision::RejectPlan, "no").await.unwrap_err();
+        let e = decide(&w, who, req[0].id, wire::AgentDecision::RejectPlan, "no")
+            .await
+            .unwrap_err();
         assert_eq!(e.code(), Code::PermissionDenied, "{who}");
     }
-    let e = decide(&w, "alice-token", req[0].id, wire::AgentDecision::AllowOnce, "").await.unwrap_err();
+    let e = decide(
+        &w,
+        "alice-token",
+        req[0].id,
+        wire::AgentDecision::AllowOnce,
+        "",
+    )
+    .await
+    .unwrap_err();
     assert_eq!(e.code(), Code::InvalidArgument);
-    let e = decide(&w, "alice-token", req[0].id, wire::AgentDecision::Unspecified, "").await.unwrap_err();
+    let e = decide(
+        &w,
+        "alice-token",
+        req[0].id,
+        wire::AgentDecision::Unspecified,
+        "",
+    )
+    .await
+    .unwrap_err();
     assert_eq!(e.code(), Code::InvalidArgument);
-    let e = decide(&w, "alice-token", req[0].id, wire::AgentDecision::RejectPlan, &"x".repeat(513)).await.unwrap_err();
+    let e = decide(
+        &w,
+        "alice-token",
+        req[0].id,
+        wire::AgentDecision::RejectPlan,
+        &"x".repeat(513),
+    )
+    .await
+    .unwrap_err();
     assert_eq!(e.code(), Code::InvalidArgument);
     // Reject with a reason: the model proposes again.
-    let r = decide(&w, "alice-token", req[0].id, wire::AgentDecision::RejectPlan, "too small").await.unwrap();
-    assert_eq!(r.request.unwrap().state, wire::AgentRequestState::Rejected as i32);
-    until("the second plan", || async { pending(&w, run.id).await.iter().any(|p| p.plan.len() == 3) }).await;
+    let r = decide(
+        &w,
+        "alice-token",
+        req[0].id,
+        wire::AgentDecision::RejectPlan,
+        "too small",
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        r.request.unwrap().state,
+        wire::AgentRequestState::Rejected as i32
+    );
+    until("the second plan", || async {
+        pending(&w, run.id).await.iter().any(|p| p.plan.len() == 3)
+    })
+    .await;
     let second = pending(&w, run.id).await.remove(0);
     // A decided request answers with the stored decision when decided again.
-    let again = decide(&w, "alice-token", req[0].id, wire::AgentDecision::ApprovePlan, "").await.unwrap();
-    assert_eq!(again.request.unwrap().state, wire::AgentRequestState::Rejected as i32);
-    decide(&w, "alice-token", second.id, wire::AgentDecision::ApprovePlan, "go").await.unwrap();
+    let again = decide(
+        &w,
+        "alice-token",
+        req[0].id,
+        wire::AgentDecision::ApprovePlan,
+        "",
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        again.request.unwrap().state,
+        wire::AgentRequestState::Rejected as i32
+    );
+    decide(
+        &w,
+        "alice-token",
+        second.id,
+        wire::AgentDecision::ApprovePlan,
+        "go",
+    )
+    .await
+    .unwrap();
     let row = w.wait(run.id).await;
     assert_eq!(row.state, RunState::Succeeded, "{row:?}");
     let got = w
         .svc
-        .get_run(w.request(wire::GetAgentRunRequest { repo: repo_ref(), id: run.id }, "alice-token", None))
+        .get_run(w.request(
+            wire::GetAgentRunRequest {
+                repo: repo_ref(),
+                id: run.id,
+            },
+            "alice-token",
+            None,
+        ))
         .await
         .unwrap()
         .into_inner()
         .run
         .unwrap();
     let p = got.progress.unwrap();
-    assert_eq!((p.steps_total, p.steps_done), (3, 2), "two of three steps were marked done");
+    assert_eq!(
+        (p.steps_total, p.steps_done),
+        (3, 2),
+        "two of three steps were marked done"
+    );
     // The approvals log keeps both decisions with the decider and the reason.
     let log = w
         .svc
         .list_requests(w.request(
-            wire::ListAgentRequestsRequest { repo: repo_ref(), run_id: run.id, ..Default::default() },
+            wire::ListAgentRequestsRequest {
+                repo: repo_ref(),
+                run_id: run.id,
+                ..Default::default()
+            },
             "carol-token",
             None,
         ))
@@ -169,8 +262,16 @@ async fn a_plan_first_run_waits_for_a_decision_and_the_decision_is_authorised_an
         .requests;
     assert_eq!(log.len(), 2);
     let rejected = log.iter().find(|r| r.id == req[0].id).unwrap();
-    assert_eq!((rejected.decided_by.as_str(), rejected.reason.as_str()), ("alice", "too small"));
-    assert_eq!(log.iter().filter(|r| r.state == wire::AgentRequestState::Approved as i32).count(), 1);
+    assert_eq!(
+        (rejected.decided_by.as_str(), rejected.reason.as_str()),
+        ("alice", "too small")
+    );
+    assert_eq!(
+        log.iter()
+            .filter(|r| r.state == wire::AgentRequestState::Approved as i32)
+            .count(),
+        1
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -178,26 +279,59 @@ async fn a_permission_is_allowed_once_or_denied_and_the_model_hears_which() {
     let w = World::new().await;
     w.key(alice(), "mine").await;
     w.script(vec![
-        tools(vec![("request_permission", json!({"action": "delete the build cache", "reason": "it is stale"}))]),
-        tools(vec![("request_permission", json!({"action": "delete the build cache"}))]),
+        tools(vec![(
+            "request_permission",
+            json!({"action": "delete the build cache", "reason": "it is stale"}),
+        )]),
+        tools(vec![(
+            "request_permission",
+            json!({"action": "delete the build cache"}),
+        )]),
         done("done"),
     ]);
     let run = w
         .start_run_with(
             "alice-token",
-            wire::CreateAgentRunRequest { repo: repo_ref(), agent: "fixer".into(), task: "tidy".into(), ..Default::default() },
+            wire::CreateAgentRunRequest {
+                repo: repo_ref(),
+                agent: "fixer".into(),
+                task: "tidy".into(),
+                ..Default::default()
+            },
         )
         .await
         .unwrap();
-    until("the first request", || async { !pending(&w, run.id).await.is_empty() }).await;
+    until("the first request", || async {
+        !pending(&w, run.id).await.is_empty()
+    })
+    .await;
     let first = pending(&w, run.id).await.remove(0);
     assert_eq!(first.kind, wire::AgentRequestKind::Permission as i32);
     assert_eq!(first.summary, "delete the build cache");
     assert_eq!(first.detail, "it is stale");
-    decide(&w, "alice-token", first.id, wire::AgentDecision::Deny, "keep it").await.unwrap();
-    until("the second request", || async { pending(&w, run.id).await.iter().any(|p| p.id != first.id) }).await;
+    decide(
+        &w,
+        "alice-token",
+        first.id,
+        wire::AgentDecision::Deny,
+        "keep it",
+    )
+    .await
+    .unwrap();
+    until("the second request", || async {
+        pending(&w, run.id).await.iter().any(|p| p.id != first.id)
+    })
+    .await;
     let second = pending(&w, run.id).await.remove(0);
-    decide(&w, "alice-token", second.id, wire::AgentDecision::AllowOnce, "").await.unwrap();
+    decide(
+        &w,
+        "alice-token",
+        second.id,
+        wire::AgentDecision::AllowOnce,
+        "",
+    )
+    .await
+    .unwrap();
     let row = w.wait(run.id).await;
     assert_eq!(row.state, RunState::Succeeded);
     let results: Vec<String> = w
@@ -207,7 +341,10 @@ async fn a_permission_is_allowed_once_or_denied_and_the_model_hears_which() {
         .filter(|e| e.kind == super::runs::EventKind::ToolResult as i64)
         .map(|e| e.text)
         .collect();
-    assert!(results[0].contains("permission denied: keep it"), "{results:?}");
+    assert!(
+        results[0].contains("permission denied: keep it"),
+        "{results:?}"
+    );
     assert!(results[1].contains("granted once"), "{results:?}");
 }
 
@@ -217,20 +354,31 @@ async fn a_paused_run_holds_at_its_next_tool_call_and_a_checkpoint_can_be_rolled
     w.key(alice(), "mine").await;
     let write = |n: u32| {
         tools(vec![
-            ("write_file", json!({"path": format!("src/f{n}.rs"), "content": format!("pub const N: u32 = {n};\n")})),
+            (
+                "write_file",
+                json!({"path": format!("src/f{n}.rs"), "content": format!("pub const N: u32 = {n};\n")}),
+            ),
             ("commit", json!({"message": format!("Change {n}")})),
         ])
     };
     w.script(vec![
         write(1),
         write(2),
-        Reply::Delay(Duration::from_millis(1500), Box::new(tools(vec![("status", json!({}))]))),
+        Reply::Delay(
+            Duration::from_millis(1500),
+            Box::new(tools(vec![("status", json!({}))])),
+        ),
         done("done"),
     ]);
     let run = w
         .start_run_with(
             "alice-token",
-            wire::CreateAgentRunRequest { repo: repo_ref(), agent: "fixer".into(), task: "two changes".into(), ..Default::default() },
+            wire::CreateAgentRunRequest {
+                repo: repo_ref(),
+                agent: "fixer".into(),
+                task: "two changes".into(),
+                ..Default::default()
+            },
         )
         .await
         .unwrap();
@@ -238,15 +386,30 @@ async fn a_paused_run_holds_at_its_next_tool_call_and_a_checkpoint_can_be_rolled
         let (w2, id) = (&w, run.id);
         async move {
             w2.svc
-                .list_checkpoints(w2.request(wire::ListAgentCheckpointsRequest { repo: repo_ref(), run_id: id }, who, None))
+                .list_checkpoints(w2.request(
+                    wire::ListAgentCheckpointsRequest {
+                        repo: repo_ref(),
+                        run_id: id,
+                    },
+                    who,
+                    None,
+                ))
                 .await
                 .map(|r| r.into_inner().checkpoints)
         }
     };
-    until("two checkpoints", || async { cps("carol-token").await.unwrap().len() == 2 }).await;
+    until("two checkpoints", || async {
+        cps("carol-token").await.unwrap().len() == 2
+    })
+    .await;
     let pause = |who: &str, paused: bool| {
         let r = w.request(
-            wire::PauseAgentRunRequest { repo: repo_ref(), id: run.id, paused, reason: "look".into() },
+            wire::PauseAgentRunRequest {
+                repo: repo_ref(),
+                id: run.id,
+                paused,
+                reason: "look".into(),
+            },
             who,
             None,
         );
@@ -254,27 +417,49 @@ async fn a_paused_run_holds_at_its_next_tool_call_and_a_checkpoint_can_be_rolled
         async move { svc.pause_run(r).await.map(tonic::Response::into_inner) }
     };
     for who in ["carol-token", "bob-token"] {
-        assert_eq!(pause(who, true).await.unwrap_err().code(), Code::PermissionDenied, "{who}");
+        assert_eq!(
+            pause(who, true).await.unwrap_err().code(),
+            Code::PermissionDenied,
+            "{who}"
+        );
     }
     let paused = pause("alice-token", true).await.unwrap().run.unwrap();
     assert!(paused.paused);
     let cps = cps("carol-token").await.unwrap();
-    assert_eq!((cps[0].seq, cps[0].label.as_str(), cps[0].changes.len()), (1, "Change 1", 1));
+    assert_eq!(
+        (cps[0].seq, cps[0].label.as_str(), cps[0].changes.len()),
+        (1, "Change 1", 1)
+    );
     assert_eq!(cps[1].changes.len(), 2);
     // Rolling back needs the permission and the pause; a checkpoint of nothing is not found.
     let rollback = |who: &str, cp: u64| {
         let r = w.request(
-            wire::RollbackAgentRunRequest { repo: repo_ref(), run_id: run.id, checkpoint_id: cp, reason: "wrong turn".into() },
+            wire::RollbackAgentRunRequest {
+                repo: repo_ref(),
+                run_id: run.id,
+                checkpoint_id: cp,
+                reason: "wrong turn".into(),
+            },
             who,
             Some(&op()),
         );
         let svc = w.svc.clone();
         async move { svc.rollback_run(r).await.map(tonic::Response::into_inner) }
     };
-    assert_eq!(rollback("bob-token", cps[0].id).await.unwrap_err().code(), Code::PermissionDenied);
-    assert_eq!(rollback("alice-token", 999_999).await.unwrap_err().code(), Code::NotFound);
+    assert_eq!(
+        rollback("bob-token", cps[0].id).await.unwrap_err().code(),
+        Code::PermissionDenied
+    );
+    assert_eq!(
+        rollback("alice-token", 999_999).await.unwrap_err().code(),
+        Code::NotFound
+    );
     pause("alice-token", false).await.unwrap();
-    assert_eq!(rollback("alice-token", cps[0].id).await.unwrap_err().code(), Code::FailedPrecondition, "only a paused run");
+    assert_eq!(
+        rollback("alice-token", cps[0].id).await.unwrap_err().code(),
+        Code::FailedPrecondition,
+        "only a paused run"
+    );
     pause("alice-token", true).await.unwrap();
     rollback("alice-token", cps[0].id).await.unwrap();
     until("the rollback", || async {
@@ -284,15 +469,30 @@ async fn a_paused_run_holds_at_its_next_tool_call_and_a_checkpoint_can_be_rolled
     .await;
     let after = w
         .svc
-        .list_checkpoints(w.request(wire::ListAgentCheckpointsRequest { repo: repo_ref(), run_id: run.id }, "alice-token", None))
+        .list_checkpoints(w.request(
+            wire::ListAgentCheckpointsRequest {
+                repo: repo_ref(),
+                run_id: run.id,
+            },
+            "alice-token",
+            None,
+        ))
         .await
         .unwrap()
         .into_inner()
         .checkpoints;
     assert_eq!(after[0].rolled_back_at, 0);
-    assert!(after[1].rolled_back_at > 0 && after[1].rolled_back_by == "alice", "{after:?}");
+    assert!(
+        after[1].rolled_back_at > 0 && after[1].rolled_back_by == "alice",
+        "{after:?}"
+    );
     let events = w.events(run.id).await;
-    assert!(events.iter().any(|e| e.tool == "rollback" && e.text.contains("rolled back to checkpoint 1")), "{events:?}");
+    assert!(
+        events
+            .iter()
+            .any(|e| e.tool == "rollback" && e.text.contains("rolled back to checkpoint 1")),
+        "{events:?}"
+    );
     pause("alice-token", false).await.unwrap();
     let row = w.wait(run.id).await;
     assert_eq!(row.state, RunState::Succeeded, "{row:?}");
@@ -303,7 +503,10 @@ async fn a_paused_run_holds_at_its_next_tool_call_and_a_checkpoint_can_be_rolled
 async fn limits_are_edited_on_a_live_run_never_above_the_policy_cap() {
     let w = World::new().await;
     w.key(alice(), "mine").await;
-    w.fake.set_default(Reply::Delay(Duration::from_secs(30), Box::new(done("late"))));
+    w.fake.set_default(Reply::Delay(
+        Duration::from_secs(30),
+        Box::new(done("late")),
+    ));
     let run = w
         .start_run_with(
             "alice-token",
@@ -311,7 +514,10 @@ async fn limits_are_edited_on_a_live_run_never_above_the_policy_cap() {
                 repo: repo_ref(),
                 agent: "fixer".into(),
                 task: "slow".into(),
-                limits: Some(wire::AgentBudgetLimits { max_changes: 50, ..Default::default() }),
+                limits: Some(wire::AgentBudgetLimits {
+                    max_changes: 50,
+                    ..Default::default()
+                }),
                 ..Default::default()
             },
         )
@@ -319,16 +525,27 @@ async fn limits_are_edited_on_a_live_run_never_above_the_policy_cap() {
         .unwrap();
     let set = |who: &str, l: wire::AgentBudgetLimits| {
         let r = w.request(
-            wire::SetAgentRunLimitsRequest { repo: repo_ref(), id: run.id, limits: Some(l) },
+            wire::SetAgentRunLimitsRequest {
+                repo: repo_ref(),
+                id: run.id,
+                limits: Some(l),
+            },
             who,
             None,
         );
         let svc = w.svc.clone();
         async move { svc.set_run_limits(r).await.map(tonic::Response::into_inner) }
     };
-    let l = |tokens, changes| wire::AgentBudgetLimits { max_tokens: tokens, max_changes: changes, ..Default::default() };
+    let l = |tokens, changes| wire::AgentBudgetLimits {
+        max_tokens: tokens,
+        max_changes: changes,
+        ..Default::default()
+    };
     for who in ["carol-token", "bob-token"] {
-        assert_eq!(set(who, l(1000, 0)).await.unwrap_err().code(), Code::PermissionDenied);
+        assert_eq!(
+            set(who, l(1000, 0)).await.unwrap_err().code(),
+            Code::PermissionDenied
+        );
     }
     let r = set("alice-token", l(100_000, 0)).await.unwrap();
     let limits = r.run.unwrap().limits.unwrap();
@@ -344,7 +561,10 @@ async fn limits_are_edited_on_a_live_run_never_above_the_policy_cap() {
         assert_eq!(t.limits.tokens, 100_000);
     }
     w.hub.cancel_run(run.id, "done", "7:alice").await.unwrap();
-    assert_eq!(set("alice-token", l(1, 0)).await.unwrap_err().code(), Code::FailedPrecondition);
+    assert_eq!(
+        set("alice-token", l(1, 0)).await.unwrap_err().code(),
+        Code::FailedPrecondition
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -359,7 +579,10 @@ async fn a_create_that_asks_for_more_than_the_policy_allows_says_what_was_lowere
                 repo: repo_ref(),
                 agent: "fixer".into(),
                 task: "x".into(),
-                limits: Some(wire::AgentBudgetLimits { max_changes: 40, ..Default::default() }),
+                limits: Some(wire::AgentBudgetLimits {
+                    max_changes: 40,
+                    ..Default::default()
+                }),
                 ..Default::default()
             },
             "alice-token",
@@ -376,14 +599,20 @@ async fn a_create_that_asks_for_more_than_the_policy_allows_says_what_was_lowere
 async fn a_cancelled_run_continues_as_a_new_run_with_raised_limits() {
     let w = World::new().await;
     w.key(alice(), "mine").await;
-    w.fake.set_default(Reply::Delay(Duration::from_secs(30), Box::new(done("late"))));
+    w.fake.set_default(Reply::Delay(
+        Duration::from_secs(30),
+        Box::new(done("late")),
+    ));
     let run = w.start_run("alice-token", "long task").await.unwrap();
     let cont = |who: &str, id: u64| {
         let r = w.request(
             wire::ContinueAgentRunRequest {
                 repo: repo_ref(),
                 id,
-                limits: Some(wire::AgentBudgetLimits { max_tokens: 500_000, ..Default::default() }),
+                limits: Some(wire::AgentBudgetLimits {
+                    max_tokens: 500_000,
+                    ..Default::default()
+                }),
             },
             who,
             Some(&op()),
@@ -391,13 +620,24 @@ async fn a_cancelled_run_continues_as_a_new_run_with_raised_limits() {
         let svc = w.svc.clone();
         async move { svc.continue_run(r).await.map(tonic::Response::into_inner) }
     };
-    assert_eq!(cont("alice-token", run.id).await.unwrap_err().code(), Code::FailedPrecondition, "still running");
+    assert_eq!(
+        cont("alice-token", run.id).await.unwrap_err().code(),
+        Code::FailedPrecondition,
+        "still running"
+    );
     w.hub.cancel_run(run.id, "stop", "7:alice").await.unwrap();
     w.wait(run.id).await;
     for who in ["carol-token", "bob-token"] {
-        assert_eq!(cont(who, run.id).await.unwrap_err().code(), Code::PermissionDenied, "{who}");
+        assert_eq!(
+            cont(who, run.id).await.unwrap_err().code(),
+            Code::PermissionDenied,
+            "{who}"
+        );
     }
-    assert_eq!(cont("alice-token", 987_654).await.unwrap_err().code(), Code::NotFound);
+    assert_eq!(
+        cont("alice-token", 987_654).await.unwrap_err().code(),
+        Code::NotFound
+    );
     let r = cont("alice-token", run.id).await.unwrap();
     let new = r.run.unwrap();
     assert_ne!(new.id, run.id);
@@ -413,21 +653,39 @@ async fn the_boards_report_estimates_recent_tasks_logs_agents_and_spend() {
     let w = World::new().await;
     w.key(alice(), "mine").await;
     w.fake.set_default(done("ok"));
-    let run = w.start_run("alice-token", "Rename the helper").await.unwrap();
+    let run = w
+        .start_run("alice-token", "Rename the helper")
+        .await
+        .unwrap();
     let row = w.wait(run.id).await;
     assert_eq!(row.state, RunState::Succeeded);
     let call = |who: &str| who.to_owned();
     // Estimate: from finished runs, readable by a reader.
     let est = w
         .svc
-        .get_estimate(w.request(wire::GetAgentEstimateRequest { repo: repo_ref(), agent: "fixer".into(), task_bytes: 0 }, &call("carol-token"), None))
+        .get_estimate(w.request(
+            wire::GetAgentEstimateRequest {
+                repo: repo_ref(),
+                agent: "fixer".into(),
+                task_bytes: 0,
+            },
+            &call("carol-token"),
+            None,
+        ))
         .await
         .unwrap()
         .into_inner();
     assert!(est.samples <= 1);
     // Recent tasks: the caller's own; an administrator sees everyone's.
     let tasks = |who: &str| {
-        let r = w.request(wire::RecentAgentTasksRequest { repo: repo_ref(), limit: 0 }, who, None);
+        let r = w.request(
+            wire::RecentAgentTasksRequest {
+                repo: repo_ref(),
+                limit: 0,
+            },
+            who,
+            None,
+        );
         let svc = w.svc.clone();
         async move { svc.recent_tasks(r).await.unwrap().into_inner().tasks }
     };
@@ -437,60 +695,121 @@ async fn the_boards_report_estimates_recent_tasks_logs_agents_and_spend() {
     // The log of a run.
     let log = w
         .svc
-        .get_run_log(w.request(wire::GetAgentRunLogRequest { repo: repo_ref(), id: run.id }, "carol-token", None))
+        .get_run_log(w.request(
+            wire::GetAgentRunLogRequest {
+                repo: repo_ref(),
+                id: run.id,
+            },
+            "carol-token",
+            None,
+        ))
         .await
         .unwrap()
         .into_inner();
     let text = String::from_utf8(log.jsonl.to_vec()).unwrap();
-    assert!(text.lines().all(|l| serde_json::from_str::<serde_json::Value>(l).is_ok()));
+    assert!(
+        text.lines()
+            .all(|l| serde_json::from_str::<serde_json::Value>(l).is_ok())
+    );
     assert!(text.contains("\"type\":\"event\""));
     assert!(log.retained_until > row.finished);
     let missing = w
         .svc
-        .get_run_log(w.request(wire::GetAgentRunLogRequest { repo: repo_ref(), id: 424_242 }, "carol-token", None))
+        .get_run_log(w.request(
+            wire::GetAgentRunLogRequest {
+                repo: repo_ref(),
+                id: 424_242,
+            },
+            "carol-token",
+            None,
+        ))
         .await
         .unwrap_err();
     assert_eq!(missing.code(), Code::NotFound);
     // The agents of the repository.
     let agents = w
         .svc
-        .list_agents(w.request(wire::ListRepoAgentsRequest { repo: repo_ref() }, "carol-token", None))
+        .list_agents(w.request(
+            wire::ListRepoAgentsRequest { repo: repo_ref() },
+            "carol-token",
+            None,
+        ))
         .await
         .unwrap()
         .into_inner();
     assert_eq!(agents.agents.len(), 1);
-    assert_eq!((agents.agents[0].agent.as_str(), agents.agents[0].runs), ("fixer", 1));
+    assert_eq!(
+        (agents.agents[0].agent.as_str(), agents.agents[0].runs),
+        ("fixer", 1)
+    );
     // Spend: the model call is on the board and a monthly cap stops the next run.
     let spend = |who: &str, month: &str| {
-        let r = w.request(wire::GetAgentSpendRequest { repo: repo_ref(), month: month.into() }, who, None);
+        let r = w.request(
+            wire::GetAgentSpendRequest {
+                repo: repo_ref(),
+                month: month.into(),
+            },
+            who,
+            None,
+        );
         let svc = w.svc.clone();
         async move { svc.get_spend(r).await.map(tonic::Response::into_inner) }
     };
-    assert_eq!(spend("carol-token", "").await.unwrap_err().code(), Code::PermissionDenied, "money is for writers");
+    assert_eq!(
+        spend("carol-token", "").await.unwrap_err().code(),
+        Code::PermissionDenied,
+        "money is for writers"
+    );
     let s = spend("bob-token", "").await.unwrap();
-    assert!(s.tokens > 0 && !s.days.is_empty() && s.agents[0].agent == "fixer", "{s:?}");
-    assert_eq!(spend("bob-token", "2026-13").await.unwrap_err().code(), Code::InvalidArgument);
+    assert!(
+        s.tokens > 0 && !s.days.is_empty() && s.agents[0].agent == "fixer",
+        "{s:?}"
+    );
+    assert_eq!(
+        spend("bob-token", "2026-13").await.unwrap_err().code(),
+        Code::InvalidArgument
+    );
     assert_eq!(spend("bob-token", "2020-01").await.unwrap().tokens, 0);
     let cap = |who: &str, agent: &str, micro: u64| {
         let r = w.request(
-            wire::SetMonthlyBudgetRequest { repo: repo_ref(), agent: agent.into(), cap_micro_usd: micro },
+            wire::SetMonthlyBudgetRequest {
+                repo: repo_ref(),
+                agent: agent.into(),
+                cap_micro_usd: micro,
+            },
             who,
             Some(&op()),
         );
         let svc = w.svc.clone();
-        async move { svc.set_monthly_budget(r).await.map(tonic::Response::into_inner) }
+        async move {
+            svc.set_monthly_budget(r)
+                .await
+                .map(tonic::Response::into_inner)
+        }
     };
     for who in ["carol-token", "bob-token"] {
-        assert_eq!(cap(who, "", 5).await.unwrap_err().code(), Code::PermissionDenied, "{who}");
+        assert_eq!(
+            cap(who, "", 5).await.unwrap_err().code(),
+            Code::PermissionDenied,
+            "{who}"
+        );
     }
-    assert_eq!(cap("alice-token", "BAD NAME", 5).await.unwrap_err().code(), Code::InvalidArgument);
+    assert_eq!(
+        cap("alice-token", "BAD NAME", 5).await.unwrap_err().code(),
+        Code::InvalidArgument
+    );
     // Make the spend of the month visible in money, then cap it below that.
     w.hub.record_spend("acme/app", "fixer", 10, 7_000, 1).await;
     cap("alice-token", "fixer", 1_000).await.unwrap();
     let e = w
         .svc
         .create_run(w.request(
-            wire::CreateAgentRunRequest { repo: repo_ref(), agent: "fixer".into(), task: "more".into(), ..Default::default() },
+            wire::CreateAgentRunRequest {
+                repo: repo_ref(),
+                agent: "fixer".into(),
+                task: "more".into(),
+                ..Default::default()
+            },
             "alice-token",
             Some(&op()),
         ))
@@ -500,24 +819,39 @@ async fn the_boards_report_estimates_recent_tasks_logs_agents_and_spend() {
     let s = spend("bob-token", "").await.unwrap();
     assert_eq!(s.agents[0].monthly_cap_micro_usd, 1_000);
     cap("alice-token", "fixer", 0).await.unwrap();
-    assert_eq!(spend("bob-token", "").await.unwrap().agents[0].monthly_cap_micro_usd, 0);
+    assert_eq!(
+        spend("bob-token", "").await.unwrap().agents[0].monthly_cap_micro_usd,
+        0
+    );
 }
 
 fn claim_service(w: &World) -> (AgentService, ForwardedVerifier) {
     let v = ForwardedVerifier::new(vec![5u8; 32]).unwrap();
-    let auth: Arc<dyn asc_rpc::auth::Authorizer> = Arc::new(ForwardedAuthorizer::new(static_auth(), v.clone()));
-    (AgentService::new(w.hub.clone(), auth, ServerInfo::default()), v)
+    let auth: Arc<dyn asc_rpc::auth::Authorizer> =
+        Arc::new(ForwardedAuthorizer::new(static_auth(), v.clone()));
+    (
+        AgentService::new(w.hub.clone(), auth, ServerInfo::default()),
+        v,
+    )
 }
 
 fn host<T>(v: &ForwardedVerifier, m: T, user: &str, role: Role, subject: &str) -> Request<T> {
     use asc_rpc::auth::{BearerToken, Credential};
     let mut r = Request::new(m);
-    r.extensions_mut().insert(Credential::bearer(BearerToken::new("host-token").unwrap()));
-    let now = i64::try_from(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()).unwrap();
+    r.extensions_mut()
+        .insert(Credential::bearer(BearerToken::new("host-token").unwrap()));
+    let now = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    )
+    .unwrap();
     for (k, val) in v.sign(user, role, subject, now) {
         r.metadata_mut().append(k, val.parse().unwrap());
     }
-    r.metadata_mut().insert("x-asc-op-id", op().parse().unwrap());
+    r.metadata_mut()
+        .insert("x-asc-op-id", op().parse().unwrap());
     r
 }
 
@@ -526,17 +860,28 @@ async fn the_hubs_claim_is_the_whole_authority_for_control_calls_and_the_relay_i
     let w = World::new().await;
     w.key(alice(), "mine").await;
     w.script(vec![
-        tools(vec![("request_permission", json!({"action": "push to a branch"}))]),
+        tools(vec![(
+            "request_permission",
+            json!({"action": "push to a branch"}),
+        )]),
         done("done"),
     ]);
     let run = w
         .start_run_with(
             "alice-token",
-            wire::CreateAgentRunRequest { repo: repo_ref(), agent: "fixer".into(), task: "t".into(), ..Default::default() },
+            wire::CreateAgentRunRequest {
+                repo: repo_ref(),
+                agent: "fixer".into(),
+                task: "t".into(),
+                ..Default::default()
+            },
         )
         .await
         .unwrap();
-    until("the request", || async { !pending(&w, run.id).await.is_empty() }).await;
+    until("the request", || async {
+        !pending(&w, run.id).await.is_empty()
+    })
+    .await;
     let id = pending(&w, run.id).await[0].id;
     let (svc, v) = claim_service(&w);
     let msg = || wire::DecideAgentRequestRequest {
@@ -546,18 +891,34 @@ async fn the_hubs_claim_is_the_whole_authority_for_control_calls_and_the_relay_i
         reason: String::new(),
     };
     // A read claim does not decide; another repository's claim is no claim here; a forged one fails.
-    let e = svc.decide_request(host(&v, msg(), "7:alice", Role::Read, "acme/app")).await.unwrap_err();
+    let e = svc
+        .decide_request(host(&v, msg(), "7:alice", Role::Read, "acme/app"))
+        .await
+        .unwrap_err();
     assert_eq!(e.code(), Code::PermissionDenied);
-    let e = svc.decide_request(host(&v, msg(), "7:alice", Role::Admin, "acme/other")).await.unwrap_err();
+    let e = svc
+        .decide_request(host(&v, msg(), "7:alice", Role::Admin, "acme/other"))
+        .await
+        .unwrap_err();
     assert_eq!(e.code(), Code::PermissionDenied);
     let forged = ForwardedVerifier::new(vec![9u8; 32]).unwrap();
-    let e = svc.decide_request(host(&forged, msg(), "7:alice", Role::Admin, "acme/app")).await.unwrap_err();
+    let e = svc
+        .decide_request(host(&forged, msg(), "7:alice", Role::Admin, "acme/app"))
+        .await
+        .unwrap_err();
     assert_eq!(e.code(), Code::PermissionDenied);
     // A write claim of a person who is neither the starter nor an administrator is refused...
-    let e = svc.decide_request(host(&v, msg(), "8:bob", Role::Write, "acme/app")).await.unwrap_err();
+    let e = svc
+        .decide_request(host(&v, msg(), "8:bob", Role::Write, "acme/app"))
+        .await
+        .unwrap_err();
     assert_eq!(e.code(), Code::PermissionDenied);
     // ...and the starter's write claim decides, as the starter, with the host as relay.
-    let r = svc.decide_request(host(&v, msg(), "7:alice", Role::Write, "acme/app")).await.unwrap().into_inner();
+    let r = svc
+        .decide_request(host(&v, msg(), "7:alice", Role::Write, "acme/app"))
+        .await
+        .unwrap()
+        .into_inner();
     assert_eq!(r.request.unwrap().decided_by, "alice");
     let row: (String, String) = {
         use sqlx::Row;
@@ -604,7 +965,13 @@ fn ask_before_matches_what_would_run_not_the_text_of_the_command() {
     ] {
         assert!(needs_permission(&argv(yes), &ask), "{yes:?} must ask");
     }
-    for no in [&["git", "status"][..], &["cargo", "test"], &["env", "cargo", "test"], &["ls"], &[]] {
+    for no in [
+        &["git", "status"][..],
+        &["cargo", "test"],
+        &["env", "cargo", "test"],
+        &["ls"],
+        &[],
+    ] {
         assert!(!needs_permission(&argv(no), &ask), "{no:?} must not ask");
     }
     // Nothing configured: nothing asks, interpreters included (the allow list is the gate then).
@@ -616,12 +983,16 @@ fn ask_before_matches_what_would_run_not_the_text_of_the_command() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_unreadable_control_state_stops_the_run_and_a_budget_that_cannot_be_read_counts_as_reached() {
+async fn an_unreadable_control_state_stops_the_run_and_a_budget_that_cannot_be_read_counts_as_reached()
+ {
     use super::control::{Flow, Hold};
     use super::runtime::Ended;
     let w = World::new().await;
     w.key(alice(), "mine").await;
-    w.fake.set_default(Reply::Delay(Duration::from_secs(30), Box::new(done("late"))));
+    w.fake.set_default(Reply::Delay(
+        Duration::from_secs(30),
+        Box::new(done("late")),
+    ));
     let run = w.start_run("alice-token", "slow").await.unwrap();
     let row = w.hub.core.runs.get(run.id).await.unwrap().unwrap();
     let live = Arc::new(super::Live {
@@ -629,11 +1000,30 @@ async fn an_unreadable_control_state_stops_the_run_and_a_budget_that_cannot_be_r
         reason: std::sync::Mutex::new(None),
     });
     assert!(matches!(w.hub.hold(&row, &live).await, Hold::Go));
-    sqlx::query("DROP TABLE agent_run_ctl").execute(&w.pool).await.unwrap();
-    assert!(matches!(w.hub.hold(&row, &live).await, Hold::Stop(Ended::Failed { .. })));
-    let call = crate::ai::model::ToolCall { id: "1".into(), name: "write_file".into(), input: json!({}) };
-    assert!(matches!(w.hub.control_call(&row, &live, &call).await, Flow::Stop(Ended::Failed { .. })));
+    sqlx::query("DROP TABLE agent_run_ctl")
+        .execute(&w.pool)
+        .await
+        .unwrap();
+    assert!(matches!(
+        w.hub.hold(&row, &live).await,
+        Hold::Stop(Ended::Failed { .. })
+    ));
+    let call = crate::ai::model::ToolCall {
+        id: "1".into(),
+        name: "write_file".into(),
+        input: json!({}),
+    };
+    assert!(matches!(
+        w.hub.control_call(&row, &live, &call).await,
+        Flow::Stop(Ended::Failed { .. })
+    ));
     assert!(!w.hub.monthly_exceeded("acme/app", "fixer").await);
-    sqlx::query("DROP TABLE agent_monthly_budget").execute(&w.pool).await.unwrap();
-    assert!(w.hub.monthly_exceeded("acme/app", "fixer").await, "an unreadable cap is a reached cap");
+    sqlx::query("DROP TABLE agent_monthly_budget")
+        .execute(&w.pool)
+        .await
+        .unwrap();
+    assert!(
+        w.hub.monthly_exceeded("acme/app", "fixer").await,
+        "an unreadable cap is a reached cap"
+    );
 }

@@ -258,7 +258,14 @@ pub const CATALOGUE: &[ActionInfo] = &[
     a(
         "review.comment.added",
         "A review comment was added to a change.",
-        &["thread", "comment", "version", "path", "suggestion", "external_id"],
+        &[
+            "thread",
+            "comment",
+            "version",
+            "path",
+            "suggestion",
+            "external_id",
+        ],
     ),
     a(
         "review.thread.resolved",

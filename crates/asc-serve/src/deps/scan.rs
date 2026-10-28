@@ -244,9 +244,10 @@ pub async fn read(
             continue;
         };
         let path = c.path.clone();
-        let found = tokio::task::spawn_blocking(move || super::imports::package_imports(&path, &bytes))
-            .await
-            .map_err(|e| internal("deps: imports", &e))?;
+        let found =
+            tokio::task::spawn_blocking(move || super::imports::package_imports(&path, &bytes))
+                .await
+                .map_err(|e| internal("deps: imports", &e))?;
         sources_scanned += 1;
         imported.extend(found);
     }

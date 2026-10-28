@@ -1,7 +1,11 @@
 use super::*;
 
 fn names(items: &[Item], kind: ItemKind) -> Vec<String> {
-    items.iter().filter(|i| i.kind == kind).map(|i| i.name.clone()).collect()
+    items
+        .iter()
+        .filter(|i| i.kind == kind)
+        .map(|i| i.name.clone())
+        .collect()
 }
 
 const COMPONENT: &str = "export function Greeting({ name }: { name?: string }) @{\n  const message = name ? `Hello, ${name}` : 'Hello';\n  <>\n    <div class=\"g\"><p>{message}</p></div>\n  </>\n}\nexport const after = 1;\n";
@@ -12,7 +16,10 @@ fn the_mask_keeps_length_rows_and_typescript() {
     assert_eq!(a.masked.len(), COMPONENT.len());
     let m = String::from_utf8(a.masked.clone()).unwrap();
     assert_eq!(m.matches('\n').count(), COMPONENT.matches('\n').count());
-    assert!(m.contains("function Greeting({ name }: { name?: string })  {"), "{m}");
+    assert!(
+        m.contains("function Greeting({ name }: { name?: string })  {"),
+        "{m}"
+    );
     assert!(m.contains("const message = name ? `Hello, ${name}` : 'Hello';"));
     assert!(!m.contains("<div"), "{m}");
     assert!(m.contains("export const after = 1;"));
@@ -25,7 +32,10 @@ fn control_flow_defines_and_uses_names() {
     let src = "function L({ users }: P) @{\n  <ul>\n    @for (const user of users; key user.id index i) {\n      const bio = user.bio.slice(0, 1);\n      @if (show && user.bio) {\n        <p>{bio}{i}</p>\n      } @else {\n        <p>none</p>\n      }\n    } @empty {\n      <li>x</li>\n    }\n  </ul>\n}\n";
     let a = analyze(src.as_bytes());
     let labels: Vec<&str> = a.scopes.iter().map(|s| s.label.as_str()).collect();
-    assert!(labels.contains(&"@for (const user of users; key user.id index i)"), "{labels:?}");
+    assert!(
+        labels.contains(&"@for (const user of users; key user.id index i)"),
+        "{labels:?}"
+    );
     assert!(labels.contains(&"@if (show && user.bio)"), "{labels:?}");
     assert!(labels.contains(&"@else"), "{labels:?}");
     assert!(labels.contains(&"@empty"), "{labels:?}");
@@ -35,7 +45,10 @@ fn control_flow_defines_and_uses_names() {
     for want in ["users", "show", "bio", "i"] {
         assert!(uses.iter().any(|u| u == want), "{want} in {uses:?}");
     }
-    assert!(!uses.iter().any(|u| u == "slice" || u == "id"), "members are not uses: {uses:?}");
+    assert!(
+        !uses.iter().any(|u| u == "slice" || u == "id"),
+        "members are not uses: {uses:?}"
+    );
     assert!(a.diagnostics.is_empty(), "{:?}", a.diagnostics);
 }
 
@@ -49,7 +62,10 @@ fn switch_try_and_dynamic_tags() {
     }
     assert_eq!(names(&a.defs, ItemKind::LoopVar), ["err"]);
     let comps = names(&a.uses, ItemKind::ComponentUse);
-    assert!(comps.contains(&"A".to_owned()) && comps.contains(&"Slow".to_owned()), "{comps:?}");
+    assert!(
+        comps.contains(&"A".to_owned()) && comps.contains(&"Slow".to_owned()),
+        "{comps:?}"
+    );
     let uses = names(&a.uses, ItemKind::ValueUse);
     assert!(uses.contains(&"kind".to_owned()) && !uses.contains(&"as".to_owned()));
     assert!(a.diagnostics.is_empty(), "{:?}", a.diagnostics);
@@ -139,7 +155,13 @@ fn the_scope_chain_names_the_component_and_the_scopes_around_a_line() {
 ";
     let a = analyze(src.as_bytes());
     let at = src.find("<li>").unwrap();
-    let comp = [("L".to_owned(), Span { start: 0, end: src.len() })];
+    let comp = [(
+        "L".to_owned(),
+        Span {
+            start: 0,
+            end: src.len(),
+        },
+    )];
     assert_eq!(
         scope_chain(&a, &comp, at),
         ["L", "@for (const x of xs)", "@if (x)"]
@@ -169,23 +191,32 @@ fn a_huge_brace_less_range_is_scanned_in_one_pass() {
     // 100k identifiers in one expression container, one pattern and one header: quadratic
     // rescans of the range before each identifier would take minutes.
     let ids = "a ".repeat(100_000);
-    let src = format!("function T() @{{
+    let src = format!(
+        "function T() @{{
   <p>{{{ids}}}</p>
   @for (const {ids} of xs) {{ <i /> }}
 }}
-");
+"
+    );
     let (a, took) = timed(|| analyze(src.as_bytes()));
     assert!(took < LIMIT, "{took:?}");
     assert_eq!(a.masked.len(), src.len());
     assert!(a.uses.len() <= MAX_ITEMS + 1);
     let (a, took) = timed(|| analyze_within(src.as_bytes(), Some(std::time::Instant::now())));
     assert!(took < LIMIT, "{took:?}");
-    assert!(a.truncated, "an expired deadline gives a partial, flagged answer");
+    assert!(
+        a.truncated,
+        "an expired deadline gives a partial, flagged answer"
+    );
 }
 
 #[test]
 fn unclosed_and_nested_containers_are_cut_off_and_flagged() {
-    for src in ["@{ ".repeat(50_000), "@{ <a> ".repeat(50_000), "function F() @{ <a>{".repeat(20_000)] {
+    for src in [
+        "@{ ".repeat(50_000),
+        "@{ <a> ".repeat(50_000),
+        "function F() @{ <a>{".repeat(20_000),
+    ] {
         let (a, took) = timed(|| analyze(src.as_bytes()));
         assert!(took < LIMIT, "{took:?}");
         assert_eq!(a.masked.len(), src.len());
@@ -196,7 +227,10 @@ fn unclosed_and_nested_containers_are_cut_off_and_flagged() {
 
 #[test]
 fn many_question_marks_and_a_megabyte_line_stay_linear() {
-    let q = format!("function T() @{{ <p>{{{}}}</p> }}", "a ? b : c, ".repeat(100_000));
+    let q = format!(
+        "function T() @{{ <p>{{{}}}</p> }}",
+        "a ? b : c, ".repeat(100_000)
+    );
     let (a, took) = timed(|| analyze(q.as_bytes()));
     assert!(took < LIMIT, "{took:?}");
     assert_eq!(a.masked.len(), q.len());
@@ -205,12 +239,17 @@ fn many_question_marks_and_a_megabyte_line_stay_linear() {
     let (a, took) = timed(|| analyze(line.as_bytes()));
     assert!(took < LIMIT, "{took:?}");
     assert_eq!(a.masked.len(), line.len());
-    let blank_lines = format!("function T() @{{
+    let blank_lines = format!(
+        "function T() @{{
   <p>{{{}}}</p>
   const x =
 {}1;
-}}", "a, ".repeat(10), "
-".repeat(200_000));
+}}",
+        "a, ".repeat(10),
+        "
+"
+        .repeat(200_000)
+    );
     let (_, took) = timed(|| analyze(blank_lines.as_bytes()));
     assert!(took < LIMIT, "{took:?}");
 }
@@ -218,8 +257,12 @@ fn many_question_marks_and_a_megabyte_line_stay_linear() {
 #[test]
 fn tags_of_an_adversarial_file_return_within_the_budget() {
     use crate::lang::Lang;
-    let src = format!("{}export function F() @{{ <p/> }}", "function f() @{ <a/> }
-".repeat(60_000));
+    let src = format!(
+        "{}export function F() @{{ <p/> }}",
+        "function f() @{ <a/> }
+"
+        .repeat(60_000)
+    );
     let (r, took) = timed(|| crate::tags::extract(Lang::Tsrx, src.as_bytes()));
     assert!(took < LIMIT, "{took:?}");
     if let Ok(tags) = r {

@@ -202,7 +202,8 @@ fn token_request(host: &str) -> Result<CredentialRequest> {
 
 /// Signs in through the hub's device flow and returns the token it hands back.
 async fn device_token(host: &str) -> Result<String> {
-    let hub = Url::parse(host).map_err(|_| CliError::Fatal("asc: --host is not a valid URL".into()))?;
+    let hub =
+        Url::parse(host).map_err(|_| CliError::Fatal("asc: --host is not a valid URL".into()))?;
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .redirect(reqwest::redirect::Policy::none())
@@ -213,10 +214,16 @@ async fn device_token(host: &str) -> Result<String> {
         &hub,
         "asc cli",
         |g| {
-            eprintln!("To sign in, open:
+            eprintln!(
+                "To sign in, open:
   {}
-and check that the code is {}", g.verification_uri_complete, g.user_code);
-            eprintln!("Waiting for you to approve it (the code lasts {} minutes)...", g.expires_in / 60);
+and check that the code is {}",
+                g.verification_uri_complete, g.user_code
+            );
+            eprintln!(
+                "Waiting for you to approve it (the code lasts {} minutes)...",
+                g.expires_in / 60
+            );
         },
         |d| async move { tokio::time::sleep(d).await },
     )

@@ -197,7 +197,10 @@ async fn changes_v1_is_advertised_so_a_client_uploads_the_metadata_a_topic_names
         .unwrap()
         .features;
     assert!(features.contains(&"changes.v1".to_owned()), "{features:?}");
-    assert!(features.contains(&"mergequeue.v1".to_owned()), "{features:?}");
+    assert!(
+        features.contains(&"mergequeue.v1".to_owned()),
+        "{features:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

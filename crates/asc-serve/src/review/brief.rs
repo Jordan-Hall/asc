@@ -56,16 +56,36 @@ fn engine_status(what: &str, e: &dyn std::fmt::Display) -> Status {
 fn path_risk(path: &str) -> Option<&'static str> {
     let p = path.to_ascii_lowercase();
     let has = |s: &str| p.contains(s);
-    if has("/auth") || p.starts_with("auth") || has("security") || has("crypto") || has("secret") || has("password") || has("permission") {
+    if has("/auth")
+        || p.starts_with("auth")
+        || has("security")
+        || has("crypto")
+        || has("secret")
+        || has("password")
+        || has("permission")
+    {
         return Some("touches authentication, secrets or permissions");
     }
     if has("migrations/") || p.ends_with(".sql") {
         return Some("touches database migrations or SQL");
     }
-    if p.starts_with(".github/") || p.starts_with(".forgejo/") || p.starts_with(".gitlab") || has("dockerfile") || p.starts_with("deploy/") || p.starts_with("infra/") || p.ends_with(".tf") {
+    if p.starts_with(".github/")
+        || p.starts_with(".forgejo/")
+        || p.starts_with(".gitlab")
+        || has("dockerfile")
+        || p.starts_with("deploy/")
+        || p.starts_with("infra/")
+        || p.ends_with(".tf")
+    {
         return Some("touches build, deploy or infrastructure files");
     }
-    if p.ends_with("cargo.lock") || p.ends_with("package-lock.json") || p.ends_with("bun.lock") || p.ends_with("yarn.lock") || p.ends_with("pnpm-lock.yaml") || p.ends_with("go.sum") {
+    if p.ends_with("cargo.lock")
+        || p.ends_with("package-lock.json")
+        || p.ends_with("bun.lock")
+        || p.ends_with("yarn.lock")
+        || p.ends_with("pnpm-lock.yaml")
+        || p.ends_with("go.sum")
+    {
         return Some("changes a dependency lock file");
     }
     None
@@ -131,14 +151,23 @@ pub fn classify(files: &[wire::ChangeFileStat], added: u32, removed: u32) -> wir
 /// Whether `new` holds `suggestion` at line `start` (1-based), where `old` had lines `start..=end`
 /// there; an empty suggestion is a deletion, which holds when the new file lost at least that many
 /// lines. Line endings are not compared.
-pub(crate) fn contains_suggestion(old: &[u8], new: &[u8], start: usize, end: usize, suggestion: &str) -> bool {
+pub(crate) fn contains_suggestion(
+    old: &[u8],
+    new: &[u8],
+    start: usize,
+    end: usize,
+    suggestion: &str,
+) -> bool {
     let (Ok(old), Ok(new)) = (std::str::from_utf8(old), std::str::from_utf8(new)) else {
         return false;
     };
     if start == 0 || end < start {
         return false;
     }
-    let (old_lines, new_lines): (Vec<&str>, Vec<&str>) = (old.split_inclusive('\n').collect(), new.split_inclusive('\n').collect());
+    let (old_lines, new_lines): (Vec<&str>, Vec<&str>) = (
+        old.split_inclusive('\n').collect(),
+        new.split_inclusive('\n').collect(),
+    );
     if suggestion.is_empty() {
         return new_lines.len() + (end - start + 1) <= old_lines.len();
     }
@@ -185,7 +214,9 @@ impl Reviews {
             let page = versions::list(&mut conn, entry.ns, change, after, 200)
                 .await
                 .map_err(|e| engine_status("versions", &e))?;
-            let Some(last) = page.last().map(|v| v.v) else { break };
+            let Some(last) = page.last().map(|v| v.v) else {
+                break;
+            };
             let n = page.len();
             out.extend(page);
             after = Some(last);
@@ -254,7 +285,10 @@ impl Reviews {
             crate::agents::repo::PolicyState::Valid(p) => p.review,
             _ => asc_core::policy::ReviewPolicy::default(),
         };
-        let authors: HashSet<String> = versions.iter().filter_map(|v| handle_of(&v.actor)).collect();
+        let authors: HashSet<String> = versions
+            .iter()
+            .filter_map(|v| handle_of(&v.actor))
+            .collect();
         let agents: HashSet<String> = if policy.human_approval {
             sqlx::query_scalar::<_, String>("SELECT DISTINCT agent FROM agent_runs WHERE repo = $1")
                 .bind(entry.name.as_str().to_ascii_lowercase())
@@ -266,7 +300,11 @@ impl Reviews {
         } else {
             HashSet::new()
         };
-        Ok(Eligibility { policy, authors, agents })
+        Ok(Eligibility {
+            policy,
+            authors,
+            agents,
+        })
     }
 
     /// The verdicts on a change, each with whether it applies to the newest version.
@@ -302,7 +340,8 @@ impl Reviews {
                 ..Default::default()
             };
             let live = state != wire::ApprovalState::Dismissed as i64
-                && (state != wire::ApprovalState::Approved as i64 || eligible.may_approve(&info.reviewer));
+                && (state != wire::ApprovalState::Approved as i64
+                    || eligible.may_approve(&info.reviewer));
             if v == latest.v {
                 info.applies = live;
             } else if let Some(from) = versions.iter().find(|x| x.v == v) {
@@ -337,12 +376,22 @@ impl Reviews {
     }
 
     /// The verdicts on a change with whether they apply to its newest version.
-    pub(crate) async fn approvals_for(&self, entry: &RepoEntry, change: ChangeId) -> Result<Vec<wire::ApprovalInfo>, Status> {
+    pub(crate) async fn approvals_for(
+        &self,
+        entry: &RepoEntry,
+        change: ChangeId,
+    ) -> Result<Vec<wire::ApprovalInfo>, Status> {
         let vs = self.all_versions(entry, change).await?;
         self.approvals_of(entry, change, &vs).await
     }
 
-    async fn provenance(&self, entry: &RepoEntry, ctx: &CallCtx, change: ChangeId, versions: u32) -> Result<wire::ChangeProvenance, Status> {
+    async fn provenance(
+        &self,
+        entry: &RepoEntry,
+        ctx: &CallCtx,
+        change: ChangeId,
+        versions: u32,
+    ) -> Result<wire::ChangeProvenance, Status> {
         let _ = entry;
         let row = sqlx::query(
             "SELECT id, agent, title, task, created_by, starter, state, started, finished, paths_json FROM agent_runs \
@@ -354,7 +403,10 @@ impl Reviews {
         .await
         .map_err(sql)?;
         let Some(r) = row else {
-            return Ok(wire::ChangeProvenance { versions, ..Default::default() });
+            return Ok(wire::ChangeProvenance {
+                versions,
+                ..Default::default()
+            });
         };
         let id: i64 = r.try_get("id").map_err(sql)?;
         let count = |tool: Option<&'static str>| {
@@ -377,13 +429,18 @@ impl Reviews {
         let starter: String = r.try_get("starter").map_err(sql)?;
         let created_by: String = r.try_get("created_by").map_err(sql)?;
         let paths: Vec<String> =
-            serde_json::from_str(&r.try_get::<String, _>("paths_json").map_err(sql)?).unwrap_or_default();
+            serde_json::from_str(&r.try_get::<String, _>("paths_json").map_err(sql)?)
+                .unwrap_or_default();
         Ok(wire::ChangeProvenance {
             run_id: u64::try_from(id).unwrap_or(0),
             agent: r.try_get("agent").map_err(sql)?,
             title: r.try_get("title").map_err(sql)?,
             task: r.try_get("task").map_err(sql)?,
-            created_by: if starter.is_empty() { created_by } else { starter },
+            created_by: if starter.is_empty() {
+                created_by
+            } else {
+                starter
+            },
             run_state: crate::agents::runs::RunState::from_i64(r.try_get("state").map_err(sql)?)
                 .name()
                 .to_owned(),
@@ -396,7 +453,11 @@ impl Reviews {
         })
     }
 
-    async fn brief_row(&self, entry: &RepoEntry, change: ChangeId) -> Result<wire::ReviewBrief, Status> {
+    async fn brief_row(
+        &self,
+        entry: &RepoEntry,
+        change: ChangeId,
+    ) -> Result<wire::ReviewBrief, Status> {
         let row = sqlx::query(
             "SELECT what, why, how, risk_note, pointers_json, updated_by, updated FROM review_briefs \
              WHERE ns = $1 AND change = $2",
@@ -410,7 +471,8 @@ impl Reviews {
             return Ok(wire::ReviewBrief::default());
         };
         let pointers: Vec<(String, u32, String)> =
-            serde_json::from_str(&r.try_get::<String, _>("pointers_json").map_err(sql)?).unwrap_or_default();
+            serde_json::from_str(&r.try_get::<String, _>("pointers_json").map_err(sql)?)
+                .unwrap_or_default();
         Ok(wire::ReviewBrief {
             what: r.try_get("what").map_err(sql)?,
             why: r.try_get("why").map_err(sql)?,
@@ -430,7 +492,11 @@ impl Reviews {
     }
 
     /// `Review.GetBrief`.
-    pub async fn get_brief(&self, ctx: &CallCtx, req: wire::GetBriefRequest) -> Result<wire::GetBriefResponse, Status> {
+    pub async fn get_brief(
+        &self,
+        ctx: &CallCtx,
+        req: wire::GetBriefRequest,
+    ) -> Result<wire::GetBriefResponse, Status> {
         let change = change_of(&req.change)?;
         let entry = self.open(ctx).await?;
         self.known(&entry, change).await?;
@@ -440,10 +506,14 @@ impl Reviews {
             Some(v) => self.file_stats(&entry, v.cs).await?,
             None => (Vec::new(), false),
         };
-        let (added, removed) = files.iter().fold((0u32, 0u32), |a, f| (a.0.saturating_add(f.added), a.1.saturating_add(f.removed)));
+        let (added, removed) = files.iter().fold((0u32, 0u32), |a, f| {
+            (a.0.saturating_add(f.added), a.1.saturating_add(f.removed))
+        });
         let approvals = self.approvals_of(&entry, change, &vs).await?;
         let (mut conn, ns) = (self.registry.pool().acquire().await.map_err(sql)?, entry.ns);
-        let (total, open) = store::thread_counts(&mut conn, ns, change).await.map_err(sql)?;
+        let (total, open) = store::thread_counts(&mut conn, ns, change)
+            .await
+            .map_err(sql)?;
         let requests = store::requests(&mut conn, ns, change).await.map_err(sql)?;
         drop(conn);
         let gate = wire::ReviewGateData {
@@ -457,11 +527,18 @@ impl Reviews {
                     .filter(|a| a.applies && a.state == wire::ApprovalState::Approved as i32)
                     .count(),
             ),
-            approvals_carried: u32_of(approvals.iter().filter(|a| a.carried && a.state == wire::ApprovalState::Approved as i32).count()),
+            approvals_carried: u32_of(
+                approvals
+                    .iter()
+                    .filter(|a| a.carried && a.state == wire::ApprovalState::Approved as i32)
+                    .count(),
+            ),
             changes_requested: u32_of(
                 approvals
                     .iter()
-                    .filter(|a| a.applies && a.state == wire::ApprovalState::ChangesRequested as i32)
+                    .filter(|a| {
+                        a.applies && a.state == wire::ApprovalState::ChangesRequested as i32
+                    })
                     .count(),
             ),
         };
@@ -474,7 +551,10 @@ impl Reviews {
             risk: Some(classify(&files, added, removed)),
             file_stats: files,
             stats_truncated: truncated,
-            provenance: Some(self.provenance(&entry, ctx, change, u32_of(vs.len())).await?),
+            provenance: Some(
+                self.provenance(&entry, ctx, change, u32_of(vs.len()))
+                    .await?,
+            ),
             approvals,
             gate: Some(gate),
         })
@@ -492,7 +572,9 @@ impl Reviews {
         let b = req.brief.unwrap_or_default();
         for t in [&b.what, &b.why, &b.how, &b.risk_note] {
             if t.len() > MAX_BRIEF_TEXT || t.contains('\0') {
-                return Err(Status::invalid_argument("each part of the brief is at most 8 KiB of text"));
+                return Err(Status::invalid_argument(
+                    "each part of the brief is at most 8 KiB of text",
+                ));
             }
         }
         if b.where_to_look.len() > MAX_POINTERS {
@@ -500,7 +582,11 @@ impl Reviews {
         }
         let mut pointers: Vec<(String, u32, String)> = Vec::new();
         for p in &b.where_to_look {
-            if p.path.len() > super::MAX_PATH || p.path.contains(&0) || p.note.len() > 500 || p.line > 10_000_000 {
+            if p.path.len() > super::MAX_PATH
+                || p.path.contains(&0)
+                || p.note.len() > 500
+                || p.line > 10_000_000
+            {
                 return Err(Status::invalid_argument("invalid pointer"));
             }
             let path = std::str::from_utf8(&p.path)
@@ -565,8 +651,16 @@ impl Reviews {
     ) -> Result<wire::RecordApprovalResponse, Status> {
         let change = change_of(&req.change)?;
         let state = match wire::ApprovalState::try_from(req.state) {
-            Ok(s @ (wire::ApprovalState::Approved | wire::ApprovalState::ChangesRequested | wire::ApprovalState::Dismissed)) => s,
-            _ => return Err(Status::invalid_argument("a verdict is approved, changes requested or dismissed")),
+            Ok(
+                s @ (wire::ApprovalState::Approved
+                | wire::ApprovalState::ChangesRequested
+                | wire::ApprovalState::Dismissed),
+            ) => s,
+            _ => {
+                return Err(Status::invalid_argument(
+                    "a verdict is approved, changes requested or dismissed",
+                ));
+            }
         };
         let entry = self.open(ctx).await?;
         self.known(&entry, change).await?;
@@ -574,14 +668,22 @@ impl Reviews {
         if state == wire::ApprovalState::Approved {
             let e = self.eligibility(&entry, change, &vs).await?;
             if !e.policy.author_may_approve && e.authors.contains(reviewer) {
-                return Err(Status::permission_denied("the author of a change cannot approve it"));
+                return Err(Status::permission_denied(
+                    "the author of a change cannot approve it",
+                ));
             }
             if e.policy.human_approval && e.agents.contains(reviewer) {
-                return Err(Status::permission_denied("an agent cannot approve a change here; the policy asks for a person"));
+                return Err(Status::permission_denied(
+                    "an agent cannot approve a change here; the policy asks for a person",
+                ));
             }
         }
         let latest = vs.last().map_or(0, |v| v.v);
-        let version = if req.version == 0 { latest } else { req.version };
+        let version = if req.version == 0 {
+            latest
+        } else {
+            req.version
+        };
         if !vs.iter().any(|v| v.v == version) {
             return Err(Status::invalid_argument("unknown version"));
         }
@@ -637,10 +739,22 @@ impl Reviews {
         let entry = self.open(ctx).await?;
         self.known(&entry, change).await?;
         let vs = self.all_versions(&entry, change).await?;
-        let to_v = if req.to_version == 0 { vs.last().map_or(0, |v| v.v) } else { req.to_version };
-        let find = |n: u32| vs.iter().find(|v| v.v == n).cloned().ok_or_else(|| Status::invalid_argument("unknown version"));
+        let to_v = if req.to_version == 0 {
+            vs.last().map_or(0, |v| v.v)
+        } else {
+            req.to_version
+        };
+        let find = |n: u32| {
+            vs.iter()
+                .find(|v| v.v == n)
+                .cloned()
+                .ok_or_else(|| Status::invalid_argument("unknown version"))
+        };
         let (from, to) = (find(req.from_version)?, find(to_v)?);
-        let (a, b) = (self.patch_map(&entry, from.cs).await?, self.patch_map(&entry, to.cs).await?);
+        let (a, b) = (
+            self.patch_map(&entry, from.cs).await?,
+            self.patch_map(&entry, to.cs).await?,
+        );
         let stats: HashMap<Vec<u8>, (u32, u32)> = self
             .file_stats(&entry, to.cs)
             .await?
@@ -684,7 +798,15 @@ impl Reviews {
             .into_iter()
             .filter(|x| x.version == from.v)
             .collect();
-        Ok(wire::CompareVersionsResponse { files, changed, unchanged, added, removed, approvals, truncated })
+        Ok(wire::CompareVersionsResponse {
+            files,
+            changed,
+            unchanged,
+            added,
+            removed,
+            approvals,
+            truncated,
+        })
     }
 
     /// `Review.PrepareSuggestion`.
@@ -695,11 +817,17 @@ impl Reviews {
     ) -> Result<wire::PrepareSuggestionResponse, Status> {
         let change = change_of(&req.change)?;
         let entry = self.open(ctx).await?;
-        let (thread, comment) = self.suggestion_of(&entry, change, req.thread_id, req.comment_id).await?;
+        let (thread, comment) = self
+            .suggestion_of(&entry, change, req.thread_id, req.comment_id)
+            .await?;
         let vs = self.all_versions(&entry, change).await?;
         let latest = vs.last().map_or(0, |v| v.v);
         let anchor = thread.anchor.clone().unwrap_or_default();
-        let version = if anchor.version == 0 { latest } else { anchor.version };
+        let version = if anchor.version == 0 {
+            latest
+        } else {
+            anchor.version
+        };
         let stale = |reason: &str| wire::PrepareSuggestionResponse {
             path: anchor.path.clone(),
             version,
@@ -714,14 +842,17 @@ impl Reviews {
             return Ok(stale("the suggestion was applied already"));
         }
         if version != latest {
-            return Ok(stale("the thread is on an older version; the change has moved on"));
+            return Ok(stale(
+                "the thread is on an older version; the change has moved on",
+            ));
         }
         let Some(v) = vs.iter().find(|v| v.v == version) else {
             return Ok(stale("unknown version"));
         };
         let view = RepoView::new(self.registry.clone());
         let root = view.root_of(&entry, v.cs).await?;
-        let path = std::str::from_utf8(&anchor.path).map_err(|_| Status::invalid_argument("a path is UTF-8"))?;
+        let path = std::str::from_utf8(&anchor.path)
+            .map_err(|_| Status::invalid_argument("a path is UTF-8"))?;
         let Some(old) = view.read(&entry, root, path, MAX_FILE).await? else {
             return Ok(stale("the file is not in this version"));
         };
@@ -729,7 +860,10 @@ impl Reviews {
             return Ok(stale("the file is not text"));
         };
         let lines: Vec<&str> = text.split_inclusive('\n').collect();
-        let (s, e) = (anchor.start_line as usize, anchor.end_line.max(anchor.start_line) as usize);
+        let (s, e) = (
+            anchor.start_line as usize,
+            anchor.end_line.max(anchor.start_line) as usize,
+        );
         if s == 0 || e > lines.len() {
             return Ok(stale("the lines are no longer in the file"));
         }
@@ -737,7 +871,8 @@ impl Reviews {
         lines[..s - 1].iter().for_each(|l| out.push_str(l));
         out.push_str(&comment.suggestion);
         let last_has_newline = lines[e - 1].ends_with('\n');
-        if last_has_newline && !comment.suggestion.is_empty() && !comment.suggestion.ends_with('\n') {
+        if last_has_newline && !comment.suggestion.is_empty() && !comment.suggestion.ends_with('\n')
+        {
             out.push('\n');
         }
         lines[e..].iter().for_each(|l| out.push_str(l));
@@ -761,7 +896,10 @@ impl Reviews {
         thread_id: u64,
         comment_id: u64,
     ) -> Result<(wire::ReviewThread, wire::ReviewComment), Status> {
-        let tid = i64::try_from(thread_id).ok().filter(|n| *n > 0).ok_or_else(|| Status::invalid_argument("invalid id"))?;
+        let tid = i64::try_from(thread_id)
+            .ok()
+            .filter(|n| *n > 0)
+            .ok_or_else(|| Status::invalid_argument("invalid id"))?;
         let mut conn = self.registry.pool().acquire().await.map_err(sql)?;
         let thread = store::thread(&mut conn, entry.ns, tid)
             .await
@@ -775,9 +913,15 @@ impl Reviews {
             .cloned()
             .ok_or_else(|| Status::not_found("unknown comment"))?;
         if comment.suggestion.is_empty() {
-            return Err(Status::failed_precondition("the comment holds no suggestion"));
+            return Err(Status::failed_precondition(
+                "the comment holds no suggestion",
+            ));
         }
-        if thread.anchor.as_ref().is_none_or(|a| a.path.is_empty() || a.start_line == 0) {
+        if thread
+            .anchor
+            .as_ref()
+            .is_none_or(|a| a.path.is_empty() || a.start_line == 0)
+        {
             return Err(Status::failed_precondition("the thread is not on lines"));
         }
         Ok((thread, comment))
@@ -792,12 +936,16 @@ impl Reviews {
     ) -> Result<wire::MarkSuggestionAppliedResponse, Status> {
         let change = change_of(&req.change)?;
         let entry = self.open(ctx).await?;
-        let (thread, comment) = self.suggestion_of(&entry, change, req.thread_id, req.comment_id).await?;
+        let (thread, comment) = self
+            .suggestion_of(&entry, change, req.thread_id, req.comment_id)
+            .await?;
         let vs = self.all_versions(&entry, change).await?;
         let latest = vs.last().map_or(0, |v| v.v);
         let on = thread.anchor.as_ref().map_or(0, |a| a.version);
         if req.version <= on || req.version > latest {
-            return Err(Status::invalid_argument("the version must be later than the thread's and at most the newest"));
+            return Err(Status::invalid_argument(
+                "the version must be later than the thread's and at most the newest",
+            ));
         }
         if comment.applied_version != 0 {
             return Err(Status::already_exists("the suggestion was applied already"));
@@ -805,7 +953,8 @@ impl Reviews {
         // The new version must really hold the suggestion: a writer cannot mark a change that was not made.
         {
             let anchor = thread.anchor.clone().unwrap_or_default();
-            let path = std::str::from_utf8(&anchor.path).map_err(|_| Status::invalid_argument("a path is UTF-8"))?;
+            let path = std::str::from_utf8(&anchor.path)
+                .map_err(|_| Status::invalid_argument("a path is UTF-8"))?;
             let bad = || Status::invalid_argument("unknown version");
             let new_v = vs.iter().find(|v| v.v == req.version).ok_or_else(bad)?;
             let old_v = vs.iter().find(|v| v.v == on).ok_or_else(bad)?;
@@ -816,7 +965,10 @@ impl Reviews {
                 .read(&entry, new_root, path, MAX_FILE)
                 .await?
                 .ok_or_else(|| Status::failed_precondition("the version does not have the file"))?;
-            let old_bytes = view.read(&entry, old_root, path, MAX_FILE).await?.unwrap_or_default();
+            let old_bytes = view
+                .read(&entry, old_root, path, MAX_FILE)
+                .await?
+                .unwrap_or_default();
             if !contains_suggestion(
                 &old_bytes,
                 &new_bytes,
@@ -824,7 +976,9 @@ impl Reviews {
                 anchor.end_line.max(anchor.start_line) as usize,
                 &comment.suggestion,
             ) {
-                return Err(Status::failed_precondition("the version does not contain the suggestion"));
+                return Err(Status::failed_precondition(
+                    "the version does not contain the suggestion",
+                ));
             }
         }
         let n = sqlx::query(
@@ -852,9 +1006,13 @@ impl Reviews {
         )
         .await;
         let mut conn = self.registry.pool().acquire().await.map_err(sql)?;
-        let thread = store::thread(&mut conn, entry.ns, i64::try_from(req.thread_id).unwrap_or(0))
-            .await
-            .map_err(sql)?;
+        let thread = store::thread(
+            &mut conn,
+            entry.ns,
+            i64::try_from(req.thread_id).unwrap_or(0),
+        )
+        .await
+        .map_err(sql)?;
         Ok(wire::MarkSuggestionAppliedResponse { thread })
     }
 
@@ -892,7 +1050,10 @@ impl Reviews {
         .map_err(sql)?;
         for r in &rows {
             let n: i64 = r.try_get("n").map_err(sql)?;
-            score.entry(r.try_get("reviewer").map_err(sql)?).or_default().0 = u32::try_from(n).unwrap_or(u32::MAX);
+            score
+                .entry(r.try_get("reviewer").map_err(sql)?)
+                .or_default()
+                .0 = u32::try_from(n).unwrap_or(u32::MAX);
         }
         if let Some(v) = vs.last() {
             let (files, _) = self.file_stats(&entry, v.cs).await?;
@@ -908,7 +1069,10 @@ impl Reviews {
                 }
                 for r in query.fetch_all(self.registry.pool()).await.map_err(sql)? {
                     let n: i64 = r.try_get("n").map_err(sql)?;
-                    score.entry(r.try_get("opened_by").map_err(sql)?).or_default().1 += u32::try_from(n).unwrap_or(0);
+                    score
+                        .entry(r.try_get("opened_by").map_err(sql)?)
+                        .or_default()
+                        .1 += u32::try_from(n).unwrap_or(0);
                 }
             }
         }
@@ -924,7 +1088,14 @@ impl Reviews {
         let mut ranked: Vec<(u32, String, u32, u32)> = score
             .into_iter()
             .filter(|(h, _)| Some(h.as_str()) != author.as_deref())
-            .map(|(h, (reviews, same))| (same.saturating_mul(3).saturating_add(reviews), h, reviews, same))
+            .map(|(h, (reviews, same))| {
+                (
+                    same.saturating_mul(3).saturating_add(reviews),
+                    h,
+                    reviews,
+                    same,
+                )
+            })
             .collect();
         ranked.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
         Ok(wire::SuggestReviewersResponse {
@@ -935,7 +1106,9 @@ impl Reviews {
                     reason: match (same, reviews) {
                         (0, r) => format!("finished {r} reviews here"),
                         (s, 0) => format!("commented on {s} threads on these files"),
-                        (s, r) => format!("commented on {s} threads on these files and finished {r} reviews"),
+                        (s, r) => format!(
+                            "commented on {s} threads on these files and finished {r} reviews"
+                        ),
                     },
                     is_agent: agents.contains(&handle),
                     handle,

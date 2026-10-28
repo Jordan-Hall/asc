@@ -1452,17 +1452,36 @@ strategy = "rebase-disjoint"
 maintainer = [\"user:a\"]
 ";
         let none = Policy::parse(head.as_bytes()).unwrap();
-        assert_eq!(none.review, ReviewPolicy { author_may_approve: false, human_approval: true });
-        let loose = format!("{head}[review]
+        assert_eq!(
+            none.review,
+            ReviewPolicy {
+                author_may_approve: false,
+                human_approval: true
+            }
+        );
+        let loose = format!(
+            "{head}[review]
 author_may_approve = true
 human_approval = false
-");
+"
+        );
         let p = Policy::parse(loose.as_bytes()).unwrap();
-        assert_eq!(p.review, ReviewPolicy { author_may_approve: true, human_approval: false });
-        let typo = format!("{head}[review]
+        assert_eq!(
+            p.review,
+            ReviewPolicy {
+                author_may_approve: true,
+                human_approval: false
+            }
+        );
+        let typo = format!(
+            "{head}[review]
 author_can_approve = true
-");
-        assert!(Policy::parse(typo.as_bytes()).is_err(), "an unknown key is an error, not a silent default");
+"
+        );
+        assert!(
+            Policy::parse(typo.as_bytes()).is_err(),
+            "an unknown key is an error, not a silent default"
+        );
     }
 
     #[test]

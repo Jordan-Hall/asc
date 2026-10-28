@@ -783,7 +783,9 @@ impl Ci for CiService {
             .env
             .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
             .await?;
-        self.hub.ci_compare_with_main(&ctx, msg).await.map(Response::new)
+        self.hub
+            .ci_compare_with_main(&ctx, msg)
+            .await
+            .map(Response::new)
     }
-
 }
