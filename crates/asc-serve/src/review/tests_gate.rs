@@ -39,23 +39,25 @@ async fn stats(f: &Fx, token: &str) -> wire::GetGateStatsResponse {
 #[tokio::test]
 async fn the_gate_history_counts_checked_held_cleared_per_day_and_per_rule() {
     let f = fx().await;
-    assert_eq!(record(&f, DAVE, 1, 2, &[false, false, false]).await.unwrap_err().code(), Code::PermissionDenied, "reporting needs write");
-    assert_eq!(record(&f, CAROL, 9, 1, &[false]).await.unwrap_err().code(), Code::NotFound);
-    assert_eq!(record(&f, CAROL, 1, 7, &[false]).await.unwrap_err().code(), Code::InvalidArgument, "unknown version");
+    for who in [DAVE, CAROL] {
+        assert_eq!(record(&f, who, 1, 2, &[false, false, false]).await.unwrap_err().code(), Code::PermissionDenied, "reporting needs an administrator");
+    }
+    assert_eq!(record(&f, ADMIN, 9, 1, &[false]).await.unwrap_err().code(), Code::NotFound);
+    assert_eq!(record(&f, ADMIN, 1, 7, &[false]).await.unwrap_err().code(), Code::InvalidArgument, "unknown version");
     let long = wire::RecordGateDecisionRequest {
         repo: repo_ref(),
         change: cbytes(1),
         version: 0,
         rules: vec![wire::GateRuleResult { rule: "x".repeat(121), held: false }],
     };
-    assert_eq!(f.review.record_gate_decision(req(long, CAROL, false)).await.unwrap_err().code(), Code::InvalidArgument);
+    assert_eq!(f.review.record_gate_decision(req(long, ADMIN, false)).await.unwrap_err().code(), Code::InvalidArgument);
     // Change 1 passes at once; change 2 is held by two rules and clears later; change 3 stays held.
-    let r = record(&f, CAROL, 1, 0, &[false, false, false]).await.unwrap();
+    let r = record(&f, ADMIN, 1, 0, &[false, false, false]).await.unwrap();
     assert!(r.passed && r.first_time && !r.cleared);
-    let r = record(&f, CAROL, 2, 1, &[true, false, true]).await.unwrap();
+    let r = record(&f, ADMIN, 2, 1, &[true, false, true]).await.unwrap();
     assert!(!r.passed && !r.first_time);
-    record(&f, CAROL, 3, 1, &[false, true, false]).await.unwrap();
-    let r = record(&f, CAROL, 2, 1, &[false, false, false]).await.unwrap();
+    record(&f, ADMIN, 3, 1, &[false, true, false]).await.unwrap();
+    let r = record(&f, ADMIN, 2, 1, &[false, false, false]).await.unwrap();
     assert!(r.passed && !r.first_time && r.cleared);
     let s = stats(&f, DAVE).await;
     assert_eq!((s.checked, s.passed_first_time, s.held, s.held_open, s.held_cleared), (3, 1, 2, 1, 1));

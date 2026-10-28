@@ -23,7 +23,7 @@ service Review {
   rpc PrepareSuggestion(PrepareSuggestionRequest) returns (PrepareSuggestionResponse);   // repo write; the file with the suggestion applied
   rpc MarkSuggestionApplied(MarkSuggestionAppliedRequest) returns (MarkSuggestionAppliedResponse);   // repo write; records the version that applied it
   rpc SuggestReviewers(SuggestReviewersRequest) returns (SuggestReviewersResponse);      // repo read
-  rpc RecordGateDecision(RecordGateDecisionRequest) returns (RecordGateDecisionResponse);   // repo write; the host reports an evaluation; idempotent
+  rpc RecordGateDecision(RecordGateDecisionRequest) returns (RecordGateDecisionResponse);   // repo admin (the host); idempotent
   rpc GetGateStats(GetGateStatsRequest) returns (GetGateStatsResponse);           // repo read; counts, per day, per rule
   rpc GrantOverride(GrantOverrideRequest) returns (GrantOverrideResponse);        // repo admin; reason required; audited; x-asc-op-id
   rpc RevokeOverride(RevokeOverrideRequest) returns (RevokeOverrideResponse);     // repo admin; idempotent
@@ -332,7 +332,7 @@ message SuggestReviewersResponse {
 // ---------------------------------------------------------------------------------------------------- gate statistics and overrides
 //
 // The policy gate itself is evaluated by the host (and by Policy.Evaluate). These calls keep its history so the gate board can show
-// what it did: the host reports each evaluation of a version; asc counts. Reads need repo read; reporting needs repo write; granting
+// what it did: the host reports each evaluation of a version; asc counts. Reads need repo read; reporting needs repo admin; granting
 // and revoking an override need repo admin (a maintainer), need a reason, are audited with the person and the relay, and are chained:
 // each override carries the SHA-256 proof of the one before it, so a removed or edited row is visible.
 

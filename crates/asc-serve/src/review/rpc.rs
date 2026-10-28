@@ -671,9 +671,10 @@ impl Review for ReviewService {
         request: Request<wire::RecordGateDecisionRequest>,
     ) -> Result<Response<wire::RecordGateDecisionResponse>, Status> {
         let (meta, ext, msg) = request.into_parts();
+        // The history of the gate is written by the host (or an administrator), not by every writer.
         let ctx = self
             .env
-            .context(&meta, &ext, msg.repo.as_ref(), Access::Write, false)
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Admin, false)
             .await?;
         self.hub.record_gate_decision(&ctx, msg).await.map(Response::new)
     }
