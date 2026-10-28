@@ -183,6 +183,23 @@ async fn the_host_and_origin_checks_and_the_metadata_document_are_live() {
     assert_eq!(doc["bearer_methods_supported"], json!(["header"]));
 }
 
+/// Regression: `asc submit` failed with "the changeset is not a version of the change its topic
+/// names" against a real server, because the server never advertised `changes.v1`. Without it the
+/// client leaves the `m/` change metadata out of its closure, the server gives the changeset a change
+/// id of its own, and the topic `asc-<change>` the client derived from its local id names no version.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn changes_v1_is_advertised_so_a_client_uploads_the_metadata_a_topic_names() {
+    let rig = rig::start(Options::default()).await;
+    let features = rig
+        .client(REPO, WRITE_TOKEN)
+        .server_version()
+        .await
+        .unwrap()
+        .features;
+    assert!(features.contains(&"changes.v1".to_owned()), "{features:?}");
+    assert!(features.contains(&"mergequeue.v1".to_owned()), "{features:?}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mcp_v1_is_advertised_exactly_when_it_is_mounted() {
     let on = rig::start(Options {
