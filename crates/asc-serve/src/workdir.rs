@@ -101,10 +101,14 @@ pub fn prepare(dir: &Path) -> io::Result<()> {
 /// # Errors
 /// The directory exists or cannot be made.
 pub fn create_private(dir: &Path) -> io::Result<()> {
-    let mut b = std::fs::DirBuilder::new();
     #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
-    b.create(dir)
+    {
+        let mut b = std::fs::DirBuilder::new();
+        std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
+        b.create(dir)
+    }
+    #[cfg(not(unix))]
+    std::fs::DirBuilder::new().create(dir)
 }
 
 #[cfg(unix)]
