@@ -786,18 +786,20 @@ impl AgentsHub {
         Ok(())
     }
 
-    /// Whether the spend of this month reached the cap of the repository or of `agent`.
+    /// Whether the spend of this month reached the cap of the repository or of `agent`. Fail
+    /// closed: when the cap or the spend cannot be read, the answer is "reached".
     pub async fn monthly_exceeded(&self, repo: &str, agent: &str) -> bool {
         let month = this_month();
         for who in ["", agent] {
-            let cap = self.monthly_cap(repo, who).await.unwrap_or(0);
+            let Ok(cap) = self.monthly_cap(repo, who).await else {
+                return true;
+            };
             if cap == 0 {
                 continue;
             }
-            if let Ok((cost, _, _)) = self.month_spend(repo, &month, who).await
-                && cost >= cap
-            {
-                return true;
+            match self.month_spend(repo, &month, who).await {
+                Ok((cost, _, _)) if cost < cap => {}
+                _ => return true,
             }
         }
         false
@@ -807,12 +809,29 @@ impl AgentsHub {
 
     /// Holds the run while it is paused; reports a stop or a rollback to perform.
     pub(crate) async fn hold(&self, run: &RunRow, live: &Arc<Live>) -> Hold {
+        let mut failures = 0u32;
         loop {
             if let Some(e) = Self::stopped_for(live) {
                 return Hold::Stop(e);
             }
-            let Ok(ctl) = self.ctl(run.id).await else {
-                return Hold::Go;
+            // Fail closed: a control state that cannot be read is retried, then the run stops. It is
+            // never taken to mean "not paused".
+            let ctl = match self.ctl(run.id).await {
+                Ok(c) => {
+                    failures = 0;
+                    c
+                }
+                Err(_) => {
+                    failures += 1;
+                    if failures >= 5 {
+                        return Hold::Stop(Ended::Failed {
+                            code: "internal".to_owned(),
+                            message: "the control state of the run could not be read".to_owned(),
+                        });
+                    }
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    continue;
+                }
             };
             if ctl.rollback_to != 0 {
                 let _ = self.set_ctl_i(run.id, "rollback_to", 0).await;
@@ -938,9 +957,16 @@ impl AgentsHub {
         live: &Arc<Live>,
         call: &ToolCall,
     ) -> Flow {
+        // Fail closed: without the control state the plan gate and the pause cannot be decided, so the
+        // run stops instead of proceeding.
         let ctl = match self.ctl(run.id).await {
             Ok(c) => c,
-            Err(_) => return Flow::Proceed,
+            Err(_) => {
+                return Flow::Stop(Ended::Failed {
+                    code: "internal".to_owned(),
+                    message: "the control state of the run could not be read".to_owned(),
+                });
+            }
         };
         let fail = |m: &str| Flow::Result { content: m.to_owned(), error: true };
         match call.name.as_str() {
@@ -1015,10 +1041,7 @@ impl AgentsHub {
                     .and_then(|v| v.as_array())
                     .map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_owned)).collect())
                     .unwrap_or_default();
-                let asks = self.core.cfg.sandbox.ask_before.iter().any(|p| {
-                    !p.is_empty() && argv.len() >= p.len() && argv[..p.len()] == p[..]
-                });
-                if !asks {
+                if !needs_permission(&argv, &self.core.cfg.sandbox.ask_before) {
                     return Flow::Proceed;
                 }
                 let line = argv.join(" ");
@@ -1211,6 +1234,84 @@ impl AgentsHub {
         }
         v
     }
+}
+
+/// Programs that run other programs: the command that follows is not the one the allow list saw.
+const WRAPPERS: &[&str] = &[
+    "env", "nice", "nohup", "timeout", "xargs", "time", "sudo", "doas", "command", "exec", "stdbuf", "ionice",
+    "setsid", "chrt", "taskset", "unbuffer", "busybox", "watch", "flock", "strace", "ltrace", "su", "runuser",
+    "chroot", "script", "parallel", "find", "git-shell", "start", "call",
+];
+
+/// Shells and interpreters: whatever they are given runs as code, so a command through one always asks.
+const INTERPRETERS: &[&str] = &[
+    "sh", "bash", "zsh", "dash", "ksh", "csh", "tcsh", "fish", "ash", "cmd", "powershell", "pwsh", "perl",
+    "ruby", "node", "nodejs", "bun", "deno", "php", "lua", "tclsh", "awk", "gawk", "mawk", "make", "gmake",
+    "eval", "source", "osascript", "wscript", "cscript", "java", "dotnet", "npx", "pnpx", "bunx", "uvx", "pipx",
+];
+
+/// The program name of an argument: its last path segment, lower case, without a Windows extension.
+fn program_name(arg: &str) -> String {
+    let last = arg.rsplit(['/', '\\']).next().unwrap_or(arg).to_ascii_lowercase();
+    for ext in [".exe", ".cmd", ".bat", ".com", ".ps1"] {
+        if let Some(stem) = last.strip_suffix(ext) {
+            return stem.to_owned();
+        }
+    }
+    last
+}
+
+fn is_interpreter(name: &str) -> bool {
+    INTERPRETERS.contains(&name) || name.starts_with("python") || name.starts_with("pypy") || name.starts_with("ruby")
+}
+
+/// Most arguments and wrapper nesting examined; beyond them the answer is "ask".
+const MAX_ARGS: usize = 64;
+const MAX_NESTING: usize = 4;
+
+/// Whether running `argv` needs a person's yes under `ask_before` (prefixes of argument lists).
+///
+/// The match is on what would run, not on the text: the program is compared by its name (a path or a
+/// `.exe` does not hide it); the words of a prefix after the program may be separated by other words,
+/// so a global option before the subcommand (`git -C dir push`) does not hide it; a wrapper
+/// (`env`, `nice`, `timeout`, `sudo`, `xargs`, ...) is looked through at every position, so an option
+/// or a value of the wrapper does not hide the command; a shell or an interpreter always asks, and so
+/// does a command too long or too deeply wrapped to examine. Over-asking is the safe error.
+pub fn needs_permission(argv: &[String], ask_before: &[Vec<String>]) -> bool {
+    if ask_before.is_empty() {
+        return false;
+    }
+    if argv.len() > MAX_ARGS {
+        return true;
+    }
+    let args: Vec<&str> = argv.iter().map(String::as_str).collect();
+    needs_inner(&args, ask_before, 0)
+}
+
+fn needs_inner(args: &[&str], ask_before: &[Vec<String>], depth: usize) -> bool {
+    let Some(first) = args.first() else {
+        return false;
+    };
+    if depth > MAX_NESTING {
+        return true;
+    }
+    let name = program_name(first);
+    if is_interpreter(&name) {
+        return true;
+    }
+    if WRAPPERS.contains(&name.as_str()) {
+        return (1..args.len()).any(|i| needs_inner(&args[i..], ask_before, depth + 1));
+    }
+    ask_before.iter().any(|p| {
+        let Some(p0) = p.first() else {
+            return false;
+        };
+        if program_name(p0) != name {
+            return false;
+        }
+        let mut rest = args[1..].iter();
+        p[1..].iter().all(|w| rest.any(|a| a == w))
+    })
 }
 
 fn summary_cut(s: &str) -> String {
