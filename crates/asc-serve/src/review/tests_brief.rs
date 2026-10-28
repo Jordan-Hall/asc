@@ -422,3 +422,108 @@ async fn an_author_and_an_agent_cannot_approve_and_an_old_verdict_of_either_does
         "a read claim does not approve"
     );
 }
+
+async fn set_trunk_policy(f: &Fx, toml: &str) {
+    use asc_core::id::RefTarget;
+    use asc_store::refs::{Actor, Expect, RefTxn, RefUpdate, Refs as _};
+    let cs = commit(&f.e, &[], &[(".asc/policy.toml", toml.as_bytes())]).await;
+    let txn = RefTxn {
+        updates: vec![RefUpdate {
+            name: asc_core::path::RefName::new(format!("refs/heads/{}", f.e.default_branch).as_bytes()).unwrap(),
+            expect: Expect::Any,
+            new: Some(RefTarget::Changeset(cs)),
+            expires_at: None,
+        }],
+        actor: Actor { id: "t".into(), via: "test".into() },
+        reason: "test".into(),
+        op_id: uuid::Uuid::new_v4(),
+    };
+    f.reg.refs().update(f.e.key, &txn).await.unwrap();
+}
+
+#[tokio::test]
+async fn the_policy_can_let_an_author_approve_and_then_the_verdict_counts() {
+    let f = fx().await;
+    let cs3 = commit(&f.e, &[], &[("f", &[7])]).await;
+    add_version(&f, 1, 3, cs3, "44:carol").await;
+    // Without a policy the strict default holds.
+    assert_eq!(approve(&f, CAROL, 1, 0, wire::ApprovalState::Approved).await.unwrap_err().code(), Code::PermissionDenied);
+    set_trunk_policy(&f, "version = 1
+[roles]
+maintainer = [\"user:alice\"]
+[review]
+author_may_approve = true
+").await;
+    approve(&f, CAROL, 1, 0, wire::ApprovalState::Approved).await.unwrap();
+    let b = brief(&f, DAVE, 1).await.unwrap();
+    assert_eq!(b.gate.unwrap().approvals_current, 1, "the policy lets the author's verdict count");
+    assert!(b.approvals.iter().any(|a| a.reviewer == "carol" && a.applies));
+}
+
+#[test]
+fn a_suggestion_is_found_at_its_line_or_as_a_deletion() {
+    use super::brief::contains_suggestion as has;
+    let old = b"a
+b
+c
+d
+";
+    assert!(has(old, b"a
+B!
+c
+d
+", 2, 2, "B!
+"));
+    assert!(has(old, b"a
+x
+y
+d
+", 2, 3, "x
+y"), "the last suggestion line may lack its newline");
+    assert!(has(old, b"a
+B!
+c
+d
+", 2, 2, "B!
+"), "line endings are not compared");
+    assert!(!has(old, old, 2, 2, "B!
+"), "an unchanged file does not hold it");
+    assert!(!has(old, b"B!
+b
+c
+d
+", 2, 2, "B!
+"), "it must be at the line");
+    assert!(has(old, b"a
+d
+", 2, 3, ""), "a deletion removes the lines");
+    assert!(!has(old, old, 2, 3, ""));
+    assert!(!has(old, b"x", 0, 0, "x"));
+    assert!(!has(&[0xff], b"x", 1, 1, "x"));
+}
+
+#[tokio::test]
+async fn marking_a_suggestion_applied_needs_a_version_that_holds_it() {
+    let f = fx().await;
+    let added = suggest(&f, CAROL, anchor(0, 1), "replaced
+").await.unwrap();
+    let thread = added.thread.unwrap();
+    let mark = |version: u32| {
+        let r = req(
+            wire::MarkSuggestionAppliedRequest { repo: repo_ref(), change: cbytes(1), thread_id: thread.id, comment_id: added.comment_id, version },
+            CAROL,
+            true,
+        );
+        let svc = &f.review;
+        async move { svc.mark_suggestion_applied(r).await.map(tonic::Response::into_inner) }
+    };
+    // Version 3 changes the file, but not to the suggestion.
+    let other = commit(&f.e, &[], &[("f", b"something else
+")]).await;
+    add_version(&f, 1, 3, other, "44:carol").await;
+    assert_eq!(mark(3).await.unwrap_err().code(), Code::FailedPrecondition);
+    let right = commit(&f.e, &[], &[("f", b"replaced
+")]).await;
+    add_version(&f, 1, 4, right, "44:carol").await;
+    assert!(mark(4).await.is_ok());
+}

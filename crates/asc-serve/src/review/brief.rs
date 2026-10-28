@@ -128,6 +128,27 @@ pub fn classify(files: &[wire::ChangeFileStat], added: u32, removed: u32) -> wir
     }
 }
 
+/// Whether `new` holds `suggestion` at line `start` (1-based), where `old` had lines `start..=end`
+/// there; an empty suggestion is a deletion, which holds when the new file lost at least that many
+/// lines. Line endings are not compared.
+pub(crate) fn contains_suggestion(old: &[u8], new: &[u8], start: usize, end: usize, suggestion: &str) -> bool {
+    let (Ok(old), Ok(new)) = (std::str::from_utf8(old), std::str::from_utf8(new)) else {
+        return false;
+    };
+    if start == 0 || end < start {
+        return false;
+    }
+    let (old_lines, new_lines): (Vec<&str>, Vec<&str>) = (old.split_inclusive('\n').collect(), new.split_inclusive('\n').collect());
+    if suggestion.is_empty() {
+        return new_lines.len() + (end - start + 1) <= old_lines.len();
+    }
+    let want: Vec<&str> = suggestion.split_inclusive('\n').collect();
+    let trim = |s: &str| s.trim_end_matches(['\r', '\n']).to_owned();
+    new_lines
+        .get(start - 1..start - 1 + want.len())
+        .is_some_and(|got| got.iter().zip(&want).all(|(g, w)| trim(g) == trim(w)))
+}
+
 /// What decides whether a verdict of approval counts.
 struct Eligibility {
     policy: asc_core::policy::ReviewPolicy,
@@ -780,6 +801,31 @@ impl Reviews {
         }
         if comment.applied_version != 0 {
             return Err(Status::already_exists("the suggestion was applied already"));
+        }
+        // The new version must really hold the suggestion: a writer cannot mark a change that was not made.
+        {
+            let anchor = thread.anchor.clone().unwrap_or_default();
+            let path = std::str::from_utf8(&anchor.path).map_err(|_| Status::invalid_argument("a path is UTF-8"))?;
+            let bad = || Status::invalid_argument("unknown version");
+            let new_v = vs.iter().find(|v| v.v == req.version).ok_or_else(bad)?;
+            let old_v = vs.iter().find(|v| v.v == on).ok_or_else(bad)?;
+            let view = RepoView::new(self.registry.clone());
+            let new_root = view.root_of(&entry, new_v.cs).await?;
+            let old_root = view.root_of(&entry, old_v.cs).await?;
+            let new_bytes = view
+                .read(&entry, new_root, path, MAX_FILE)
+                .await?
+                .ok_or_else(|| Status::failed_precondition("the version does not have the file"))?;
+            let old_bytes = view.read(&entry, old_root, path, MAX_FILE).await?.unwrap_or_default();
+            if !contains_suggestion(
+                &old_bytes,
+                &new_bytes,
+                anchor.start_line as usize,
+                anchor.end_line.max(anchor.start_line) as usize,
+                &comment.suggestion,
+            ) {
+                return Err(Status::failed_precondition("the version does not contain the suggestion"));
+            }
         }
         let n = sqlx::query(
             "UPDATE review_comments SET applied_version = $4, applied_by = $5 \
