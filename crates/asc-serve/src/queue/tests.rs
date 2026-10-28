@@ -234,3 +234,45 @@ async fn the_watch_starts_with_the_live_entries_then_streams_changes_and_resumes
     let m = wire::WatchQueueRequest { repo: repo_ref(), ..Default::default() };
     assert_eq!(q2.watch(host(&v, m, "42:alice", Role::Admin, "o/other", false)).await.err().map(|e| e.code()), Some(Code::PermissionDenied));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_enqueues_of_one_change_at_once_leave_one_entry() {
+    let f = fx().await;
+    let (q, _) = svc(&f);
+    let (a, b) = tokio::join!(enqueue(&q, CAROL, 1), enqueue(&q, CAROL, 1));
+    let codes: Vec<Code> = [a, b].iter().map(|r| r.as_ref().map_or_else(|e| e.code(), |_| Code::Ok)).collect();
+    assert_eq!(codes.iter().filter(|c| **c == Code::Ok).count(), 1, "{codes:?}");
+    assert!(codes.contains(&Code::AlreadyExists) || codes.contains(&Code::Aborted), "{codes:?}");
+    let l = q.list(req(wire::ListQueueRequest { repo: repo_ref(), ..Default::default() }, ALICE, false)).await.unwrap().into_inner();
+    assert_eq!(l.entries.len(), 1);
+    let nine = vec![1; 9];
+    assert_eq!(
+        q.list(req(wire::ListQueueRequest { repo: repo_ref(), states: nine, ..Default::default() }, ALICE, false)).await.unwrap_err().code(),
+        Code::InvalidArgument
+    );
+}
+
+#[tokio::test]
+async fn an_entry_that_stopped_passing_is_refused_at_the_moment_of_landing() {
+    let f = fx().await;
+    let (q, _) = svc(&f);
+    let e = enqueue(&q, CAROL, 1).await.unwrap();
+    approve(&f, 1).await;
+    let r = q.revalidate(req(wire::RevalidateRequest { repo: repo_ref(), id: e.id }, CAROL, false)).await.unwrap().into_inner().entry.unwrap();
+    assert_eq!(r.state, wire::QueueEntryState::Ready as i32);
+    // Between READY and the landing, a reviewer asks for changes.
+    f.review
+        .record_approval(req(
+            wire::RecordApprovalRequest { repo: repo_ref(), change: cbytes(1), version: 0, state: wire::ApprovalState::ChangesRequested as i32 },
+            ADMIN,
+            true,
+        ))
+        .await
+        .unwrap();
+    let err = report(&q, ADMIN, e.id, wire::QueueEntryState::Landing, &[]).await.unwrap_err();
+    assert_eq!(err.code(), Code::FailedPrecondition);
+    assert!(err.message().contains("REVALIDATION_FAILED"), "{err:?}");
+    let now = q.get(req(wire::GetQueueEntryRequest { repo: repo_ref(), id: e.id }, ALICE, false)).await.unwrap().into_inner().entry.unwrap();
+    assert_eq!(now.state, wire::QueueEntryState::Blocked as i32, "it went back, it did not land");
+    assert_eq!(report(&q, ADMIN, e.id, wire::QueueEntryState::Landed, &[9u8; 32]).await.unwrap_err().code(), Code::FailedPrecondition, "and it cannot be reported landed");
+}

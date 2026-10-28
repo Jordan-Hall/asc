@@ -133,7 +133,17 @@ impl AgentService {
             .open(&ctx.repo)
             .await
             .map_err(|e| crate::update::internal("registry", &e))?;
-        Ok(match &*self.hub.core.view.policy(&entry).await? {
+        // The cap is the stricter of the policy and the instance defaults: an edit cannot lift a run above
+        // what a new run could be given.
+        let d = self.hub.core.cfg.default_limits;
+        let instance = Budget {
+            changes: u64::from(d.max_changes),
+            tokens: d.max_tokens,
+            cost: d.max_cost_micro_usd,
+            paths: u64::from(d.max_paths),
+            runtime: u64::from(d.max_runtime_seconds),
+        };
+        let policy = match &*self.hub.core.view.policy(&entry).await? {
             PolicyState::Valid(p) => {
                 let b = &p.agents.budgets;
                 Budget {
@@ -144,8 +154,15 @@ impl AgentService {
                     runtime: p.agents.max_runtime_seconds.map_or(0, u64::from),
                 }
             }
-            _ => Budget::default(),
-        })
+            PolicyState::Absent => Budget::default(),
+            // Fail closed: a policy that cannot be used gives no cap to edit against.
+            PolicyState::Invalid(_) => {
+                return Err(Status::failed_precondition(
+                    "the repository policy cannot be used; fix .asc/policy.toml on trunk",
+                ));
+            }
+        };
+        Ok(policy.merge(instance))
     }
 
     // ---------------------------------------------------------------------------- requests
@@ -160,6 +177,9 @@ impl AgentService {
             0 => DEFAULT_REQUESTS,
             n => usize::try_from(n).unwrap_or(MAX_REQUESTS).min(MAX_REQUESTS),
         };
+        if msg.states.len() > 8 {
+            return Err(Status::invalid_argument("at most 8 states"));
+        }
         let mut states = Vec::new();
         for s in &msg.states {
             let st = wire::AgentRequestState::try_from(*s)
@@ -614,7 +634,8 @@ impl AgentService {
     ) -> Result<Response<wire::GetAgentSpendResponse>, Status> {
         use sqlx::Row;
         let (meta, ext, msg) = request.into_parts();
-        let ctx = self.env.context(&meta, &ext, msg.repo.as_ref(), Access::Read, false).await?;
+        // Money: a writer sees it, a reader does not.
+        let ctx = self.env.context(&meta, &ext, msg.repo.as_ref(), Access::Write, false).await?;
         let month = if msg.month.is_empty() { control::this_month() } else { msg.month.clone() };
         if !control::valid_month(&month) {
             return Err(Status::invalid_argument("a month is YYYY-MM"));
