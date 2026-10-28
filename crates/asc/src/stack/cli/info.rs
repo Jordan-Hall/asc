@@ -92,7 +92,9 @@ pub const NATIVE: &[NativeSpec] = &[NativeSpec {
     cmd: "stack",
     flags: &[
         "--json", "--add", "--remove", "--upstack", "--downstack", "-c", "-d", "-u", "--unfrozen",
-        "--worktree", "--now", "-n", "--dry-run", "--revset", "--delete", "--close",
+        "--worktree", "--now", "-n", "--dry-run", "--revset", "--delete", "--close", "-s", "--stack", "--draft",
+        "--publish", "--reviewer", "--update-only", "--auto-merge", "--force", "--no-fetch", "--no-restack",
+        "--all-trunks", "--downstack", "--only", "-m", "--message",
     ],
     placeholders: &[],
 }];
@@ -102,7 +104,7 @@ super::verb!(STACK, "stack");
 pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let Some(word) = a.rest.first().and_then(|w| w.to_str()) else {
         return Err(CliError::Usage(
-            "usage: asc stack <rename|delete|pop|get|freeze|unfreeze|trunk|info|parent|children|merge|exec> [<args>]"
+            "usage: asc stack <rename|delete|pop|get|freeze|unfreeze|trunk|info|parent|children|merge|exec|submit|sync|restack|share> [<args>]"
                 .into(),
         ));
     };

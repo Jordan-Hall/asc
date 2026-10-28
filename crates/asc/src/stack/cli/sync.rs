@@ -89,6 +89,8 @@ pub const NATIVE: &[NativeSpec] = &[NativeSpec {
 }];
 
 super::verb!(SYNC, "sync");
+/// `asc stack sync` is the same command as `asc sync` (SPEC 20.7 lists the stack verbs under both spellings).
+super::info::sub!(STACK_SYNC, "sync", Args, run);
 
 // ---------------------------------------------------------------- report
 

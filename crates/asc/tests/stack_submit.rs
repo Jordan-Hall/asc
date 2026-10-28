@@ -561,6 +561,36 @@ fn a_stack_goes_up_as_one_update_refs_bottom_to_top() {
 }
 
 #[test]
+fn asc_stack_submit_is_asc_submit_with_the_same_gate_and_refusals() {
+    let fx = Fx::new();
+    let chs = fx.stack(3);
+    fx.server.forget();
+    let r = fx.asc(&["stack", "submit"]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(!r.stderr.contains("not supported yet"), "{}", r.stderr);
+    assert_eq!(fx.sent(), fx.agit_names(&chs), "bottom to top");
+    assert_eq!(fx.server.count("UpdateRefs"), 1);
+    assert_eq!(fx.server.agit()[0].push_options, ["asc.draft=true"]);
+    assert!(
+        r.stdout.contains("Submitted 3 changes to origin (draft)"),
+        "{}",
+        r.stdout
+    );
+    // The options and the client-side refusals are the same as `asc submit`'s.
+    fx.server.forget();
+    let r = fx.asc(&["stack", "submit", "--reviewer=a=b"]);
+    assert_eq!(r.code, 129, "{}", r.stderr);
+    assert!(fx.sent().is_empty(), "nothing is sent for a bad reviewer");
+    fx.server.forget();
+    let r = fx.asc(&["stack", "submit", "--publish", "--auto-merge"]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert_eq!(
+        fx.server.agit()[0].push_options,
+        ["asc.draft=false", "asc.auto_merge=true"]
+    );
+}
+
+#[test]
 fn a_named_change_sends_bottom_through_it_and_s_sends_everything() {
     let fx = Fx::new();
     let chs = fx.stack(3);
