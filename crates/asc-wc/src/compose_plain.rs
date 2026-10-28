@@ -939,6 +939,18 @@ mod tests {
     use super::*;
     use crate::plain::testutil::*;
 
+    /// Whether file modes bind this process: root (and a process with `CAP_DAC_OVERRIDE`) writes
+    /// to a read-only file, so a test that expects a refused write skips that line there.
+    fn modes_bind() -> bool {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("probe");
+        fs::write(&f, b"x").unwrap();
+        let mut perm = fs::metadata(&f).unwrap().permissions();
+        perm.set_readonly(true);
+        fs::set_permissions(&f, perm).unwrap();
+        fs::write(&f, b"y").is_err()
+    }
+
     #[test]
     fn gitmodules_parse_and_bound() {
         let text = "# c\n[submodule \"sdk\"]\n\tpath = packages/sdk\n\turl = ../soma.git\n[submodule \"x\"]\n\turl = nope\n[other]\npath = z\n";
@@ -1025,9 +1037,11 @@ mod tests {
                 .permissions()
                 .readonly()
         );
-        assert!(fs::write(fx.root.join("packages/sdk/lib.rs"), b"x").is_err());
-        #[cfg(unix)]
-        assert!(fs::write(fx.root.join("packages/sdk/new"), b"x").is_err());
+        if modes_bind() {
+            assert!(fs::write(fx.root.join("packages/sdk/lib.rs"), b"x").is_err());
+            #[cfg(unix)]
+            assert!(fs::write(fx.root.join("packages/sdk/new"), b"x").is_err());
+        }
 
         // Occupied by files and not marked as composed: refused.
         let again = project(&*fx.store, &gate, &at, v2, true, Replace::EmptyOnly, &lim).await;
@@ -1156,7 +1170,9 @@ mod tests {
             .collect();
         assert_eq!(names, [MARKER]);
         #[cfg(unix)]
-        assert!(fs::write(fx.root.join("secret/x"), b"x").is_err());
+        if modes_bind() {
+            assert!(fs::write(fx.root.join("secret/x"), b"x").is_err());
+        }
         restrict(&gate, &p("secret"), Replace::Composed).unwrap();
         assert!(clear(&gate, &p("secret")).unwrap());
     }
