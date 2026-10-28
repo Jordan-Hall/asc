@@ -571,3 +571,68 @@ async fn the_hubs_claim_is_the_whole_authority_for_control_calls_and_the_relay_i
     assert_eq!(row, ("alice".to_owned(), "host".to_owned()));
     w.wait(run.id).await;
 }
+
+fn argv(words: &[&str]) -> Vec<String> {
+    words.iter().map(|w| (*w).to_owned()).collect()
+}
+
+#[test]
+fn ask_before_matches_what_would_run_not_the_text_of_the_command() {
+    use super::control::needs_permission;
+    let ask = vec![argv(&["git", "push"])];
+    for yes in [
+        &["git", "push"][..],
+        &["/usr/bin/git", "push", "origin"],
+        &[r"C:\Git\bin\GIT.EXE", "push"],
+        &["git", "-C", "dir", "push"],
+        &["git", "--no-pager", "push"],
+        &["env", "git", "push"],
+        &["env", "-i", "FOO=1", "git", "push"],
+        &["timeout", "30", "git", "push"],
+        &["nice", "-n", "5", "git", "push"],
+        &["sudo", "-u", "root", "git", "push"],
+        &["xargs", "-n1", "git", "push"],
+        &["env", "nice", "timeout", "30", "git", "push"],
+        &["sh", "-c", "git push"],
+        &["/bin/bash", "-c", "x"],
+        &["python3", "-c", "x"],
+        &["python3.12", "x.py"],
+        &["env", "sh", "-c", "x"],
+        &["make", "deploy"],
+        &["npx", "something"],
+    ] {
+        assert!(needs_permission(&argv(yes), &ask), "{yes:?} must ask");
+    }
+    for no in [&["git", "status"][..], &["cargo", "test"], &["env", "cargo", "test"], &["ls"], &[]] {
+        assert!(!needs_permission(&argv(no), &ask), "{no:?} must not ask");
+    }
+    // Nothing configured: nothing asks, interpreters included (the allow list is the gate then).
+    assert!(!needs_permission(&argv(&["sh", "-c", "x"]), &[]));
+    // Too long, or wrapped too deep to examine: ask.
+    let long: Vec<String> = (0..65).map(|_| "a".to_owned()).collect();
+    assert!(needs_permission(&long, &ask));
+    assert!(needs_permission(&argv(&["env"; 12]), &ask));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_unreadable_control_state_stops_the_run_and_a_budget_that_cannot_be_read_counts_as_reached() {
+    use super::control::{Flow, Hold};
+    use super::runtime::Ended;
+    let w = World::new().await;
+    w.key(alice(), "mine").await;
+    w.fake.set_default(Reply::Delay(Duration::from_secs(30), Box::new(done("late"))));
+    let run = w.start_run("alice-token", "slow").await.unwrap();
+    let row = w.hub.core.runs.get(run.id).await.unwrap().unwrap();
+    let live = Arc::new(super::Live {
+        cancel: tokio_util::sync::CancellationToken::new(),
+        reason: std::sync::Mutex::new(None),
+    });
+    assert!(matches!(w.hub.hold(&row, &live).await, Hold::Go));
+    sqlx::query("DROP TABLE agent_run_ctl").execute(&w.pool).await.unwrap();
+    assert!(matches!(w.hub.hold(&row, &live).await, Hold::Stop(Ended::Failed { .. })));
+    let call = crate::ai::model::ToolCall { id: "1".into(), name: "write_file".into(), input: json!({}) };
+    assert!(matches!(w.hub.control_call(&row, &live, &call).await, Flow::Stop(Ended::Failed { .. })));
+    assert!(!w.hub.monthly_exceeded("acme/app", "fixer").await);
+    sqlx::query("DROP TABLE agent_monthly_budget").execute(&w.pool).await.unwrap();
+    assert!(w.hub.monthly_exceeded("acme/app", "fixer").await, "an unreadable cap is a reached cap");
+}

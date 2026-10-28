@@ -1002,7 +1002,13 @@ impl AgentsHub {
         let ref_name = format!("refs/heads/agent/{}/run-{}", run.agent, run.id);
         let _ = core.runs.set_ref(run.id, &ref_name).await;
         let commands = self.sandbox.allowed_text();
-        let ctl0 = self.ctl(run.id).await.unwrap_or_default();
+        // Fail closed: the plan gate lives in the control state, so a state that cannot be read ends the run.
+        let ctl0 = match self.ctl(run.id).await {
+            Ok(c) => c,
+            Err(_) => {
+                return Ended::failed("internal", "the control state of the run could not be read");
+            }
+        };
         let mut tool_specs = specs(&commands);
         tool_specs.extend(super::control::extra_specs(ctl0.plan_first));
         let system = format!(
