@@ -212,7 +212,7 @@ fn listed(resp: &Value) -> bool {
 async fn search_is_listed_exactly_while_codeintel_is_registered() {
     let r = rig().await;
     let on = features::features(&r.slot);
-    assert_eq!(on, ["search.v1"]);
+    assert_eq!(on, ["search.v1", "cross-search.v1"]);
     let off = features::features(&CodeIntelSlot::default());
     assert!(off.is_empty());
 
