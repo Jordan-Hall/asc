@@ -666,4 +666,66 @@ impl Review for ReviewService {
             .await?;
         self.hub.suggest_reviewers(&ctx, msg).await.map(Response::new)
     }
+    async fn record_gate_decision(
+        &self,
+        request: Request<wire::RecordGateDecisionRequest>,
+    ) -> Result<Response<wire::RecordGateDecisionResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Write, false)
+            .await?;
+        self.hub.record_gate_decision(&ctx, msg).await.map(Response::new)
+    }
+
+    async fn get_gate_stats(
+        &self,
+        request: Request<wire::GetGateStatsRequest>,
+    ) -> Result<Response<wire::GetGateStatsResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
+            .await?;
+        self.hub.get_gate_stats(&ctx, msg).await.map(Response::new)
+    }
+
+    async fn grant_override(
+        &self,
+        request: Request<wire::GrantOverrideRequest>,
+    ) -> Result<Response<wire::GrantOverrideResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Admin, true)
+            .await?;
+        let handle = require_handle(&ctx)?;
+        self.hub.grant_override(&ctx, &handle, msg).await.map(Response::new)
+    }
+
+    async fn revoke_override(
+        &self,
+        request: Request<wire::RevokeOverrideRequest>,
+    ) -> Result<Response<wire::RevokeOverrideResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Admin, false)
+            .await?;
+        let handle = require_handle(&ctx)?;
+        self.hub.revoke_override(&ctx, &handle, msg).await.map(Response::new)
+    }
+
+    async fn list_overrides(
+        &self,
+        request: Request<wire::ListOverridesRequest>,
+    ) -> Result<Response<wire::ListOverridesResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
+            .await?;
+        self.hub.list_overrides(&ctx, msg).await.map(Response::new)
+    }
+
 }

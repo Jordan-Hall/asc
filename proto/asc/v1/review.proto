@@ -23,6 +23,11 @@ service Review {
   rpc PrepareSuggestion(PrepareSuggestionRequest) returns (PrepareSuggestionResponse);   // repo write; the file with the suggestion applied
   rpc MarkSuggestionApplied(MarkSuggestionAppliedRequest) returns (MarkSuggestionAppliedResponse);   // repo write; records the version that applied it
   rpc SuggestReviewers(SuggestReviewersRequest) returns (SuggestReviewersResponse);      // repo read
+  rpc RecordGateDecision(RecordGateDecisionRequest) returns (RecordGateDecisionResponse);   // repo write; the host reports an evaluation; idempotent
+  rpc GetGateStats(GetGateStatsRequest) returns (GetGateStatsResponse);           // repo read; counts, per day, per rule
+  rpc GrantOverride(GrantOverrideRequest) returns (GrantOverrideResponse);        // repo admin; reason required; audited; x-asc-op-id
+  rpc RevokeOverride(RevokeOverrideRequest) returns (RevokeOverrideResponse);     // repo admin; idempotent
+  rpc ListOverrides(ListOverridesRequest) returns (ListOverridesResponse);        // repo read; paged
 }
 
 enum ThreadStatus {
@@ -321,4 +326,93 @@ message SuggestedReviewer {
 }
 message SuggestReviewersResponse {
   repeated SuggestedReviewer reviewers = 1;
+}
+
+// ---------------------------------------------------------------------------------------------------- gate statistics and overrides
+//
+// The policy gate itself is evaluated by the host (and by Policy.Evaluate). These calls keep its history so the gate board can show
+// what it did: the host reports each evaluation of a version; asc counts. Reads need repo read; reporting needs repo write; granting
+// and revoking an override need repo admin (a maintainer), need a reason, are audited with the person and the relay, and are chained:
+// each override carries the SHA-256 proof of the one before it, so a removed or edited row is visible.
+
+message GateRuleResult {
+  string rule = 1;                       // the rule as the gate names it ("two approvals", "checks green", ...), at most 120 bytes
+  bool held = 2;                         // this rule held the change
+}
+message RecordGateDecisionRequest {
+  RepoRef repo = 1;
+  bytes change = 2 [(asc.v1.json) = JSON_KIND_CHANGE];
+  uint32 version = 3;                    // 0 means the newest
+  repeated GateRuleResult rules = 4;     // at most 64
+}
+// The same version reported again replaces the rules; a version that held and passes later is cleared (the time to clear is counted).
+message RecordGateDecisionResponse {
+  bool passed = 1;
+  bool first_time = 2;                   // it passed at its first evaluation
+  bool cleared = 3;                      // it held before and passes now
+}
+message GetGateStatsRequest {
+  RepoRef repo = 1;
+  uint32 days = 2;                       // 0 means 30, at most 365
+}
+message GateDay {
+  string day = 1;                        // YYYY-MM-DD, UTC
+  uint32 checked = 2;
+  uint32 held = 3;
+}
+message GateRuleCount {
+  string rule = 1;
+  uint32 checked = 2;
+  uint32 held = 3;
+}
+message GetGateStatsResponse {
+  uint32 checked = 1;                    // versions the gate looked at in the window
+  uint32 passed_first_time = 2;
+  uint32 held = 3;                       // versions that were held at least once
+  uint32 held_open = 4;                  // still held
+  uint32 held_cleared = 5;
+  uint32 median_clear_seconds = 6;       // among the cleared
+  repeated GateDay per_day = 7;          // every day of the window, ascending, zero days included
+  repeated GateRuleCount per_rule = 8;   // busiest first
+  uint32 overrides_active = 9;
+  bool truncated = 10;                   // more than 20000 evaluations: the oldest were left out
+}
+message GateOverride {
+  uint64 id = 1;
+  bytes change = 2 [(asc.v1.json) = JSON_KIND_CHANGE];
+  string rule = 3;
+  string reason = 4;
+  string granted_by = 5;
+  int64 granted_at = 6;
+  string revoked_by = 7;
+  int64 revoked_at = 8;                  // 0 while active
+  bytes proof = 9 [(asc.v1.json) = JSON_KIND_HEX];   // SHA-256 over the previous proof and this row
+  bytes prev = 10 [(asc.v1.json) = JSON_KIND_HEX];
+}
+message GrantOverrideRequest {
+  RepoRef repo = 1;
+  bytes change = 2 [(asc.v1.json) = JSON_KIND_CHANGE];
+  string rule = 3;                       // 1 to 120 bytes
+  string reason = 4;                     // 1 to 500 bytes
+}
+message GrantOverrideResponse {
+  GateOverride override = 1;
+}
+message RevokeOverrideRequest {
+  RepoRef repo = 1;
+  uint64 id = 2;
+}
+message RevokeOverrideResponse {
+  GateOverride override = 1;
+}
+message ListOverridesRequest {
+  RepoRef repo = 1;
+  bytes change = 2 [(asc.v1.json) = JSON_KIND_CHANGE];   // empty: every change of the repository
+  bool active_only = 3;
+  uint32 limit = 4;                      // 0 means 50, at most 200
+  string page_token = 5;
+}
+message ListOverridesResponse {
+  repeated GateOverride overrides = 1;   // newest first
+  string next_page_token = 2;
 }

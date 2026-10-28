@@ -281,6 +281,16 @@ pub const CATALOGUE: &[ActionInfo] = &[
         &["thread", "comment", "version"],
     ),
     a(
+        "review.override.granted",
+        "A maintainer granted an exception to a rule of the policy gate for a change.",
+        &["rule", "reason"],
+    ),
+    a(
+        "review.override.revoked",
+        "An exception to a rule of the policy gate was withdrawn.",
+        &[],
+    ),
+    a(
         "review.requested",
         "A review was requested from, or withdrawn from, people.",
         &["add", "remove"],
