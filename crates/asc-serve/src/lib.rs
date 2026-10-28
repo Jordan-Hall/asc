@@ -53,6 +53,7 @@ pub mod migrate;
 pub mod mirror;
 pub mod mutations;
 pub mod netguard;
+pub mod notify;
 pub mod objects;
 pub mod obs;
 pub mod outbox;
@@ -203,6 +204,23 @@ impl Authorizer for DenyAll {
 }
 
 // ------------------------------------------------------------------------------ startup
+
+/// The hub that notification events go to: `[forgejo]` with its internal token.
+fn notify_sink(
+    cfg: &config::ServeConfig,
+) -> Result<Option<Arc<dyn notify::worker::Sink>>, ConfigError> {
+    #[cfg(feature = "forgejo")]
+    {
+        let client = forgejo::event_client(cfg.forgejo.as_ref())
+            .map_err(|e| ConfigError::Invalid(e.to_string()))?;
+        Ok(client.map(|c| Arc::new(notify::worker::HubSink(c)) as Arc<dyn notify::worker::Sink>))
+    }
+    #[cfg(not(feature = "forgejo"))]
+    {
+        let _ = cfg;
+        Ok(None)
+    }
+}
 
 /// The `CodeIntel` settings when `[codeintel] enabled` and `cache.disk_dir` names the disk the
 /// replica keeps index segments on (`<disk_dir>/ci`).
@@ -782,6 +800,20 @@ pub async fn serve(
             .effects()
             .register(codeintel::source::enqueue_effect(&registry));
     }
+    // Notification events for the hub's people (docs/BUILDOUT.md section 21): posted to the hub's
+    // internal endpoint with a retry. Without `[forgejo]` and its internal token nothing is posted.
+    outbox
+        .effects()
+        .register(notify::policy::PolicyChanged::effect(&registry));
+    let notify_sink = notify_sink(&cfg)?;
+    let notifier = tokio::spawn(
+        Arc::new(notify::worker::Dispatcher::new(
+            registry.pool().clone(),
+            notify_sink,
+            notify::worker::DispatchConfig::default(),
+        ))
+        .run(),
+    );
     let worker = tokio::spawn(outbox.run());
     // The indexing workers (SPEC §23.5) run beside `CodeIntel` whenever `[codeintel] enabled`.
     let indexers = match codeintel::runner::config(&cfg) {
@@ -854,6 +886,7 @@ pub async fn serve(
     }
     admin_worker.abort();
     audit_retention.abort();
+    notifier.abort();
     insights_retention.abort();
     #[cfg(feature = "git-ssh")]
     if let Some(t) = ssh_task {
