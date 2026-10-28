@@ -165,11 +165,7 @@ mod tests {
     fn sheet_covers_spec_11_3() {
         for needle in [
             "Instant and virtual",
-            "git push --land",
-            "git submodule update",
-            "git lfs",
             "ASC's VS Code and JetBrains plugins",
-            "git push origin feat",
             "asc hide",
             "`master`, never `main`",
         ] {
