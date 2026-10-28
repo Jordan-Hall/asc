@@ -977,7 +977,13 @@ async fn random_scenario(seed: u64, n: usize, skew: bool) -> Built {
 
 #[tokio::test]
 async fn graph_and_order_match_git_on_random_histories() {
+    // `ASC_LOG_SEED=<n>` runs one history; a failure names its seed.
+    let only: Option<u64> = std::env::var("ASC_LOG_SEED").ok().and_then(|v| v.parse().ok());
     for seed in 1..=14u64 {
+        if only.is_some_and(|o| o != seed) {
+            continue;
+        }
+        eprintln!("history seed {seed}");
         let b = random_scenario(seed, 22, seed % 3 == 0).await;
         b.same_log(&[
             &["--oneline"],
