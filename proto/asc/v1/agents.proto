@@ -43,6 +43,22 @@ service Agents {
   rpc CancelRun(CancelAgentRunRequest) returns (CancelAgentRunResponse);   // run owner or maintainer; idempotent
   rpc SendInput(SendAgentInputRequest) returns (SendAgentInputResponse);   // run owner; mutating, x-asc-op-id
   rpc WatchRun(WatchAgentRunRequest) returns (stream AgentRunEvent);       // repo read; long-lived, resumable
+  // Control of a live run and the data of the run boards. Deciding, pausing, rolling back, editing limits and continuing need repo
+  // write and either that the caller started the run, a policy maintainer, or repo admin. A call the hub makes for a person carries
+  // the forwarded claim of that person (see review.proto) and is audited with the host as relay. All of them are additive.
+  rpc ListRequests(ListAgentRequestsRequest) returns (ListAgentRequestsResponse);   // repo read; paged; the approvals log
+  rpc DecideRequest(DecideAgentRequestRequest) returns (DecideAgentRequestResponse); // allow once / deny a permission, approve / reject a plan; x-asc-op-id
+  rpc PauseRun(PauseAgentRunRequest) returns (PauseAgentRunResponse);               // holds the run at its next tool call; idempotent
+  rpc ListCheckpoints(ListAgentCheckpointsRequest) returns (ListAgentCheckpointsResponse);   // repo read
+  rpc RollbackRun(RollbackAgentRunRequest) returns (RollbackAgentRunResponse);      // a paused run goes back to a checkpoint; logged; x-asc-op-id
+  rpc SetRunLimits(SetAgentRunLimitsRequest) returns (SetAgentRunLimitsResponse);   // edits the limits of a live run, never above the policy cap
+  rpc ContinueRun(ContinueAgentRunRequest) returns (ContinueAgentRunResponse);      // starts a run that continues a finished one with raised limits; x-asc-op-id
+  rpc GetEstimate(GetAgentEstimateRequest) returns (GetAgentEstimateResponse);      // repo read; duration and cost from similar finished runs
+  rpc RecentTasks(RecentAgentTasksRequest) returns (RecentAgentTasksResponse);      // repo read; recent tasks of the caller (admin: of everyone)
+  rpc GetRunLog(GetAgentRunLogRequest) returns (GetAgentRunLogResponse);            // repo read; the events and decisions of the run as JSON lines
+  rpc ListAgents(ListRepoAgentsRequest) returns (ListRepoAgentsResponse);           // repo read; per agent: runs, landed changes, spend
+  rpc GetSpend(GetAgentSpendRequest) returns (GetAgentSpendResponse);               // repo read; month totals, cap, daily series, per agent
+  rpc SetMonthlyBudget(SetMonthlyBudgetRequest) returns (SetMonthlyBudgetResponse); // repo admin; whole repository or one agent; mutating, x-asc-op-id
 }
 
 enum AgentRunState {
@@ -79,7 +95,23 @@ message AgentRun {
   string token_id = 19;                  // the run's own agent token
   uint64 workflow_run_id = 20;           // 0 unless a workflow started it
   string workflow_step = 21;
+  string task = 22;                      // the task text as the person gave it
+  AgentRunProgress progress = 23;
+  bool paused = 24;
+  uint32 pending_requests = 25;          // permission or plan requests waiting for a decision
+  uint64 continues_run = 26;             // the run this one continues, or 0
+  bytes for_change = 27 [(asc.v1.json) = JSON_KIND_CHANGE];   // the change the run was started for (checks babysitting), or empty
 }
+
+// `steps_total` is the length of the approved plan, 0 without one; `steps_done` counts the finished plan steps, or the model turns
+// when there is no plan. `plan_first` is whether the run waits for an approved plan before its first tool call.
+message AgentRunProgress {
+  uint32 steps_done = 1;
+  uint32 steps_total = 2;
+  string current = 3;
+  bool plan_first = 4;
+}
+
 
 // `task` is 1 to 65,536 bytes. `paths` narrows the write scope further; globs the policy does not admit are refused with
 // AGENT_SCOPE_DENIED. `ai_key_id` empty means the repository owner's default key. `base` empty means the tip of `target`.
@@ -94,9 +126,13 @@ message CreateAgentRunRequest {
   string ai_key_id = 8;
   string model = 9;
   AgentBudgetLimits limits = 10;
+  bool plan_first = 11;                  // wait for an approved plan before any tool call
+  bytes for_change = 12 [(asc.v1.json) = JSON_KIND_CHANGE];   // the run is for this change
 }
+// `lowered` names the limits (changes, tokens, cost, paths, runtime) that were asked above the policy cap and lowered to it.
 message CreateAgentRunResponse {
   AgentRun run = 1;
+  repeated string lowered = 2;
 }
 
 // Newest first. `limit` 0 means 30, at most 100.
@@ -275,4 +311,220 @@ message ReportAgentUsageRequest {
 message ReportAgentUsageResponse {
   AgentBudgetUsage usage = 1;
   AgentBudgetUsage remaining = 2;
+}
+
+// ---------------------------------------------------------------------------------------------------- control and boards
+
+enum AgentRequestKind {
+  AGENT_REQUEST_KIND_UNSPECIFIED = 0;
+  AGENT_REQUEST_KIND_PERMISSION = 1;     // the agent wants to run a command or take an action that needs a person to say yes
+  AGENT_REQUEST_KIND_PLAN = 2;           // the agent proposed a plan and waits for approval
+}
+enum AgentRequestState {
+  AGENT_REQUEST_STATE_UNSPECIFIED = 0;   // in a request: any state
+  AGENT_REQUEST_STATE_PENDING = 1;
+  AGENT_REQUEST_STATE_ALLOWED = 2;       // permission: allowed once
+  AGENT_REQUEST_STATE_DENIED = 3;
+  AGENT_REQUEST_STATE_APPROVED = 4;      // plan
+  AGENT_REQUEST_STATE_REJECTED = 5;
+  AGENT_REQUEST_STATE_EXPIRED = 6;       // the run ended before a decision
+}
+enum AgentDecision {
+  AGENT_DECISION_UNSPECIFIED = 0;
+  AGENT_DECISION_ALLOW_ONCE = 1;
+  AGENT_DECISION_DENY = 2;
+  AGENT_DECISION_APPROVE_PLAN = 3;
+  AGENT_DECISION_REJECT_PLAN = 4;
+}
+message AgentPlanStep {
+  uint32 index = 1;                      // from 0
+  string text = 2;
+  string state = 3;                      // todo, doing or done
+}
+message AgentRequest {
+  uint64 id = 1;
+  uint64 run_id = 2;
+  AgentRequestKind kind = 3;
+  AgentRequestState state = 4;
+  string summary = 5;                    // "run pnpm install" or the plan title
+  string detail = 6;                     // the command line, or the reason the agent gave
+  repeated AgentPlanStep plan = 7;       // kind PLAN: the proposed steps
+  int64 requested_at = 8;
+  string decided_by = 9;                 // the person; empty while pending
+  int64 decided_at = 10;
+  string reason = 11;                    // the words of the decider
+  string agent = 12;
+}
+message ListAgentRequestsRequest {
+  RepoRef repo = 1;
+  uint64 run_id = 2;                     // 0: every run of the repository
+  repeated AgentRequestState states = 3;
+  uint32 limit = 4;                      // 0 means 50, at most 200
+  string page_token = 5;
+}
+message ListAgentRequestsResponse {
+  repeated AgentRequest requests = 1;
+  string next_page_token = 2;
+}
+// A permission is allowed once (it does not become a standing grant) or denied; a plan is approved or rejected. `reason` is at most
+// 512 bytes and is recorded with the decider. A request that is decided already answers with the stored decision.
+message DecideAgentRequestRequest {
+  RepoRef repo = 1;
+  uint64 request_id = 2;
+  AgentDecision decision = 3;
+  string reason = 4;
+}
+message DecideAgentRequestResponse {
+  AgentRequest request = 1;
+  AgentRun run = 2;
+}
+message PauseAgentRunRequest {
+  RepoRef repo = 1;
+  uint64 id = 2;
+  bool paused = 3;
+  string reason = 4;
+}
+message PauseAgentRunResponse {
+  AgentRun run = 1;
+}
+message AgentCheckpoint {
+  uint64 id = 1;
+  uint64 run_id = 2;
+  uint32 seq = 3;
+  int64 at = 4;
+  string label = 5;                      // the commit message that made it
+  repeated bytes changes = 6 [(asc.v1.json) = JSON_KIND_CHANGE];   // the changes of the run at the checkpoint, bottom to top
+  bytes tip = 7 [(asc.v1.json) = JSON_KIND_HEX];
+  int64 rolled_back_at = 8;
+  string rolled_back_by = 9;
+}
+message ListAgentCheckpointsRequest {
+  RepoRef repo = 1;
+  uint64 run_id = 2;
+}
+message ListAgentCheckpointsResponse {
+  repeated AgentCheckpoint checkpoints = 1;
+}
+// The run must be paused. It is taken back to the checkpoint at its next tool call: the ref of the run goes back to the tip of the
+// checkpoint, the later changes leave the run, and the rollback is logged with the person and the reason.
+message RollbackAgentRunRequest {
+  RepoRef repo = 1;
+  uint64 run_id = 2;
+  uint64 checkpoint_id = 3;
+  string reason = 4;
+}
+message RollbackAgentRunResponse {
+  AgentRun run = 1;
+  AgentCheckpoint checkpoint = 2;
+}
+// The limits of a queued, running, waiting or paused run. A value of 0 keeps the current value. Values above the policy cap are
+// lowered to it and named in `lowered`.
+message SetAgentRunLimitsRequest {
+  RepoRef repo = 1;
+  uint64 id = 2;
+  AgentBudgetLimits limits = 3;
+}
+message SetAgentRunLimitsResponse {
+  AgentRun run = 1;
+  repeated string lowered = 2;
+}
+// Starts a new run with the same agent, task and target that continues the finished run `id`; the model is told what the earlier run
+// did. `limits` replace the earlier ones (0 keeps the earlier value).
+message ContinueAgentRunRequest {
+  RepoRef repo = 1;
+  uint64 id = 2;
+  AgentBudgetLimits limits = 3;
+}
+message ContinueAgentRunResponse {
+  AgentRun run = 1;
+  repeated string lowered = 2;
+}
+message GetAgentEstimateRequest {
+  RepoRef repo = 1;
+  string agent = 2;
+  uint32 task_bytes = 3;                 // the length of the task text, to weigh similar runs
+}
+message GetAgentEstimateResponse {
+  uint32 samples = 1;                    // finished runs it is based on (up to 50); 0 means no estimate
+  uint32 seconds = 2;                    // median
+  uint64 cost_micro_usd = 3;             // median
+  uint64 tokens = 4;                     // median
+}
+message AgentTaskRef {
+  string task = 1;
+  string title = 2;
+  string agent = 3;
+  uint64 run_id = 4;                     // the latest run with this task
+  int64 at = 5;
+}
+message RecentAgentTasksRequest {
+  RepoRef repo = 1;
+  uint32 limit = 2;                      // 0 means 10, at most 50
+}
+message RecentAgentTasksResponse {
+  repeated AgentTaskRef tasks = 1;       // distinct task texts, newest first
+}
+message GetAgentRunLogRequest {
+  RepoRef repo = 1;
+  uint64 id = 2;
+}
+message GetAgentRunLogResponse {
+  bytes jsonl = 1;                       // one JSON object per line: events, requests and rollbacks, in time order; at most 4 MiB
+  bool truncated = 2;
+  int64 retained_until = 3;              // when the events are pruned (retention window)
+}
+message RepoAgentInfo {
+  string agent = 1;
+  uint32 runs = 2;                       // all runs
+  uint32 active = 3;
+  uint32 landed_30d = 4;                 // changes of its runs that landed in the last 30 days
+  uint32 pending_requests = 5;
+  uint64 cost_micro_usd_month = 6;
+  int64 last_run = 7;
+  repeated string paths = 8;             // the write scope of its tokens
+}
+message ListRepoAgentsRequest {
+  RepoRef repo = 1;
+}
+message ListRepoAgentsResponse {
+  repeated RepoAgentInfo agents = 1;
+  uint32 running = 2;
+  uint32 max_concurrent = 3;             // the concurrency cap of the repository
+  uint32 landed_30d = 4;
+  uint32 changes_30d = 5;                // all changes agents made in the last 30 days (for "31% of changes")
+}
+message SpendDay {
+  string day = 1;                        // YYYY-MM-DD, UTC
+  uint64 cost_micro_usd = 2;
+  uint64 tokens = 3;
+}
+message AgentSpend {
+  string agent = 1;
+  uint64 cost_micro_usd = 2;
+  uint64 tokens = 3;
+  uint64 requests = 4;
+  uint64 monthly_cap_micro_usd = 5;      // 0 = none
+}
+message GetAgentSpendRequest {
+  RepoRef repo = 1;
+  string month = 2;                      // YYYY-MM, empty for the current month (UTC)
+}
+message GetAgentSpendResponse {
+  string month = 1;
+  uint64 cost_micro_usd = 2;
+  uint64 tokens = 3;
+  uint64 monthly_cap_micro_usd = 4;      // the cap of the whole repository, 0 = none
+  repeated SpendDay days = 5;            // every day with spend, ascending
+  repeated AgentSpend agents = 6;
+}
+// `agent` empty sets the cap of the repository; otherwise the cap of one agent. 0 removes the cap. A run that would start, or a
+// model call that would be made, after the spend of the month reached a cap is refused with BUDGET_EXCEEDED (paths[0] = "monthly").
+message SetMonthlyBudgetRequest {
+  RepoRef repo = 1;
+  string agent = 2;
+  uint64 cap_micro_usd = 3;
+}
+message SetMonthlyBudgetResponse {
+  string agent = 1;
+  uint64 cap_micro_usd = 2;
 }

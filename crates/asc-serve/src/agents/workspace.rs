@@ -585,6 +585,30 @@ impl Workspace {
         Ok(())
     }
 
+    /// Takes the working files back to the tree `root` (a rollback): files the tree does not have are
+    /// deleted, the others get its content, and it becomes the new base.
+    pub async fn reset_to(&mut self, root: TreeId) -> Result<(), Status> {
+        self.rebase_to(root).await?;
+        let want: Vec<super::repo::TreeFile> = self.base.values().cloned().collect();
+        let contents = self
+            .view
+            .read_many(&self.entry, &want, self.limits.max_file_bytes)
+            .await?;
+        let have = self.files().await.map_err(|_| Status::internal("internal error"))?;
+        for (p, _) in have {
+            if !self.base.contains_key(&p) {
+                let _ = self.delete(&p).await;
+            }
+        }
+        for (p, c) in contents {
+            let same = self.read(&p, self.limits.max_file_bytes).await.ok().as_deref() == Some(&c[..]);
+            if !same {
+                let _ = self.write(&p, &c).await;
+            }
+        }
+        Ok(())
+    }
+
     /// Paths of the base tree.
     pub fn base_paths(&self) -> BTreeSet<&str> {
         self.base.keys().map(String::as_str).collect()

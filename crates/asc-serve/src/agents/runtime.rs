@@ -109,6 +109,12 @@ pub struct RunRequest {
     pub limits: Budget,
     pub workflow_run_id: u64,
     pub workflow_step: String,
+    /// Wait for an approved plan before any tool call.
+    pub plan_first: bool,
+    /// The change the run is for (a 16-byte change id), or empty.
+    pub for_change: Vec<u8>,
+    /// The run this one continues, or 0.
+    pub continues: u64,
 }
 
 fn hex(b: &[u8]) -> String {
@@ -291,6 +297,9 @@ impl AgentsHub {
             return Err(AiError::NoPrice(model).status());
         }
 
+        if self.monthly_exceeded(&req.repo, &req.agent).await {
+            return Err(errors::budget_exceeded("monthly"));
+        }
         let active = self
             .core
             .runs
@@ -340,6 +349,8 @@ impl AgentsHub {
             .await
             .map_err(|e| db(&e))?
             .ok_or_else(|| Status::internal("internal error"))?;
+        self.init_ctl(row.id, req.plan_first, &req.for_change, req.continues)
+            .await?;
         self.event(&row, EventKind::State, "queued", "", &[], "")
             .await;
         self.audit(
@@ -755,6 +766,7 @@ impl AgentsHub {
         if let Err(e) = self.core.runs.finish(id, state, &code, &message).await {
             tracing::error!(class = %crate::ai::store::class(&e), "agent run not finished");
         }
+        self.expire_requests(id).await;
         self.audit(
             "agent.run.finished",
             &fresh.created_by,
@@ -990,8 +1002,14 @@ impl AgentsHub {
         let ref_name = format!("refs/heads/agent/{}/run-{}", run.agent, run.id);
         let _ = core.runs.set_ref(run.id, &ref_name).await;
         let commands = self.sandbox.allowed_text();
-        let tool_specs = specs(&commands);
-        let system = system_prompt(run, &commands);
+        let ctl0 = self.ctl(run.id).await.unwrap_or_default();
+        let mut tool_specs = specs(&commands);
+        tool_specs.extend(super::control::extra_specs(ctl0.plan_first));
+        let system = format!(
+            "{}{}",
+            system_prompt(run, &commands),
+            super::control::prompt_tail(ctl0.plan_first)
+        );
         let mut messages: Vec<Message> = vec![Message::User(run.task.clone())];
         let mut tip: Vec<u8> = run.base.clone();
         let mut ref_exists = false;
@@ -1018,6 +1036,9 @@ impl AgentsHub {
                 return e;
             }
             steps += 1;
+            if !ctl0.plan_first {
+                self.count_step(run.id, u64::from(steps)).await;
+            }
             if steps > core.cfg.max_steps {
                 return Ended::failed(
                     "max_steps",
@@ -1081,6 +1102,9 @@ impl AgentsHub {
             let max_out = u32::try_from(remaining.min(u64::from(core.cfg.max_output_tokens)))
                 .unwrap_or(core.cfg.max_output_tokens);
 
+            if self.monthly_exceeded(&run.repo, &run.agent).await {
+                return Ended::Budget("monthly".into());
+            }
             compact(&mut messages);
             let req = ModelRequest {
                 model: run.model.clone(),
@@ -1197,6 +1221,14 @@ impl AgentsHub {
                     1,
                 )
                 .await;
+            self.record_spend(
+                &run.repo,
+                &run.agent,
+                usage.total(),
+                done.cost_micro_usd.unwrap_or(0),
+                1,
+            )
+            .await;
             let (spent, over) = match charged {
                 Ok(Ok(row)) => (row.spent, None),
                 Ok(Err((row, dim))) => (row.spent, Some(dim)),
@@ -1283,6 +1315,42 @@ impl AgentsHub {
                 let shown = masker.mask(&call.input.to_string());
                 self.event(&fresh, EventKind::ToolCall, &shown, &call.name, &[], "")
                     .await;
+                match self.hold(run, live).await {
+                    super::control::Hold::Go => {}
+                    super::control::Hold::Stop(e) => return e,
+                    super::control::Hold::Rollback(cp) => {
+                        if let Err(why) = self
+                            .do_rollback(
+                                run,
+                                &cp,
+                                ws,
+                                secret,
+                                &ref_name,
+                                &mut tip,
+                                &mut ref_exists,
+                                &mut committed,
+                            )
+                            .await
+                        {
+                            self.event(&fresh, EventKind::Error, &why, "rollback", &[], "")
+                                .await;
+                        }
+                    }
+                }
+                match self.control_call(run, live, call).await {
+                    super::control::Flow::Proceed => {}
+                    super::control::Flow::Result { content, error } => {
+                        self.event(&fresh, EventKind::ToolResult, &content, &call.name, &[], "")
+                            .await;
+                        results.push(ToolResult {
+                            call_id: call.id.clone(),
+                            content,
+                            is_error: error,
+                        });
+                        continue;
+                    }
+                    super::control::Flow::Stop(e) => return e,
+                }
                 let before = committed.len();
                 let outcome = {
                     let mut tools = ToolCtx {
@@ -1319,6 +1387,12 @@ impl AgentsHub {
                         "",
                     )
                     .await;
+                }
+                for k in before..committed.len() {
+                    let all: Vec<Vec<u8>> = committed[..=k].iter().map(|c| c.change.clone()).collect();
+                    let _ = self
+                        .add_checkpoint(run.id, &committed[k].message, &all, &committed[k].changeset)
+                        .await;
                 }
                 match outcome {
                     Outcome::Result { content, error } => {

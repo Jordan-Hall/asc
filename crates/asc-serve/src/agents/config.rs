@@ -44,6 +44,9 @@ pub struct SandboxConfig {
     /// The wrapper for a command that holds secrets: it denies the network except the hosts in
     /// `{allow}` (comma-joined; none for no network). Empty: such a command does not run.
     pub restricted_wrapper: Vec<String>,
+    /// Argument-list prefixes of allowed commands that still need a person to say yes each time
+    /// (`[["git", "push"]]`): the run waits in `WAITING_INPUT` for `Agents.DecideRequest`.
+    pub ask_before: Vec<Vec<String>>,
     /// Run commands with no wrapper. Off: the server refuses to run a command without isolation.
     pub allow_unisolated: bool,
     /// Longest output captured from a command, in bytes.
@@ -60,6 +63,7 @@ impl Default for SandboxConfig {
             pass_env: Vec::new(),
             wrapper: Vec::new(),
             restricted_wrapper: Vec::new(),
+            ask_before: Vec::new(),
             allow_unisolated: false,
             max_output_bytes: 256 * 1024,
             max_command_seconds: 1800,

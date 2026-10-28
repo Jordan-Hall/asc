@@ -308,6 +308,7 @@ impl WorkflowsHub {
                 limits,
                 workflow_run_id: run.id,
                 workflow_step: def.id.clone(),
+                ..Default::default()
             };
             match self.agents.create_run(&who, req).await {
                 Ok(r) => {
