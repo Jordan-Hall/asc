@@ -177,12 +177,12 @@ pub fn extract_within(lang: Lang, src: &[u8], budget: Duration) -> Result<Vec<Ta
     }
     // A TSRX file is parsed with its template regions blanked (same offsets, same rows); the
     // template's own names come from the analysis and are added at the end.
-    let analysis = (lang == Lang::Tsrx).then(|| crate::tsrx::analyze(src));
+    let deadline = Instant::now() + budget;
+    let analysis = (lang == Lang::Tsrx).then(|| crate::tsrx::analyze_within(src, Some(deadline)));
     let original = src;
     let src: &[u8] = analysis.as_ref().map_or(src, |a| a.masked.as_slice());
     let language = grammar::language(lang)?;
     let query = grammar::query(lang)?;
-    let deadline = Instant::now() + budget;
     let mut parser = Parser::new();
     parser
         .set_language(language)

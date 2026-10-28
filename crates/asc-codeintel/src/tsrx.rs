@@ -119,10 +119,24 @@ pub struct Analysis {
     pub defs: Vec<Item>,
     pub uses: Vec<Item>,
     pub diagnostics: Vec<Diagnostic>,
+    /// The work budget, the deadline or an item limit stopped the scan: the lists are partial and
+    /// the masked text is blanked only as far as the scan got.
+    pub truncated: bool,
 }
+
+/// Most `@{` containers one file reports.
+pub const MAX_CONTAINERS: usize = 10_000;
+/// Bytes of work between two looks at the clock.
+const CLOCK_EVERY: usize = 8_192;
 
 /// Analyses `src`. Total: any bytes give an answer.
 pub fn analyze(src: &[u8]) -> Analysis {
+    analyze_within(src, None)
+}
+
+/// Like [`analyze`], and stops at `deadline` (the same one the parse runs under) with a partial,
+/// `truncated` answer. The work is also bounded by the size of the input, whatever the clock says.
+pub fn analyze_within(src: &[u8], deadline: Option<std::time::Instant>) -> Analysis {
     let mut s = Scan {
         src,
         a: Analysis {
@@ -130,8 +144,14 @@ pub fn analyze(src: &[u8]) -> Analysis {
             ..Analysis::default()
         },
         steps: 0,
+        exhausted: false,
+        deadline,
+        next_clock: CLOCK_EVERY,
     };
     s.ts(0, None, false, 0);
+    if s.exhausted {
+        s.a.truncated = true;
+    }
     s.a.containers.sort_by_key(|c| (c.start, std::cmp::Reverse(c.end)));
     s.a
 }
@@ -149,6 +169,10 @@ struct Scan<'a> {
     src: &'a [u8],
     a: Analysis,
     steps: usize,
+    /// The budget or the deadline ran out; every loop that charges work stops from then on.
+    exhausted: bool,
+    deadline: Option<std::time::Instant>,
+    next_clock: usize,
 }
 
 fn is_ident_start(b: u8) -> bool {
@@ -168,14 +192,37 @@ impl Scan<'_> {
         self.src.get(i..).is_some_and(|r| r.starts_with(pat))
     }
 
+    /// Charges `n` bytes of work; true once the budget or the deadline is gone (and from then on).
     fn spent(&mut self, n: usize) -> bool {
-        self.steps += n;
-        self.steps > self.src.len().saturating_mul(8).saturating_add(4096)
+        if self.exhausted {
+            return true;
+        }
+        self.steps = self.steps.saturating_add(n);
+        if self.steps > self.src.len().saturating_mul(16).saturating_add(4096) {
+            self.exhausted = true;
+        } else if self.steps >= self.next_clock {
+            self.next_clock = self.steps.saturating_add(CLOCK_EVERY);
+            if self.deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+                self.exhausted = true;
+            }
+        }
+        self.exhausted
     }
 
     fn diag(&mut self, at: usize, message: &'static str) {
+        if message == "nesting is too deep" {
+            self.a.truncated = true;
+        }
         if self.a.diagnostics.len() < 64 {
             self.a.diagnostics.push(Diagnostic { at, message });
+        }
+    }
+
+    fn push_container(&mut self, sp: Span) {
+        if self.a.containers.len() < MAX_CONTAINERS {
+            self.a.containers.push(sp);
+        } else {
+            self.a.truncated = true;
         }
     }
 
@@ -359,9 +406,7 @@ impl Scan<'_> {
                 b'@' if self.at(i + 1) == b'{' => {
                     self.a.masked[i] = b' ';
                     let end = self.ts(i + 2, Some(b'}'), true, depth + 1);
-                    if self.room() {
-                        self.a.containers.push(Span { start: i, end });
-                    }
+                    self.push_container(Span { start: i, end });
                     i = end;
                     prev = b'}';
                 }
@@ -532,6 +577,7 @@ impl Scan<'_> {
         while j < self.src.len() && !self.starts(j, close) {
             j += 1;
         }
+        self.spent(j - i);
         if css {
             self.style_classes(i, j);
         }
@@ -552,6 +598,9 @@ impl Scan<'_> {
         let mut stmt_start = true;
         let mut j = a;
         while j < b {
+            if self.spent(1) {
+                return;
+            }
             let c = self.src[j];
             let in_decl = stack.last().copied().unwrap_or(false);
             if self.starts(j, b"/*") {
@@ -560,6 +609,10 @@ impl Scan<'_> {
             }
             match c {
                 b'{' => {
+                    if stack.len() >= MAX_DEPTH {
+                        self.a.truncated = true;
+                        return;
+                    }
                     stack.push(in_decl || !stmt_at_rule);
                     stmt_start = true;
                     stmt_at_rule = false;
@@ -647,9 +700,7 @@ impl Scan<'_> {
                 b'@' if self.at(i + 1) == b'{' => {
                     self.a.masked[i] = b' ';
                     let end = self.ts(i + 2, Some(b'}'), true, depth + 1);
-                    if self.room() {
-                        self.a.containers.push(Span { start: i, end });
-                    }
+                    self.push_container(Span { start: i, end });
                     i = end;
                     last_sig = b'}';
                 }
@@ -742,7 +793,7 @@ impl Scan<'_> {
                     if !open || prev == 0 {
                         return i;
                     }
-                    i += 1;
+                    i = n.max(i + 1);
                 }
                 b'\'' | b'"' => {
                     i = self.string_end(i);
@@ -777,17 +828,20 @@ impl Scan<'_> {
     }
 
     /// Defines every identifier of the binding pattern `a..b` (`user`, `{ a, b: c }`, `[x, y]`).
+    /// One pass: the brace depth is tracked as the range is walked.
     fn idents_of_pattern(&mut self, a: usize, b: usize, kind: ItemKind) {
+        let b = b.min(self.src.len());
         let mut j = a;
-        let mut skip_next_value = false;
+        let mut braces = 0usize;
         while j < b {
+            if self.spent(1) {
+                return;
+            }
             let c = self.src[j];
-            if c == b':' {
-                // `{ key: name }` defines `name`; the key is not a binding. A type annotation
-                // (`x: T`) at the top level is cut off at the first colon outside braces.
-                skip_next_value = false;
-                j += 1;
-                continue;
+            if c == b'{' {
+                braces += 1;
+            } else if c == b'}' {
+                braces = braces.saturating_sub(1);
             }
             if is_ident_start(c) {
                 let from = j;
@@ -795,9 +849,10 @@ impl Scan<'_> {
                     j += 1;
                 }
                 let word = String::from_utf8_lossy(&self.src[from..j]).into_owned();
+                // `{ key: name }` defines `name`; the key is not a binding.
                 let k = self.skip_ws(j);
-                let is_key = self.at(k) == b':' && self.in_braces(a, from);
-                if !KEYWORDS.contains(&word.as_str()) && !is_key && !skip_next_value && self.room() {
+                let is_key = self.at(k) == b':' && braces > 0;
+                if !KEYWORDS.contains(&word.as_str()) && !is_key && self.room() {
                     self.a.defs.push(Item { name: word, kind, span: Span { start: from, end: j } });
                 }
                 continue;
@@ -806,20 +861,23 @@ impl Scan<'_> {
         }
     }
 
-    /// Whether `at` sits inside `{ }` of the pattern starting at `a`.
-    fn in_braces(&self, a: usize, at: usize) -> bool {
-        self.src[a..at].iter().filter(|&&c| c == b'{').count()
-            > self.src[a..at].iter().filter(|&&c| c == b'}').count()
-    }
-
-    /// Records the identifiers read in `a..b` as value uses.
+    /// Records the identifiers read in `a..b` as value uses. One pass: what precedes an
+    /// identifier (the last significant byte, a spread, a `?`) is tracked as the range is walked.
     fn uses_in(&mut self, a: usize, b: usize) {
         let b = b.min(self.src.len());
         let mut j = a;
+        let mut last = 0u8; // the last significant byte before `j`
+        let mut dots = 0u32; // dots ending at `last`
+        let mut question = false;
         while j < b {
+            if self.spent(1) {
+                return;
+            }
             let c = self.src[j];
             if c == b'\'' || c == b'"' {
                 j = self.string_end(j);
+                last = c;
+                dots = 0;
                 continue;
             }
             if c == b'`' {
@@ -833,6 +891,8 @@ impl Scan<'_> {
                     j += 1;
                 }
                 j += 1;
+                last = b'`';
+                dots = 0;
                 continue;
             }
             if self.starts(j, b"//") {
@@ -847,6 +907,8 @@ impl Scan<'_> {
                 while j < b && (is_ident(self.src[j]) || self.src[j] == b'.') {
                     j += 1;
                 }
+                last = b'0';
+                dots = 0;
                 continue;
             }
             if is_ident_start(c) {
@@ -854,24 +916,25 @@ impl Scan<'_> {
                 while j < b && is_ident(self.src[j]) {
                     j += 1;
                 }
-                let word = &self.src[from..j];
-                let dotted = {
-                    let mut p = from;
-                    while p > a && self.src[p - 1].is_ascii_whitespace() {
-                        p -= 1;
-                    }
-                    p > a && self.src[p - 1] == b'.' && !(p >= a + 3 && &self.src[p - 3..p] == b"...")
-                };
+                let dotted = last == b'.' && dots != 3;
                 let key = {
                     let k = self.skip_ws(j);
-                    self.at(k) == b':' && self.at(k + 1) != b':' && !self.src[a..from].contains(&b'?')
-                        && self.src[a..from].iter().rev().find(|c| !c.is_ascii_whitespace()).is_some_and(|c| matches!(c, b'{' | b','))
+                    self.at(k) == b':' && self.at(k + 1) != b':' && !question && matches!(last, b'{' | b',')
                 };
-                let text = String::from_utf8_lossy(word).into_owned();
+                let text = String::from_utf8_lossy(&self.src[from..j]).into_owned();
                 if !dotted && !key && !KEYWORDS.contains(&text.as_str()) && self.room() {
                     self.a.uses.push(Item { name: text, kind: ItemKind::ValueUse, span: Span { start: from, end: j } });
                 }
+                last = b'a';
+                dots = 0;
                 continue;
+            }
+            if !c.is_ascii_whitespace() {
+                dots = if c == b'.' { dots + 1 } else { 0 };
+                if c == b'?' {
+                    question = true;
+                }
+                last = c;
             }
             j += 1;
         }
@@ -1006,6 +1069,7 @@ impl Scan<'_> {
         match kind {
             ScopeKind::For => {
                 // `<decl> <pattern> of <iterable> [; key <expr>] [index <ident>]`
+                self.spent(3 * (b - a));
                 let text = &self.src[a..b];
                 let of = find_word(text, b"of").map(|p| a + p);
                 let semi = self.src[a..b].iter().position(|&c| c == b';').map(|p| a + p);
