@@ -128,6 +128,20 @@ pub fn classify(files: &[wire::ChangeFileStat], added: u32, removed: u32) -> wir
     }
 }
 
+/// What decides whether a verdict of approval counts.
+struct Eligibility {
+    policy: asc_core::policy::ReviewPolicy,
+    authors: HashSet<String>,
+    agents: HashSet<String>,
+}
+
+impl Eligibility {
+    fn may_approve(&self, reviewer: &str) -> bool {
+        (self.policy.author_may_approve || !self.authors.contains(reviewer))
+            && (!self.policy.human_approval || !self.agents.contains(reviewer))
+    }
+}
+
 impl Reviews {
     async fn known(&self, entry: &RepoEntry, change: ChangeId) -> Result<(), Status> {
         let mut conn = self.registry.pool().acquire().await.map_err(sql)?;
@@ -207,6 +221,33 @@ impl Reviews {
         Ok((files, truncated))
     }
 
+    /// Who may approve this change: not its authors and not an agent, unless the policy of the
+    /// repository says otherwise. A policy that cannot be read is the strict default.
+    async fn eligibility(
+        &self,
+        entry: &RepoEntry,
+        _change: ChangeId,
+        versions: &[versions::Version],
+    ) -> Result<Eligibility, Status> {
+        let policy = match &*RepoView::new(self.registry.clone()).policy(entry).await? {
+            crate::agents::repo::PolicyState::Valid(p) => p.review,
+            _ => asc_core::policy::ReviewPolicy::default(),
+        };
+        let authors: HashSet<String> = versions.iter().filter_map(|v| handle_of(&v.actor)).collect();
+        let agents: HashSet<String> = if policy.human_approval {
+            sqlx::query_scalar::<_, String>("SELECT DISTINCT agent FROM agent_runs WHERE repo = $1")
+                .bind(entry.name.as_str().to_ascii_lowercase())
+                .fetch_all(self.registry.pool())
+                .await
+                .map_err(sql)?
+                .into_iter()
+                .collect()
+        } else {
+            HashSet::new()
+        };
+        Ok(Eligibility { policy, authors, agents })
+    }
+
     /// The verdicts on a change, each with whether it applies to the newest version.
     async fn approvals_of(
         &self,
@@ -226,6 +267,7 @@ impl Reviews {
         let Some(latest) = versions.last() else {
             return Ok(Vec::new());
         };
+        let eligible = self.eligibility(entry, change, versions).await?;
         let mut maps: HashMap<u32, BTreeMap<Vec<u8>, String>> = HashMap::new();
         let mut out = Vec::new();
         for r in &rows {
@@ -238,7 +280,8 @@ impl Reviews {
                 at: r.try_get("at").map_err(sql)?,
                 ..Default::default()
             };
-            let live = state != wire::ApprovalState::Dismissed as i64;
+            let live = state != wire::ApprovalState::Dismissed as i64
+                && (state != wire::ApprovalState::Approved as i64 || eligible.may_approve(&info.reviewer));
             if v == latest.v {
                 info.applies = live;
             } else if let Some(from) = versions.iter().find(|x| x.v == v) {
@@ -507,6 +550,15 @@ impl Reviews {
         let entry = self.open(ctx).await?;
         self.known(&entry, change).await?;
         let vs = self.all_versions(&entry, change).await?;
+        if state == wire::ApprovalState::Approved {
+            let e = self.eligibility(&entry, change, &vs).await?;
+            if !e.policy.author_may_approve && e.authors.contains(reviewer) {
+                return Err(Status::permission_denied("the author of a change cannot approve it"));
+            }
+            if e.policy.human_approval && e.agents.contains(reviewer) {
+                return Err(Status::permission_denied("an agent cannot approve a change here; the policy asks for a person"));
+            }
+        }
         let latest = vs.last().map_or(0, |v| v.v);
         let version = if req.version == 0 { latest } else { req.version };
         if !vs.iter().any(|v| v.v == version) {

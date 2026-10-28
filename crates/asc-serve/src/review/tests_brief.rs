@@ -372,3 +372,53 @@ async fn reviewers_are_suggested_from_history_without_the_author() {
         .unwrap_err();
     assert_eq!(missing.code(), Code::NotFound);
 }
+
+#[tokio::test]
+async fn an_author_and_an_agent_cannot_approve_and_an_old_verdict_of_either_does_not_count() {
+    let f = fx().await;
+    // Carol publishes version 3 of change 1, so she is one of its authors.
+    let cs3 = commit(&f.e, &[], &[("f", &[7])]).await;
+    add_version(&f, 1, 3, cs3, "44:carol").await;
+    let e = approve(&f, CAROL, 1, 0, wire::ApprovalState::Approved).await.unwrap_err();
+    assert_eq!(e.code(), Code::PermissionDenied);
+    assert!(e.message().contains("author"), "{e:?}");
+    // She may still ask for changes.
+    assert!(approve(&f, CAROL, 1, 0, wire::ApprovalState::ChangesRequested).await.is_ok());
+    // A verdict recorded before she was an author (or by a policy that changed) does not count.
+    sqlx::query("INSERT INTO review_approvals (ns, change, reviewer, version, state, at) VALUES ($1, $2, 'carol', 1, 1, 1)")
+        .bind(f.e.ns.as_bytes().to_vec())
+        .bind(super::tests::cid(1).as_bytes().to_vec())
+        .execute(f.reg.pool())
+        .await
+        .unwrap();
+    // A person who is no author approves, and that counts.
+    assert!(approve(&f, super::tests::ADMIN, 1, 0, wire::ApprovalState::Approved).await.is_ok());
+    let b = brief(&f, DAVE, 1).await.unwrap();
+    let carol = b.approvals.iter().find(|a| a.reviewer == "carol" && a.version == 1).unwrap();
+    assert!(!carol.applies && !carol.carried, "{carol:?}");
+    assert_eq!(b.gate.unwrap().approvals_current, 1);
+    // An agent's name is not a person who may approve.
+    sqlx::query(
+        "INSERT INTO agent_runs (id, repo, agent, state, target, base, task, created_by, created) VALUES (9, 'o/r', 'robot', 4, 'master', $1, 't', '42:alice', 1)",
+    )
+    .bind(Vec::<u8>::new())
+    .execute(f.reg.pool())
+    .await
+    .unwrap();
+    let (a, v) = claimkit::authorizer();
+    let svc = super::rpc::ReviewService::new(
+        std::sync::Arc::new(super::Reviews::new(f.reg.clone())),
+        a,
+        asc_rpc::server::ServerInfo::default(),
+    );
+    let m = || wire::RecordApprovalRequest { repo: repo_ref(), change: cbytes(2), version: 0, state: wire::ApprovalState::Approved as i32 };
+    let e = svc.record_approval(host(&v, m(), "50:robot", Role::Write, "o/r", true)).await.unwrap_err();
+    assert_eq!(e.code(), Code::PermissionDenied);
+    assert!(e.message().contains("agent"), "{e:?}");
+    assert!(svc.record_approval(host(&v, m(), "51:dana", Role::Write, "o/r", true)).await.is_ok());
+    assert_eq!(
+        svc.record_approval(host(&v, m(), "51:dana", Role::Read, "o/r", true)).await.unwrap_err().code(),
+        Code::PermissionDenied,
+        "a read claim does not approve"
+    );
+}

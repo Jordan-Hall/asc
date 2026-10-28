@@ -702,6 +702,24 @@ impl Default for MergeOptions {
     }
 }
 
+/// `[review]`: who may approve.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReviewPolicy {
+    /// The author of a change (anyone who published a version of it) may approve it. Off by default.
+    pub author_may_approve: bool,
+    /// Only people approve: an approval from an agent does not count. On by default.
+    pub human_approval: bool,
+}
+
+impl Default for ReviewPolicy {
+    fn default() -> Self {
+        Self {
+            author_may_approve: false,
+            human_approval: true,
+        }
+    }
+}
+
 /// A parsed, validated policy.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Policy {
@@ -715,6 +733,7 @@ pub struct Policy {
     pub agents: Agents,
     pub strategy: Strategy,
     pub merge: MergeOptions,
+    pub review: ReviewPolicy,
 }
 
 #[derive(Deserialize)]
@@ -738,6 +757,26 @@ struct RawPolicy {
     agents: RawAgents,
     #[serde(default)]
     merge: RawMerge,
+    #[serde(default)]
+    review: RawReview,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawReview {
+    #[serde(default)]
+    author_may_approve: bool,
+    #[serde(default = "yes")]
+    human_approval: bool,
+}
+
+impl Default for RawReview {
+    fn default() -> Self {
+        Self {
+            author_may_approve: false,
+            human_approval: true,
+        }
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -1068,6 +1107,10 @@ impl Policy {
             merge: MergeOptions {
                 queue: raw.merge.queue,
                 revalidate: raw.merge.revalidate,
+            },
+            review: ReviewPolicy {
+                author_may_approve: raw.review.author_may_approve,
+                human_approval: raw.review.human_approval,
             },
         })
     }
@@ -1400,6 +1443,26 @@ strategy = "rebase-disjoint"
         let m = Policy::parse(minimal.as_bytes()).unwrap();
         assert_eq!(m.strategy, Strategy::Rebase);
         assert_eq!(m.trunk, Trunk::default());
+    }
+
+    #[test]
+    fn the_review_section_defaults_to_no_self_approval_and_human_approvals_only() {
+        let head = "version = 1
+[roles]
+maintainer = [\"user:a\"]
+";
+        let none = Policy::parse(head.as_bytes()).unwrap();
+        assert_eq!(none.review, ReviewPolicy { author_may_approve: false, human_approval: true });
+        let loose = format!("{head}[review]
+author_may_approve = true
+human_approval = false
+");
+        let p = Policy::parse(loose.as_bytes()).unwrap();
+        assert_eq!(p.review, ReviewPolicy { author_may_approve: true, human_approval: false });
+        let typo = format!("{head}[review]
+author_can_approve = true
+");
+        assert!(Policy::parse(typo.as_bytes()).is_err(), "an unknown key is an error, not a silent default");
     }
 
     #[test]
