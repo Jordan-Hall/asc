@@ -580,7 +580,7 @@ fn asc_stack_submit_is_asc_submit_with_the_same_gate_and_refusals() {
     fx.server.forget();
     let r = fx.asc(&["stack", "submit", "--reviewer=a=b"]);
     assert_eq!(r.code, 129, "{}", r.stderr);
-    assert!(fx.sent().is_empty(), "nothing is sent for a bad reviewer");
+    assert!(fx.server.agit().is_empty(), "nothing is sent for a bad reviewer");
     fx.server.forget();
     let r = fx.asc(&["stack", "submit", "--publish", "--auto-merge"]);
     assert_eq!(r.code, 0, "{}", r.stderr);

@@ -1,0 +1,37 @@
+def type Props L5-5 in - | sig="type Props = { users: User[]; showBio: boolean };"
+def property users L5-5 in Props | sig="users: User[]"
+ref type User L5-5 in users
+def property showBio L5-5 in Props | sig="showBio: boolean"
+def variable theme L7-7 in - | sig="theme = null"
+def property base L8-8 in - | sig=".base"
+def component Greeting L11-23 in - | sig="function Greeting({ name }: { name?: string })"
+ref call formatName L12-12 in Greeting
+ref variable name L12-12 in Greeting
+ref variable message L16-16 in Greeting
+def property greeting L19-19 in Greeting | sig=".greeting"
+def property greeting L20-20 in Greeting | sig=".greeting"
+def component UserList L25-43 in - | sig="function UserList({ users, showBio }: Props)"
+ref type Props L25-25 in UserList
+def scope @for (const user of users; key user.id index i) L29-39 in UserList | sig="@for (const user of users; key user.id index i)"
+def variable user L29-29 in @for (const user of users; key user.id index i) | sig="user"
+ref variable users L29-29 in @for (const user of users; key user.id index i)
+ref variable user L29-29 in @for (const user of users; key user.id index i)
+def variable i L29-29 in @for (const user of users; key user.id index i) | sig="i"
+def variable short_bio L30-30 in @for (const user of users; key user.id index i) | sig="short_bio"
+ref variable user L30-30 in @for (const user of users; key user.id index i)
+ref call Card L32-32 in @for (const user of users; key user.id index i)
+ref variable user L32-32 in @for (const user of users; key user.id index i)
+def scope @if (showBio && user.bio) L33-35 in @for (const user of users; key user.id index i) | sig="@if (showBio && user.bio)"
+ref variable showBio L33-33 in @if (showBio && user.bio)
+ref variable user L33-33 in @if (showBio && user.bio)
+ref variable short_bio L34-34 in @if (showBio && user.bio)
+ref variable i L34-34 in @if (showBio && user.bio)
+def scope @else L35-37 in @for (const user of users; key user.id index i) | sig="@else"
+def scope @empty L39-41 in UserList | sig="@empty"
+ref variable total L40-40 in @empty
+def component Total L45-49 in - | sig="Total = ({ items }: { items: number[] }) =>"
+ref call reduce L46-46 in Total
+ref variable subtotal L48-48 in Total
+def function pad L51-53 in - | sig="function pad(n: number): string"
+ref call padStart L52-52 in pad
+ref call String L52-52 in pad

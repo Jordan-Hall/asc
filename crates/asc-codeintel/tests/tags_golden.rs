@@ -11,10 +11,11 @@ use asc_codeintel::tags::{
     Kind, NO_CONTAINER, Role, Tag, TagsError, extract, extract_within, outline, query_source,
 };
 
-const ALL: [Lang; 7] = [
+const ALL: [Lang; 8] = [
     Lang::Rust,
     Lang::TypeScript,
     Lang::Tsx,
+    Lang::Tsrx,
     Lang::JavaScript,
     Lang::Python,
     Lang::CSharp,
@@ -81,6 +82,11 @@ fn golden_typescript() {
 #[test]
 fn golden_tsx() {
     golden("sample.tsx", Lang::Tsx);
+}
+
+#[test]
+fn golden_tsrx() {
+    golden("sample.tsrx", Lang::Tsrx);
 }
 
 #[test]
