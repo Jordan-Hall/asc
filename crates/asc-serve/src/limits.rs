@@ -278,6 +278,8 @@ const TABLE: &[(&str, Class, &[&str])] = &[
             "SuggestReviewers",
             "GetGateStats",
             "HunkContext",
+            "GetConflicts",
+            "DraftContext",
         ],
     ),
     ("Ci", Class::Cheap, &["ListRuns", "JobLog"]),
@@ -325,6 +327,7 @@ const TABLE: &[(&str, Class, &[&str])] = &[
             "GetEstimate",
             "RecentTasks",
             "SetMonthlyBudget",
+            "GetPerson",
         ],
     ),
     (
@@ -406,7 +409,7 @@ const TABLE: &[(&str, Class, &[&str])] = &[
         Class::Cheap,
         &["ListFindings", "ListRules", "UpdateFinding"],
     ),
-    ("SecretScan", Class::Expensive, &["Scan"]),
+    ("SecretScan", Class::Expensive, &["Scan", "Check"]),
     (
         "Signing",
         Class::Cheap,

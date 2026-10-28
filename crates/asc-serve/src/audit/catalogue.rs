@@ -348,6 +348,11 @@ pub const CATALOGUE: &[ActionInfo] = &[
         &["run", "new_run"],
     ),
     a(
+        "agent.profile.read",
+        "An agent or a person asked for the profile of a person that the person lets agents read.",
+        &["login", "allowed"],
+    ),
+    a(
         "agent.budget.monthly_set",
         "A monthly budget of agents was set or removed.",
         &["agent", "cap_micro_usd"],
@@ -356,6 +361,16 @@ pub const CATALOGUE: &[ActionInfo] = &[
         "agent.run.cancelled",
         "An agent run was cancelled.",
         &["run", "agent", "reason"],
+    ),
+    a(
+        "notify.event.delivered",
+        "The hub took a notification event (agent, checks, queue, policy, review or mention).",
+        &["event", "told", "attempts"],
+    ),
+    a(
+        "notify.event.rejected",
+        "A notification event was refused by the hub or given up after a day of retries.",
+        &["event", "attempts", "reason"],
     ),
     a(
         "agent.run.finished",

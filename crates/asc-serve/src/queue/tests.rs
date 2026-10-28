@@ -719,3 +719,148 @@ async fn an_entry_that_stopped_passing_is_refused_at_the_moment_of_landing() {
         "and it cannot be reported landed"
     );
 }
+
+#[tokio::test]
+async fn the_person_who_queued_an_entry_is_told_when_it_lands_is_blocked_or_is_dropped() {
+    let f = fx().await;
+    let (q, _v) = svc(&f);
+    let first = enqueue(&q, CAROL, 1).await.unwrap();
+    approve(&f, 1).await;
+    q.revalidate(req(
+        wire::RevalidateRequest {
+            repo: repo_ref(),
+            id: first.id,
+        },
+        CAROL,
+        false,
+    ))
+    .await
+    .unwrap();
+    // LANDING is progress, not news.
+    report(&q, ADMIN, first.id, wire::QueueEntryState::Landing, &[])
+        .await
+        .unwrap();
+    assert!(crate::notify::tests::notes(f.reg.pool()).await.is_empty());
+    report(
+        &q,
+        ADMIN,
+        first.id,
+        wire::QueueEntryState::Landed,
+        &[9u8; 32],
+    )
+    .await
+    .unwrap();
+    // A second entry is dropped by an administrator, who is not its owner.
+    let second = enqueue(&q, CAROL, 2).await.unwrap();
+    q.dequeue(req(
+        wire::DequeueRequest {
+            repo: repo_ref(),
+            id: second.id,
+            reason: "the base moved\nagain".into(),
+        },
+        ADMIN,
+        true,
+    ))
+    .await
+    .unwrap();
+    // The owner removing their own entry needs no notice.
+    let third = enqueue(&q, CAROL, 3).await.unwrap();
+    q.dequeue(req(
+        wire::DequeueRequest {
+            repo: repo_ref(),
+            id: third.id,
+            reason: "mine".into(),
+        },
+        CAROL,
+        true,
+    ))
+    .await
+    .unwrap();
+    let notes = crate::notify::tests::notes(f.reg.pool()).await;
+    let shown: Vec<(&str, &Vec<String>, &str)> = notes
+        .iter()
+        .map(|n| (n.0.as_str(), &n.1, n.3.as_str()))
+        .collect();
+    assert_eq!(notes.len(), 2, "{shown:?}");
+    assert_eq!(notes[0].0, "merge_queue");
+    assert_eq!(notes[0].1, ["carol"]);
+    assert!(notes[0].2.contains("landed"), "{}", notes[0].2);
+    assert_eq!(notes[0].4, "/o/r/merge-queue");
+    assert!(notes[1].2.contains("was dropped"), "{}", notes[1].2);
+    assert_eq!(notes[1].3, "the base moved again", "one line");
+    // Asking again for the same report tells nobody twice.
+    report(
+        &q,
+        ADMIN,
+        first.id,
+        wire::QueueEntryState::Landed,
+        &[9u8; 32],
+    )
+    .await
+    .ok();
+    assert_eq!(crate::notify::tests::notes(f.reg.pool()).await.len(), 2);
+}
+
+#[tokio::test]
+async fn an_entry_carries_the_hub_id_of_the_person_who_queued_it_and_none_for_a_token() {
+    let f = fx().await;
+    let (q, v) = svc(&f);
+    let m = |change: u8| wire::EnqueueRequest {
+        repo: repo_ref(),
+        change: cbytes(change),
+        ..Default::default()
+    };
+    // A relayed call of the hub: the claim names user 44.
+    let relayed = q
+        .enqueue(host(&v, m(1), "44:carol", Role::Write, "o/r", true))
+        .await
+        .unwrap()
+        .into_inner()
+        .entry
+        .unwrap();
+    assert_eq!(
+        (relayed.enqueued_by.as_str(), relayed.queued_by_id),
+        ("carol", 44)
+    );
+    // A caller with a personal token only has a name.
+    let auth = asc_rpc::auth::StaticTokens::new().with_token(
+        "pat-token",
+        "pat:dave",
+        asc_rpc::auth::Access::Write,
+    );
+    let token_only = QueueService::new(
+        Arc::new(Reviews::new(f.reg.clone())),
+        Arc::new(auth),
+        ServerInfo::default(),
+    )
+    .enqueue(req(m(2), "pat-token", true))
+    .await
+    .unwrap()
+    .into_inner()
+    .entry
+    .unwrap();
+    assert_eq!(
+        (token_only.enqueued_by.as_str(), token_only.queued_by_id),
+        ("dave", 0)
+    );
+    // Both come back in a listing.
+    let listed = q
+        .list(req(
+            wire::ListQueueRequest {
+                repo: repo_ref(),
+                ..Default::default()
+            },
+            CAROL,
+            false,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    let mut ids: Vec<(String, u64)> = listed
+        .entries
+        .iter()
+        .map(|e| (e.enqueued_by.clone(), e.queued_by_id))
+        .collect();
+    ids.sort();
+    assert_eq!(ids, [("carol".to_owned(), 44), ("dave".to_owned(), 0)]);
+}

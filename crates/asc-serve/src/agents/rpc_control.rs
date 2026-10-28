@@ -762,6 +762,51 @@ impl AgentService {
         }))
     }
 
+    /// `Agents.GetPerson`: the profile a person lets agents read, or nothing. The hub is asked on
+    /// every call (with a short memory) and any failure to ask is a refusal.
+    pub(super) async fn get_person_impl(
+        &self,
+        request: Request<wire::GetAgentPersonRequest>,
+    ) -> Result<Response<wire::GetAgentPersonResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
+            .await?;
+        if msg.login.is_empty() || msg.login.len() > 64 {
+            return Err(Status::invalid_argument("a login is 1 to 64 characters"));
+        }
+        let profile = match self.hub.profiles.get() {
+            Some(p) => p.get(&msg.login).await,
+            None => None,
+        };
+        self.hub
+            .audit(
+                "agent.profile.read",
+                &ctx.principal.id,
+                crate::review::acting::relayed(&ctx).then_some("host"),
+                ctx.repo.as_str(),
+                &msg.login,
+                &[
+                    ("login", msg.login.clone()),
+                    ("allowed", profile.is_some().to_string()),
+                ],
+            )
+            .await;
+        Ok(Response::new(match profile {
+            Some(p) => wire::GetAgentPersonResponse {
+                allowed: true,
+                login: p.login,
+                full_name: p.full_name,
+                description: p.description,
+                location: p.location,
+                website: p.website,
+                pronouns: p.pronouns,
+            },
+            None => wire::GetAgentPersonResponse::default(),
+        }))
+    }
+
     pub(super) async fn get_spend_impl(
         &self,
         request: Request<wire::GetAgentSpendRequest>,

@@ -203,6 +203,13 @@ impl Agents for Fake {
         Err(Status::unimplemented("not served by this stand-in"))
     }
 
+    async fn get_person(
+        &self,
+        _r: Request<wire::GetAgentPersonRequest>,
+    ) -> Result<Response<wire::GetAgentPersonResponse>, Status> {
+        Err(Status::unimplemented("not served by this stand-in"))
+    }
+
     async fn set_monthly_budget(
         &self,
         _r: Request<wire::SetMonthlyBudgetRequest>,

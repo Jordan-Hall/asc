@@ -192,6 +192,59 @@ impl SecretScanHub {
         ctx: &CallCtx,
         req: wire::ScanSecretsRequest,
     ) -> Result<wire::ScanSecretsResponse, Status> {
+        self.scan_inner(ctx, req, true)
+            .await
+            .map(|(answer, _, _)| answer)
+    }
+
+    /// `SecretScan.Check`: the scan of `Scan`, recording nothing, with what the push gate would do.
+    pub async fn check(
+        &self,
+        ctx: &CallCtx,
+        req: wire::CheckSecretsRequest,
+    ) -> Result<wire::CheckSecretsResponse, Status> {
+        use wire::check_secrets_request::At as From;
+        use wire::scan_secrets_request::At;
+        let at = req.at.map(|a| match a {
+            From::Rev(r) => At::Rev(r),
+            From::Change(c) => At::Change(c),
+            From::Range(r) => At::Range(r),
+        });
+        let (answer, report, sp) = self
+            .scan_inner(
+                ctx,
+                wire::ScanSecretsRequest {
+                    repo: req.repo,
+                    at,
+                    paths: req.paths,
+                },
+                false,
+            )
+            .await?;
+        Ok(wire::CheckSecretsResponse {
+            blocks: sp.enabled
+                && sp.block_on_push
+                && (!report.found.is_empty() || report.truncated),
+            block_on_push: sp.block_on_push,
+            findings: answer.findings,
+            files_scanned: answer.files_scanned,
+            truncated: answer.truncated,
+        })
+    }
+
+    async fn scan_inner(
+        &self,
+        ctx: &CallCtx,
+        req: wire::ScanSecretsRequest,
+        record: bool,
+    ) -> Result<
+        (
+            wire::ScanSecretsResponse,
+            super::scan::Report,
+            asc_core::policy::SecretsPolicy,
+        ),
+        Status,
+    > {
         use wire::scan_secrets_request::At;
         let spec = Self::spec(&req.paths)?;
         let entry = self.open(ctx).await?;
@@ -281,6 +334,30 @@ impl SecretScanHub {
             .scan_refs(engine, entry.key.0, &policy, files)
             .await?;
         report.truncated |= cut;
+        if !record {
+            let findings = report
+                .found
+                .iter()
+                .map(|f| wire::SecretFinding {
+                    rule_id: f.rule_id.clone(),
+                    severity: severity_to_wire(f.severity),
+                    state: wire::SecretFindingState::Open as i32,
+                    path: f.path.clone().into(),
+                    line: f.line,
+                    column: f.column,
+                    changeset: bytes::Bytes::copy_from_slice(f.changeset.as_bytes()),
+                    fingerprint: f.fingerprint.clone(),
+                    preview: f.preview.clone(),
+                    ..Default::default()
+                })
+                .collect();
+            let answer = wire::ScanSecretsResponse {
+                findings,
+                files_scanned: report.files_scanned,
+                truncated: report.truncated,
+            };
+            return Ok((answer, report, policy));
+        }
         let new: Vec<store::NewFinding> = report
             .found
             .iter()
@@ -302,11 +379,12 @@ impl SecretScanHub {
         for r in &rows {
             findings.push(self.finding_out(&ids, r).await?);
         }
-        Ok(wire::ScanSecretsResponse {
+        let answer = wire::ScanSecretsResponse {
             findings,
             files_scanned: report.files_scanned,
             truncated: report.truncated,
-        })
+        };
+        Ok((answer, report, policy))
     }
 
     /// `SecretScan.ListFindings`.
@@ -476,6 +554,18 @@ impl SecretScan for SecretScanService {
             .context(&meta, &ext, msg.repo.as_ref(), Access::Admin, false)
             .await?;
         self.hub.scan(&ctx, msg).await.map(Response::new)
+    }
+
+    async fn check(
+        &self,
+        request: Request<wire::CheckSecretsRequest>,
+    ) -> Result<Response<wire::CheckSecretsResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Write, false)
+            .await?;
+        self.hub.check(&ctx, msg).await.map(Response::new)
     }
 
     async fn list_findings(

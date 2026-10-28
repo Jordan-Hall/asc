@@ -544,15 +544,42 @@ A client calls it with the user's own credential.
   (a failed check run of a change, to its authors), `restack_conflict` (to the authors of the change that conflicted), `merge_queue` (landed, blocked or
   dropped, to the person who queued it), `policy_changed` (an update of trunk changed `.asc/policy.toml`, an outbox effect `notify.policy`, to the
   recent contributors), `review_requested` (to the people newly asked) and `mentioned` (an `@login` in a comment, once per comment).
-  The hub today ingests the first six (`IngestEvents`); it sends the last two itself for reviews made on the hub, and answers `400` to them, which asc
-  records as rejected and does not retry.
+  The hub accepts all eight and tells each `x-asc-event-id` once (the id is `<namespace hex>-<row id>`, which matches `[A-Za-z0-9_.:-]{1,64}`).
 - **Limits, enforced here before the hub enforces them.** At most 50 logins per call (a longer list becomes several rows), title 200 bytes, detail
   500 bytes, one line (control characters become spaces), path local to the hub (`/...`, not `//`, no spaces), a repository name `owner/name`.
 - **Outbox and retry.** `emit` writes a row and returns; it never fails the operation that caused the event. The dispatcher leases due rows, posts
-  them and records the outcome: delivered; refused (a `4xx` except 408, 425 and 429, or an answer it cannot read) is final; anything else backs off
+  them and records the outcome: delivered; refused (a `4xx` except 401, 403, 408, 425 and 429, or an answer it cannot read) is final (401 and 403 are retried: the internal token may be rotating); anything else backs off
   from 1 s to 5 min. A row older than a day is given up; finished rows are deleted after a week. Each post carries `x-asc-event-id`, so a hub can drop a
   redelivery. A key (`dedup`) makes a cause tell once per repository; a repository holds at most 2000 undelivered rows.
-- Without `[forgejo]` and its internal token the rows are written and given up after a day; nothing is posted.
+- Without `[forgejo]` and its internal token nothing is queued. Every posted delivery and every refusal or give-up is audited (`notify.event.delivered`,
+  `notify.event.rejected`).
+- **Links.** `[notify]` sets `path_prefix` and the templates `change_path`, `run_path`, `queue_path` and `policy_path` (`{repo}`, `{change}`, `{run}`);
+  the defaults are `/{repo}/changes/{change}`, `/{repo}/agents/runs/{run}`, `/{repo}/merge-queue` and `/{repo}/settings/policy`, which the hub rewrites to its own pages.
+
+## 22. Review gaps: conflicts, drafts, secret check, undo preview, babysit
+
+- **Row 81, `Review.GetConflicts`** (repo read, expensive). The conflicts of a change's newest version with a target branch (default branch when empty),
+  hunk by hunk: `main` lines, `change` lines, `base` lines when the merge kept them, and the line each side starts at. Read from the marked file the
+  mergeability merge stores; a conflict that is not text (binary, modify/delete, file/dir, case) lists only the path and kind. The change stays open and
+  nothing is written; `held_back` lists the changes stacked on it. Bounds: 50 files, 20 hunks, 200 lines per side, a 1 MiB marked file.
+- **Row 111, `Review.DraftContext`** (repo read, expensive). What "Draft from the diff" is written from, for `base..head` (default branch and HEAD):
+  the subjects of the changesets, the files with summed line counts, the size and the risk with its reasons (the brief's classification), and
+  `nothing_to_compare`. The patch is read with `Repo.Diff`; the hub writes the text with the person's own key.
+- **Row 114, babysit.** `Agents.CreateRun` takes `for_change`: it must be 16 bytes and name a change that has a version in this repository (otherwise
+  `NOT_FOUND`), and `AgentRun.for_change` echoes it. The task text is the hub's.
+- **Row 119, `SecretScan.Check`** (repo write, expensive, records nothing). The scan of `Scan` for a `rev`, `change` or `range`, for a person about to
+  open a change. `blocks` says what the push gate would do under the policy in force: `[secrets] enabled` and `block_on_push`, with a secret found or a scan
+  that stopped before it read every file. A finding never carries the value.
+- **Row 294, `Stacks.UndoRef` dry run.** The answer lists the changes that leave the ref (`changes_back`, at most 100 in `changes`) and how many of them hold an
+  approval of their newest version, which stays (`approvals_kept`). The walk is bounded at 2000 changesets (`preview_truncated`).
+
+## 23. Agent profile privacy
+
+- `Agents.GetPerson` (repo read; cheap) returns the profile a person lets agents read: name, bio, location, website, pronouns. asc keeps no profiles; each call asks
+  the hub (`POST /api/internal/asc/agent-profile {login}` with the internal token) and returns `allowed: false` with nothing else when the person does not allow it, does
+  not exist, is not public, or the hub cannot be asked (no hub, no token, transport error, any status but 200, an unreadable answer). Errors are not cached; a refusal
+  and an answer are kept for 30 and 60 seconds. There is no email and no avatar in the answer, and none is added. Every call is audited (`agent.profile.read`:
+  login and whether it was allowed, never the values).
 
 ## Error codes
 
@@ -619,6 +646,7 @@ Every method of the build-out services (90). A test keeps this list equal to the
 
 - `asc.v1.SecretScan/ListRules` — repo read
 - `asc.v1.SecretScan/Scan` — repo admin; expensive; records findings
+- `asc.v1.SecretScan/Check` — repo write; expensive; records nothing; says whether the push gate would refuse
 - `asc.v1.SecretScan/ListFindings` — repo admin; paged
 - `asc.v1.SecretScan/UpdateFinding` — repo admin; mutating
 
@@ -719,6 +747,7 @@ Every method of the build-out services (90). A test keeps this list equal to the
 - `asc.v1.Agents/ListAgents` — repo read
 - `asc.v1.Agents/GetSpend` — repo read
 - `asc.v1.Agents/SetMonthlyBudget` — repo admin; mutating
+- `asc.v1.Agents/GetPerson` — repo read; the profile a person lets agents read, asked of the hub each time; fails closed
 
 **AgentTokens** (`agents.proto`)
 

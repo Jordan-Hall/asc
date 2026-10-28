@@ -173,7 +173,7 @@ where
 }
 
 /// The state of merging `head` into `tip`, with its conflicts (raw changeset ids).
-async fn compute(
+pub(crate) async fn compute(
     engine: &std::sync::Arc<crate::idmode::Eng>,
     head: ChangesetId,
     tip: ChangesetId,
