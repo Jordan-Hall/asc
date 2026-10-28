@@ -11,11 +11,14 @@
 //! writing transaction; a lost race is a primary-key conflict and the writer retries
 //! ([`retry_conflict`]).
 
+pub mod acting;
 pub mod rpc;
 pub mod store;
 
 #[cfg(test)]
 pub(crate) mod tests;
+#[cfg(test)]
+mod tests_acting;
 
 use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -199,6 +202,7 @@ impl Env {
             .authorizer
             .authorize_credential(ext.get::<Credential>(), name.as_str(), access)
             .await?;
+        let (principal, admin) = acting::act_as(&*self.authorizer, principal, meta, &name, access)?;
         let op_id = match meta.get("x-asc-op-id") {
             None => None,
             Some(v) => Some(
@@ -217,12 +221,16 @@ impl Env {
             principal,
             op_id,
             client,
-            admin: Default::default(),
+            admin,
         })
     }
 
     /// Whether the caller also holds `access` on the repository of `ctx` (a refusal means no).
+    /// A call made on the hub's claim holds what the claim's role covers and nothing more.
     pub(crate) async fn has(&self, ext: &TonicExt, ctx: &CallCtx, access: Access) -> bool {
+        if let Some(c) = ctx.admin.forwarded_claim() {
+            return c.allows(acting::role_of(access));
+        }
         self.authorizer
             .authorize_credential(ext.get::<Credential>(), ctx.repo.as_str(), access)
             .await

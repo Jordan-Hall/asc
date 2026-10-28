@@ -256,6 +256,21 @@ pub const CATALOGUE: &[ActionInfo] = &[
         &["run", "agent"],
     ),
     a(
+        "review.comment.added",
+        "A review comment was added to a change.",
+        &["thread", "comment", "version", "path", "suggestion", "external_id"],
+    ),
+    a(
+        "review.thread.resolved",
+        "A review thread was resolved or reopened.",
+        &["thread", "resolved"],
+    ),
+    a(
+        "review.requested",
+        "A review was requested from, or withdrawn from, people.",
+        &["add", "remove"],
+    ),
+    a(
         "agent.run.cancelled",
         "An agent run was cancelled.",
         &["run", "agent", "reason"],

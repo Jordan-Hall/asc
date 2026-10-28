@@ -122,7 +122,7 @@ async fn comments_of(
     let mut out: HashMap<i64, Vec<wire::ReviewComment>> = HashMap::new();
     for chunk in threads.chunks(100) {
         let q = format!(
-            "SELECT id, thread, author, body, created FROM review_comments \
+            "SELECT id, thread, author, body, created, external_id FROM review_comments \
              WHERE ns = $1 AND thread IN ({}) ORDER BY id",
             placeholders(2, chunk.len())
         );
@@ -138,6 +138,7 @@ async fn comments_of(
                     author: r.try_get("author")?,
                     body: r.try_get("body")?,
                     created: r.try_get("created")?,
+                    external_id: r.try_get("external_id")?,
                 });
         }
     }
@@ -277,31 +278,55 @@ pub(crate) async fn insert_thread(
     Ok(())
 }
 
+/// A comment to store.
+pub(crate) struct NewComment<'a> {
+    pub id: i64,
+    pub thread: i64,
+    pub author: &'a str,
+    pub body: &'a str,
+    pub at: i64,
+    /// The host's own id of the comment, or empty.
+    pub external_id: &'a str,
+}
+
+/// The `(thread, comment)` already stored under the host's `external_id`, if any.
+pub(crate) async fn comment_by_external(
+    conn: &mut AnyConnection,
+    ns: Ns,
+    external_id: &str,
+) -> Result<Option<(i64, i64)>, sqlx::Error> {
+    let row = sqlx::query(
+        "SELECT thread, id FROM review_comments WHERE ns = $1 AND external_id = $2 ORDER BY id LIMIT 1",
+    )
+    .bind(ns_of(ns))
+    .bind(external_id.to_owned())
+    .fetch_optional(&mut *conn)
+    .await?;
+    row.map(|r| Ok((r.try_get("thread")?, r.try_get("id")?)))
+        .transpose()
+}
+
 pub(crate) async fn insert_comment(
     conn: &mut AnyConnection,
     ns: Ns,
-    id: i64,
-    thread: i64,
-    author: &str,
-    body: &str,
-    at: i64,
+    c: &NewComment<'_>,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO review_comments (ns, id, thread, author, body, created) \
-         VALUES ($1, $2, $3, $4, $5, $6)",
+        "INSERT INTO review_comments (ns, id, thread, author, body, created, external_id)          VALUES ($1, $2, $3, $4, $5, $6, $7)",
     )
     .bind(ns_of(ns))
-    .bind(id)
-    .bind(thread)
-    .bind(author.to_owned())
-    .bind(body.to_owned())
-    .bind(at)
+    .bind(c.id)
+    .bind(c.thread)
+    .bind(c.author.to_owned())
+    .bind(c.body.to_owned())
+    .bind(c.at)
+    .bind(c.external_id.to_owned())
     .execute(&mut *conn)
     .await?;
     sqlx::query("UPDATE review_threads SET updated = $3 WHERE ns = $1 AND id = $2")
         .bind(ns_of(ns))
-        .bind(thread)
-        .bind(at)
+        .bind(c.thread)
+        .bind(c.at)
         .execute(&mut *conn)
         .await?;
     Ok(())

@@ -157,6 +157,7 @@ async fn comment(
                     None
                 },
                 body: body.into(),
+                ..Default::default()
             },
             token,
             true,

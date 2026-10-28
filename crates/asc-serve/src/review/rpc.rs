@@ -38,6 +38,11 @@ const OP_TAG: &[u8; 3] = b"rc1";
 /// Furthest line a thread may name.
 const MAX_LINE: u32 = 10_000_000;
 
+/// A change id in lower-case hex, for audit targets.
+pub(crate) fn hex_change(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
 fn id_of(n: u64) -> Result<i64, Status> {
     i64::try_from(n)
         .ok()
@@ -93,6 +98,18 @@ fn anchor_of(a: Option<wire::ThreadAnchor>) -> Result<Anchor, Status> {
         start_line: i64::from(a.start_line),
         end_line: i64::from(a.end_line.max(a.start_line)),
     })
+}
+
+/// The host's id of a comment: at most 128 bytes of `[A-Za-z0-9._:/-]`, or empty.
+fn external_of(id: &str) -> Result<&str, Status> {
+    if id.len() > 128
+        || !id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'/' | b'-'))
+    {
+        return Err(Status::invalid_argument("invalid external id"));
+    }
+    Ok(id)
 }
 
 fn body_of(body: &str) -> Result<&str, Status> {
@@ -198,6 +215,7 @@ impl Reviews {
     ) -> Result<wire::AddCommentResponse, Status> {
         let change = change_of(&req.change)?;
         let body = body_of(&req.body)?;
+        let external = external_of(&req.external_id)?;
         let op_id = ctx
             .op_id
             .ok_or_else(|| Status::invalid_argument("mutating calls need x-asc-op-id"))?;
@@ -220,9 +238,18 @@ impl Reviews {
                 existing,
                 anchor.as_ref(),
                 op_id,
+                external,
             )
         })
         .await?;
+        super::acting::record(
+            self.registry.pool(),
+            super::acting::event(ctx, "review.comment.added", &hex_change(&req.change))
+                .detail("thread", thread.to_string())
+                .detail("comment", comment.to_string())
+                .detail("external_id", external),
+        )
+        .await;
         Ok(wire::AddCommentResponse {
             thread: Some(self.thread_answer(&entry, thread).await?),
             comment_id: u64::try_from(comment).unwrap_or(0),
@@ -239,6 +266,7 @@ impl Reviews {
         existing: Option<i64>,
         anchor: Option<&Anchor>,
         op_id: Uuid,
+        external: &str,
     ) -> Result<(i64, i64), WriteError> {
         // A retry of a call that already committed answers with the first result.
         if let Some(done) = self.stored(entry, op_id).await? {
@@ -249,6 +277,15 @@ impl Reviews {
         let mut tx = self.registry.pool().begin().await?;
         // U48c: the namespace must still belong to this repository id and name.
         self.registry.guard(&mut tx, entry).await?;
+        if !external.is_empty()
+            && let Some((thread, comment)) = store::comment_by_external(&mut tx, ns, external).await?
+        {
+            let head = store::thread_head(&mut tx, ns, thread).await?;
+            return match head {
+                Some((c, _, _)) if c == change.as_bytes() => Ok((thread, comment)),
+                _ => Err(Status::already_exists("this external id belongs to another change").into()),
+            };
+        }
         if !store::change_known(&mut tx, ns, change).await? {
             return Err(Status::not_found("unknown change").into());
         }
@@ -299,7 +336,19 @@ impl Reviews {
             (None, None) => return Err(Status::invalid_argument("missing anchor").into()),
         };
         let comment = next_id(&mut tx, "review_comments", ns.as_bytes()).await?;
-        store::insert_comment(&mut tx, ns, comment, thread, handle, body, at).await?;
+        store::insert_comment(
+            &mut tx,
+            ns,
+            &store::NewComment {
+                id: comment,
+                thread,
+                author: handle,
+                body,
+                at,
+                external_id: external,
+            },
+        )
+        .await?;
         store::finish_request(&mut tx, ns, change, handle, at).await?;
         let mut result = OP_TAG.to_vec();
         result.extend_from_slice(&thread.to_be_bytes());
@@ -355,6 +404,13 @@ impl Reviews {
                 .map_err(sql)?;
         }
         tx.commit().await.map_err(sql)?;
+        super::acting::record(
+            self.registry.pool(),
+            super::acting::event(ctx, "review.thread.resolved", &id.to_string())
+                .detail("thread", id.to_string())
+                .detail("resolved", req.resolved.to_string()),
+        )
+        .await;
         Ok(wire::ResolveThreadResponse {
             thread: Some(self.thread_answer(&entry, id).await?),
         })
@@ -405,6 +461,13 @@ impl Reviews {
         }
         let requests = store::requests(&mut tx, ns, change).await.map_err(sql)?;
         tx.commit().await.map_err(sql)?;
+        super::acting::record(
+            self.registry.pool(),
+            super::acting::event(ctx, "review.requested", &hex_change(&req.change))
+                .detail("add", req.add.join(","))
+                .detail("remove", req.remove.join(",")),
+        )
+        .await;
         Ok(wire::RequestReviewResponse { requests })
     }
 }

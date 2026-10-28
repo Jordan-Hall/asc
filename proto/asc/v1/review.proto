@@ -4,6 +4,10 @@ package asc.v1;
 import "asc/v1/options.proto";
 import "asc/v1/repo.proto";
 
+// Calls made by the host service (the hub) for a signed-in person carry that person's forwarded claim (x-asc-forwarded-*,
+// subject = the repository): the call then acts as the person, within the claim's role (read, write or admin) and no more,
+// and the audit events name the person as the actor and the host service as the relay. A claim that does not verify, or
+// whose role is too small, is PERMISSION_DENIED. This holds for every RPC of this file.
 // Review comment threads on a change, stored by asc itself so every client sees the same threads whichever forge,
 // if any, sits in front of the server. Advertised as Version.features "review.v1". Reads need repo read; comments
 // and resolving need repo read and a user identity (comments carry the author's handle); RequestReview needs repo write.
@@ -41,6 +45,7 @@ message ReviewComment {
   string author = 2;
   string body = 3;
   int64 created = 4;
+  string external_id = 5;   // the host's own id of the comment, when it mirrored it here; empty otherwise
 }
 
 message ReviewThread {
@@ -80,6 +85,10 @@ message AddCommentRequest {
   uint64 thread_id = 3;
   ThreadAnchor anchor = 4;
   string body = 5;
+  // The host's own id of the comment (at most 128 bytes of [A-Za-z0-9._:/-]). A comment mirrored twice under the same
+  // id is stored once: the second call answers with the stored comment and thread and changes nothing. The id is
+  // unique per repository, so it cannot name a comment of another change.
+  string external_id = 6;
 }
 message AddCommentResponse {
   ReviewThread thread = 1;
