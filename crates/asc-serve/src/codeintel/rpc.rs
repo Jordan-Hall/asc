@@ -665,6 +665,11 @@ impl CodeIntelRpc {
         })
     }
 
+    /// The server's page key, for tokens other services seal themselves.
+    pub(super) fn page_key(&self) -> [u8; 32] {
+        self.key
+    }
+
     pub(super) fn registry(&self) -> &Arc<Registry> {
         &self.registry
     }
@@ -697,19 +702,6 @@ impl CodeIntelRpc {
     }
 
     // -------------------------------------------------------------------------- tokens
-
-    /// A page token of the cross-repository walk, sealed with this handler's key.
-    pub(super) fn seal_token<T: Serialize>(&self, kind: u8, v: &T) -> Result<String, Status> {
-        self.seal(kind, v)
-    }
-
-    pub(super) fn open_token<T: for<'de> Deserialize<'de>>(
-        &self,
-        kind: u8,
-        token: &str,
-    ) -> Result<T, Status> {
-        self.open(kind, token)
-    }
 
     fn seal<T: Serialize>(&self, kind: u8, v: &T) -> Result<String, Status> {
         let mut raw = postcard::to_stdvec(v).map_err(|e| internal("page token", &e))?;

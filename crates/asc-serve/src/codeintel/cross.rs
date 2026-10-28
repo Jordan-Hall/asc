@@ -8,10 +8,15 @@
 //! error, so a search cannot tell a private repository from a missing one.
 //!
 //! Paging: the candidates (the named repositories, or those of a scope) are sorted by name and
-//! visited in that order. A page token names the repository to resume at and the token that
-//! repository's own search gave, sealed with the page-token key and bound to the caller and the
-//! request. A repository created or made readable between two pages joins the walk where its name
-//! falls; nothing already returned is repeated.
+//! visited in that order. A page token holds the position to go on from (the last repository the
+//! walk looked at, or a repository whose own search has more to give, with that search's token).
+//! The token is encrypted and authenticated (XChaCha20-Poly1305 under a key derived from the
+//! server's page key), bound to the caller and the request by its associated data, and it expires.
+//! The client cannot read a position out of it, change it, hand it to another caller or use it for
+//! another question: all of those are the same "invalid page token". A repository created or made
+//! readable between two pages joins the walk where its name falls; nothing already returned is
+//! repeated. The position is never a name the caller was shown, so nothing in a token, an error or
+//! a count tells a caller about a repository it cannot read.
 
 use std::collections::BTreeMap;
 use std::pin::Pin;
@@ -23,6 +28,10 @@ use asc_rpc::auth::{Access, AuthError, AuthInterceptor, Authorizer, Credential, 
 use asc_rpc::errors::{ErrorInfo, RpcError};
 use asc_rpc::server::{ClientVersion, MAX_MESSAGE, RepoName, ServerInfo, rpc_status, wire};
 use asc_rpc::services::cross_search_server::{CrossSearch, CrossSearchServer};
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use chacha20poly1305::aead::{Aead, Payload};
+use chacha20poly1305::{KeyInit, XChaCha20Poly1305, XNonce};
 use serde::{Deserialize, Serialize};
 use tonic::metadata::MetadataMap;
 use tonic::service::interceptor::InterceptedService;
@@ -47,7 +56,6 @@ pub const DEFAULT_SYMBOLS: u32 = 50;
 pub const MAX_SYMBOLS: u32 = 200;
 /// Other repositories a symbol panel looks in for references (`cross_repo`).
 const PANEL_REPOS: usize = 20;
-const KIND_CROSS: u8 = 3;
 /// The most authorisation questions one call asks, however many repositories there are: eight per
 /// repository it may visit, and never more than this. Each question may be a call to the forge, so
 /// an instance of thousands of repositories the caller cannot read must not become thousands of
@@ -96,15 +104,33 @@ impl Asks {
     }
 }
 
-/// Where a walk over the candidates stopped.
-#[derive(Serialize, Deserialize)]
-struct CrossPage {
-    /// Binds the token to the caller and the question.
-    digest: [u8; 32],
-    /// The repository to resume at.
-    repo: String,
-    /// The token of that repository's own search; empty when it starts afresh.
+/// How long a page token is good for.
+const PAGE_TTL_SECS: u64 = 900;
+
+/// Where a walk over the candidates goes on: after the repository `at` (or at it, with `inner`,
+/// the token of its own search, when `inclusive`). Empty `at` is the start.
+#[derive(Serialize, Deserialize, Clone, Default)]
+struct Cursor {
+    at: String,
+    inclusive: bool,
     inner: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct Sealed {
+    cursor: Cursor,
+    /// Unix seconds.
+    expires: u64,
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+fn invalid_token() -> Status {
+    Status::invalid_argument("invalid page token")
 }
 
 /// The handler of `asc.v1.CrossSearch`.
@@ -196,8 +222,9 @@ impl CrossSearchService {
     async fn candidates(
         &self,
         target: Option<&wire::CrossSearchTarget>,
-        from: &str,
+        from: &Cursor,
     ) -> Result<(Vec<RepoName>, bool), Status> {
+        let (from, inclusive) = (from.at.as_str(), from.inclusive);
         let target = target.ok_or_else(|| Status::invalid_argument("missing target"))?;
         let mut cut = false;
         let mut names: Vec<String> = if !target.repos.is_empty() {
@@ -249,7 +276,7 @@ impl CrossSearchService {
         };
         names.sort_unstable();
         names.dedup();
-        names.retain(|n| n.as_str() >= from);
+        names.retain(|n| n.as_str() > from || (inclusive && n.as_str() == from));
         if names.len() > MAX_CANDIDATES {
             names.truncate(MAX_CANDIDATES);
             cut = true;
@@ -287,6 +314,60 @@ impl CrossSearchService {
         self.rpc.symbols(caller, req).await
     }
 
+    fn cipher(&self) -> XChaCha20Poly1305 {
+        let key = blake3::derive_key("asc v1 cross search page encryption", &self.rpc.page_key());
+        XChaCha20Poly1305::new(&key.into())
+    }
+
+    /// `cursor` as an opaque token for the question `digest` names.
+    fn seal_page(&self, digest: &[u8; 32], cursor: Cursor) -> Result<String, Status> {
+        let plain = postcard::to_stdvec(&Sealed {
+            cursor,
+            expires: now_secs() + PAGE_TTL_SECS,
+        })
+        .map_err(|_| Status::internal("internal error"))?;
+        let mut nonce = [0u8; 24];
+        getrandom::fill(&mut nonce).map_err(|_| Status::internal("internal error"))?;
+        let ct = self
+            .cipher()
+            .encrypt(
+                &XNonce::from(nonce),
+                Payload {
+                    msg: &plain,
+                    aad: digest,
+                },
+            )
+            .map_err(|_| Status::internal("internal error"))?;
+        let mut raw = nonce.to_vec();
+        raw.extend_from_slice(&ct);
+        Ok(URL_SAFE_NO_PAD.encode(raw))
+    }
+
+    /// The cursor of `token`; every failure (garbage, a changed byte, another caller, another
+    /// question, a late token) is the same refusal.
+    fn open_page(&self, digest: &[u8; 32], token: &str) -> Result<Cursor, Status> {
+        let raw = URL_SAFE_NO_PAD.decode(token).map_err(|_| invalid_token())?;
+        if raw.len() < 24 + 16 {
+            return Err(invalid_token());
+        }
+        let nonce: [u8; 24] = raw[..24].try_into().map_err(|_| invalid_token())?;
+        let plain = self
+            .cipher()
+            .decrypt(
+                &XNonce::from(nonce),
+                Payload {
+                    msg: &raw[24..],
+                    aad: digest,
+                },
+            )
+            .map_err(|_| invalid_token())?;
+        let sealed: Sealed = postcard::from_bytes(&plain).map_err(|_| invalid_token())?;
+        if sealed.expires < now_secs() {
+            return Err(invalid_token());
+        }
+        Ok(sealed.cursor)
+    }
+
     fn digest(&self, who: &str, op: &str, parts: &[&[u8]]) -> [u8; 32] {
         let mut h = blake3::Hasher::new_derive_key("asc v1 cross search page scope");
         let mut put = |b: &[u8]| {
@@ -300,6 +381,23 @@ impl CrossSearchService {
         }
         *h.finalize().as_bytes()
     }
+}
+
+/// The target of a request as bytes, so a token is good for the question it came from only.
+fn target_key(t: Option<&wire::CrossSearchTarget>) -> Vec<u8> {
+    let Some(t) = t else { return Vec::new() };
+    let mut v = Vec::new();
+    if let Some(s) = &t.scope {
+        v.extend_from_slice(&s.kind.to_le_bytes());
+        v.extend_from_slice(s.name.as_bytes());
+    }
+    v.push(0);
+    for r in &t.repos {
+        v.extend_from_slice(r.as_bytes());
+        v.push(0);
+    }
+    v.extend_from_slice(t.rev.as_bytes());
+    v
 }
 
 fn too_slow() -> Status {
@@ -442,30 +540,42 @@ impl CrossSearchService {
             0 => DEFAULT_SYMBOLS,
             n => n.min(MAX_SYMBOLS),
         } as usize;
-        let mut resume = String::new();
         let rev = msg.target.as_ref().map_or("", |t| t.rev.as_str());
         let digest = self.digest(
             &self.who(credential.as_ref()).await,
             "lookup",
-            &[msg.name.as_bytes(), rev.as_bytes(), &[kind as u8]],
+            &[
+                msg.name.as_bytes(),
+                rev.as_bytes(),
+                &[kind as u8],
+                &target_key(msg.target.as_ref()),
+            ],
         );
         let mut hits: Vec<wire::SymbolHit> = Vec::new();
-        if !msg.page_token.is_empty() {
-            let page: CrossPage = self.rpc.open_token(KIND_CROSS, &msg.page_token)?;
-            if page.digest != digest {
-                return Err(Status::invalid_argument(
-                    "the page token is for another request",
-                ));
-            }
-            resume = page.repo;
-        }
-        let (names, cut) = self.candidates(msg.target.as_ref(), &resume).await?;
+        let start = if msg.page_token.is_empty() {
+            Cursor::default()
+        } else {
+            self.open_page(&digest, &msg.page_token)?
+        };
+        let (names, cut) = self.candidates(msg.target.as_ref(), &start).await?;
         let (mut visited, mut truncated) = (0usize, cut);
         let mut asks = Asks::new(&self.limits, self.limits.max_repos);
+        // Where to go on if the walk stops before the repository in hand: after the last one
+        // looked at. Never the repository in hand, which may be one the caller cannot read.
+        let mut pos = start;
+        let mut stopped = false;
+        let mut prev: Option<&RepoName> = None;
         for repo in &names {
+            if let Some(p) = prev.take() {
+                pos = Cursor {
+                    at: p.to_string(),
+                    ..Cursor::default()
+                };
+            }
+            prev = Some(repo);
             if hits.len() >= limit || !asks.take() {
                 truncated = true;
-                resume = repo.to_string();
+                stopped = true;
                 break;
             }
             let Some(caller) = self.readable(credential.as_ref(), repo).await? else {
@@ -473,7 +583,7 @@ impl CrossSearchService {
             };
             if visited >= self.limits.max_repos {
                 truncated = true;
-                resume = repo.to_string();
+                stopped = true;
                 break;
             }
             visited += 1;
@@ -525,15 +635,8 @@ impl CrossSearchService {
                 });
             }
         }
-        let next = if truncated && !resume.is_empty() {
-            self.rpc.seal_token(
-                KIND_CROSS,
-                &CrossPage {
-                    digest,
-                    repo: resume,
-                    inner: String::new(),
-                },
-            )?
+        let next = if stopped {
+            self.seal_page(&digest, pos)?
         } else {
             String::new()
         };
@@ -625,7 +728,7 @@ impl CrossSearchService {
                         }),
                         ..wire::CrossSearchTarget::default()
                     }),
-                    "",
+                    &Cursor::default(),
                 )
                 .await?;
             truncated |= cut;
@@ -702,19 +805,18 @@ impl CrossSearchService {
                 msg.pattern.as_bytes(),
                 &[mode as u8, u8::from(msg.case_sensitive)],
                 rev.as_bytes(),
+                &target_key(msg.target.as_ref()),
+                &msg.paths.join("\0").into_bytes(),
+                &msg.exclude_paths.join("\0").into_bytes(),
+                &msg.langs.join("\0").into_bytes(),
             ],
         );
-        let (mut resume, mut inner) = (String::new(), String::new());
-        if !msg.page_token.is_empty() {
-            let page: CrossPage = self.rpc.open_token(KIND_CROSS, &msg.page_token)?;
-            if page.digest != digest {
-                return Err(Status::invalid_argument(
-                    "the page token is for another request",
-                ));
-            }
-            (resume, inner) = (page.repo, page.inner);
-        }
-        let (names, cut) = self.candidates(msg.target.as_ref(), &resume).await?;
+        let start = if msg.page_token.is_empty() {
+            Cursor::default()
+        } else {
+            self.open_page(&digest, &msg.page_token)?
+        };
+        let (names, cut) = self.candidates(msg.target.as_ref(), &start).await?;
         let results = match budget.max_results {
             0 => asc_codeintel::render::DEFAULT_RESULTS,
             n => n.min(asc_codeintel::render::MAX_RESULTS),
@@ -734,19 +836,25 @@ impl CrossSearchService {
             exclude: &msg.exclude_paths,
             langs: &msg.langs,
         };
-        let mut next: Option<(String, String)> = None;
+        let mut next: Option<Cursor> = None;
         let mut visited = 0usize;
         let mut asks = Asks::new(&self.limits, self.limits.max_repos);
+        // Where to go on if the walk stops before the repository in hand: after the last one
+        // looked at. Never the repository in hand, which may be one the caller cannot read.
+        let mut pos = start.clone();
+        let mut prev: Option<&RepoName> = None;
         for repo in &names {
-            let resuming = repo.as_str() == resume;
+            if let Some(p) = prev.take() {
+                pos = Cursor {
+                    at: p.to_string(),
+                    ..Cursor::default()
+                };
+            }
+            prev = Some(repo);
+            let resuming = start.inclusive && repo.as_str() == start.at;
             if !asks.take() {
                 out.truncated = true;
-                let again = if resuming {
-                    std::mem::take(&mut inner)
-                } else {
-                    String::new()
-                };
-                next = Some((repo.to_string(), again));
+                next = Some(pos.clone());
                 break;
             }
             let Some(caller) = self.readable(credential, repo).await? else {
@@ -754,12 +862,12 @@ impl CrossSearchService {
             };
             if room == 0 || tokens_left < 20 || visited >= self.limits.max_repos {
                 out.truncated = true;
-                next = Some((repo.to_string(), String::new()));
+                next = Some(pos.clone());
                 break;
             }
             visited += 1;
             let sent = if resuming {
-                std::mem::take(&mut inner)
+                start.inner.clone()
             } else {
                 String::new()
             };
@@ -788,8 +896,10 @@ impl CrossSearchService {
             if !out.repos.is_empty()
                 && (resp.files.len() as u32 > room || resp.est_tokens > tokens_left)
             {
+                // It is readable and has more than the page has room for: it goes whole to the
+                // next page, which starts after the last repository looked at.
                 out.truncated = true;
-                next = Some((repo.to_string(), sent));
+                next = Some(pos.clone());
                 break;
             }
             out.searched_repos += 1;
@@ -812,22 +922,19 @@ impl CrossSearchService {
             }
             if !resp.next_page_token.is_empty() {
                 out.truncated = true;
-                next = Some((repo.to_string(), resp.next_page_token));
+                next = Some(Cursor {
+                    at: repo.to_string(),
+                    inclusive: true,
+                    inner: resp.next_page_token,
+                });
                 break;
             }
             if resp.truncated {
                 out.truncated = true;
             }
         }
-        if let Some((repo, inner)) = next {
-            out.next_page_token = self.rpc.seal_token(
-                KIND_CROSS,
-                &CrossPage {
-                    digest,
-                    repo,
-                    inner,
-                },
-            )?;
+        if let Some(cursor) = next {
+            out.next_page_token = self.seal_page(&digest, cursor)?;
         }
         Ok(out)
     }

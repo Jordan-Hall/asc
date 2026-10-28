@@ -544,3 +544,93 @@ async fn a_zero_deadline_stops_every_call() {
         Ok(r) => assert!(r.truncated || r.repos.is_empty()),
     }
 }
+
+fn instance() -> wire::CrossSearchTarget {
+    scope(wire::OwnerKind::Instance, "")
+}
+
+/// A caller who may read none of the repositories is told nothing about them: not in the counts,
+/// not in the page tokens, not in an error, and a token cannot be read, changed, handed to someone
+/// else or used for another question.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_caller_who_reads_nothing_learns_nothing_from_tokens_errors_or_counts() {
+    // Few enough questions per call that the walk of 104 repositories must stop and give a token.
+    let limits = Limits {
+        max_repos: 5,
+        ..Limits::default()
+    };
+    let rig = rig_with(1, 100, limits, grants()).await;
+
+    let first = search(&rig, "none", request(instance(), WORD, 100, ""))
+        .await
+        .unwrap();
+    assert!(first.repos.is_empty());
+    assert_eq!((first.searched_repos, first.unindexed_repos), (0, 0));
+    assert!(!first.next_page_token.is_empty(), "the walk stopped");
+    let token = first.next_page_token.clone();
+
+    // The token is opaque: no repository name in it, in any of its encodings, and a second token
+    // from the same position is a different string.
+    let raw =
+        base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, &token).unwrap();
+    for needle in ["big/", "r000", "o/a", "o/b", "p/d"] {
+        assert!(
+            !token.contains(needle) && !raw.windows(needle.len()).any(|w| w == needle.as_bytes()),
+            "{needle} in a token"
+        );
+    }
+    let again = search(&rig, "none", request(instance(), WORD, 100, ""))
+        .await
+        .unwrap();
+    assert_ne!(again.next_page_token, token);
+
+    // It works for the caller it was made for, with the question it was made for, and goes on.
+    let next = search(&rig, "none", request(instance(), WORD, 100, &token))
+        .await
+        .unwrap();
+    assert!(next.repos.is_empty() && next.searched_repos == 0);
+
+    // Another caller cannot use it; a changed token, garbage and a token for another question or
+    // another target are the same refusal with the same text.
+    let mut flipped = token.clone().into_bytes();
+    let mid = flipped.len() / 2;
+    flipped[mid] = if flipped[mid] == b'A' { b'B' } else { b'A' };
+    let flipped = String::from_utf8(flipped).unwrap();
+    let mut refusals = Vec::new();
+    for (who, req) in [
+        ("some", request(instance(), WORD, 100, &token)),
+        ("none", request(instance(), WORD, 100, &flipped)),
+        ("none", request(instance(), WORD, 100, "garbage")),
+        ("none", request(instance(), "another_pattern", 100, &token)),
+        (
+            "none",
+            request(scope(wire::OwnerKind::User, "o"), WORD, 100, &token),
+        ),
+    ] {
+        let e = search(&rig, who, req).await.unwrap_err();
+        assert_eq!(e.code(), tonic::Code::InvalidArgument);
+        refusals.push(e.message().to_owned());
+    }
+    assert!(
+        refusals.iter().all(|m| m == "invalid page token"),
+        "{refusals:?}"
+    );
+
+    // The lookup's tokens follow the same rules.
+    let sym = |token: &str| wire::LookupSymbolRequest {
+        target: Some(instance()),
+        name: "anything".to_owned(),
+        page_token: token.to_owned(),
+        ..Default::default()
+    };
+    let call = |who: &str, r: wire::LookupSymbolRequest| {
+        let mut req = Request::new(r);
+        req.extensions_mut().insert(cred(who));
+        rig.svc.lookup_symbol(req)
+    };
+    let l = call("none", sym("")).await.unwrap().into_inner();
+    assert!(l.hits.is_empty() && !l.next_page_token.is_empty());
+    assert!(call("some", sym(&l.next_page_token)).await.is_err());
+    assert!(call("none", sym("garbage")).await.is_err());
+    assert!(call("none", sym(&l.next_page_token)).await.is_ok());
+}
