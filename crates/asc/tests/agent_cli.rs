@@ -118,6 +118,98 @@ type RunStream = futures::stream::Iter<std::vec::IntoIter<Result<wire::AgentRunE
 impl Agents for Fake {
     type WatchRunStream = RunStream;
 
+    // The run controls, estimates and spend belong to other tests; this stand-in serves the commands under test.
+    async fn list_requests(
+        &self,
+        _r: Request<wire::ListAgentRequestsRequest>,
+    ) -> Result<Response<wire::ListAgentRequestsResponse>, Status> {
+        Err(Status::unimplemented("not served by this stand-in"))
+    }
+
+    async fn decide_request(
+        &self,
+        _r: Request<wire::DecideAgentRequestRequest>,
+    ) -> Result<Response<wire::DecideAgentRequestResponse>, Status> {
+        Err(Status::unimplemented("not served by this stand-in"))
+    }
+
+    async fn pause_run(
+        &self,
+        _r: Request<wire::PauseAgentRunRequest>,
+    ) -> Result<Response<wire::PauseAgentRunResponse>, Status> {
+        Err(Status::unimplemented("not served by this stand-in"))
+    }
+
+    async fn list_checkpoints(
+        &self,
+        _r: Request<wire::ListAgentCheckpointsRequest>,
+    ) -> Result<Response<wire::ListAgentCheckpointsResponse>, Status> {
+        Err(Status::unimplemented("not served by this stand-in"))
+    }
+
+    async fn rollback_run(
+        &self,
+        _r: Request<wire::RollbackAgentRunRequest>,
+    ) -> Result<Response<wire::RollbackAgentRunResponse>, Status> {
+        Err(Status::unimplemented("not served by this stand-in"))
+    }
+
+    async fn set_run_limits(
+        &self,
+        _r: Request<wire::SetAgentRunLimitsRequest>,
+    ) -> Result<Response<wire::SetAgentRunLimitsResponse>, Status> {
+        Err(Status::unimplemented("not served by this stand-in"))
+    }
+
+    async fn continue_run(
+        &self,
+        _r: Request<wire::ContinueAgentRunRequest>,
+    ) -> Result<Response<wire::ContinueAgentRunResponse>, Status> {
+        Err(Status::unimplemented("not served by this stand-in"))
+    }
+
+    async fn get_estimate(
+        &self,
+        _r: Request<wire::GetAgentEstimateRequest>,
+    ) -> Result<Response<wire::GetAgentEstimateResponse>, Status> {
+        Err(Status::unimplemented("not served by this stand-in"))
+    }
+
+    async fn recent_tasks(
+        &self,
+        _r: Request<wire::RecentAgentTasksRequest>,
+    ) -> Result<Response<wire::RecentAgentTasksResponse>, Status> {
+        Err(Status::unimplemented("not served by this stand-in"))
+    }
+
+    async fn get_run_log(
+        &self,
+        _r: Request<wire::GetAgentRunLogRequest>,
+    ) -> Result<Response<wire::GetAgentRunLogResponse>, Status> {
+        Err(Status::unimplemented("not served by this stand-in"))
+    }
+
+    async fn list_agents(
+        &self,
+        _r: Request<wire::ListRepoAgentsRequest>,
+    ) -> Result<Response<wire::ListRepoAgentsResponse>, Status> {
+        Err(Status::unimplemented("not served by this stand-in"))
+    }
+
+    async fn get_spend(
+        &self,
+        _r: Request<wire::GetAgentSpendRequest>,
+    ) -> Result<Response<wire::GetAgentSpendResponse>, Status> {
+        Err(Status::unimplemented("not served by this stand-in"))
+    }
+
+    async fn set_monthly_budget(
+        &self,
+        _r: Request<wire::SetMonthlyBudgetRequest>,
+    ) -> Result<Response<wire::SetMonthlyBudgetResponse>, Status> {
+        Err(Status::unimplemented("not served by this stand-in"))
+    }
+
     async fn create_run(
         &self,
         r: Request<wire::CreateAgentRunRequest>,
@@ -133,6 +225,7 @@ impl Agents for Fake {
         self.seen.lock().unwrap().create_run.push(r.into_inner());
         Ok(Response::new(wire::CreateAgentRunResponse {
             run: Some(run_of(41, wire::AgentRunState::Queued)),
+            ..Default::default()
         }))
     }
 
