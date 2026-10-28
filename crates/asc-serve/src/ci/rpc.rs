@@ -29,8 +29,8 @@ use super::{
 };
 use crate::registry::RepoEntry;
 use crate::review::{
-    Env, Reviews, WriteError, change_of, next_id, now, page_limit, parse_after, placeholders,
-    retry_conflict, sql, store,
+    Env, Reviews, WriteError, after_token, change_of, next_id, now, page_limit, parse_after,
+    placeholders, retry_conflict, sql, store,
 };
 
 /// Marks an `op_results` row as the result of `AppendJobLog`: the tag, then the log size.
@@ -241,7 +241,8 @@ impl Reviews {
         };
         let status = wire::CiStatus::try_from(req.status)
             .map_err(|_| Status::invalid_argument("invalid status"))? as i64;
-        let before = match parse_after(&req.page_token)? {
+        let scope = format!("Ci.ListRuns|{}", ctx.repo);
+        let before = match parse_after(&scope, &ctx.principal.id, &req.page_token)? {
             0 => i64::MAX,
             n => n,
         };
@@ -271,7 +272,9 @@ impl Reviews {
             .map_err(sql)?;
         let next_page_token = if runs.len() > limit {
             runs.truncate(limit);
-            runs.last().map(|r| r.id.to_string()).unwrap_or_default()
+            runs.last()
+                .map(|r| after_token(&scope, &ctx.principal.id, r.id))
+                .unwrap_or_default()
         } else {
             String::new()
         };

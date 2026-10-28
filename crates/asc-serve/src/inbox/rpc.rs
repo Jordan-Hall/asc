@@ -15,7 +15,7 @@ use tonic::{Request, Response, Status};
 
 use super::{DEFAULT_PAGE, MAX_PAGE, MAX_SNOOZE, MAX_STATE_ROWS, etag, sections_of, visible};
 use crate::review::{
-    Env, Reviews, change_of, now, page_limit, parse_after, require_handle, sql, store,
+    Env, Reviews, after_token, change_of, now, page_limit, parse_after, require_handle, sql, store,
 };
 
 impl Reviews {
@@ -28,7 +28,9 @@ impl Reviews {
     ) -> Result<wire::InboxListResponse, Status> {
         let sections = sections_of(&req.sections)?;
         let limit = page_limit(req.limit, DEFAULT_PAGE, MAX_PAGE);
-        let offset = usize::try_from(parse_after(&req.page_token)?).unwrap_or(usize::MAX);
+        let scope = format!("Inbox.List|{}", ctx.repo);
+        let offset = usize::try_from(parse_after(&scope, &ctx.principal.id, &req.page_token)?)
+            .unwrap_or(usize::MAX);
         let entry = self.open(ctx).await?;
         let at = now();
         let items: Vec<wire::InboxItem> = self
@@ -41,7 +43,11 @@ impl Reviews {
         let total = u32::try_from(items.len()).unwrap_or(u32::MAX);
         let page: Vec<wire::InboxItem> = items.into_iter().skip(offset).take(limit + 1).collect();
         let next_page_token = if page.len() > limit {
-            (offset + limit).to_string()
+            after_token(
+                &scope,
+                &ctx.principal.id,
+                i64::try_from(offset + limit).unwrap_or(i64::MAX),
+            )
         } else {
             String::new()
         };

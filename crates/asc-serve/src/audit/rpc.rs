@@ -263,17 +263,8 @@ fn filter_of(f: Option<&wire::AuditFilter>) -> Result<Filter, Status> {
     })
 }
 
-fn page_after(token: &str) -> Result<Option<u64>, Status> {
-    if token.is_empty() {
-        return Ok(None);
-    }
-    if token.len() > 19 || !token.bytes().all(|b| b.is_ascii_digit()) {
-        return Err(Status::invalid_argument("malformed page token"));
-    }
-    token
-        .parse()
-        .map(Some)
-        .map_err(|_| Status::invalid_argument("malformed page token"))
+fn page_after(scope: &str, who: &str, token: &str) -> Result<Option<u64>, Status> {
+    Ok(crate::pagetoken::open_id(scope, who, token)?.map(|n| u64::try_from(n).unwrap_or(0)))
 }
 
 fn principal_ref(a: &Actor) -> wire::PrincipalRef {
@@ -338,9 +329,11 @@ impl AuditApi for AuditService {
         request: Request<wire::ListAuditRequest>,
     ) -> Result<Response<wire::ListAuditResponse>, Status> {
         let (meta, ext, msg) = request.into_parts();
-        let (scope, _, _) = self.resolve(&ext, &meta, msg.scope.as_ref()).await?;
+        let (scope, who, _) = self.resolve(&ext, &meta, msg.scope.as_ref()).await?;
         let filter = filter_of(msg.filter.as_ref())?;
-        let after = page_after(&msg.page_token)?;
+        let page_scope = format!("Audit.List|{:?}|{}", scope.kind, scope.name);
+        let page_who = format!("{}:{}", who.kind, who.name);
+        let after = page_after(&page_scope, &page_who, &msg.page_token)?;
         let page = store::list(
             self.audit.registry.pool(),
             &scope,
@@ -353,7 +346,10 @@ impl AuditApi for AuditService {
         .map_err(db)?;
         Ok(Response::new(wire::ListAuditResponse {
             events: page.events.iter().map(wire_event).collect(),
-            next_page_token: page.next.map(|n| n.to_string()).unwrap_or_default(),
+            next_page_token: page
+                .next
+                .map(|n| crate::pagetoken::seal(&page_scope, &page_who, &n.to_string()))
+                .unwrap_or_default(),
         }))
     }
 
@@ -526,11 +522,12 @@ mod tests {
     }
 
     #[test]
-    fn page_tokens_are_numbers() {
-        assert_eq!(page_after("").unwrap(), None);
-        assert_eq!(page_after("42").unwrap(), Some(42));
-        assert!(page_after("4 2").is_err());
-        assert!(page_after("-1").is_err());
-        assert!(page_after("99999999999999999999").is_err());
+    fn page_tokens_are_opaque_and_bound() {
+        assert_eq!(page_after("s", "w", "").unwrap(), None);
+        let t = crate::pagetoken::seal("s", "w", "42");
+        assert_eq!(page_after("s", "w", &t).unwrap(), Some(42));
+        assert!(page_after("s", "w", "42").is_err());
+        assert!(page_after("s", "other", &t).is_err());
+        assert!(page_after("s", "w", &crate::pagetoken::seal("s", "w", "-1")).unwrap() == Some(0));
     }
 }

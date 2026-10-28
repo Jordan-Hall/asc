@@ -30,7 +30,9 @@ use crate::audit::actor::actor_of;
 use crate::idmode::{Eng, IdCodec};
 use crate::policy::PolicyStore;
 use crate::registry::{Registry, RepoEntry};
-use crate::review::{Env, internal, now, page_limit, parse_after, registry_status, sql};
+use crate::review::{
+    Env, after_token, internal, now, page_limit, parse_after, registry_status, sql,
+};
 
 /// Scans running at once, server wide; further callers wait their turn.
 const CONCURRENT_SCANS: usize = 2;
@@ -333,7 +335,8 @@ impl SecretScanHub {
             ),
         };
         let limit = page_limit(req.limit, DEFAULT_PAGE, MAX_PAGE);
-        let after = parse_after(&req.page_token)?;
+        let scope = format!("SecretScan.ListFindings|{}", ctx.repo);
+        let after = parse_after(&scope, &ctx.principal.id, &req.page_token)?;
         let entry = self.open(ctx).await?;
         let ids = IdCodec::new(ctx.id_mode, &self.registry, &entry).for_viewer(&ctx.principal);
         let filter = Filter {
@@ -347,7 +350,9 @@ impl SecretScanHub {
             .map_err(sql)?;
         let next_page_token = if rows.len() > limit {
             rows.truncate(limit);
-            rows.last().map(|r| r.id.to_string()).unwrap_or_default()
+            rows.last()
+                .map(|r| after_token(&scope, &ctx.principal.id, r.id))
+                .unwrap_or_default()
         } else {
             String::new()
         };

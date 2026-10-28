@@ -26,9 +26,9 @@ use uuid::Uuid;
 use super::store::{self, NewThread};
 use super::{
     DEFAULT_PAGE, Env, MAX_BODY, MAX_COMMENTS_PER_THREAD, MAX_PAGE, MAX_PATH,
-    MAX_REQUESTS_PER_CHANGE, MAX_REVIEWERS, MAX_THREADS_PER_CHANGE, Reviews, WriteError, change_of,
-    handle_of, next_id, now, page_limit, parse_after, require_handle, retry_conflict, sql,
-    valid_handle,
+    MAX_REQUESTS_PER_CHANGE, MAX_REVIEWERS, MAX_THREADS_PER_CHANGE, Reviews, WriteError,
+    after_token, change_of, handle_of, next_id, now, page_limit, parse_after, require_handle,
+    retry_conflict, sql, valid_handle,
 };
 use crate::registry::RepoEntry;
 use asc_rpc::server::CallCtx;
@@ -114,7 +114,8 @@ impl Reviews {
         let change = change_of(&req.change)?;
         let status = wire::ThreadStatus::try_from(req.status)
             .map_err(|_| Status::invalid_argument("invalid status"))? as i64;
-        let after = parse_after(&req.page_token)?;
+        let scope = format!("Review.ListThreads|{}", ctx.repo);
+        let after = parse_after(&scope, &ctx.principal.id, &req.page_token)?;
         let limit = page_limit(req.limit, DEFAULT_PAGE, MAX_PAGE);
         let entry = self.open(ctx).await?;
         let mut conn = self.registry.pool().acquire().await.map_err(sql)?;
@@ -134,7 +135,10 @@ impl Reviews {
         .map_err(sql)?;
         let next_page_token = if threads.len() > limit {
             threads.truncate(limit);
-            threads.last().map(|t| t.id.to_string()).unwrap_or_default()
+            threads
+                .last()
+                .map(|t| after_token(&scope, &ctx.principal.id, t.id))
+                .unwrap_or_default()
         } else {
             String::new()
         };

@@ -56,6 +56,7 @@ pub mod netguard;
 pub mod objects;
 pub mod obs;
 pub mod outbox;
+pub mod pagetoken;
 pub mod policy;
 pub mod projects;
 pub mod projects_warm;
@@ -859,6 +860,7 @@ pub async fn run_migrate(cfg: &ServeConfig) -> Result<(), ServeError> {
     };
     let pool = migrate::connect(db, 2).await?;
     migrate::migrate(&pool).await?;
+    pagetoken::init(&pool).await?;
     Ok(())
 }
 

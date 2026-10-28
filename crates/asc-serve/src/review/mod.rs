@@ -318,15 +318,13 @@ pub(crate) fn page_limit(asked: u32, default: usize, max: usize) -> usize {
     }
 }
 
-/// A numeric page token: the last id of the previous page.
-pub(crate) fn parse_after(token: &str) -> Result<i64, Status> {
-    if token.is_empty() {
-        return Ok(0);
-    }
-    if token.len() > 19 || !token.bytes().all(|b| b.is_ascii_digit()) {
-        return Err(Status::invalid_argument("malformed page token"));
-    }
-    token
-        .parse::<i64>()
-        .map_err(|_| Status::invalid_argument("malformed page token"))
+/// The cursor of an opaque page token (the last id of the previous page); 0 for none. `scope`
+/// names the call and repository, `who` the caller: a token is good for those only.
+pub(crate) fn parse_after(scope: &str, who: &str, token: &str) -> Result<i64, Status> {
+    Ok(crate::pagetoken::open_id(scope, who, token)?.unwrap_or(0))
+}
+
+/// The opaque page token that continues after `id`.
+pub(crate) fn after_token(scope: &str, who: &str, id: impl std::fmt::Display) -> String {
+    crate::pagetoken::seal(scope, who, &id.to_string())
 }
