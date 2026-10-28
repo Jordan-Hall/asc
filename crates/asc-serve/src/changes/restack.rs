@@ -1625,6 +1625,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_conflict_tells_the_authors_of_the_change_that_conflicted_and_a_dry_run_tells_nobody()
+    {
+        let f = fx().await;
+        // Change 1 was published by alice, a user.
+        sqlx::query("UPDATE change_versions SET actor = '42:alice' WHERE change = $1")
+            .bind(cid(1).as_bytes().to_vec())
+            .execute(f.reg.pool())
+            .await
+            .unwrap();
+        let m = forge(msg(f.x, vec![item(1), item(2), item(3)]));
+        f.run(
+            wire::RestackChangesRequest {
+                dry_run: true,
+                ..m.clone()
+            },
+            FORGE,
+        )
+        .await
+        .unwrap();
+        assert!(crate::notify::tests::notes(f.reg.pool()).await.is_empty());
+        let done = f.run(m, FORGE).await.unwrap();
+        assert_eq!(done.conflicts.len(), 1);
+        let notes = crate::notify::tests::notes(f.reg.pool()).await;
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        let (event, users, title, _detail, path) = &notes[0];
+        assert_eq!(event, "restack_conflict");
+        assert_eq!(users, &["alice".to_owned()]);
+        assert!(title.contains("conflict"), "{title}");
+        assert_eq!(path, &format!("/o/r/changes/{}", hex(cid(1).as_bytes())));
+    }
+
+    #[tokio::test]
     async fn a_conflict_is_an_answer_and_atomic_writes_nothing() {
         let f = fx().await;
         let m = forge(msg(f.x, vec![item(1), item(2), item(3)]));

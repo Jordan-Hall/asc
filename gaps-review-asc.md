@@ -18,6 +18,22 @@ Branch feat/asc-review. Server side done, with tests per RPC (right caller, call
 
 The rows (all 45 minus row 67): No proto or server code was changed.
 
+## Status after the third run
+
+Added since the second run (docs/BUILDOUT.md sections 21 to 23):
+
+- Notification events for the hub (migration 0576, `notify/`): agent question and finish, checks failed, restack conflict, merge queue, policy changed,
+  review requested, mentioned; outbox with retry (401 and 403 retried), the hub's limits, `x-asc-event-id`, audit of delivery, `[notify]` link templates.
+- Row 81 `Review.GetConflicts`, row 111 `Review.DraftContext`, row 114 `Agents.CreateRun.for_change` validated, row 119 `SecretScan.Check`,
+  row 294 `UndoRef` dry-run preview (`changes_back`, `approvals_kept`).
+- `Agents.GetPerson`: the profile of a person for an agent, asked of the hub every time (`/api/internal/asc/agent-profile`), fail closed, audited.
+  asc serves no other person data to agents on its own: commit signatures are git data that any reader of the repository has, and are not changed.
+  The sandbox tool list and the MCP toolset have no profile tool yet.
+- Test fixes: the two flaky tests were a host-key creation race (production: the key is now published whole by a hard link, with the old create-and-write as the
+  fallback) and a timing assumption in the AI cap test (the cap itself is one conditional UPDATE and holds).
+- Not done: step 6 remainder (statistics RPC, `batch` policy key, release provenance/notes/checksums with `asc release`, backups RPC, usage data, org agents and
+  merge policy, sessions list, data export, AI key caps and sharing) and the "not supported yet" stubs.
+
 ## Findings for Phase 3 (from reading the code)
 
 - Protos are in proto/asc/v1 (not crates/asc-rpc/proto). Migrations are in crates/asc-serve/migrations/{sqlite,postgres}, last is 0561; use a distinct range (0570+) to avoid clashing with the other worktrees.

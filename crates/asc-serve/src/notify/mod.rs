@@ -24,7 +24,9 @@ pub mod policy;
 pub mod worker;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
+#[cfg(test)]
+mod tests_hooks;
 
 use sqlx::{AnyPool, Row};
 
@@ -151,22 +153,132 @@ impl Event {
     }
 }
 
-/// The places a notification links to, on the hub (all begin with the repository `owner/name`).
+/// `[notify]`: whether events are queued, and where they link to on the hub. The hub publishes the
+/// real route table; until a deployment sets these, the defaults are asc's guesses.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct NotifyConfig {
+    /// `false` queues nothing. Events are queued only when `[forgejo]` with its internal token
+    /// names a hub to post them to, whatever this says.
+    pub enabled: bool,
+    /// Put before every path: empty, or `/` and a path without a closing `/` (a hub served under
+    /// a sub-path).
+    pub path_prefix: String,
+    /// Templates of the links. `{repo}` is `owner/name`, `{change}` the change id in hex and
+    /// `{run}` the agent run number.
+    pub change_path: String,
+    pub run_path: String,
+    pub queue_path: String,
+    pub policy_path: String,
+}
+
+impl Default for NotifyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            path_prefix: String::new(),
+            change_path: "/{repo}/changes/{change}".into(),
+            run_path: "/{repo}/agents/runs/{run}".into(),
+            queue_path: "/{repo}/merge-queue".into(),
+            policy_path: "/{repo}/settings/policy".into(),
+        }
+    }
+}
+
+impl NotifyConfig {
+    /// Checks the templates. The error names the key.
+    pub fn validate(&self) -> Result<(), String> {
+        let p = &self.path_prefix;
+        if !p.is_empty() && (!p.starts_with('/') || p.ends_with('/') || p.contains("//")) {
+            return Err("path_prefix is empty or starts with `/` and does not end with one".into());
+        }
+        if p.len() > 100
+            || p.chars()
+                .any(|c| c.is_control() || c.is_whitespace() || c == '\\')
+        {
+            return Err("path_prefix is at most 100 characters without spaces".into());
+        }
+        for (key, t) in [
+            ("change_path", &self.change_path),
+            ("run_path", &self.run_path),
+            ("queue_path", &self.queue_path),
+            ("policy_path", &self.policy_path),
+        ] {
+            let bare = t
+                .replace("{repo}", "")
+                .replace("{change}", "")
+                .replace("{run}", "");
+            let ok = t.starts_with('/')
+                && !t.starts_with("//")
+                && t.len() <= 200
+                && !bare.contains(['{', '}'])
+                && !t
+                    .chars()
+                    .any(|c| c.is_control() || c.is_whitespace() || c == '\\');
+            if !ok {
+                return Err(format!(
+                    "{key} starts with one `/`, has no spaces and uses only {{repo}}, {{change}} and {{run}}"
+                ));
+            }
+            if !t.contains("{repo}") {
+                return Err(format!("{key} must contain {{repo}}"));
+            }
+        }
+        Ok(())
+    }
+
+    fn render(&self, template: &str, repo: &str, change: &str, run: &str) -> String {
+        format!(
+            "{}{}",
+            self.path_prefix,
+            template
+                .replace("{repo}", repo)
+                .replace("{change}", change)
+                .replace("{run}", run)
+        )
+    }
+}
+
+static SETTINGS: std::sync::OnceLock<(NotifyConfig, bool)> = std::sync::OnceLock::new();
+
+/// Sets the process's notification settings at startup: the config, and whether a hub exists to
+/// post to. Without a hub nothing is queued. The first call wins.
+pub fn configure(cfg: &NotifyConfig, hub: bool) {
+    let _ = SETTINGS.set((cfg.clone(), hub));
+}
+
+fn settings() -> NotifyConfig {
+    SETTINGS
+        .get()
+        .map_or_else(NotifyConfig::default, |(c, _)| c.clone())
+}
+
+fn queueing() -> bool {
+    SETTINGS.get().is_none_or(|(c, hub)| c.enabled && *hub)
+}
+
+/// The places a notification links to, on the hub (see [`NotifyConfig`]).
 pub mod paths {
+    use super::settings;
+
     pub fn change(repo: &str, change_hex: &str) -> String {
-        format!("/{repo}/changes/{change_hex}")
+        let c = settings();
+        c.render(&c.change_path, repo, change_hex, "")
     }
 
     pub fn run(repo: &str, run: u64) -> String {
-        format!("/{repo}/agents/runs/{run}")
+        let c = settings();
+        c.render(&c.run_path, repo, "", &run.to_string())
     }
 
     pub fn queue(repo: &str) -> String {
-        format!("/{repo}/merge-queue")
+        let c = settings();
+        c.render(&c.queue_path, repo, "", "")
     }
 
     pub fn policy(repo: &str) -> String {
-        format!("/{repo}/settings/policy")
+        let c = settings();
+        c.render(&c.policy_path, repo, "", "")
     }
 }
 
@@ -267,7 +379,7 @@ pub async fn emit(pool: &AnyPool, repo: &str, ev: Event) {
 
 /// [`emit`] with the error returned: how many rows were written.
 pub async fn record(pool: &AnyPool, repo: &str, ev: Event) -> Result<usize, sqlx::Error> {
-    if !hub_repo(repo) {
+    if !queueing() || !hub_repo(repo) {
         return Ok(0);
     }
     let Some(c) = clean(ev) else {

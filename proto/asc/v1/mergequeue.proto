@@ -74,6 +74,7 @@ message QueueEntry {
   int64 landed_at = 12;
   string removed_reason = 13;
   QueueEntryTiming timing = 14;
+  uint64 queued_by_id = 15;              // the hub's immutable id of the person who queued it; 0 when the caller had none (`enqueued_by` can be renamed)
 }
 
 // `target` empty means the repository default branch. `now` asks to land at once when the entry is first and ready.

@@ -346,6 +346,27 @@ async fn a_permission_is_allowed_once_or_denied_and_the_model_hears_which() {
         "{results:?}"
     );
     assert!(results[1].contains("granted once"), "{results:?}");
+    // The starter was told of both questions and of the end, each once.
+    until("the notices", || async {
+        crate::notify::tests::notes(&w.hub.core.pool).await.len() >= 3
+    })
+    .await;
+    let notes = crate::notify::tests::notes(&w.hub.core.pool).await;
+    let kinds: Vec<&str> = notes.iter().map(|n| n.0.as_str()).collect();
+    assert_eq!(
+        kinds,
+        ["agent_question", "agent_question", "agent_finished"],
+        "{notes:?}"
+    );
+    assert!(notes.iter().all(|n| n.1 == ["alice"]), "{notes:?}");
+    assert!(
+        notes[0].2.contains("delete the build cache"),
+        "{}",
+        notes[0].2
+    );
+    assert_eq!(notes[0].3, "it is stale");
+    assert_eq!(notes[0].4, format!("/acme/app/agents/runs/{}", run.id));
+    assert!(notes[2].2.contains("finished"), "{}", notes[2].2);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1034,4 +1055,147 @@ async fn an_unreadable_control_state_stops_the_run_and_a_budget_that_cannot_be_r
         w.hub.monthly_exceeded("acme/app", "fixer").await,
         "an unreadable cap is a reached cap"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_run_for_a_change_names_a_change_of_this_repository_to_babysit_its_checks() {
+    let w = World::new().await;
+    w.key(alice(), "mine").await;
+    w.script(vec![done("watching")]);
+    let start = |change: Vec<u8>| {
+        w.start_run_with(
+            "alice-token",
+            wire::CreateAgentRunRequest {
+                repo: repo_ref(),
+                agent: "fixer".into(),
+                task: "watch the checks of this change and fix what fails".into(),
+                for_change: change.into(),
+                ..Default::default()
+            },
+        )
+    };
+    // Not 16 bytes, and a change nobody published here: refused before anything is queued.
+    assert_eq!(
+        start(vec![1; 5]).await.unwrap_err().code(),
+        tonic::Code::InvalidArgument
+    );
+    assert_eq!(
+        start(vec![7; 16]).await.unwrap_err().code(),
+        tonic::Code::NotFound
+    );
+    // A change of another repository is as unknown as a made-up one.
+    let ns = crate::notify::ns_of(&w.hub.core.pool, "acme/app")
+        .await
+        .unwrap()
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO change_versions (ns, change, v, cs, parent_change, at, actor, op_id) \
+         VALUES ($1, $2, 1, $3, NULL, 1, '42:alice', $4)",
+    )
+    .bind(vec![9u8; 4])
+    .bind(vec![7u8; 16])
+    .bind(vec![3u8; 32])
+    .bind(vec![1u8])
+    .execute(&w.hub.core.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        start(vec![7; 16]).await.unwrap_err().code(),
+        tonic::Code::NotFound
+    );
+    sqlx::query("UPDATE change_versions SET ns = $1")
+        .bind(ns)
+        .execute(&w.hub.core.pool)
+        .await
+        .unwrap();
+    let run = start(vec![7; 16]).await.unwrap();
+    assert_eq!(run.for_change.as_ref(), &[7u8; 16]);
+    // The run holds the hub's id of the person who made it (alice is user 7 here), beside the name.
+    assert_eq!(run.created_by_id, 7);
+    assert_eq!(w.wait(run.id).await.state, RunState::Succeeded);
+}
+
+struct Hub(std::sync::Mutex<Result<Option<crate::profile::Profile>, String>>);
+
+#[async_trait::async_trait]
+impl crate::profile::ProfileSource for Hub {
+    async fn profile(&self, login: &str) -> Result<Option<crate::profile::Profile>, String> {
+        let _ = login;
+        self.0.lock().unwrap().clone()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agent_gets_the_profile_of_a_person_only_when_the_hub_says_the_person_allows_it() {
+    use sqlx::Row;
+    let w = World::new().await;
+    let ask = |who: &'static str, login: &'static str| {
+        let r = w.request(
+            wire::GetAgentPersonRequest {
+                repo: repo_ref(),
+                login: login.into(),
+            },
+            who,
+            None,
+        );
+        let svc = w.svc.clone();
+        async move { svc.get_person(r).await.map(tonic::Response::into_inner) }
+    };
+    // No hub is set: everything is refused, for anyone who may read.
+    let none = ask("carol-token", "maya").await.unwrap();
+    assert!(!none.allowed && none.full_name.is_empty());
+    let hub = std::sync::Arc::new(Hub(std::sync::Mutex::new(Ok(Some(
+        crate::profile::Profile {
+            login: "maya".into(),
+            full_name: "Maya Okafor".into(),
+            location: "Lagos".into(),
+            ..Default::default()
+        },
+    )))));
+    assert!(
+        w.hub
+            .set_profiles(std::sync::Arc::new(crate::profile::AgentProfiles::new(
+                Some(hub.clone())
+            )))
+    );
+    // A reader gets what the hub allows (and nothing else: no email, no avatar exist in the answer).
+    let got = ask("carol-token", "maya").await.unwrap();
+    assert_eq!(
+        (got.allowed, got.full_name.as_str(), got.location.as_str()),
+        (true, "Maya Okafor", "Lagos")
+    );
+    // The person switched it off: nothing, in the same shape as a person who does not exist.
+    *hub.0.lock().unwrap() = Ok(None);
+    let other = ask("carol-token", "nobody").await.unwrap();
+    assert!(!other.allowed && other.login.is_empty() && other.full_name.is_empty());
+    // The hub cannot be asked: refused, never guessed.
+    *hub.0.lock().unwrap() = Err("unreachable".into());
+    assert!(!ask("carol-token", "someone").await.unwrap().allowed);
+    // Who may ask, and what is a login.
+    assert_eq!(
+        ask("no-such-token", "maya").await.unwrap_err().code(),
+        Code::Unauthenticated
+    );
+    assert_eq!(
+        ask("carol-token", "").await.unwrap_err().code(),
+        Code::InvalidArgument
+    );
+    assert!(!ask("carol-token", "a b").await.unwrap().allowed);
+    // Every ask is audited with the answer, and the value is not in the log.
+    let rows = sqlx::query(
+        "SELECT target FROM audit_events WHERE action = 'agent.profile.read' ORDER BY seq",
+    )
+    .fetch_all(&w.pool)
+    .await
+    .unwrap();
+    assert!(rows.len() >= 5, "{}", rows.len());
+    let all: String = sqlx::query_scalar("SELECT details_json FROM audit_events WHERE action = 'agent.profile.read' ORDER BY seq DESC LIMIT 1")
+        .fetch_one(&w.pool)
+        .await
+        .unwrap_or_default();
+    assert!(
+        !all.contains("Maya Okafor") && !all.contains("Lagos"),
+        "{all}"
+    );
+    let _ = rows[0].get::<String, _>("target");
 }

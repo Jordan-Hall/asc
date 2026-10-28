@@ -315,7 +315,7 @@ impl Reviews {
         versions: &[versions::Version],
     ) -> Result<Vec<wire::ApprovalInfo>, Status> {
         let rows = sqlx::query(
-            "SELECT reviewer, version, state, at FROM review_approvals WHERE ns = $1 AND change = $2 \
+            "SELECT reviewer, reviewer_id, version, state, at FROM review_approvals WHERE ns = $1 AND change = $2 \
              ORDER BY at, reviewer",
         )
         .bind(entry.ns.as_bytes().to_vec())
@@ -337,6 +337,8 @@ impl Reviews {
                 version: v,
                 state: i32::try_from(state).unwrap_or(0),
                 at: r.try_get("at").map_err(sql)?,
+                reviewer_id: u64::try_from(r.try_get::<i64, _>("reviewer_id").map_err(sql)?)
+                    .unwrap_or(0),
                 ..Default::default()
             };
             let live = state != wire::ApprovalState::Dismissed as i64
@@ -700,7 +702,7 @@ impl Reviews {
             .await
             .map_err(sql)?;
         sqlx::query(
-            "INSERT INTO review_approvals (ns, change, reviewer, version, state, at) VALUES ($1, $2, $3, $4, $5, $6)",
+            "INSERT INTO review_approvals (ns, change, reviewer, version, state, at, reviewer_id) VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
         .bind(ns.as_bytes().to_vec())
         .bind(change.as_bytes().to_vec())
@@ -708,6 +710,7 @@ impl Reviews {
         .bind(i64::from(version))
         .bind(state as i64)
         .bind(at)
+        .bind(super::user_id_col(&ctx.principal.id))
         .execute(&mut *tx)
         .await
         .map_err(sql)?;
