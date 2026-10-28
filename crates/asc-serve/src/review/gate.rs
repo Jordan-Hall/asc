@@ -260,7 +260,7 @@ impl Reviews {
                 .detail("reason", reason),
         )
         .await;
-        Ok(wire::GrantOverrideResponse { override_: Some(self.override_row(&entry, id).await?) })
+        Ok(wire::GrantOverrideResponse { r#override: Some(self.override_row(&entry, id).await?) })
     }
 
     async fn override_row(&self, entry: &crate::registry::RepoEntry, id: i64) -> Result<wire::GateOverride, Status> {
@@ -289,7 +289,7 @@ impl Reviews {
             .await
             .map_err(sql)?;
         super::acting::record(self.registry.pool(), super::acting::event(ctx, "review.override.revoked", &id.to_string())).await;
-        Ok(wire::RevokeOverrideResponse { override_: Some(self.override_row(&entry, id).await?) })
+        Ok(wire::RevokeOverrideResponse { r#override: Some(self.override_row(&entry, id).await?) })
     }
 
     /// `Review.ListOverrides`.

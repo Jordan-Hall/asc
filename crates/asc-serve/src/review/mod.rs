@@ -13,6 +13,7 @@
 
 pub mod acting;
 pub mod brief;
+pub mod gate;
 pub mod rpc;
 pub mod store;
 
@@ -22,6 +23,8 @@ pub(crate) mod tests;
 mod tests_acting;
 #[cfg(test)]
 mod tests_brief;
+#[cfg(test)]
+mod tests_gate;
 
 use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
