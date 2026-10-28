@@ -135,11 +135,9 @@ fn bad_input_stores_nothing() {
     let sb = Sandbox::new();
     let log = install_helper(&sb);
     for (args, stdin) in [
-        (
-            vec!["login", "--host", "https://h.example.com"],
-            Some(TOKEN),
-        ),
+        // No host: nothing to sign in to (without a method the browser flow would start).
         (vec!["login", "--token-stdin"], Some(TOKEN)),
+        (vec!["login"], None),
         (
             vec!["login", "--host", "https://h.example.com", "--token-stdin"],
             Some("\n"),
@@ -172,5 +170,77 @@ fn bad_input_stores_nothing() {
         assert!(!out.status.success(), "{args:?}");
         never_leaks(&out);
     }
+    assert_eq!(calls(&log), "");
+}
+
+/// A loopback hub that answers the device flow: the code, one "pending", then the token.
+fn device_hub(token: &'static str) -> (String, std::thread::JoinHandle<Vec<String>>) {
+    use std::io::Read;
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", l.local_addr().unwrap());
+    let b2 = base.clone();
+    let h = std::thread::spawn(move || {
+        let mut paths = Vec::new();
+        let script = [
+            (200, format!("{{\"device_code\":\"dc9\",\"user_code\":\"WXYZ-1234\",\"verification_uri\":\"{b2}/login/device\",\"verification_uri_complete\":\"{b2}/login/device?user_code=WXYZ-1234\",\"expires_in\":600,\"interval\":1}}")),
+            (400, "{\"error\":\"authorization_pending\"}".to_owned()),
+            (200, format!("{{\"access_token\":\"{token}\",\"token_type\":\"bearer\"}}")),
+        ];
+        for (status, body) in script {
+            let (mut c, _) = l.accept().unwrap();
+            let mut buf = vec![0u8; 8192];
+            let mut n = 0;
+            while !String::from_utf8_lossy(&buf[..n]).contains("
+
+") {
+                let r = c.read(&mut buf[n..]).unwrap();
+                if r == 0 {
+                    break;
+                }
+                n += r;
+            }
+            let head = String::from_utf8_lossy(&buf[..n]).into_owned();
+            paths.push(head.split_whitespace().nth(1).unwrap_or("").to_owned());
+            let resp = format!("HTTP/1.1 {status} X
+content-type: application/json
+content-length: {}
+connection: close
+
+{body}", body.len());
+            let _ = c.write_all(resp.as_bytes());
+        }
+        paths
+    });
+    (base, h)
+}
+
+#[test]
+fn login_without_a_method_signs_in_through_the_browser_flow_and_stores_the_token() {
+    let sb = Sandbox::new();
+    let log = install_helper(&sb);
+    let (hub, served) = device_hub(TOKEN);
+    let out = asc(&sb, &["login", "--host", &hub], None, true);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    never_leaks(&out);
+    let err = text(&out.stderr);
+    assert!(err.contains(&format!("{hub}/login/device?user_code=WXYZ-1234")), "{err}");
+    assert!(err.contains("WXYZ-1234"), "{err}");
+    assert_eq!(served.join().unwrap(), ["/login/device/code", "/login/device/token", "/login/device/token"]);
+    let log = calls(&log);
+    assert!(log.contains("== store"), "{log}");
+    assert!(log.contains(&format!("password={TOKEN}
+")), "{log}");
+    assert!(log.contains("username=asc
+"), "{log}");
+}
+
+#[test]
+fn the_login_methods_exclude_each_other() {
+    let sb = Sandbox::new();
+    let log = install_helper(&sb);
+    let out = asc(&sb, &["login", "--host", "https://hub.example.com", "--device", "--token-stdin"], Some(TOKEN), false);
+    assert!(!out.status.success());
+    let out = asc(&sb, &["login", "--host", "https://hub.example.com", "--prompt", "--device"], None, false);
+    assert!(!out.status.success());
     assert_eq!(calls(&log), "");
 }

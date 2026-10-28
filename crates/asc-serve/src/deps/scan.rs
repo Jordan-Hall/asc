@@ -55,6 +55,11 @@ pub struct Snapshot {
     pub deps: Vec<Dep>,
     /// The walk or the budget stopped before every file was read.
     pub truncated: bool,
+    /// The npm packages the JavaScript, TypeScript, TSX and TSRX sources import (see [`super::imports`]),
+    /// when npm was asked for.
+    pub imported: std::collections::BTreeSet<String>,
+    /// Source files read for [`Snapshot::imported`].
+    pub sources_scanned: usize,
 }
 
 /// Whether a directory called `name`, beside `siblings` (file names), is skipped.
@@ -87,6 +92,8 @@ pub async fn read(
 ) -> Result<Snapshot, Status> {
     let mut truncated = false;
     let mut candidates: Vec<Candidate> = Vec::new();
+    let mut sources: Vec<Candidate> = Vec::new();
+    let want_imports = ecosystems.is_empty() || ecosystems.contains(&Ecosystem::Npm);
     let mut stack: Vec<(String, TreeId, usize)> = vec![(String::new(), root, 0)];
     let mut visited = 0usize;
     'walk: while let Some((prefix, tree, depth)) = stack.pop() {
@@ -124,6 +131,18 @@ pub async fn read(
                 }
                 Kind::File | Kind::Exec => {
                     let Some(format) = Format::of(&name) else {
+                        if want_imports
+                            && sources.len() < super::imports::MAX_SOURCES
+                            && e.size <= super::imports::MAX_SOURCE_BYTES
+                            && super::imports::is_source(&name)
+                        {
+                            sources.push(Candidate {
+                                path,
+                                format: Format::PackageJson,
+                                file: FileId::from_bytes(e.id),
+                                size: e.size,
+                            });
+                        }
                         continue;
                     };
                     if !ecosystems.is_empty() && !ecosystems.contains(&format.ecosystem()) {
@@ -209,12 +228,36 @@ pub async fn read(
     for f in &mut files {
         f.direct = direct.get(f.path.as_str()).copied().unwrap_or(0);
     }
+    // The sources: which packages they import. A file that cannot be read is skipped, and the byte
+    // budget of the sources is its own so a large repository cannot starve the manifests.
+    let mut imported = std::collections::BTreeSet::new();
+    let mut sources_scanned = 0usize;
+    let mut source_budget = cfg.max_manifest_bytes.0.max(8 << 20);
+    sources.sort_by(|a, b| a.path.cmp(&b.path));
+    for c in sources {
+        if c.size > source_budget {
+            truncated = true;
+            break;
+        }
+        source_budget -= c.size;
+        let Ok(bytes) = engine.read_file(c.file, c.size).await else {
+            continue;
+        };
+        let path = c.path.clone();
+        let found = tokio::task::spawn_blocking(move || super::imports::package_imports(&path, &bytes))
+            .await
+            .map_err(|e| internal("deps: imports", &e))?;
+        sources_scanned += 1;
+        imported.extend(found);
+    }
     Ok(Snapshot {
         rev,
         files,
         texts,
         deps,
         truncated,
+        imported,
+        sources_scanned,
     })
 }
 

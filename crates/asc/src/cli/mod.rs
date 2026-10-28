@@ -33,6 +33,7 @@ pub mod api;
 pub mod apply;
 pub mod archive;
 pub mod auth;
+pub mod auth_device;
 pub mod bisect;
 pub mod blame;
 pub mod branch;

@@ -46,7 +46,7 @@ pub const NATIVE: &[NativeSpec] = &[NativeSpec {
 }];
 
 super::verb!(SHARE, "share");
-/// `asc stack share` is the same command as `asc share` (SPEC 20.7 lists the stack verbs under both spellings).
+// `asc stack share` is the same command as `asc share` (SPEC 20.7 lists the stack verbs under both spellings).
 super::info::sub!(STACK_SHARE, "share", Args, run);
 
 #[derive(Serialize)]

@@ -25,6 +25,7 @@ pub mod cvss;
 pub mod egress;
 pub mod facts;
 pub mod gate;
+pub mod imports;
 pub mod hub;
 pub mod latest;
 pub mod latest_facts;

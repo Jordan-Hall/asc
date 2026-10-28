@@ -2,11 +2,14 @@
 //! for a URL, and never the secret. It is read-only: it resolves under `Prompt::Never` and
 //! tells no helper `approve` or `reject`.
 //!
-//! `asc auth login --host <url> (--token-stdin | --prompt)` stores a token with the git
+//! `asc auth login --host <url> [--device | --token-stdin | --prompt]` stores a token with the git
 //! credential helpers (`git credential approve`), and `asc auth logout --host <url>` forgets it
 //! (`git credential reject`), as with git. The token is read from stdin, never argv. `--prompt`
 //! lets `git credential fill` ask on the terminal (hidden by git), only when stdin is a TTY.
-//! Only this CLI layer ever prompts; the libraries resolve under `Prompt::Never`.
+//! `--device` (the default when neither of the others is given) signs in through the browser: the hub
+//! gives a code and a link, the person approves it there, and the CLI stores the personal access token
+//! the hub hands back (see `auth_device`). Only this CLI layer ever prompts; the libraries resolve under
+//! `Prompt::Never`.
 
 use std::ffi::OsString;
 use std::process::ExitCode;
@@ -25,7 +28,7 @@ use crate::remote::server::{self, Resolution, cfg_get};
 use crate::remote::url::{self as remote_url, RefsMode, RemoteSpec};
 
 const USAGE: &str = "usage: asc auth status [--json] [<url>]
-       asc auth login --host <url> (--token-stdin | --prompt)
+       asc auth login --host <url> [--device | --token-stdin | --prompt]
        asc auth logout --host <url>";
 
 /// The user name the token is stored under; the server reads the password as the token.
@@ -42,7 +45,7 @@ pub struct Args {
 
 pub const NATIVE: &[NativeSpec] = &[NativeSpec {
     cmd: "auth",
-    flags: &["--json", "--host", "--token-stdin", "--prompt"],
+    flags: &["--json", "--host", "--token-stdin", "--prompt", "--device"],
     placeholders: &[],
 }];
 
@@ -197,6 +200,30 @@ fn token_request(host: &str) -> Result<CredentialRequest> {
     Ok(request)
 }
 
+/// Signs in through the hub's device flow and returns the token it hands back.
+async fn device_token(host: &str) -> Result<String> {
+    let hub = Url::parse(host).map_err(|_| CliError::Fatal("asc: --host is not a valid URL".into()))?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| CliError::Fatal(format!("asc: {e}")))?;
+    super::auth_device::login(
+        &client,
+        &hub,
+        "asc cli",
+        |g| {
+            eprintln!("To sign in, open:
+  {}
+and check that the code is {}", g.verification_uri_complete, g.user_code);
+            eprintln!("Waiting for you to approve it (the code lasts {} minutes)...", g.expires_in / 60);
+        },
+        |d| async move { tokio::time::sleep(d).await },
+    )
+    .await
+    .map_err(|e| CliError::Fatal(format!("asc: {e}")))
+}
+
 fn read_token() -> Result<String> {
     use std::io::Read;
     let mut raw = Vec::new();
@@ -220,9 +247,9 @@ fn read_token() -> Result<String> {
 }
 
 /// `login` and `logout`: `args` are the words after the verb.
-fn sign(ctx: &Ctx, login: bool, args: &[String]) -> Result<ExitCode> {
+async fn sign(ctx: &Ctx, login: bool, args: &[String]) -> Result<ExitCode> {
     use std::io::IsTerminal;
-    let (mut host, mut stdin_token, mut prompt) = (None::<String>, false, false);
+    let (mut host, mut stdin_token, mut prompt, mut device) = (None::<String>, false, false, false);
     let mut it = args.iter();
     while let Some(w) = it.next() {
         match w.as_str() {
@@ -233,6 +260,7 @@ fn sign(ctx: &Ctx, login: bool, args: &[String]) -> Result<ExitCode> {
             }
             "--token-stdin" if login => stdin_token = true,
             "--prompt" if login => prompt = true,
+            "--device" if login => device = true,
             w if w.starts_with("--host=") => {
                 if host.replace(w["--host=".len()..].to_owned()).is_some() {
                     return Err(usage());
@@ -242,9 +270,11 @@ fn sign(ctx: &Ctx, login: bool, args: &[String]) -> Result<ExitCode> {
         }
     }
     let host = host.ok_or_else(usage)?;
-    if login && stdin_token == prompt {
+    if login && usize::from(stdin_token) + usize::from(prompt) + usize::from(device) > 1 {
         return Err(usage());
     }
+    // No method named: sign in through the browser.
+    let device = login && !stdin_token && !prompt;
     let request = token_request(&host)?;
     let real = ctx
         .real_git()
@@ -263,7 +293,9 @@ fn sign(ctx: &Ctx, login: bool, args: &[String]) -> Result<ExitCode> {
         println!("signed out of {origin}");
         return Ok(ExitCode::SUCCESS);
     }
-    let cred = if stdin_token {
+    let cred = if device {
+        Credential::new(TOKEN_USER, device_token(&host).await?)
+    } else if stdin_token {
         Credential::new(TOKEN_USER, read_token()?)
     } else {
         if !std::io::stdin().is_terminal() {
@@ -294,7 +326,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         Some("status") => {}
         Some(verb @ ("login" | "logout")) => {
             let rest: Vec<String> = it.cloned().collect();
-            return sign(ctx, verb == "login", &rest);
+            return sign(ctx, verb == "login", &rest).await;
         }
         _ => return Err(usage()),
     }

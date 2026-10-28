@@ -118,7 +118,7 @@ pub const NATIVE: &[NativeSpec] = &[NativeSpec {
 }];
 
 super::verb!(SUBMIT, "submit");
-/// `asc stack submit` is the same command as `asc submit` (SPEC 20.7 lists the stack verbs under both spellings).
+// `asc stack submit` is the same command as `asc submit` (SPEC 20.7 lists the stack verbs under both spellings).
 super::info::sub!(STACK_SUBMIT, "submit", Args, run);
 
 // ------------------------------------------------------------------------------ pure parts
