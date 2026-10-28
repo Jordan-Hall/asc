@@ -20,7 +20,7 @@ pub mod store;
 #[cfg(test)]
 pub(crate) mod tests;
 #[cfg(test)]
-mod tests_acting;
+pub(crate) mod tests_acting;
 #[cfg(test)]
 mod tests_brief;
 #[cfg(test)]
@@ -71,6 +71,7 @@ pub fn features() -> Vec<String> {
         FEATURE.to_owned(),
         crate::inbox::FEATURE.to_owned(),
         crate::ci::FEATURE.to_owned(),
+        crate::queue::FEATURE.to_owned(),
     ]
 }
 

@@ -272,6 +272,12 @@ impl Reviews {
         Ok(out)
     }
 
+    /// The verdicts on a change with whether they apply to its newest version.
+    pub(crate) async fn approvals_for(&self, entry: &RepoEntry, change: ChangeId) -> Result<Vec<wire::ApprovalInfo>, Status> {
+        let vs = self.all_versions(entry, change).await?;
+        self.approvals_of(entry, change, &vs).await
+    }
+
     async fn provenance(&self, entry: &RepoEntry, ctx: &CallCtx, change: ChangeId, versions: u32) -> Result<wire::ChangeProvenance, Status> {
         let _ = entry;
         let row = sqlx::query(

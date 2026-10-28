@@ -19,6 +19,8 @@ service MergeQueue {
   rpc Revalidate(RevalidateRequest) returns (RevalidateResponse);         // repo write; may be slow
   rpc SetPaused(SetQueuePausedRequest) returns (SetQueuePausedResponse);  // maintainer; idempotent
   rpc Watch(WatchQueueRequest) returns (stream QueueEvent);               // repo read; long-lived, resumable
+  rpc Preview(PreviewEnqueueRequest) returns (PreviewEnqueueResponse);    // repo read; what an Enqueue would do, with position and ETA
+  rpc ReportEntry(ReportQueueEntryRequest) returns (ReportQueueEntryResponse);   // repo admin; the host reports landing progress; fail closed
 }
 
 enum QueueEntryState {
@@ -71,6 +73,7 @@ message QueueEntry {
   bytes landed_as = 11 [(asc.v1.json) = JSON_KIND_HEX];
   int64 landed_at = 12;
   string removed_reason = 13;
+  QueueEntryTiming timing = 14;
 }
 
 // `target` empty means the repository default branch. `now` asks to land at once when the entry is first and ready.
@@ -108,6 +111,7 @@ message ListQueueResponse {
   string next_page_token = 2;
   bool paused = 3;
   string paused_reason = 4;
+  uint32 median_land_seconds = 5;
 }
 
 message GetQueueEntryRequest {
@@ -146,4 +150,53 @@ message QueueEvent {
   QueueEntry entry = 1;
   bool paused = 2;
   bytes resume = 3 [(asc.v1.json) = JSON_KIND_HEX];
+}
+
+// ---------------------------------------------------------------------------------------------------- server, estimates, report
+//
+// The server keeps the queue in its database. Entries land in order, one stack prefix at a time, and the host that performs the
+// landing (the hub, or `asc serve` itself with no forge) reports what it does with ReportEntry. Landing is fail closed: an entry
+// moves to LANDING only from READY, and READY is reached only when Revalidate passed (every change of the entry has a current
+// approval and none has changes requested); a check that cannot be decided leaves the entry WAITING. `eta_seconds` and
+// `starts_in_seconds` come from the median landing time of the last 20 landed entries (180 seconds without history) and the position.
+// Authorisation: Enqueue, Revalidate, Get, List, Preview, Watch as documented on the service; Dequeue the owner or repo admin;
+// SetPaused and ReportEntry repo admin. A call the hub makes for a person carries that person's claim (see review.proto).
+
+message QueueEntryTiming {
+  uint32 eta_seconds = 1;                // until it has landed, 0 when landed or not queued
+  uint32 starts_in_seconds = 2;          // until it starts landing, 0 when it already has
+  string stage = 3;                      // waiting, checking, landing or done
+  uint32 progress_percent = 4;           // of the current stage, as the host reported it
+  string detail = 5;                     // "unit running on merged trunk", as the host reported it
+  uint32 median_land_seconds = 6;        // the figure the estimate used
+}
+message QueuePreview {
+  repeated bytes stack = 1 [(asc.v1.json) = JSON_KIND_CHANGE];   // the changes an Enqueue of `change` would add, bottom to top
+  repeated bytes already_queued = 2 [(asc.v1.json) = JSON_KIND_CHANGE];
+  uint32 position = 3;                   // the position the entry would take
+  QueueEntryTiming timing = 4;
+  bool paused = 5;
+  string paused_reason = 6;
+  repeated RevalidationReason would_wait_for = 7;   // what Revalidate says now
+}
+message PreviewEnqueueRequest {
+  RepoRef repo = 1;
+  bytes change = 2 [(asc.v1.json) = JSON_KIND_CHANGE];
+  string target = 3;
+}
+message PreviewEnqueueResponse {
+  QueuePreview preview = 1;
+}
+message ReportQueueEntryRequest {
+  RepoRef repo = 1;
+  uint64 id = 2;
+  QueueEntryState state = 3;             // LANDING, LANDED, BLOCKED or REMOVED
+  bytes landed_as = 4 [(asc.v1.json) = JSON_KIND_HEX];   // LANDED: the changeset that landed
+  string stage = 5;
+  uint32 progress_percent = 6;           // 0 to 100
+  string detail = 7;                     // at most 200 bytes
+}
+message ReportQueueEntryResponse {
+  QueueEntry entry = 1;
+  QueueEntryTiming timing = 2;
 }
