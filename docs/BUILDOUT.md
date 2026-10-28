@@ -491,6 +491,50 @@ A client calls it with the user's own credential.
   `asc-codeintel/src/tsrx/tests.rs`.
 - `asc stack submit|sync|restack|share` run the same commands as the top-level verbs (they answered "not supported yet").
 
+## 18. Agent control and run boards
+
+- **RPCs** (`agents.proto`): `Agents.ListRequests`, `DecideRequest`, `PauseRun`, `ListCheckpoints`, `RollbackRun`, `SetRunLimits`, `ContinueRun`,
+  `GetEstimate`, `RecentTasks`, `GetRunLog`, `ListAgents`, `GetSpend`, `SetMonthlyBudget`. `AgentRun` gains `task`, `progress` (steps done and total,
+  current step), `paused`, `pending_requests`, `continues_run`, `for_change`. `CreateAgentRun` gains `plan_first` and `for_change`, and answers
+  `lowered` (the limits asked above the policy cap and lowered to it). Migration `0571`.
+- **Permission and plan requests** (`asc-serve/src/agents/control.rs`): a command that matches `[agents.sandbox] ask_before`, or the model's
+  `request_permission` tool, opens a permission request; a run started with `plan_first` must call `propose_plan` before any other tool and the
+  plan is a request too. The run waits in `WAITING_INPUT`; `DecideRequest` allows once / denies a permission or approves / rejects a plan, with the
+  decider and a reason stored (the approvals log). Allowing is never a standing grant. A rejected plan goes back to the model with the reason.
+- **Pause and rollback.** A paused run holds at its next tool call. Every commit of a run is a checkpoint; a paused run can be rolled back to one:
+  the run's ref is forced back to the checkpoint's tip, the working copy is reset, later changes leave the run, and the rollback is audited.
+- **Who may.** Reads need repo read. Deciding, pausing, rolling back, editing limits and continuing need repo write and either that the caller
+  started the run, a policy maintainer, or repo admin. Monthly budgets need repo admin. A call made by the hub for a person carries that person's
+  forwarded claim (section 16) and is audited with the host as relay. A run of another repository is "not found".
+- **Spend.** Every model call adds to `agent_spend` (repository, UTC day, agent). `SetMonthlyBudget` caps a repository or one agent per calendar
+  month; a run that would start, or a model call that would be made, after the cap is reached is refused or ends with `BUDGET_EXCEEDED` (`monthly`).
+
+## 19. Review brief, approvals, suggestions, gate statistics and overrides
+
+- **RPCs** (`review.proto`): `Review.GetBrief`, `SetBrief`, `RecordApproval`, `CompareVersions`, `PrepareSuggestion`, `MarkSuggestionApplied`,
+  `SuggestReviewers`, `RecordGateDecision`, `GetGateStats`, `GrantOverride`, `RevokeOverride`, `ListOverrides`. Migrations `0572`, `0573`.
+- **Brief.** Intent (what, why, how, risk, where to look), size and per-file stats from `diffstat.v1`, a deterministic risk level with reasons, the
+  provenance (the agent run whose change list holds the change: task, tool calls, files read, write scope) and the data of the gate card (open
+  threads, pending and finished reviewers, approvals that apply).
+- **Approval carry-over.** The host reports each verdict (`RecordApproval`). A verdict on an older version applies to the newest one when the patch of
+  every file that version changes is identical there; otherwise the answer names the files that differ. `CompareVersions` gives changed / unchanged
+  files between two versions.
+- **Suggestions.** A comment may carry replacement text for its lines (`AddComment.suggestion`). `PrepareSuggestion` returns the file as it would be
+  (or says it is stale); the host commits it as the next version and calls `MarkSuggestionApplied`, which records the version. The apply is a normal
+  commit, so it is undone with the ordinary ref undo.
+- **Gate history.** The host reports each evaluation (`RecordGateDecision`); `GetGateStats` returns checked, passed first time, held, cleared and open,
+  the median time to clear, a count per day (zero days included) and per rule. Overrides need repo admin and a reason, are audited with the person
+  and the relay, and are chained by a SHA-256 proof.
+
+## 20. Merge queue server
+
+- `MergeQueue` is served by `asc-serve/src/queue/` (`mergequeue.v1`, migration `0574`). Entries are stack prefixes of one target and land in id order.
+  `Enqueue` needs repo write, `Dequeue` the owner or admin, `SetPaused` and `ReportEntry` admin, the reads repo read.
+- **Fail closed.** `Revalidate` makes an entry READY only when every change has a current approval and none has changes requested; what this
+  server cannot decide leaves it WAITING. `ReportEntry` moves an entry to LANDING only from READY and to LANDED only with the landed changeset.
+- **Estimates and stream.** `QueueEntry.timing` has `eta_seconds`, `starts_in_seconds`, the stage, the progress and the detail the host reported;
+  the median comes from the last 20 landings. `Watch` starts with the live entries, then streams every change from a cursor.
+
 ## Error codes
 
 All are `ErrorDetail.code` values, registered in `crates/asc-rpc/src/errors.rs` and mapped in `server.rs`; the test
@@ -591,6 +635,8 @@ Every method of the build-out services (90). A test keeps this list equal to the
 - `asc.v1.MergeQueue/Revalidate` — repo write; may be slow
 - `asc.v1.MergeQueue/SetPaused` — maintainer; idempotent
 - `asc.v1.MergeQueue/Watch` — repo read; long-lived, resumable
+- `asc.v1.MergeQueue/Preview` — repo read
+- `asc.v1.MergeQueue/ReportEntry` — repo admin; the host reports landing; fail closed
 
 **CiInsights** (`ciinsights.proto`)
 
@@ -641,6 +687,19 @@ Every method of the build-out services (90). A test keeps this list equal to the
 - `asc.v1.Agents/CancelRun` — run owner or maintainer; idempotent
 - `asc.v1.Agents/SendInput` — run owner; mutating
 - `asc.v1.Agents/WatchRun` — repo read; long-lived, resumable
+- `asc.v1.Agents/ListRequests` — repo read; paged; the approvals log
+- `asc.v1.Agents/DecideRequest` — run starter, maintainer or admin; allow once / deny / approve / reject; mutating
+- `asc.v1.Agents/PauseRun` — run starter, maintainer or admin; idempotent
+- `asc.v1.Agents/ListCheckpoints` — repo read
+- `asc.v1.Agents/RollbackRun` — run starter, maintainer or admin; the run must be paused; mutating
+- `asc.v1.Agents/SetRunLimits` — run starter, maintainer or admin; never above the policy cap
+- `asc.v1.Agents/ContinueRun` — run starter, maintainer or admin; mutating
+- `asc.v1.Agents/GetEstimate` — repo read
+- `asc.v1.Agents/RecentTasks` — repo read; own tasks, admin sees all
+- `asc.v1.Agents/GetRunLog` — repo read
+- `asc.v1.Agents/ListAgents` — repo read
+- `asc.v1.Agents/GetSpend` — repo read
+- `asc.v1.Agents/SetMonthlyBudget` — repo admin; mutating
 
 **AgentTokens** (`agents.proto`)
 
