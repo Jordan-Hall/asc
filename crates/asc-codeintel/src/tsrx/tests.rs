@@ -155,3 +155,74 @@ fn import_evidence_works_for_tsrx_modules() {
         b"src/Card.tsrx"
     ));
 }
+
+fn timed<T>(f: impl FnOnce() -> T) -> (T, std::time::Duration) {
+    let t = std::time::Instant::now();
+    let r = f();
+    (r, t.elapsed())
+}
+
+const LIMIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+#[test]
+fn a_huge_brace_less_range_is_scanned_in_one_pass() {
+    // 100k identifiers in one expression container, one pattern and one header: quadratic
+    // rescans of the range before each identifier would take minutes.
+    let ids = "a ".repeat(100_000);
+    let src = format!("function T() @{{
+  <p>{{{ids}}}</p>
+  @for (const {ids} of xs) {{ <i /> }}
+}}
+");
+    let (a, took) = timed(|| analyze(src.as_bytes()));
+    assert!(took < LIMIT, "{took:?}");
+    assert_eq!(a.masked.len(), src.len());
+    assert!(a.uses.len() <= MAX_ITEMS + 1);
+    let (a, took) = timed(|| analyze_within(src.as_bytes(), Some(std::time::Instant::now())));
+    assert!(took < LIMIT, "{took:?}");
+    assert!(a.truncated, "an expired deadline gives a partial, flagged answer");
+}
+
+#[test]
+fn unclosed_and_nested_containers_are_cut_off_and_flagged() {
+    for src in ["@{ ".repeat(50_000), "@{ <a> ".repeat(50_000), "function F() @{ <a>{".repeat(20_000)] {
+        let (a, took) = timed(|| analyze(src.as_bytes()));
+        assert!(took < LIMIT, "{took:?}");
+        assert_eq!(a.masked.len(), src.len());
+        assert!(a.truncated, "deep nesting is flagged");
+        assert!(a.containers.len() <= MAX_CONTAINERS);
+    }
+}
+
+#[test]
+fn many_question_marks_and_a_megabyte_line_stay_linear() {
+    let q = format!("function T() @{{ <p>{{{}}}</p> }}", "a ? b : c, ".repeat(100_000));
+    let (a, took) = timed(|| analyze(q.as_bytes()));
+    assert!(took < LIMIT, "{took:?}");
+    assert_eq!(a.masked.len(), q.len());
+    let line = format!("function T() @{{ {} }}", "<a>x</a>".repeat(130_000));
+    assert!(line.len() > 1_000_000 && !line.contains(char::from(10)));
+    let (a, took) = timed(|| analyze(line.as_bytes()));
+    assert!(took < LIMIT, "{took:?}");
+    assert_eq!(a.masked.len(), line.len());
+    let blank_lines = format!("function T() @{{
+  <p>{{{}}}</p>
+  const x =
+{}1;
+}}", "a, ".repeat(10), "
+".repeat(200_000));
+    let (_, took) = timed(|| analyze(blank_lines.as_bytes()));
+    assert!(took < LIMIT, "{took:?}");
+}
+
+#[test]
+fn tags_of_an_adversarial_file_return_within_the_budget() {
+    use crate::lang::Lang;
+    let src = format!("{}export function F() @{{ <p/> }}", "function f() @{ <a/> }
+".repeat(60_000));
+    let (r, took) = timed(|| crate::tags::extract(Lang::Tsrx, src.as_bytes()));
+    assert!(took < LIMIT, "{took:?}");
+    if let Ok(tags) = r {
+        assert!(tags.len() <= crate::tags::MAX_TAGS);
+    }
+}

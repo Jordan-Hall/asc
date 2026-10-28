@@ -43,22 +43,33 @@ fn cut(s: &str) -> String {
 /// Adds the TSRX tags of `a` (analysis of `src`) to `tags` and restores source order and containers.
 pub(super) fn add(tags: &mut Vec<Tag>, a: &Analysis, src: &[u8]) {
     let rows = rows_of(src);
-    // A function whose body is a `@{` container is a component.
+    // A function whose body is a `@{` container is a component. Both lists are in source order, so
+    // one sweep with a stack of the functions that have started and not yet ended finds, for each
+    // container, the innermost function around it.
+    let mut open: Vec<usize> = Vec::new();
+    let mut next = 0usize;
+    let mut found: Vec<usize> = Vec::new();
     for c in &a.containers {
-        let best = tags
-            .iter()
-            .enumerate()
-            .filter(|(_, t)| {
-                t.role == Role::Def
-                    && t.kind == Kind::Function
-                    && (t.range.start_byte as usize) <= c.start
-                    && c.end <= (t.range.end_byte as usize)
-            })
-            .min_by_key(|(_, t)| t.range.end_byte - t.range.start_byte)
-            .map(|(i, _)| i);
-        if let Some(i) = best {
-            tags[i].kind = Kind::Component;
+        while next < tags.len() && (tags[next].range.start_byte as usize) <= c.start {
+            if tags[next].role == Role::Def && tags[next].kind == Kind::Function {
+                open.push(next);
+            }
+            next += 1;
         }
+        while open.last().is_some_and(|&t| (tags[t].range.end_byte as usize) <= c.start) {
+            open.pop();
+        }
+        if let Some(&t) = open
+            .iter()
+            .rev()
+            .take(64)
+            .find(|&&t| c.end <= (tags[t].range.end_byte as usize))
+        {
+            found.push(t);
+        }
+    }
+    for t in found {
+        tags[t].kind = Kind::Component;
     }
     let room = MAX_TAGS.saturating_sub(tags.len());
     let mut extra: Vec<Tag> = Vec::new();
