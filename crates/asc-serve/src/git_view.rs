@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use asc_core::codec::decode_envelope;
 use asc_core::git::{ObjectKind, export_tag, object_oid};
-use asc_core::id::{GitOid, RefTarget, TagId};
+use asc_core::id::{ChangesetId, GitOid, RefTarget, TagId};
 use asc_core::object::TagRecord;
 use asc_core::path::RefName;
 use asc_git::compat::view::{RefSource, SourceError};
@@ -788,6 +788,49 @@ impl Effect for BridgePromoteEffect {
             "bridge promoted"
         );
         Ok(())
+    }
+}
+
+/// Puts the commits of changesets in the host's git directory under refs of their own (see
+/// [`crate::forgejo::BridgeHold`]): the same export as a promotion, for tips no shared ref names.
+pub struct PromoteHold {
+    service: Arc<GitViewService>,
+    root: PathBuf,
+}
+
+impl PromoteHold {
+    pub fn new(service: Arc<GitViewService>, root: PathBuf) -> Self {
+        Self { service, root }
+    }
+}
+
+#[async_trait]
+impl crate::forgejo::BridgeHold for PromoteHold {
+    async fn hold(
+        &self,
+        repo: &Arc<RepoEntry>,
+        items: &[(String, ChangesetId)],
+    ) -> Result<(), String> {
+        let mut plan = PromotePlan::default();
+        for (name, cs) in items {
+            let (root, git) = export_target(repo, RefTarget::Changeset(*cs))
+                .await
+                .map_err(|e| e.to_string())?;
+            plan.sets.push(PromoteSet {
+                name: name.clone(),
+                root,
+                git,
+            });
+        }
+        let (root, repo_name) = (self.root.clone(), repo.name.as_str().to_owned());
+        let dir = tokio::task::spawn_blocking(move || bridge_dir(&root, &repo_name))
+            .await
+            .map_err(|e| e.to_string())??;
+        self.service
+            .promote(repo, dir, plan)
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string())
     }
 }
 

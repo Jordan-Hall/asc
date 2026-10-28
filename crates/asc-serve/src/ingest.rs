@@ -354,6 +354,8 @@ pub struct Ingestor<'a> {
     costs: HashMap<ChangesetId, u64>,
     /// What the last successful [`Ingestor::ingest`] recorded.
     added_bytes: u64,
+    /// The principal whose staged change metas (`changes::staged`) join the closure of this ingest.
+    staged_for: Option<String>,
 }
 
 impl<'a> Ingestor<'a> {
@@ -377,7 +379,16 @@ impl<'a> Ingestor<'a> {
             budget: None,
             costs: HashMap::new(),
             added_bytes: 0,
+            staged_for: None,
         }
+    }
+
+    /// Adds to the closure the change metas `principal` uploaded for the changesets this ingest
+    /// adds (SPEC section 20.2). Without it the `m/` objects of a push are stored and never
+    /// indexed.
+    pub fn staged_for(mut self, principal: &str) -> Self {
+        self.staged_for = Some(principal.to_owned());
+        self
     }
 
     /// Records `owner`, the verified owner id of the ingesting principal, in `cs_ledger` for every
@@ -496,6 +507,12 @@ impl<'a> Ingestor<'a> {
             .collect();
         let mut closure: Vec<ObjKey> = order.iter().map(|&c| ObjKey::Changeset(c)).collect();
         closure.extend(tags.iter().map(|(t, _)| ObjKey::Tag(*t)));
+        if let Some(principal) = &self.staged_for {
+            let metas = crate::changes::staged::take(self.pool, self.entry.ns, principal, &order)
+                .await
+                .map_err(|e| IngestError::Store(e.to_string()))?;
+            closure.extend(metas.into_iter().map(ObjKey::ChangeMeta));
+        }
         let mut tx = self
             .refs
             .begin()
@@ -513,6 +530,11 @@ impl<'a> Ingestor<'a> {
         observer
             .on_ingested(&mut tx, self.entry.key, &order, &closure)
             .await?;
+        if let Some(principal) = &self.staged_for {
+            crate::changes::staged::consume(&mut tx, self.entry.ns, principal, &order)
+                .await
+                .map_err(|e| IngestError::Store(e.to_string()))?;
+        }
         tx.commit().await?;
         self.added_bytes = cost;
         Ok(order)
