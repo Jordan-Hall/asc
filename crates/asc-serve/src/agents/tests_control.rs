@@ -466,10 +466,11 @@ async fn the_boards_report_estimates_recent_tasks_logs_agents_and_spend() {
         let svc = w.svc.clone();
         async move { svc.get_spend(r).await.map(tonic::Response::into_inner) }
     };
-    let s = spend("carol-token", "").await.unwrap();
+    assert_eq!(spend("carol-token", "").await.unwrap_err().code(), Code::PermissionDenied, "money is for writers");
+    let s = spend("bob-token", "").await.unwrap();
     assert!(s.tokens > 0 && !s.days.is_empty() && s.agents[0].agent == "fixer", "{s:?}");
-    assert_eq!(spend("carol-token", "2026-13").await.unwrap_err().code(), Code::InvalidArgument);
-    assert_eq!(spend("carol-token", "2020-01").await.unwrap().tokens, 0);
+    assert_eq!(spend("bob-token", "2026-13").await.unwrap_err().code(), Code::InvalidArgument);
+    assert_eq!(spend("bob-token", "2020-01").await.unwrap().tokens, 0);
     let cap = |who: &str, agent: &str, micro: u64| {
         let r = w.request(
             wire::SetMonthlyBudgetRequest { repo: repo_ref(), agent: agent.into(), cap_micro_usd: micro },
@@ -496,10 +497,10 @@ async fn the_boards_report_estimates_recent_tasks_logs_agents_and_spend() {
         .await
         .unwrap_err();
     assert_eq!(e.code(), Code::ResourceExhausted, "{e:?}");
-    let s = spend("carol-token", "").await.unwrap();
+    let s = spend("bob-token", "").await.unwrap();
     assert_eq!(s.agents[0].monthly_cap_micro_usd, 1_000);
     cap("alice-token", "fixer", 0).await.unwrap();
-    assert_eq!(spend("carol-token", "").await.unwrap().agents[0].monthly_cap_micro_usd, 0);
+    assert_eq!(spend("bob-token", "").await.unwrap().agents[0].monthly_cap_micro_usd, 0);
 }
 
 fn claim_service(w: &World) -> (AgentService, ForwardedVerifier) {

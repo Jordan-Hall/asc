@@ -44,6 +44,17 @@ pub(crate) const LANDED: i64 = wire::QueueEntryState::Landed as i64;
 pub(crate) const BLOCKED: i64 = wire::QueueEntryState::Blocked as i64;
 pub(crate) const REMOVED: i64 = wire::QueueEntryState::Removed as i64;
 
+/// Frees the changes an entry held, so they can be queued again.
+async fn release_members(tx: &mut sqlx::AnyConnection, ns: &[u8], id: i64) -> Result<(), Status> {
+    sqlx::query("DELETE FROM queue_members WHERE ns = $1 AND entry_id = $2")
+        .bind(ns.to_vec())
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(sql)?;
+    Ok(())
+}
+
 fn live(state: i64) -> bool {
     matches!(state, WAITING | REVALIDATING | READY | LANDING)
 }
@@ -408,6 +419,31 @@ impl Reviews {
             let mut tx = self.registry.pool().begin().await?;
             self.registry.guard(&mut tx, &entry).await?;
             let id = next_id(&mut tx, "queue_entries", &ns).await?;
+            // The members first: the key refuses a change that another entry holds, even when two
+            // enqueues race (the loser retries, finds the member and is told so).
+            for c in &stack {
+                let held: Option<i64> = sqlx::query_scalar(
+                    "SELECT entry_id FROM queue_members WHERE ns = $1 AND target = $2 AND change = $3",
+                )
+                .bind(ns.clone())
+                .bind(target.clone())
+                .bind(c.as_bytes().to_vec())
+                .fetch_optional(&mut *tx)
+                .await?;
+                if held.is_some() {
+                    return Err(WriteError::Status(Status::already_exists(queue_error(
+                        "QUEUE_ENTRY_EXISTS",
+                        "a change of this stack is queued already",
+                    ))));
+                }
+                sqlx::query("INSERT INTO queue_members (ns, target, change, entry_id) VALUES ($1, $2, $3, $4)")
+                    .bind(ns.clone())
+                    .bind(target.clone())
+                    .bind(c.as_bytes().to_vec())
+                    .bind(id)
+                    .execute(&mut *tx)
+                    .await?;
+            }
             sqlx::query(
                 "INSERT INTO queue_entries (ns, id, target, change, stack_json, state, style, enqueued_by, enqueued_at, reval_json, reval_at, landed_as) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $9, $11)",
@@ -456,14 +492,19 @@ impl Reviews {
                 return Err(Status::failed_precondition("the entry is landing"));
             }
             let mut tx = self.registry.pool().begin().await.map_err(sql)?;
-            sqlx::query("UPDATE queue_entries SET state = $3, removed_reason = $4 WHERE ns = $1 AND id = $2 AND state IN (1, 2, 3)")
+            let n = sqlx::query("UPDATE queue_entries SET state = $3, removed_reason = $4 WHERE ns = $1 AND id = $2 AND state IN (1, 2, 3)")
                 .bind(ns.clone())
                 .bind(id)
                 .bind(REMOVED)
                 .bind(req.reason.clone())
                 .execute(&mut *tx)
                 .await
-                .map_err(sql)?;
+                .map_err(sql)?
+                .rows_affected();
+            if n == 0 {
+                return Err(Status::failed_precondition("the entry is landing or finished"));
+            }
+            release_members(&mut tx, &ns, id).await?;
             self.q_event(&mut tx, &ns, id).await?;
             tx.commit().await.map_err(sql)?;
             acting::record(self.registry.pool(), acting::event(ctx, "queue.dequeued", &id.to_string()).detail("reason", req.reason)).await;
@@ -478,6 +519,9 @@ impl Reviews {
         let entry = self.open(ctx).await?;
         let ns = entry.ns.as_bytes().to_vec();
         let limit = page_limit(req.limit, 50, 200);
+        if req.states.len() > 8 {
+            return Err(Status::invalid_argument("at most 8 states"));
+        }
         let mut states: Vec<i64> = Vec::new();
         for s in &req.states {
             let st = wire::QueueEntryState::try_from(*s).map_err(|_| Status::invalid_argument("unknown state"))?;
@@ -622,26 +666,68 @@ impl Reviews {
                 "an entry lands only from READY, with the landed changeset for LANDED",
             )));
         }
+        // Landing is decided again here, at the moment of landing: approvals may have changed since the
+        // entry became READY. Fail closed: an entry that no longer passes goes back and is refused.
+        if to == LANDING && row.state == READY {
+            let stack: Vec<ChangeId> = row.stack.iter().filter_map(|c| change_of(c).ok()).collect();
+            let (reasons, blocked) = self.q_reasons(ctx, &entry, &stack).await?;
+            if !reasons.is_empty() || blocked {
+                let back = if blocked { BLOCKED } else { WAITING };
+                let reval = serde_json::to_string(&(false, &reasons)).unwrap_or_default();
+                let mut tx = self.registry.pool().begin().await.map_err(sql)?;
+                sqlx::query("UPDATE queue_entries SET state = $3, reval_json = $4, reval_at = $5 WHERE ns = $1 AND id = $2 AND state = 3")
+                    .bind(ns.clone())
+                    .bind(id)
+                    .bind(back)
+                    .bind(reval)
+                    .bind(now())
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(sql)?;
+                self.q_event(&mut tx, &ns, id).await?;
+                tx.commit().await.map_err(sql)?;
+                return Err(Status::failed_precondition(queue_error(
+                    "REVALIDATION_FAILED",
+                    "the entry no longer passes its checks; it went back",
+                )));
+            }
+        }
         let at = now();
         let mut tx = self.registry.pool().begin().await.map_err(sql)?;
-        sqlx::query(
+        // Only from the states the move is allowed from, decided by the database, not by the read above.
+        let from = match to {
+            LANDING | LANDED => "3, 4",
+            _ => "1, 2, 3, 4, 6",
+        };
+        let q = format!(
             "UPDATE queue_entries SET state = $3, stage = $4, progress = $5, detail = $6, \
              started_at = CASE WHEN $3 = 4 AND started_at = 0 THEN $7 ELSE started_at END, \
              landed_at = CASE WHEN $3 = 5 THEN $7 ELSE landed_at END, landed_as = CASE WHEN $3 = 5 THEN $8 ELSE landed_as END, \
              removed_reason = CASE WHEN $3 IN (6, 7) THEN $6 ELSE removed_reason END \
-             WHERE ns = $1 AND id = $2",
-        )
-        .bind(ns.clone())
-        .bind(id)
-        .bind(to)
-        .bind(req.stage.clone())
-        .bind(i64::from(req.progress_percent))
-        .bind(req.detail.clone())
-        .bind(at)
-        .bind(req.landed_as.to_vec())
-        .execute(&mut *tx)
-        .await
-        .map_err(sql)?;
+             WHERE ns = $1 AND id = $2 AND state IN ({from})"
+        );
+        let done = sqlx::query(sqlx::AssertSqlSafe(q))
+            .bind(ns.clone())
+            .bind(id)
+            .bind(to)
+            .bind(req.stage.clone())
+            .bind(i64::from(req.progress_percent))
+            .bind(req.detail.clone())
+            .bind(at)
+            .bind(req.landed_as.to_vec())
+            .execute(&mut *tx)
+            .await
+            .map_err(sql)?
+            .rows_affected();
+        if done == 0 {
+            return Err(Status::failed_precondition(queue_error(
+                "REVALIDATION_FAILED",
+                "the entry changed while the report was made; read it again",
+            )));
+        }
+        if matches!(to, LANDED | REMOVED) {
+            release_members(&mut tx, &ns, id).await?;
+        }
         self.q_event(&mut tx, &ns, id).await?;
         tx.commit().await.map_err(sql)?;
         acting::record(
