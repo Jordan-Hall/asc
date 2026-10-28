@@ -266,6 +266,21 @@ pub const CATALOGUE: &[ActionInfo] = &[
         &["thread", "resolved"],
     ),
     a(
+        "review.brief.set",
+        "The brief of a change (what, why, how, where to look) was written.",
+        &[],
+    ),
+    a(
+        "review.approval.recorded",
+        "A verdict on a version of a change was recorded.",
+        &["version", "state"],
+    ),
+    a(
+        "review.suggestion.applied",
+        "A suggested change of a review comment was applied as a new version.",
+        &["thread", "comment", "version"],
+    ),
+    a(
         "review.requested",
         "A review was requested from, or withdrawn from, people.",
         &["add", "remove"],

@@ -104,6 +104,7 @@ fn add(body: &str, external: &str, thread: u64) -> wire::AddCommentRequest {
         }),
         body: body.into(),
         external_id: external.into(),
+        ..Default::default()
     }
 }
 

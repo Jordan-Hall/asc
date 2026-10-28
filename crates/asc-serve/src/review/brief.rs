@@ -531,7 +531,9 @@ impl Reviews {
         .await
         .map_err(sql)?;
         if state != wire::ApprovalState::Dismissed {
-            store::finish_request(&mut tx, ns, change, reviewer, at).await?;
+            store::finish_request(&mut tx, ns, change, reviewer, at)
+                .await
+                .map_err(sql)?;
         }
         tx.commit().await.map_err(sql)?;
         super::acting::record(

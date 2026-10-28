@@ -12,6 +12,7 @@
 //! ([`retry_conflict`]).
 
 pub mod acting;
+pub mod brief;
 pub mod rpc;
 pub mod store;
 
@@ -19,6 +20,8 @@ pub mod store;
 pub(crate) mod tests;
 #[cfg(test)]
 mod tests_acting;
+#[cfg(test)]
+mod tests_brief;
 
 use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};

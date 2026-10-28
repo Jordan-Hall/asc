@@ -16,6 +16,13 @@ service Review {
   rpc AddComment(AddCommentRequest) returns (AddCommentResponse);          // mutating, x-asc-op-id
   rpc ResolveThread(ResolveThreadRequest) returns (ResolveThreadResponse); // idempotent, no x-asc-op-id
   rpc RequestReview(RequestReviewRequest) returns (RequestReviewResponse); // idempotent; feeds the inbox
+  rpc GetBrief(GetBriefRequest) returns (GetBriefResponse);                       // repo read; brief, size, risk, provenance, approvals, gate data
+  rpc SetBrief(SetBriefRequest) returns (SetBriefResponse);                       // the author or repo write; idempotent
+  rpc RecordApproval(RecordApprovalRequest) returns (RecordApprovalResponse);     // repo write; the host reports the verdict of a person; idempotent
+  rpc CompareVersions(CompareVersionsRequest) returns (CompareVersionsResponse);  // repo read; files changed or unchanged between two versions
+  rpc PrepareSuggestion(PrepareSuggestionRequest) returns (PrepareSuggestionResponse);   // repo write; the file with the suggestion applied
+  rpc MarkSuggestionApplied(MarkSuggestionAppliedRequest) returns (MarkSuggestionAppliedResponse);   // repo write; records the version that applied it
+  rpc SuggestReviewers(SuggestReviewersRequest) returns (SuggestReviewersResponse);      // repo read
 }
 
 enum ThreadStatus {
@@ -46,6 +53,9 @@ message ReviewComment {
   string body = 3;
   int64 created = 4;
   string external_id = 5;   // the host's own id of the comment, when it mirrored it here; empty otherwise
+  string suggestion = 6;    // replacement text for the lines of the thread; empty when the comment suggests nothing
+  uint32 applied_version = 7;   // the version that applied the suggestion, 0 while it is not applied
+  string applied_by = 8;
 }
 
 message ReviewThread {
@@ -89,6 +99,9 @@ message AddCommentRequest {
   // id is stored once: the second call answers with the stored comment and thread and changes nothing. The id is
   // unique per repository, so it cannot name a comment of another change.
   string external_id = 6;
+  // Replacement text for the lines of the thread (at most 64 KiB; the thread must be on lines). Applying it is PrepareSuggestion and
+  // MarkSuggestionApplied.
+  string suggestion = 7;
 }
 message AddCommentResponse {
   ReviewThread thread = 1;
@@ -121,4 +134,191 @@ message ReviewRequestInfo {
 }
 message RequestReviewResponse {
   repeated ReviewRequestInfo requests = 1;
+}
+
+// ---------------------------------------------------------------------------------------------------- brief, approvals, suggestions
+//
+// Authorisation of the calls below, as everywhere in this file: reads need repo read, writes need repo write (SetBrief: the author
+// of the change or a writer; RecordApproval: the claim names the reviewer, who needs repo write to approve). A change of another
+// repository is NOT_FOUND. All of them are additive.
+
+message WhereToLook {
+  bytes path = 1 [(asc.v1.json) = JSON_KIND_PATH];
+  uint32 line = 2;                       // 1-based; 0 for the file as a whole
+  string note = 3;
+}
+// The block the author writes: what changed, why, how, what could go wrong and where to look first.
+message ReviewBrief {
+  string what = 1;
+  string why = 2;
+  string how = 3;
+  string risk_note = 4;
+  repeated WhereToLook where_to_look = 5;
+  string updated_by = 6;
+  int64 updated = 7;
+}
+message ChangeFileStat {
+  bytes path = 1 [(asc.v1.json) = JSON_KIND_PATH];
+  uint32 added = 2;
+  uint32 removed = 3;
+  bool binary = 4;
+}
+enum RiskLevel {
+  RISK_LEVEL_UNSPECIFIED = 0;
+  RISK_LEVEL_LOW = 1;
+  RISK_LEVEL_MEDIUM = 2;
+  RISK_LEVEL_HIGH = 3;
+}
+// The classifier is deterministic and path and size based; `reasons` says why, in words a reviewer can read.
+message ChangeRisk {
+  RiskLevel level = 1;
+  repeated string reasons = 2;
+}
+// Where a change came from when an agent run made it ("How it was made").
+message ChangeProvenance {
+  uint64 run_id = 1;                     // 0 when no run made the change
+  string agent = 2;
+  string title = 3;
+  string task = 4;
+  string created_by = 5;
+  string run_state = 6;
+  uint32 tool_calls = 7;
+  uint32 files_read = 8;
+  uint32 versions = 9;                   // versions of this change
+  repeated string paths = 10;            // the write scope of the run
+  int64 started = 11;
+  int64 finished = 12;
+}
+enum ApprovalState {
+  APPROVAL_STATE_UNSPECIFIED = 0;
+  APPROVAL_STATE_APPROVED = 1;
+  APPROVAL_STATE_CHANGES_REQUESTED = 2;
+  APPROVAL_STATE_DISMISSED = 3;
+}
+// One person's verdict on one version, and whether it still applies to the newest one: it does when the patch of every file the
+// version changes is identical in the newest version (`carried`); otherwise `changed_files` names the files that differ.
+message ApprovalInfo {
+  string reviewer = 1;
+  uint32 version = 2;
+  ApprovalState state = 3;
+  int64 at = 4;
+  bool applies = 5;                      // still counts for the newest version
+  bool carried = 6;                      // applies although the version is not the newest
+  uint32 unchanged_files = 7;
+  repeated bytes changed_files = 8 [(asc.v1.json) = JSON_KIND_PATH];
+}
+// What the policy gate card of the review page shows, as far as asc knows it. Checks and the rules of the policy are evaluated by
+// Policy.Evaluate and Ci.ListRuns.
+message ReviewGateData {
+  uint32 open_threads = 1;
+  uint32 total_threads = 2;
+  uint32 pending_reviewers = 3;
+  uint32 finished_reviewers = 4;
+  uint32 approvals_current = 5;          // approvals that apply to the newest version, carried ones included
+  uint32 approvals_carried = 6;
+  uint32 changes_requested = 7;
+}
+message GetBriefRequest {
+  RepoRef repo = 1;
+  bytes change = 2 [(asc.v1.json) = JSON_KIND_CHANGE];
+}
+message GetBriefResponse {
+  ReviewBrief brief = 1;                 // empty fields when the author wrote none
+  uint32 latest_version = 2;
+  uint32 files = 3;
+  uint32 added = 4;
+  uint32 removed = 5;
+  repeated ChangeFileStat file_stats = 6;   // at most 500
+  bool stats_truncated = 7;
+  ChangeRisk risk = 8;
+  ChangeProvenance provenance = 9;
+  repeated ApprovalInfo approvals = 10;
+  ReviewGateData gate = 11;
+}
+// Replaces the brief. Each text is at most 8 KiB, at most 20 pointers. The author of the change (the actor of its first version) or
+// anyone with repo write may write it.
+message SetBriefRequest {
+  RepoRef repo = 1;
+  bytes change = 2 [(asc.v1.json) = JSON_KIND_CHANGE];
+  ReviewBrief brief = 3;
+}
+message SetBriefResponse {
+  ReviewBrief brief = 1;
+}
+// The host (the hub) reports the verdict of a person on a version. The reviewer is the person of the claim; a person with only
+// repo read cannot approve. A second verdict of the same person on the same version replaces the first. `version` 0 means the newest.
+message RecordApprovalRequest {
+  RepoRef repo = 1;
+  bytes change = 2 [(asc.v1.json) = JSON_KIND_CHANGE];
+  uint32 version = 3;
+  ApprovalState state = 4;
+}
+message RecordApprovalResponse {
+  repeated ApprovalInfo approvals = 1;
+}
+message CompareVersionsRequest {
+  RepoRef repo = 1;
+  bytes change = 2 [(asc.v1.json) = JSON_KIND_CHANGE];
+  uint32 from_version = 3;
+  uint32 to_version = 4;                 // 0 means the newest
+}
+message VersionFile {
+  bytes path = 1 [(asc.v1.json) = JSON_KIND_PATH];
+  string state = 2;                      // changed, unchanged, added or removed (relative to `from_version`)
+  uint32 added = 3;                      // lines added in `to_version`
+  uint32 removed = 4;
+}
+message CompareVersionsResponse {
+  repeated VersionFile files = 1;        // at most 2000
+  uint32 changed = 2;
+  uint32 unchanged = 3;
+  uint32 added = 4;                      // lines added across the changed files
+  uint32 removed = 5;
+  repeated ApprovalInfo approvals = 6;   // the verdicts on `from_version` and whether they apply to `to_version`
+  bool truncated = 7;
+}
+message PrepareSuggestionRequest {
+  RepoRef repo = 1;
+  bytes change = 2 [(asc.v1.json) = JSON_KIND_CHANGE];
+  uint64 thread_id = 3;
+  uint64 comment_id = 4;
+}
+// The file as it would be with the suggestion applied. The host commits it as the next version of the change, then calls
+// MarkSuggestionApplied. `stale` is true when the suggestion no longer fits (the thread is on an older version, the file or the lines
+// are gone); `new_content` is empty then and `reason` says why.
+message PrepareSuggestionResponse {
+  bytes path = 1 [(asc.v1.json) = JSON_KIND_PATH];
+  uint32 version = 2;
+  uint32 latest_version = 3;
+  bytes base_changeset = 4 [(asc.v1.json) = JSON_KIND_HEX];
+  bytes new_content = 5;
+  uint32 start_line = 6;
+  uint32 end_line = 7;
+  bool stale = 8;
+  string reason = 9;
+}
+message MarkSuggestionAppliedRequest {
+  RepoRef repo = 1;
+  bytes change = 2 [(asc.v1.json) = JSON_KIND_CHANGE];
+  uint64 thread_id = 3;
+  uint64 comment_id = 4;
+  uint32 version = 5;                    // the version the apply made; later than the one the thread is on, at most the newest
+}
+message MarkSuggestionAppliedResponse {
+  ReviewThread thread = 1;
+}
+message SuggestReviewersRequest {
+  RepoRef repo = 1;
+  bytes change = 2 [(asc.v1.json) = JSON_KIND_CHANGE];
+  uint32 limit = 3;                      // 0 means 5, at most 20
+}
+message SuggestedReviewer {
+  string handle = 1;
+  bool is_agent = 2;
+  uint32 reviews = 3;                    // finished reviews in this repository
+  uint32 on_same_files = 4;              // threads they opened on the files this change touches
+  string reason = 5;
+}
+message SuggestReviewersResponse {
+  repeated SuggestedReviewer reviewers = 1;
 }
