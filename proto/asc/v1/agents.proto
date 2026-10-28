@@ -469,7 +469,7 @@ message GetAgentRunLogRequest {
   uint64 id = 2;
 }
 message GetAgentRunLogResponse {
-  bytes jsonl = 1;                       // one JSON object per line: events, requests and rollbacks, in time order; at most 4 MiB
+  bytes jsonl = 1 [(asc.v1.json) = JSON_KIND_TEXT];                       // one JSON object per line: events, requests and rollbacks, in time order; at most 4 MiB
   bool truncated = 2;
   int64 retained_until = 3;              // when the events are pruned (retention window)
 }

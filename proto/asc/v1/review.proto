@@ -296,7 +296,7 @@ message PrepareSuggestionResponse {
   uint32 version = 2;
   uint32 latest_version = 3;
   bytes base_changeset = 4 [(asc.v1.json) = JSON_KIND_HEX];
-  bytes new_content = 5;
+  bytes new_content = 5 [(asc.v1.json) = JSON_KIND_DATA];
   uint32 start_line = 6;
   uint32 end_line = 7;
   bool stale = 8;
