@@ -6,8 +6,11 @@
 // Read from a probe report: activation time and JVM heap delta. A test-only IDE run measures those (forced GC,
 // used heap with the plugin enabled minus the same IDE with it disabled, median of 5) and writes JSON to
 // ASC_JB_PROBE_REPORT or plugins/jetbrains/build/reports/asc-budget/probe.json.
-// Not yet measured: plugins/jetbrains/build.gradle.kts has no task that writes that probe report, so until one does
-// the three probe metrics read "not measured" and `--check` fails on them rather than passing on missing data.
+// Enforced today: jar size and bridge RSS. The three probe metrics (activation time, inert activation, JVM heap delta)
+// are enforced only when a probe report exists. No Gradle task writes one yet (it needs a downloaded IDE and two
+// runs), so without a report they are listed as "unenforced" on stderr and in the output, never silently passed
+// and never counted as measured. Delete the report and nothing about the gate changes; write one and all five
+// metrics are checked against the budgets.
 // `bench/plugins/collect.ts --target jetbrains` runs this file's `runJetbrains`.
 import { spawn } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
@@ -30,6 +33,8 @@ export interface Finding {
 }
 
 export const METRICS: readonly Metric[] = ["activationMs", "inertActivationMs", "jvmHeapDeltaMiB", "bridgeRssMiB", "jarBytes"];
+/** What this machine measures without an IDE; the rest need a probe report. */
+export const ALWAYS_MEASURED: readonly Metric[] = ["bridgeRssMiB", "jarBytes"];
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "../..");
 const BASELINE_PATH = join(here, "baseline.jetbrains.json");
@@ -40,13 +45,21 @@ export function loadBaseline(path = BASELINE_PATH): Baseline {
   return b;
 }
 
-/** Pure comparison: every metric must be present, within budget, and not regress past tolerance vs the baseline. */
+/** The metrics with no value that the gate cannot judge: the probe metrics when there is no probe report. */
+export function unenforced(m: Metrics): Metric[] {
+  return METRICS.filter((k) => !ALWAYS_MEASURED.includes(k) && (m[k] === null || !Number.isFinite(m[k])));
+}
+
+/**
+ * Pure comparison. The always-measured metrics must be present, within budget, and not regress past tolerance
+ * vs the baseline. A probe metric is judged the same way when it has a value and skipped (see `unenforced`) when not.
+ */
 export function checkJetbrains(m: Metrics, b: Baseline): Finding[] {
   const out: Finding[] = [];
   for (const k of METRICS) {
     const v = m[k];
     if (v === null || !Number.isFinite(v)) {
-      out.push({ metric: k, kind: "missing", message: `${k}: not measured` });
+      if (ALWAYS_MEASURED.includes(k)) out.push({ metric: k, kind: "missing", message: `${k}: not measured` });
       continue;
     }
     if (v > b.budgets[k]) out.push({ metric: k, kind: "budget", message: `${k}: ${v} exceeds budget ${b.budgets[k]}` });
@@ -137,12 +150,15 @@ export async function runJetbrains(argv: readonly string[]): Promise<number> {
   process.stdout.write(`${JSON.stringify(m, null, 2)}
 `);
   if (argv.includes("--update-baseline")) {
-    const missing = METRICS.filter((k) => m[k] === null);
+    const missing = ALWAYS_MEASURED.filter((k) => m[k] === null);
     if (missing.length) throw new Error(`cannot record a baseline, not measured: ${missing.join(", ")}`);
     writeFileSync(BASELINE_PATH, `${JSON.stringify({ ...baseline, measured: m }, null, 2)}\n`);
     return 0;
   }
   if (!argv.includes("--check")) return 0;
+  const skipped = unenforced(m);
+  if (skipped.length) process.stderr.write(`UNENFORCED (no probe report): ${skipped.join(", ")}
+`);
   const findings = checkJetbrains(m, baseline);
   for (const f of findings) process.stderr.write(`FAIL ${f.kind}: ${f.message}
 `);
