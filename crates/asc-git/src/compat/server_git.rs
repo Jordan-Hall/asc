@@ -1786,6 +1786,19 @@ mod tests {
     fn a_child_starts_while_the_parent_holds_more_threads_than_the_cap_and_cannot_fork_past_it() {
         use std::sync::mpsc;
 
+        // `RLIMIT_NPROC` is not enforced for root (`CAP_SYS_RESOURCE`): the child would fork past
+        // any cap, so there is nothing to measure. CI runs as an ordinary user.
+        let uid_line = fs::read_to_string("/proc/self/status")
+            .unwrap_or_default()
+            .lines()
+            .find(|l| l.starts_with("Uid:"))
+            .map(str::to_owned)
+            .unwrap_or_default();
+        if uid_line.split_whitespace().nth(1) == Some("0") {
+            eprintln!("skipped: RLIMIT_NPROC does not bind root");
+            return;
+        }
+
         let _gate = SPAWN_GATE.write().unwrap_or_else(PoisonError::into_inner);
 
         let (release, parked) = mpsc::channel::<()>();
