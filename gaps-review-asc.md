@@ -3,9 +3,15 @@
 Source: D:/dev/asc-hub docs/asc/feature-gaps/review.md at 9285890ac2 (row id = line number in that file).
 Branch feat/asc-review (worktree D:/tmp/feat-asc-review), based on master 09452f9.
 
-## Status: stopped before any RPC family (coordinator order: UI first, RPC families in Phase 3)
+## Status after the first run
 
-Rows done: none. Rows not done: all 45 rows (4 needs-asc-backend, 41 needs-both) listed below. No proto or server code was changed.
+Done: row 67 (hub comments reach the Review service: claim-aware `Env::context`, `AddComment.external_id`, audit with relay; tests in `review/tests_acting.rs`).
+Also done (outside the rows): `asc stack submit|sync|restack|share` (were 'not supported yet'); TSRX code intelligence (`asc-codeintel/src/tsrx.rs`, tags, chunking, imports, scope chain; golden `sample.tsrx.golden`).
+Not done: every other row below. Not wired: dependency scanning has no per-source import scan to hook (`tsrx::import_specifiers` is ready); review hunk headers stay git-compatible (`tsrx::scope_chain` is ready for a Review RPC).
+
+Other user-reachable 'not supported yet' / unimplemented paths found, not changed: merge octopus and unborn-branch merge (cli/merge.rs), pick on unborn (pick.rs), rebase unborn and root commit (rebase.rs), pull --autostash (pull.rs), update-ref --no-deref HEAD (update_ref.rs), read-tree of several trees (write_tree.rs), file/directory and case conflicts (conflict.rs), worktree convert in virtual mode (ext.rs), non-bucket remotes (remote/mod.rs), asc mcp paths (cli/mcp.rs:94), daemon NOT_SERVED (daemon/mod.rs), server Unimplemented: admin.rs 587/598, changes/restack.rs:364, changes/rpc.rs 427/798, MergeQueue service.
+
+The rows (all 45 minus row 67): No proto or server code was changed.
 
 ## Findings for Phase 3 (from reading the code)
 
@@ -19,7 +25,7 @@ Rows done: none. Rows not done: all 45 rows (4 needs-asc-backend, 41 needs-both)
 
 ## Rows not done
 - row 60: Review | Intent, 'Where to look' pointers (file:line), Size, Files, Risk summary block | needs-both
-- row 67: Review | Threads visible to asc clients: hub comments are not written to the asc Review service (ListThreads/AddComment | needs-both
+- row 67 (DONE): Review | Threads visible to asc clients: hub comments are not written to the asc Review service (ListThreads/AddComment | needs-both
 - row 69: Review | Suggested change block in a comment, 'Apply as v5' (creates a version, undoable op, resets approvals), 'Ask co | needs-both
 - row 75: Review | Approval carry-over: approval on an unchanged diff survives a new version and says so | needs-both
 - row 76: Review | Landing card: queue position, estimated start, 'Add changes 1 and 2 to queue', dry-run line | needs-both

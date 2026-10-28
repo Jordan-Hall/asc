@@ -3770,6 +3770,9 @@ The server adds `search.v1` to `Version.features` when the `CodeIntel` service i
 `regex` 1.13.1 and `regex-syntax` 0.8.11 match `Cargo.lock`. All crates pass `cargo deny` as configured (MIT, Apache-2.0, Unlicense and others). Zoekt and ripgrep are **bench-only tools**, not dependencies.
 
 
+
+**TSRX (`.tsrx`, <https://tsrx.dev/>).** Code intelligence has a language `tsrx` with its own layer, not an alias of TSX: `asc-codeintel/src/tsrx.rs` scans the file (strings, template literals, comments, regular expressions, brackets, elements and attributes, raw `<style>`/`<script>` bodies, nested `@{` containers, and the control-flow forms `@if/@else`, `@for/@empty`, `@switch/@case/@default`, `@try/@pending/@catch`), blanks the template regions to spaces (newlines kept, so bytes and rows do not move) and gives the rest to the TSX grammar with the TypeScript query. The layer adds what only it sees: `component` tags for functions (and arrow functions) with a `@{` body, `scope` tags for control-flow bodies with the loop variables, `index` names, `catch` parameters and block locals they define, class selectors of `<style>` blocks as `property` definitions, and references for component tags (`<UserList/>`), identifiers in expressions, attributes and headers ("used in"). Chunking for semantic and text search parses the masked source and cuts the original text. Imports are read like TypeScript (`import_specifiers`), and `scope_chain` names the component and scopes around a line for a review hunk header. The scanner is bounded (depth 48, 20 000 items, work linear in the input) and total: hostile input gives diagnostics, never a panic.
+
 ### 23.7 Security
 
 | Threat | Control |
