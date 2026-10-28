@@ -190,9 +190,7 @@ fn device_hub(token: &'static str) -> (String, std::thread::JoinHandle<Vec<Strin
             let (mut c, _) = l.accept().unwrap();
             let mut buf = vec![0u8; 8192];
             let mut n = 0;
-            while !String::from_utf8_lossy(&buf[..n]).contains("
-
-") {
+            while !String::from_utf8_lossy(&buf[..n]).contains("\r\n\r\n") {
                 let r = c.read(&mut buf[n..]).unwrap();
                 if r == 0 {
                     break;
@@ -200,13 +198,21 @@ fn device_hub(token: &'static str) -> (String, std::thread::JoinHandle<Vec<Strin
                 n += r;
             }
             let head = String::from_utf8_lossy(&buf[..n]).into_owned();
+            // Read the body too: closing with unread data would reset the connection.
+            let h = head.find("\r\n\r\n").unwrap_or(0) + 4;
+            let want: usize = head
+                .lines()
+                .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse().unwrap_or(0)))
+                .unwrap_or(0);
+            while n < h + want {
+                let r = c.read(&mut buf[n..]).unwrap();
+                if r == 0 {
+                    break;
+                }
+                n += r;
+            }
             paths.push(head.split_whitespace().nth(1).unwrap_or("").to_owned());
-            let resp = format!("HTTP/1.1 {status} X
-content-type: application/json
-content-length: {}
-connection: close
-
-{body}", body.len());
+            let resp = format!("HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
             let _ = c.write_all(resp.as_bytes());
         }
         paths
