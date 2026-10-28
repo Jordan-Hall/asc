@@ -162,6 +162,7 @@ impl Outbox {
             "post_receive",
             "bridge_promote",
             crate::codeintel::queue::EFFECT,
+            crate::notify::policy::EFFECT,
         ] {
             outbox.effects.register(Arc::new(NoopEffect(kind)));
         }

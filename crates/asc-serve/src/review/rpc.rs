@@ -257,6 +257,22 @@ impl Reviews {
                 .detail("external_id", external),
         )
         .await;
+        // The hub's `mentioned`: whoever the comment names with an @, once per comment.
+        let repo = entry.name.as_str();
+        crate::notify::emit(
+            self.registry.pool(),
+            repo,
+            crate::notify::Event::new(
+                crate::notify::Kind::Mentioned,
+                format!("{handle} mentioned you in a comment"),
+            )
+            .users(crate::notify::mentions(body))
+            .except(handle)
+            .detail(body)
+            .path(crate::notify::paths::change(repo, &hex_change(&req.change)))
+            .dedup(format!("comment:{comment}")),
+        )
+        .await;
         Ok(wire::AddCommentResponse {
             thread: Some(self.thread_answer(&entry, thread).await?),
             comment_id: u64::try_from(comment).unwrap_or(0),
@@ -466,6 +482,13 @@ impl Reviews {
         if !store::change_known(&mut tx, ns, change).await? {
             return Err(Status::not_found("unknown change"));
         }
+        let before: Vec<String> = store::requests(&mut tx, ns, change)
+            .await
+            .map_err(sql)?
+            .into_iter()
+            .filter(|r| r.done_at == 0)
+            .map(|r| r.reviewer)
+            .collect();
         for r in &req.remove {
             store::remove_request(&mut tx, ns, change, r)
                 .await
@@ -492,6 +515,25 @@ impl Reviews {
             super::acting::event(ctx, "review.requested", &hex_change(&req.change))
                 .detail("add", req.add.join(","))
                 .detail("remove", req.remove.join(",")),
+        )
+        .await;
+        // The hub's `review_requested`: the people asked now, not those already asked or the asker.
+        let repo = entry.name.as_str();
+        let asked = req
+            .add
+            .iter()
+            .filter(|r| !before.contains(r))
+            .map(String::as_str);
+        crate::notify::emit(
+            self.registry.pool(),
+            repo,
+            crate::notify::Event::new(
+                crate::notify::Kind::ReviewRequested,
+                format!("{handle} asked for your review"),
+            )
+            .users(asked)
+            .except(handle)
+            .path(crate::notify::paths::change(repo, &hex_change(&req.change))),
         )
         .await;
         Ok(wire::RequestReviewResponse { requests })
