@@ -21,6 +21,7 @@
 
 pub mod authz;
 pub mod config;
+pub mod control;
 pub mod errors;
 pub mod gate;
 pub mod inproc;
@@ -36,6 +37,8 @@ pub mod workspace;
 
 #[cfg(test)]
 pub(crate) mod tests;
+#[cfg(test)]
+mod tests_control;
 #[cfg(test)]
 mod tests_flow;
 #[cfg(test)]
@@ -246,6 +249,8 @@ pub fn run_to_wire(r: &RunRow, token: Option<&TokenRow>, now: i64) -> wire::Agen
         token_id: r.token_id.clone(),
         workflow_run_id: r.workflow_run_id,
         workflow_step: r.workflow_step.clone(),
+        task: r.task.clone(),
+        ..Default::default()
     }
 }
 

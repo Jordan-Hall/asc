@@ -271,6 +271,51 @@ pub const CATALOGUE: &[ActionInfo] = &[
         &["add", "remove"],
     ),
     a(
+        "agent.request.opened",
+        "An agent asked for permission or proposed a plan.",
+        &["run", "kind", "summary"],
+    ),
+    a(
+        "agent.request.decided",
+        "A person decided a permission or plan request of an agent.",
+        &["run", "decision", "reason"],
+    ),
+    a(
+        "agent.run.paused",
+        "An agent run was paused.",
+        &["run", "reason"],
+    ),
+    a(
+        "agent.run.resumed",
+        "A paused agent run was resumed.",
+        &["run", "reason"],
+    ),
+    a(
+        "agent.run.rollback_requested",
+        "A paused agent run was asked to go back to a checkpoint.",
+        &["run", "checkpoint", "reason"],
+    ),
+    a(
+        "agent.run.rolled_back",
+        "An agent run went back to a checkpoint.",
+        &["run", "checkpoint"],
+    ),
+    a(
+        "agent.run.limits_changed",
+        "The limits of a live agent run were edited.",
+        &["run", "tokens", "cost", "runtime"],
+    ),
+    a(
+        "agent.run.continued",
+        "A finished agent run was continued by a new run.",
+        &["run", "new_run"],
+    ),
+    a(
+        "agent.budget.monthly_set",
+        "A monthly budget of agents was set or removed.",
+        &["agent", "cap_micro_usd"],
+    ),
+    a(
         "agent.run.cancelled",
         "An agent run was cancelled.",
         &["run", "agent", "reason"],

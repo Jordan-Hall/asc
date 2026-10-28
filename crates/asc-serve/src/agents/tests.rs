@@ -198,7 +198,13 @@ impl World {
             ..AgentsConfig::default()
         };
         (o.cfg)(&mut cfg);
-        let hub = AgentsHub::new(pool.clone(), registry.clone(), ai.clone(), cfg, None);
+        let hub = AgentsHub::new(
+            pool.clone(),
+            registry.clone(),
+            ai.clone(),
+            cfg,
+            Some(Arc::new(crate::ai::audit::PoolAudit::new(pool.clone()))),
+        );
         let public: Arc<dyn Authorizer> = hub.authorizer(authorizer.clone());
         assert!(ext.pipeline.set_agent_gate(hub.gate()).is_ok());
         assert!(ext.ai.set(ai.clone()));

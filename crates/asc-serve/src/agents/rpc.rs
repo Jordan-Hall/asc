@@ -36,6 +36,8 @@ use super::runs::{RunRow, RunState};
 use super::runtime::{Requester, RunRequest, example_of};
 use super::tokens::{self, Budget, NewToken, Refusal, Spent, TokenRow};
 use super::{AgentsHub, event_to_wire, run_to_wire};
+#[path = "rpc_control.rs"]
+mod control_rpc;
 use crate::ai::clock;
 use crate::ai::ops::OpState;
 use crate::review::{Env, handle_of, require_handle};
@@ -208,6 +210,97 @@ impl AgentService {
 impl Agents for AgentService {
     type WatchRunStream = WatchStream;
 
+    async fn list_requests(
+        &self,
+        request: Request<wire::ListAgentRequestsRequest>,
+    ) -> Result<Response<wire::ListAgentRequestsResponse>, Status> {
+        self.list_requests_impl(request).await
+    }
+
+    async fn decide_request(
+        &self,
+        request: Request<wire::DecideAgentRequestRequest>,
+    ) -> Result<Response<wire::DecideAgentRequestResponse>, Status> {
+        self.decide_request_impl(request).await
+    }
+
+    async fn pause_run(
+        &self,
+        request: Request<wire::PauseAgentRunRequest>,
+    ) -> Result<Response<wire::PauseAgentRunResponse>, Status> {
+        self.pause_run_impl(request).await
+    }
+
+    async fn list_checkpoints(
+        &self,
+        request: Request<wire::ListAgentCheckpointsRequest>,
+    ) -> Result<Response<wire::ListAgentCheckpointsResponse>, Status> {
+        self.list_checkpoints_impl(request).await
+    }
+
+    async fn rollback_run(
+        &self,
+        request: Request<wire::RollbackAgentRunRequest>,
+    ) -> Result<Response<wire::RollbackAgentRunResponse>, Status> {
+        self.rollback_run_impl(request).await
+    }
+
+    async fn set_run_limits(
+        &self,
+        request: Request<wire::SetAgentRunLimitsRequest>,
+    ) -> Result<Response<wire::SetAgentRunLimitsResponse>, Status> {
+        self.set_run_limits_impl(request).await
+    }
+
+    async fn continue_run(
+        &self,
+        request: Request<wire::ContinueAgentRunRequest>,
+    ) -> Result<Response<wire::ContinueAgentRunResponse>, Status> {
+        self.continue_run_impl(request).await
+    }
+
+    async fn get_estimate(
+        &self,
+        request: Request<wire::GetAgentEstimateRequest>,
+    ) -> Result<Response<wire::GetAgentEstimateResponse>, Status> {
+        self.get_estimate_impl(request).await
+    }
+
+    async fn recent_tasks(
+        &self,
+        request: Request<wire::RecentAgentTasksRequest>,
+    ) -> Result<Response<wire::RecentAgentTasksResponse>, Status> {
+        self.recent_tasks_impl(request).await
+    }
+
+    async fn get_run_log(
+        &self,
+        request: Request<wire::GetAgentRunLogRequest>,
+    ) -> Result<Response<wire::GetAgentRunLogResponse>, Status> {
+        self.get_run_log_impl(request).await
+    }
+
+    async fn list_agents(
+        &self,
+        request: Request<wire::ListRepoAgentsRequest>,
+    ) -> Result<Response<wire::ListRepoAgentsResponse>, Status> {
+        self.list_agents_impl(request).await
+    }
+
+    async fn get_spend(
+        &self,
+        request: Request<wire::GetAgentSpendRequest>,
+    ) -> Result<Response<wire::GetAgentSpendResponse>, Status> {
+        self.get_spend_impl(request).await
+    }
+
+    async fn set_monthly_budget(
+        &self,
+        request: Request<wire::SetMonthlyBudgetRequest>,
+    ) -> Result<Response<wire::SetMonthlyBudgetResponse>, Status> {
+        self.set_monthly_budget_impl(request).await
+    }
+
     async fn create_run(
         &self,
         request: Request<wire::CreateAgentRunRequest>,
@@ -226,6 +319,10 @@ impl Agents for AgentService {
             principal: ctx.principal.id.clone(),
             handle: Some(handle),
         };
+        if !msg.for_change.is_empty() && msg.for_change.len() != 16 {
+            return Err(Status::invalid_argument("a change id is 16 bytes"));
+        }
+        let asked_limits = Budget::from_wire(msg.limits.as_ref());
         let req = RunRequest {
             repo: ctx.repo.as_str().to_owned(),
             agent: msg.agent,
@@ -239,6 +336,9 @@ impl Agents for AgentService {
             limits: Budget::from_wire(msg.limits.as_ref()),
             workflow_run_id: 0,
             workflow_step: String::new(),
+            plan_first: msg.plan_first,
+            for_change: msg.for_change.to_vec(),
+            continues: 0,
         };
         let hub = self.hub.clone();
         let ops = hub.core.ops.clone();
@@ -252,7 +352,8 @@ impl Agents for AgentService {
             || async move {
                 let row = hub.create_run(&who, req).await?;
                 Ok(wire::CreateAgentRunResponse {
-                    run: Some(this.wire_run(&row).await),
+                    run: Some(this.wire_run_full(&row).await),
+                    lowered: AgentsHub::lowered(asked_limits, row.limits),
                 })
             },
         )
@@ -315,7 +416,7 @@ impl Agents for AgentService {
         };
         let mut runs = Vec::with_capacity(rows.len());
         for r in &rows {
-            runs.push(self.wire_run(r).await);
+            runs.push(self.wire_run_full(r).await);
         }
         Ok(Response::new(wire::ListAgentRunsResponse {
             runs,
@@ -334,7 +435,7 @@ impl Agents for AgentService {
             .await?;
         let run = self.run_in(&ctx, msg.id).await?;
         Ok(Response::new(wire::GetAgentRunResponse {
-            run: Some(self.wire_run(&run).await),
+            run: Some(self.wire_run_full(&run).await),
         }))
     }
 
@@ -376,7 +477,7 @@ impl Agents for AgentService {
             .cancel_run(run.id, &msg.reason, &ctx.principal.id)
             .await?;
         Ok(Response::new(wire::CancelAgentRunResponse {
-            run: Some(self.wire_run(&row).await),
+            run: Some(self.wire_run_full(&row).await),
         }))
     }
 
@@ -411,7 +512,7 @@ impl Agents for AgentService {
             || async move {
                 let row = hub.send_input(run.id, &text).await?;
                 Ok(wire::SendAgentInputResponse {
-                    run: Some(this.wire_run(&row).await),
+                    run: Some(this.wire_run_full(&row).await),
                 })
             },
         )
