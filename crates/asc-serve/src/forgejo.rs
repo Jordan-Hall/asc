@@ -202,6 +202,33 @@ impl ForgejoClient {
             .bearer_auth(&token.0))
     }
 
+    /// `POST /api/internal/asc/event`: tells the hub that something happened which people on `repo`
+    /// have to know about. Returns how many people the hub told. The hub decides who may be told
+    /// (a person who cannot read the repository is skipped) and how (inbox, email).
+    pub(crate) async fn asc_event(
+        &self,
+        id: &str,
+        body: &serde_json::Value,
+    ) -> Result<u64, ForgejoError> {
+        let req = self
+            .internal_request(&["api", "internal", "asc", "event"])?
+            .header("x-asc-event-id", id)
+            .json_body(body)?;
+        let (status, answer) = Self::send(req).await?;
+        if status != StatusCode::OK {
+            return Err(ForgejoError::Status {
+                status: status.as_u16(),
+                message: failure_message("event", status, &answer),
+            });
+        }
+        #[derive(Deserialize)]
+        struct Told {
+            #[serde(default)]
+            notified: u64,
+        }
+        Ok(decode::<Told>(&answer)?.notified)
+    }
+
     /// Sends `req` and reads at most [`MAX_BODY`] bytes of the answer.
     async fn send(req: RequestBuilder) -> Result<(StatusCode, Vec<u8>), ForgejoError> {
         let mut resp = req
@@ -1800,9 +1827,14 @@ impl PushHooks for ForgejoHooks {
                 "bridge_promote",
                 "post_receive",
                 crate::codeintel::queue::EFFECT,
+                crate::notify::policy::EFFECT,
             ]
         } else {
-            &["post_receive", crate::codeintel::queue::EFFECT]
+            &[
+                "post_receive",
+                crate::codeintel::queue::EFFECT,
+                crate::notify::policy::EFFECT,
+            ]
         }
     }
 }
@@ -1893,6 +1925,17 @@ fn client_of(cfg: &ForgejoConfig) -> Result<(Arc<ForgejoClient>, bool), ForgejoE
         .transpose()?;
     let has_token = token.is_some();
     Ok((Arc::new(ForgejoClient::new(&cfg.url, token)?), has_token))
+}
+
+/// The client that reports events to the hub, or `None` without `[forgejo]` and its internal token.
+pub fn event_client(
+    cfg: Option<&ForgejoConfig>,
+) -> Result<Option<Arc<ForgejoClient>>, ForgejoError> {
+    let Some(cfg) = cfg else {
+        return Ok(None);
+    };
+    let (client, internal) = client_of(cfg)?;
+    Ok(internal.then_some(client))
 }
 
 /// The authorizer for a server configured with Forgejo: [`InternalAuthz`] when the internal token

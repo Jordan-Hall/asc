@@ -365,7 +365,7 @@ async fn a_paused_run_holds_at_its_next_tool_call_and_a_checkpoint_can_be_rolled
         write(1),
         write(2),
         Reply::Delay(
-            Duration::from_millis(1500),
+            Duration::from_secs(6),
             Box::new(tools(vec![("status", json!({}))])),
         ),
         done("done"),
@@ -462,9 +462,17 @@ async fn a_paused_run_holds_at_its_next_tool_call_and_a_checkpoint_can_be_rolled
     );
     pause("alice-token", true).await.unwrap();
     rollback("alice-token", cps[0].id).await.unwrap();
+    // The run changes first and the checkpoints are marked after it: wait for the mark.
     until("the rollback", || async {
         let r = w.hub.core.runs.get(run.id).await.unwrap().unwrap();
-        r.changes.len() == 1
+        let marked = w
+            .hub
+            .checkpoints(run.id)
+            .await
+            .unwrap()
+            .iter()
+            .any(|c| c.rolled_back_at > 0);
+        r.changes.len() == 1 && marked
     })
     .await;
     let after = w
