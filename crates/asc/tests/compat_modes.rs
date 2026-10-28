@@ -59,13 +59,32 @@ fn branchless_push_runs_in_both_modes() {
 }
 
 /// `ASC_MODES_FILTER=<substring>` limits the sweep; unset runs every scenario.
+///
+/// The sweep is bounded as a whole: one scenario may take `SCRIPT_TIMEOUT` on each side and each
+/// side runs more than once, so ninety-odd scenarios have no useful upper bound of their own.
+/// `ASC_MODES_BUDGET_SECS` (default 1800) is the wall-clock budget; when it is spent the sweep stops
+/// and the test FAILS naming every scenario it did not reach, so a slow or hung machine is a
+/// visible failure and not an hour of silence. Set `ASC_MODES_FILTER` to split the sweep across
+/// jobs.
 #[test]
 fn every_scenario_is_byte_identical_in_both_modes() {
     let filter = std::env::var("ASC_MODES_FILTER").unwrap_or_default();
+    let budget = std::time::Duration::from_secs(
+        std::env::var("ASC_MODES_BUDGET_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1800),
+    );
+    let started = std::time::Instant::now();
     let mut failures = Vec::new();
+    let mut unreached = Vec::new();
     let mut ran = 0;
     for name in tools().scenario_names() {
         if !name.contains(&filter) {
+            continue;
+        }
+        if started.elapsed() > budget {
+            unreached.push(name);
             continue;
         }
         let script = tools().scenario(&name).expect("scenario");
@@ -78,6 +97,12 @@ fn every_scenario_is_byte_identical_in_both_modes() {
         }
     }
     assert!(ran > 0 || !filter.is_empty(), "no scenario ran");
+    assert!(
+        unreached.is_empty(),
+        "the {}s budget (ASC_MODES_BUDGET_SECS) ran out after {ran} scenarios; not run: {}",
+        budget.as_secs(),
+        unreached.join(", ")
+    );
     assert!(
         failures.is_empty(),
         "{} of {ran} scenarios differ between modes:\n{}",
