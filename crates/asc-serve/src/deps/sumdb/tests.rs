@@ -100,7 +100,8 @@ fn a_record_that_is_not_what_was_logged_is_not_in_the_tree() {
     // A tile of the log that was changed, or is the wrong size, or is missing.
     let mut bad = tiles.clone();
     let t = *bad.keys().next().unwrap();
-    bad.get_mut(&t).unwrap()[5] ^= 1;
+    // Every byte, since which hashes of a tile the proof reads depends on the record.
+    bad.get_mut(&t).unwrap().iter_mut().for_each(|b| *b ^= 0xff);
     assert!(verify_inclusion(&l, &bad).is_err());
     let mut short = tiles.clone();
     short.get_mut(&t).unwrap().truncate(32);
