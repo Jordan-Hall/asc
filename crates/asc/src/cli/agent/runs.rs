@@ -277,6 +277,7 @@ pub async fn run(ctx: &Ctx, a: RunArgs) -> Result<ExitCode> {
         ai_key_id: a.key.clone().unwrap_or_default(),
         model: a.model.clone().unwrap_or_default(),
         limits: Some(limits),
+        ..Default::default()
     };
     let run = conn
         .call(true, |s, op| {

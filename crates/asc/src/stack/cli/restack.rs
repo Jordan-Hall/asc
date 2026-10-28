@@ -79,7 +79,7 @@ pub const NATIVE: &[NativeSpec] = &[NativeSpec {
 }];
 
 super::verb!(RESTACK, "restack");
-/// `asc stack restack` is the same command as `asc restack` (SPEC 20.7 lists the stack verbs under both spellings).
+// `asc stack restack` is the same command as `asc restack` (SPEC 20.7 lists the stack verbs under both spellings).
 super::info::sub!(STACK_RESTACK, "restack", Args, run);
 
 // ---------------------------------------------------------------- report

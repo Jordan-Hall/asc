@@ -3,13 +3,18 @@
 Source: D:/dev/asc-hub docs/asc/feature-gaps/review.md at 9285890ac2 (row id = line number in that file).
 Branch feat/asc-review (worktree D:/tmp/feat-asc-review), based on master 09452f9.
 
-## Status after the first run
+## Status after the second run
 
-Done: row 67 (hub comments reach the Review service: claim-aware `Env::context`, `AddComment.external_id`, audit with relay; tests in `review/tests_acting.rs`).
-Also done (outside the rows): `asc stack submit|sync|restack|share` (were 'not supported yet'); TSRX code intelligence (`asc-codeintel/src/tsrx.rs`, tags, chunking, imports, scope chain; golden `sample.tsrx.golden`).
-Not done: every other row below. Not wired: dependency scanning has no per-source import scan to hook (`tsrx::import_specifiers` is ready); review hunk headers stay git-compatible (`tsrx::scope_chain` is ready for a Review RPC).
+Branch feat/asc-review. Server side done, with tests per RPC (right caller, caller without the right, unknown change, another repository's claim):
 
-Other user-reachable 'not supported yet' / unimplemented paths found, not changed: merge octopus and unborn-branch merge (cli/merge.rs), pick on unborn (pick.rs), rebase unborn and root commit (rebase.rs), pull --autostash (pull.rs), update-ref --no-deref HEAD (update_ref.rs), read-tree of several trees (write_tree.rs), file/directory and case conflicts (conflict.rs), worktree convert in virtual mode (ext.rs), non-bucket remotes (remote/mod.rs), asc mcp paths (cli/mcp.rs:94), daemon NOT_SERVED (daemon/mod.rs), server Unimplemented: admin.rs 587/598, changes/restack.rs:364, changes/rpc.rs 427/798, MergeQueue service.
+- claim-aware `Env::context` for Review, Inbox, Ci, Agents, MergeQueue (read/write/admin, wrong subject or key denied, audit person + host relay); hub comments (`AddComment.external_id`): row 67.
+- Review: `GetBrief` (intent, where to look, size, per-file stats, risk with reasons, provenance of the agent run, gate card data): rows 60, 80, 112; `SetBrief`; `RecordApproval`, approvals with carry-over (`ApprovalInfo.applies/carried/changed_files`): rows 75, 91; `CompareVersions` (changed / unchanged files): row 95; suggestions (`AddComment.suggestion`, `PrepareSuggestion`, `MarkSuggestionApplied`): rows 69, 83 (the host commits the new version; asc validates and records it); `SuggestReviewers`: row 113.
+- Gate: `RecordGateDecision`, `GetGateStats` (per day, per rule, time to clear), overrides (`GrantOverride`, `RevokeOverride`, `ListOverrides`, audited, proof chain): rows 271, 274, 275, 276.
+- Agents: task text, progress / steps, plan_first plans, permission requests, `DecideRequest`, `PauseRun`, checkpoints, `RollbackRun`, `SetRunLimits`, `ContinueRun`, `GetEstimate`, `RecentTasks`, `GetRunLog`, `ListAgents`, `GetSpend`, `SetMonthlyBudget`, `lowered` on create: rows 159, 163, 165, 166, 178, 180, 182, 183, 189, 191, 192, 193, 202, 204, 205, 206, 215, 216, 218, 234.
+- MergeQueue server (entries, order, ETA, preview, fail-closed `Revalidate` / `ReportEntry`, pause, `Watch` stream): rows 76, 98, 306, 313.
+- Not done: rows 81 (conflict hunks), 111 (draft from the diff: needs the hub's AI key), 114 (babysit trigger: `CreateRun.for_change` exists, the babysit task itself is the hub's), 119 (SecretScan.Scan exists, hub gates), 126 and 150 (CI aggregates and per-test timing), 294 (undo preview); step 6 rows of shell, settings, repo.
+- Also done: `asc stack submit|sync|restack|share`; server advertises `changes.v1` (fixes `asc submit`: "the changeset is not a version of the change its topic names"); `asc auth login` device flow (`--device`, default; `--token-stdin` and `--prompt` stay); TSRX code intelligence (+ DoS fixes) and `deps::imports` (npm imports of TS/TSX/TSRX sources in the dependency snapshot).
+- Other 'not supported yet' paths are unchanged (see the list below).
 
 The rows (all 45 minus row 67): No proto or server code was changed.
 
