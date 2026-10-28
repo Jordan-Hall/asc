@@ -65,6 +65,7 @@ pub mod refauthz;
 pub mod refpolicy;
 pub mod reftl;
 pub mod registry;
+pub mod queue;
 pub mod review;
 pub mod secretscan;
 pub mod seeds;
@@ -317,6 +318,10 @@ pub fn build_grpc(ext: &Extensions, authorizer: Arc<dyn Authorizer>, info: Serve
             )
             .add_service(
                 ci::rpc::CiService::new(h.clone(), authorizer.clone(), info.clone()).into_service(),
+            )
+            .add_service(
+                queue::rpc::QueueService::new(h.clone(), authorizer.clone(), info.clone())
+                    .into_service(),
             );
     }
     if let Some(h) = ext.codeintel.get() {

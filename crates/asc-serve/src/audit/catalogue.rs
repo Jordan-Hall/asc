@@ -291,6 +291,31 @@ pub const CATALOGUE: &[ActionInfo] = &[
         &[],
     ),
     a(
+        "queue.enqueued",
+        "A change was added to the merge queue.",
+        &["change", "target"],
+    ),
+    a(
+        "queue.dequeued",
+        "An entry was removed from the merge queue.",
+        &["reason"],
+    ),
+    a(
+        "queue.paused",
+        "The merge queue of a branch was paused.",
+        &["reason"],
+    ),
+    a(
+        "queue.resumed",
+        "The merge queue of a branch was resumed.",
+        &["reason"],
+    ),
+    a(
+        "queue.entry.reported",
+        "The host reported the progress of a merge queue entry.",
+        &["state", "detail"],
+    ),
+    a(
         "review.requested",
         "A review was requested from, or withdrawn from, people.",
         &["add", "remove"],
