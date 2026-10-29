@@ -624,6 +624,8 @@ pub struct Extensions {
     pub deps: crate::deps::DepsSlot,
     /// Policy, secret scanning and signing; `build_routes` serves `Policy`, `SecretScan` and `Signing`.
     pub security: crate::policy::SecuritySlot,
+    /// Backups, usage, organisation settings, sessions, data export; `build_grpc` serves them.
+    pub settings: crate::settings::SettingsSlot,
 }
 
 impl Extensions {
@@ -647,6 +649,7 @@ impl Extensions {
             insights: Default::default(),
             byos: Default::default(),
             security: Default::default(),
+            settings: Default::default(),
             deps: Default::default(),
         }
     }
