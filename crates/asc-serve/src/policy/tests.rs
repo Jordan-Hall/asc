@@ -2759,3 +2759,23 @@ async fn an_organisations_defaults_tighten_what_a_repository_requires_to_land() 
     f.land(ALICE, b).await.unwrap();
     assert_eq!(f.tip().await, b);
 }
+
+#[tokio::test]
+async fn while_a_restore_is_staged_no_ref_moves() {
+    let f = fx().await;
+    let a = commit(&f.e, &[], &[("x", b"1")]).await;
+    f.set_master(a).await;
+    let b = commit(&f.e, &[a], &[("y", b"2")]).await;
+    f.gate
+        .read_only_flag()
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let err = f.land(ALICE, b).await.unwrap_err();
+    assert_eq!(err.code(), tonic::Code::Unavailable);
+    assert!(err.message().contains("read-only"), "{}", err.message());
+    assert_eq!(f.tip().await, a);
+    f.gate
+        .read_only_flag()
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+    f.land(ALICE, b).await.unwrap();
+    assert_eq!(f.tip().await, b);
+}
