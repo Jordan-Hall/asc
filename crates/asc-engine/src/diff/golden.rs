@@ -137,7 +137,9 @@ async fn own_patches_apply() {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
-    let git_probe = Command::new("git").arg("--version").output(); // lint:allow-raw-git
+    let git_probe = Command::new(crate::merge::testutil::git_program())
+        .arg("--version")
+        .output(); // lint:allow-raw-git
     if git_probe.is_err() {
         return;
     }
@@ -163,7 +165,7 @@ async fn own_patches_apply() {
                 .await
                 .unwrap();
             std::fs::write(work.path().join("file"), &old).unwrap();
-            let mut child = Command::new("git") // lint:allow-raw-git
+            let mut child = Command::new(crate::merge::testutil::git_program())
                 .args(["apply", "--check", "-"])
                 .current_dir(work.path())
                 .stdin(Stdio::piped())
