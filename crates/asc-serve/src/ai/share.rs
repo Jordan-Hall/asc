@@ -1,5 +1,5 @@
 //! Sharing of AI keys and the warning and stop rules of their caps (`aikeyshares.proto`,
-//! docs/BUILDOUT.md section 29).
+//! docs/BUILDOUT.md section 31).
 //!
 //! A share lets the agents and workflows of a grantee use a key it does not own. The key stays
 //! sealed and unreadable to the grantee; [`AiHub::resolve`] consults the shares after each owner's

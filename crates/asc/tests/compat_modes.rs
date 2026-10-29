@@ -58,31 +58,59 @@ fn branchless_push_runs_in_both_modes() {
         .unwrap_or_else(|e| panic!("{e}"));
 }
 
-/// `ASC_MODES_FILTER=<substring>` limits the sweep; unset runs every scenario.
-///
-/// The sweep is bounded as a whole: one scenario may take `SCRIPT_TIMEOUT` on each side and each
-/// side runs more than once, so ninety-odd scenarios have no useful upper bound of their own.
-/// `ASC_MODES_BUDGET_SECS` (default 1800) is the wall-clock budget; when it is spent the sweep stops
-/// and the test FAILS naming every scenario it did not reach, so a slow or hung machine is a
-/// visible failure and not an hour of silence. Set `ASC_MODES_FILTER` to split the sweep across
-/// jobs.
-#[test]
-fn every_scenario_is_byte_identical_in_both_modes() {
+/// Scenarios per group. One test runs one group, so a slow machine fails one group naming what it
+/// did not reach and the other groups still report; the groups also run side by side.
+const GROUP_SIZE: usize = 20;
+/// Groups the file declares. [`every_scenario_belongs_to_a_group`] fails when the scenarios outgrow
+/// them, so a new scenario cannot go unrun.
+const GROUPS: usize = 6;
+
+/// The sorted names of the scenarios that run in both modes' sweep, `ASC_MODES_FILTER` applied.
+fn sweep_names() -> Vec<String> {
     let filter = std::env::var("ASC_MODES_FILTER").unwrap_or_default();
+    tools()
+        .scenario_names()
+        .into_iter()
+        .filter(|n| n.contains(&filter))
+        .collect()
+}
+
+#[test]
+fn every_scenario_belongs_to_a_group() {
+    let n = sweep_names().len();
+    assert!(
+        n <= GROUPS * GROUP_SIZE,
+        "{n} scenarios do not fit {GROUPS} groups of {GROUP_SIZE}: add a `group!` line and raise GROUPS"
+    );
+}
+
+/// Runs group `index` (scenarios `index * GROUP_SIZE ..`) in both modes.
+///
+/// `ASC_MODES_FILTER=<substring>` limits the sweep first. Each group has its own wall-clock budget,
+/// `ASC_MODES_BUDGET_SECS` (default 1800): one scenario may take `SCRIPT_TIMEOUT` on each side and
+/// each side runs more than once, so a group has no useful upper bound of its own. When the budget
+/// is spent the group stops and FAILS naming every scenario it did not reach, so a slow or hung
+/// machine is a visible failure and not an hour of silence. CI runs all groups; a development
+/// machine with slow process start-up (a debug build on a network or 9p mount) can run one group
+/// with `cargo test -p asc --test compat_modes group_2`.
+fn run_group(index: usize) {
     let budget = std::time::Duration::from_secs(
         std::env::var("ASC_MODES_BUDGET_SECS")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(1800),
     );
+    let names = sweep_names();
+    let group: Vec<String> = names
+        .into_iter()
+        .skip(index * GROUP_SIZE)
+        .take(GROUP_SIZE)
+        .collect();
     let started = std::time::Instant::now();
     let mut failures = Vec::new();
     let mut unreached = Vec::new();
     let mut ran = 0;
-    for name in tools().scenario_names() {
-        if !name.contains(&filter) {
-            continue;
-        }
+    for name in group {
         if started.elapsed() > budget {
             unreached.push(name);
             continue;
@@ -96,17 +124,37 @@ fn every_scenario_is_byte_identical_in_both_modes() {
             failures.push(e);
         }
     }
-    assert!(ran > 0 || !filter.is_empty(), "no scenario ran");
     assert!(
         unreached.is_empty(),
-        "the {}s budget (ASC_MODES_BUDGET_SECS) ran out after {ran} scenarios; not run: {}",
+        "group {index}: the {}s budget (ASC_MODES_BUDGET_SECS) ran out after {ran} scenarios; not run: {}",
         budget.as_secs(),
         unreached.join(", ")
     );
     assert!(
         failures.is_empty(),
-        "{} of {ran} scenarios differ between modes:\n{}",
+        "group {index}: {} of {ran} scenarios differ between modes:
+{}",
         failures.len(),
-        failures.join("\n\n")
+        failures.join(
+            "
+
+"
+        )
     );
 }
+
+macro_rules! group {
+    ($name:ident, $index:expr) => {
+        #[test]
+        fn $name() {
+            run_group($index);
+        }
+    };
+}
+
+group!(scenarios_group_0_are_byte_identical_in_both_modes, 0);
+group!(scenarios_group_1_are_byte_identical_in_both_modes, 1);
+group!(scenarios_group_2_are_byte_identical_in_both_modes, 2);
+group!(scenarios_group_3_are_byte_identical_in_both_modes, 3);
+group!(scenarios_group_4_are_byte_identical_in_both_modes, 4);
+group!(scenarios_group_5_are_byte_identical_in_both_modes, 5);

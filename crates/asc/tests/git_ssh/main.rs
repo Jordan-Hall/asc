@@ -39,6 +39,37 @@ pub mod h {
 
     use asc_git::realgit::RealGit;
 
+    /// Keeps a child `ssh` (and anything it starts) from opening `/dev/tty`. Run from a terminal,
+    /// an unknown host key or a passphrase would otherwise be asked for there and the test would
+    /// wait for a person (or stop on SIGTTIN when the group is in the background). With
+    /// `SSH_ASKPASS_REQUIRE=force` every prompt goes to a program that answers nothing, so ssh
+    /// fails the way it does with no terminal. OpenSSH 8.4 and later; older ones ignore both
+    /// variables and keep the terminal.
+    pub fn no_tty(cmd: &mut Command) -> &mut Command {
+        #[cfg(unix)]
+        {
+            use std::sync::OnceLock;
+            static ASKPASS: OnceLock<PathBuf> = OnceLock::new();
+            let path = ASKPASS.get_or_init(|| {
+                use std::os::unix::fs::PermissionsExt;
+                let path =
+                    std::env::temp_dir().join(format!("asc-no-askpass-{}.sh", std::process::id()));
+                std::fs::write(
+                    &path,
+                    "#!/bin/sh
+exit 1
+",
+                )
+                .unwrap();
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+                path
+            });
+            cmd.env("SSH_ASKPASS", path)
+                .env("SSH_ASKPASS_REQUIRE", "force");
+        }
+        cmd
+    }
+
     pub fn free_port() -> u16 {
         TcpListener::bind("127.0.0.1:0")
             .unwrap()
@@ -238,6 +269,7 @@ pub mod h {
                 .env("USERPROFILE", home)
                 .env_remove("SSH_AUTH_SOCK")
                 .stdin(Stdio::null());
+            no_tty(&mut cmd);
             let out = cmd.output().unwrap();
             Run {
                 ok: out.status.success(),
@@ -365,6 +397,7 @@ pub mod h {
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
+            no_tty(&mut cmd);
             for (k, v) in env {
                 cmd.env(k, v);
             }

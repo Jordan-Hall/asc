@@ -15,7 +15,7 @@ use std::path::Path as FsPath;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use asc_core::id::RefTarget;
+use asc_core::id::{ChangesetId, RefTarget};
 use asc_core::transport_policy::{Policy, classify_url};
 use asc_rpc::auth::{
     Access, AuthError, Authorizer, BearerToken, Credential, Decision as SshDecision, Principal,
@@ -1711,12 +1711,35 @@ fn parse_target(s: &str) -> Option<RefTarget> {
 
 // ------------------------------------------------------------------------------ pipeline
 
+/// Makes the forge's git directory hold the commits of some changesets, under refs of their own,
+/// so the forge can read them (AGit `refs/for/*` is never stored as a ref, SPEC section 13.5).
+#[async_trait]
+pub trait BridgeHold: Send + Sync {
+    async fn hold(
+        &self,
+        repo: &Arc<crate::registry::RepoEntry>,
+        items: &[(String, ChangesetId)],
+    ) -> Result<(), String>;
+}
+
+/// Where the git layer, which starts after the forge hooks, hands them its [`BridgeHold`].
+#[derive(Clone, Default)]
+pub struct BridgeSlot(Arc<std::sync::OnceLock<Arc<dyn BridgeHold>>>);
+
+impl BridgeSlot {
+    /// Installs the hold; the first call wins.
+    pub fn set(&self, hold: Arc<dyn BridgeHold>) {
+        let _ = self.0.set(hold);
+    }
+}
+
 /// Pipeline step 7 (pre-receive) and the internal-token rule for `SKIP_PRE`.
 pub struct ForgejoHooks {
     client: HookClient,
     registry: Arc<Registry>,
     ids: GitIds,
     bridge_promote: bool,
+    bridge: BridgeSlot,
 }
 
 impl ForgejoHooks {
@@ -1729,7 +1752,14 @@ impl ForgejoHooks {
             registry,
             ids,
             bridge_promote: false,
+            bridge: BridgeSlot::default(),
         }
+    }
+
+    /// The slot the git layer fills with the means to put commits in the forge's git directory.
+    pub fn with_bridge(mut self, slot: BridgeSlot) -> Self {
+        self.bridge = slot;
+        self
     }
 
     /// Queues `bridge_promote` before `post_receive` on every push, so the forge's git directory
@@ -1777,6 +1807,39 @@ impl PushHooks for ForgejoHooks {
     async fn pre_receive(&self, req: &HookRequest<'_>) -> Result<(), HookRejected> {
         let opts = self.options(req).await?;
         self.client.pre_receive(req.repo, &opts).await
+    }
+
+    async fn proc_receive(
+        &self,
+        req: &HookRequest<'_>,
+    ) -> Result<Vec<ProcRefResult>, HookRejected> {
+        // The forge reads the commits of a `refs/for` update from its own git directory, and no
+        // ref of asc names them yet: put them there under a ref of their own first.
+        if let Some(hold) = self.bridge.0.get() {
+            let items: Vec<(String, ChangesetId)> = req
+                .updates
+                .iter()
+                .filter(|u| u.name.starts_with("refs/for/"))
+                .filter_map(|u| match &u.new {
+                    Some(RefTarget::Changeset(cs)) => {
+                        Some((format!("refs/asc/for/{}", hex(cs.as_bytes())), *cs))
+                    }
+                    _ => None,
+                })
+                .collect();
+            if !items.is_empty() {
+                let entry = self.registry.open(req.repo).await.map_err(|e| {
+                    tracing::warn!(error = %e, "proc-receive: the repository cannot be opened");
+                    HookRejected("the push cannot be checked by the forge".into())
+                })?;
+                hold.hold(&entry, &items).await.map_err(|e| {
+                    tracing::warn!(error = %e, "proc-receive: the forge's git directory is not current");
+                    HookRejected("the forge's git directory cannot be made current".into())
+                })?;
+            }
+        }
+        let opts = self.options(req).await?;
+        self.client.proc_receive(req.repo, &opts).await
     }
 
     fn outbox_effects(&self) -> &'static [&'static str] {
@@ -1936,9 +1999,10 @@ pub fn register(
     registry: &Arc<Registry>,
     outbox: &Outbox,
     cfg: Option<&ForgejoConfig>,
-) -> Result<(), ForgejoError> {
+) -> Result<BridgeSlot, ForgejoError> {
+    let slot = BridgeSlot::default();
     let Some(cfg) = cfg else {
-        return Ok(());
+        return Ok(slot);
     };
     let (client, internal) = client_of(cfg)?;
     if !internal {
@@ -1953,14 +2017,15 @@ pub fn register(
     ext.pipeline
         .set_push_hooks(Arc::new(
             ForgejoHooks::new(hooks.clone(), registry.clone())
-                .with_bridge_promote(cfg.bridge_promote),
+                .with_bridge_promote(cfg.bridge_promote)
+                .with_bridge(slot.clone()),
         ))
         .map_err(|_| ForgejoError::Config("push hooks are already set".into()))?;
     outbox.effects().register(Arc::new(PostReceiveEffect::new(
         hooks,
         registry.pool().clone(),
     )));
-    Ok(())
+    Ok(slot)
 }
 
 /// Serves Forgejo's push webhook ([`WEBHOOK_PATH`]) when `[forgejo] webhook_secret_file` is set

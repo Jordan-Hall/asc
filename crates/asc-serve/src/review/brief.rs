@@ -369,7 +369,8 @@ impl Reviews {
                     .take(MAX_STAT_FILES)
                     .map(|p| Bytes::copy_from_slice(p))
                     .collect();
-                info.carried = live && changed.is_empty();
+                info.carried =
+                    live && changed.is_empty() && eligible.policy.keep_approvals_on_restack;
                 info.applies = info.carried;
             }
             out.push(info);

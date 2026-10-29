@@ -25,7 +25,7 @@ pub(crate) mod tests;
 #[cfg(test)]
 pub(crate) mod tests_acting;
 #[cfg(test)]
-mod tests_brief;
+pub(crate) mod tests_brief;
 #[cfg(test)]
 mod tests_gaps;
 #[cfg(test)]
