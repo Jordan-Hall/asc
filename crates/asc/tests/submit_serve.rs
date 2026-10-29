@@ -225,7 +225,9 @@ impl Client<'_> {
     }
 
     fn commit_file(&self, name: &str, body: &str) {
-        std::fs::write(self.dir.join(name), body).unwrap();
+        let path = self.dir.join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
         self.ok(&["add", name]);
         self.ok(&["commit", "-q", "-m", &format!("add {name}")]);
     }
@@ -275,4 +277,55 @@ fn a_stack_of_three_is_submitted_and_a_fourth_change_extends_it() {
     let json: serde_json::Value = serde_json::from_str(text(&second.stdout).trim()).unwrap();
     assert_eq!(json["status"], "submitted", "{json}");
     assert_eq!(json["changes"].as_array().unwrap().len(), 4, "{json}");
+}
+
+/// A `push` to the trunk that the policy refuses leaves the commit on the local trunk branch. The next
+/// `asc submit -s` must still submit the stack: the refused commit is part of what the person made, and it
+/// has to reach the server as a change like any other, not break the metadata of the stack.
+#[test]
+#[ignore = "fails until a submit can name a changeset the server holds from a plain push (no change row): see the fix options in the report"]
+fn a_submit_after_a_push_the_policy_refused_still_submits_the_stack() {
+    let server = Server::start();
+    server.create_repo("acme/web");
+    let sb = Sandbox::new();
+    let admin = Client {
+        sb: &sb,
+        dir: sb.dir("admin"),
+        token: &server.admin,
+    };
+    admin.ok(&["init", "-q"]);
+    admin.ok(&["remote", "add", "origin", &server.url("acme/web")]);
+    admin.commit_file("base.txt", "base\n");
+    admin.commit_file(
+        ".asc/policy.toml",
+        "version = 1\n\n[roles]\nmaintainer = [\"user:root\"]\n\n[trunk]\nrequire_approvals = 1\nallow_force = false\n",
+    );
+    admin.ok(&["push", "origin", "master"]);
+
+    let bob_token = server.token(&["--user", "bob", "--repo", "acme/*", "--write"]);
+    let bob = Client {
+        sb: &sb,
+        dir: sb.dir("bob"),
+        token: &bob_token,
+    };
+    bob.ok(&["init", "-q"]);
+    bob.ok(&["remote", "add", "origin", &server.url("acme/web")]);
+    bob.ok(&["pull", "origin", "master"]);
+    bob.ok(&["config", "asc.stack.trunk", "master"]);
+    bob.commit_file("direct.txt", "direct\n");
+    let refused = bob.run(&["push", "origin", "master"]);
+    assert!(
+        !refused.status.success(),
+        "a direct push to the trunk was accepted: {}",
+        text(&refused.stdout)
+    );
+
+    bob.commit_file("step1.txt", "step 1\n");
+    let out = bob.run(&["submit", "-s", "--json"]);
+    assert!(
+        out.status.success(),
+        "the submit after the refused push failed: {}\nserver: {}",
+        text(&out.stderr),
+        server.log()
+    );
 }
