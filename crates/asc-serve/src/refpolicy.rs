@@ -206,6 +206,8 @@ impl Class {
 pub struct RepoPolicy {
     branchless: bool,
     patterns: Vec<String>,
+    /// The repository's default branch: the trunk the policy protects (`ListRefs` reports it as `head`).
+    default_branch: String,
 }
 
 impl RepoPolicy {
@@ -252,7 +254,13 @@ impl RepoPolicy {
         Ok(Self {
             branchless,
             patterns,
+            default_branch: default_branch.to_owned(),
         })
+    }
+
+    /// The full name of the default branch.
+    pub fn head(&self) -> String {
+        format!("{HEADS}{}", self.default_branch)
     }
 
     /// Reads the policy of repository `repo_id`.
@@ -620,7 +628,7 @@ pub async fn advertise<R: Refs + ?Sized>(
     Ok(wire::ListRefsResponse {
         refs: shown.to_vec(),
         next,
-        head: String::new(),
+        head: policy.head(),
     })
 }
 
@@ -630,6 +638,48 @@ mod tests {
 
     fn policy(branchless: bool) -> RepoPolicy {
         RepoPolicy::from_parts(branchless, None, "master", "[]").unwrap()
+    }
+
+    #[tokio::test]
+    async fn listing_refs_reports_the_default_branch_as_head() {
+        use asc_store::refs::{Actor, Expect, RefTxn, RefUpdate, Refs as _};
+        let registry = crate::ingest::testutil::registry().await;
+        let entry = crate::ingest::testutil::repo(&registry).await;
+        let c = crate::ingest::testutil::commit(&entry, &[], &[("f", b"x")]).await;
+        let txn = RefTxn {
+            updates: vec![RefUpdate {
+                name: asc_core::path::RefName::new(b"refs/heads/master".to_vec()).unwrap(),
+                expect: Expect::Any,
+                new: Some(asc_core::id::RefTarget::Changeset(c)),
+                expires_at: None,
+            }],
+            actor: Actor {
+                id: "t".into(),
+                via: "test".into(),
+            },
+            reason: "t".into(),
+            op_id: uuid::Uuid::new_v4(),
+        };
+        registry.refs().update(entry.key, &txn).await.unwrap();
+        let req = wire::ListRefsRequest::default();
+        let got = advertise(
+            registry.refs().as_ref(),
+            entry.key,
+            &policy(false),
+            None,
+            &req,
+        )
+        .await
+        .unwrap();
+        assert_eq!(got.head, "refs/heads/master");
+        assert_eq!(got.refs.len(), 1);
+        // The head is the repository's default branch, whatever refs exist, and names a branch that need not exist yet.
+        let trunk = RepoPolicy::from_parts(false, None, "trunk", "[]").unwrap();
+        assert_eq!(trunk.head(), "refs/heads/trunk");
+        let got = advertise(registry.refs().as_ref(), entry.key, &trunk, None, &req)
+            .await
+            .unwrap();
+        assert_eq!(got.head, "refs/heads/trunk");
     }
 
     #[test]
