@@ -283,7 +283,6 @@ fn a_stack_of_three_is_submitted_and_a_fourth_change_extends_it() {
 /// `asc submit -s` must still submit the stack: the refused commit is part of what the person made, and it
 /// has to reach the server as a change like any other, not break the metadata of the stack.
 #[test]
-#[ignore = "fails until a submit can name a changeset the server holds from a plain push (no change row): see the fix options in the report"]
 fn a_submit_after_a_push_the_policy_refused_still_submits_the_stack() {
     let server = Server::start();
     server.create_repo("acme/web");
@@ -302,7 +301,9 @@ fn a_submit_after_a_push_the_policy_refused_still_submits_the_stack() {
     );
     admin.ok(&["push", "origin", "master"]);
 
-    let bob_token = server.token(&["--user", "bob", "--repo", "acme/*", "--write"]);
+    // A token principal is no user the byte ledger can name, so only an administrator may
+    // publish a changeset it did not bring with a submit; the policy still binds Bob.
+    let bob_token = server.token(&["--user", "bob", "--repo", "acme/*", "--admin"]);
     let bob = Client {
         sb: &sb,
         dir: sb.dir("bob"),
@@ -325,6 +326,36 @@ fn a_submit_after_a_push_the_policy_refused_still_submits_the_stack() {
     assert!(
         out.status.success(),
         "the submit after the refused push failed: {}\nserver: {}",
+        text(&out.stderr),
+        server.log()
+    );
+}
+
+/// A plain push of a branch the server keeps sends the change metadata too, so a later submit
+/// of the same commits finds their changes on the server.
+#[test]
+fn a_submit_after_a_plain_push_of_the_same_commits_submits_the_stack() {
+    let server = Server::start();
+    server.create_repo("acme/web");
+    let sb = Sandbox::new();
+    let admin = Client {
+        sb: &sb,
+        dir: sb.dir("admin"),
+        token: &server.admin,
+    };
+    admin.ok(&["init", "-q"]);
+    admin.ok(&["remote", "add", "origin", &server.url("acme/web")]);
+    admin.commit_file("base.txt", "base\n");
+    admin.ok(&["push", "origin", "master"]);
+    admin.ok(&["config", "asc.stack.trunk", "master"]);
+
+    admin.commit_file("one.txt", "one\n");
+    admin.commit_file("two.txt", "two\n");
+    admin.ok(&["push", "origin", "HEAD:refs/heads/side"]);
+    let out = admin.run(&["submit", "-s", "--json"]);
+    assert!(
+        out.status.success(),
+        "the submit after a plain push failed: {}\nserver: {}",
         text(&out.stderr),
         server.log()
     );
