@@ -715,7 +715,8 @@ fn drive(
                         let msg = Msg::Data(Bytes::copy_from_slice(&buf[..n]));
                         if !send_bounded(&tx, msg, limits.idle_timeout, deadline) {
                             // The client went away or stopped reading: the child has no reader.
-                            child.kill();
+                            // SIGTERM first: a git killed outright leaves its push quarantine.
+                            child.terminate(Duration::from_secs(2));
                             break;
                         }
                         sent_any = true;
