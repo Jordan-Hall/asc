@@ -40,6 +40,20 @@ use sqlx::{AnyPool, Row};
 use tonic::Status;
 use uuid::Uuid;
 
+/// Changesets a preview walks at most.
+const PREVIEW_WALK: usize = 2000;
+/// Changes a preview lists.
+const PREVIEW_LISTED: usize = 100;
+
+/// What an undo would do to the changes of the ref.
+#[derive(Default)]
+struct Preview {
+    back: u32,
+    changes: Vec<Bytes>,
+    kept: u32,
+    truncated: bool,
+}
+
 use super::actor::actor_of;
 use super::catalogue::plain;
 use super::{NewEvent, Outcome, store};
@@ -551,10 +565,17 @@ impl RefLog {
             user: stored_name.starts_with(USER_NS),
         };
         if req.dry_run {
+            let preview = self
+                .preview(&entry, current.as_ref(), restored.as_ref())
+                .await?;
             return Ok(wire::UndoRefResponse {
                 result: Some(result),
                 new_seq: 0,
                 applied: false,
+                changes_back: preview.back,
+                changes: preview.changes,
+                approvals_kept: preview.kept,
+                preview_truncated: preview.truncated,
             });
         }
 
@@ -576,6 +597,7 @@ impl RefLog {
             result: Some(result),
             new_seq: 0,
             applied: true,
+            ..Default::default()
         };
         match self
             .commit(
@@ -598,6 +620,85 @@ impl RefLog {
                 Err(e)
             }
         }
+    }
+
+    /// The changes that leave the ref when it goes from `current` back to `restored`, and how many of
+    /// them hold an approval of their newest version, which stays.
+    async fn preview(
+        &self,
+        entry: &RepoEntry,
+        current: Option<&RefTarget>,
+        restored: Option<&RefTarget>,
+    ) -> Result<Preview, Status> {
+        use futures::TryStreamExt as _;
+        let mut out = Preview::default();
+        let Some(RefTarget::Changeset(top)) = current else {
+            return Ok(out);
+        };
+        let exclude: Vec<_> = match restored {
+            Some(RefTarget::Changeset(c)) => vec![*c],
+            _ => Vec::new(),
+        };
+        let graph = crate::policy::graph_of(&self.registry, entry);
+        let list: Vec<asc_core::id::ChangesetId> = graph
+            .log(asc_engine::graph::LogQuery {
+                include: vec![*top],
+                exclude,
+                limit: Some(PREVIEW_WALK + 1),
+                ..asc_engine::graph::LogQuery::default()
+            })
+            .try_collect()
+            .await
+            .map_err(|e| internal("history", &e))?;
+        out.truncated = list.len() > PREVIEW_WALK;
+        let ns = entry.ns.as_bytes().to_vec();
+        let mut changes: std::collections::BTreeSet<Vec<u8>> = std::collections::BTreeSet::new();
+        for part in list
+            .iter()
+            .take(PREVIEW_WALK)
+            .collect::<Vec<_>>()
+            .chunks(100)
+        {
+            let marks = (1..=part.len())
+                .map(|i| format!("${}", i + 1))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let q = format!(
+                "SELECT DISTINCT change FROM change_versions WHERE ns = $1 AND cs IN ({marks})"
+            );
+            let mut query =
+                sqlx::query_scalar::<_, Vec<u8>>(sqlx::AssertSqlSafe(q)).bind(ns.clone());
+            for cs in part {
+                query = query.bind(cs.as_bytes().to_vec());
+            }
+            changes.extend(
+                query
+                    .fetch_all(self.pool())
+                    .await
+                    .map_err(|e| internal("change_versions", &e))?,
+            );
+        }
+        out.back = u32::try_from(changes.len()).unwrap_or(u32::MAX);
+        for change in &changes {
+            let kept: i64 = sqlx::query_scalar(
+                "SELECT CAST(COUNT(*) AS BIGINT) FROM review_approvals a                  WHERE a.ns = $1 AND a.change = $2 AND a.state = $3 AND a.version =                    (SELECT MAX(v.v) FROM change_versions v WHERE v.ns = a.ns AND v.change = a.change)",
+            )
+            .bind(ns.clone())
+            .bind(change.clone())
+            .bind(wire::ApprovalState::Approved as i64)
+            .fetch_one(self.pool())
+            .await
+            .map_err(|e| internal("review_approvals", &e))?;
+            if kept > 0 {
+                out.kept += 1;
+            }
+        }
+        out.changes = changes
+            .into_iter()
+            .take(PREVIEW_LISTED)
+            .map(Bytes::from)
+            .collect();
+        Ok(out)
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -22,6 +22,7 @@ const BUILDOUT_FILES: &[&str] = &[
     "asc/v1/ciinsights.proto",
     "asc/v1/crosssearch.proto",
     "asc/v1/deps.proto",
+    "asc/v1/insights.proto",
     "asc/v1/mergequeue.proto",
     "asc/v1/policy.proto",
     "asc/v1/secretscan.proto",

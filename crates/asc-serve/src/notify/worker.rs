@@ -74,7 +74,8 @@ impl Sink for HubSink {
         self.0.asc_event(id, &body).await.map_err(|e| {
             let permanent = match &e {
                 ForgejoError::Status { status, .. } => {
-                    (400..500).contains(status) && !matches!(status, 408 | 425 | 429)
+                    // 401 and 403 are a token being rotated: retried with the backoff.
+                    (400..500).contains(status) && !matches!(status, 401 | 403 | 408 | 425 | 429)
                 }
                 // A 200 the hub sent nonsense with was received: posting again would tell twice.
                 ForgejoError::Invalid(_)
@@ -233,6 +234,12 @@ impl Dispatcher {
             };
             match result {
                 Ok(told) => {
+                    audit(&self.pool, &out.repo, "notify.event.delivered", &name)
+                        .detail("event", out.event.clone())
+                        .detail("told", told.to_string())
+                        .detail("attempts", (attempts + 1).to_string())
+                        .write()
+                        .await;
                     sqlx::query(
                         "UPDATE notify_events SET state = 1, done_at = $1, notified = $2, last_error = '' \
                          WHERE ns = $3 AND id = $4",
@@ -246,6 +253,12 @@ impl Dispatcher {
                 }
                 Err(f) if f.permanent || now - created_at >= GIVE_UP_SECS => {
                     tracing::warn!(event = "notify.rejected", id = %name, error = %cut(&f.message));
+                    audit(&self.pool, &out.repo, "notify.event.rejected", &name)
+                        .detail("event", out.event.clone())
+                        .detail("attempts", (attempts + 1).to_string())
+                        .detail("reason", cut(&f.message))
+                        .write()
+                        .await;
                     sqlx::query(
                         "UPDATE notify_events SET state = 2, done_at = $1, attempts = $2, last_error = $3 \
                          WHERE ns = $4 AND id = $5",
@@ -279,6 +292,32 @@ impl Dispatcher {
     /// Wakes the worker after new rows were written (the poll finds them anyway).
     pub fn wake(&self) {
         self.wake.notify_one();
+    }
+}
+
+/// An audit event of the dispatcher (the actor is the system); `write` appends it, best effort.
+struct Audit<'a> {
+    pool: &'a AnyPool,
+    event: crate::audit::NewEvent,
+}
+
+fn audit<'a>(pool: &'a AnyPool, repo: &str, action: &str, target: &str) -> Audit<'a> {
+    Audit {
+        pool,
+        event: crate::audit::NewEvent::new(action, crate::audit::Actor::new("system", "notify"))
+            .repo(repo)
+            .target(target),
+    }
+}
+
+impl Audit<'_> {
+    fn detail(mut self, key: &str, value: String) -> Self {
+        self.event = self.event.detail(key, value);
+        self
+    }
+
+    async fn write(self) {
+        crate::audit::store::record_best_effort(self.pool, &self.event).await;
     }
 }
 

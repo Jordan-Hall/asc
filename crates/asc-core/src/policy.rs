@@ -691,6 +691,10 @@ pub struct MergeOptions {
     pub queue: bool,
     /// The queue re-checks the exact head that would land.
     pub revalidate: bool,
+    /// Entries the queue tests and lands together, 1 to [`MAX_BATCH`].
+    pub batch: u32,
+    /// The checks of the policy run again on the landed tip, after the merge.
+    pub post_merge_checks: bool,
 }
 
 impl Default for MergeOptions {
@@ -698,8 +702,30 @@ impl Default for MergeOptions {
         Self {
             queue: false,
             revalidate: true,
+            batch: 1,
+            post_merge_checks: false,
         }
     }
+}
+
+/// Largest `[merge] batch`.
+pub const MAX_BATCH: u32 = 20;
+/// Largest `[stacks] max_depth`.
+pub const MAX_STACK_DEPTH: u32 = 100;
+/// Largest `[stacks] cleanup_days`.
+pub const MAX_CLEANUP_DAYS: u32 = 3650;
+
+/// `[stacks]`: how stacks of changes behave in this repository.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StacksPolicy {
+    /// The most changes one stack may hold when it is queued to land; `None` is no limit.
+    pub max_depth: Option<u32>,
+    /// Days after the last change of a stack lands before its refs are removed; `None` leaves it to the server.
+    pub cleanup_days: Option<u32>,
+    /// Restack the open stacks when the default branch moves.
+    pub restack_on_main_move: bool,
+    /// People with write access who did not start a stack may push onto it.
+    pub collaborators_may_push: bool,
 }
 
 /// `[review]`: who may approve.
@@ -709,6 +735,9 @@ pub struct ReviewPolicy {
     pub author_may_approve: bool,
     /// Only people approve: an approval from an agent does not count. On by default.
     pub human_approval: bool,
+    /// An approval of a version still counts on a newer version when no file's patch changed (a
+    /// restack moved the base only). On by default.
+    pub keep_approvals_on_restack: bool,
 }
 
 impl Default for ReviewPolicy {
@@ -716,6 +745,7 @@ impl Default for ReviewPolicy {
         Self {
             author_may_approve: false,
             human_approval: true,
+            keep_approvals_on_restack: true,
         }
     }
 }
@@ -734,6 +764,7 @@ pub struct Policy {
     pub strategy: Strategy,
     pub merge: MergeOptions,
     pub review: ReviewPolicy,
+    pub stacks: StacksPolicy,
 }
 
 #[derive(Deserialize)]
@@ -759,6 +790,19 @@ struct RawPolicy {
     merge: RawMerge,
     #[serde(default)]
     review: RawReview,
+    #[serde(default)]
+    stacks: RawStacks,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct RawStacks {
+    max_depth: Option<u32>,
+    cleanup_days: Option<u32>,
+    #[serde(default)]
+    restack_on_main_move: bool,
+    #[serde(default)]
+    collaborators_may_push: bool,
 }
 
 #[derive(Deserialize)]
@@ -768,6 +812,8 @@ struct RawReview {
     author_may_approve: bool,
     #[serde(default = "yes")]
     human_approval: bool,
+    #[serde(default = "yes")]
+    keep_approvals_on_restack: bool,
 }
 
 impl Default for RawReview {
@@ -775,6 +821,7 @@ impl Default for RawReview {
         Self {
             author_may_approve: false,
             human_approval: true,
+            keep_approvals_on_restack: true,
         }
     }
 }
@@ -913,6 +960,14 @@ struct RawMerge {
     queue: bool,
     #[serde(default = "yes")]
     revalidate: bool,
+    #[serde(default = "one")]
+    batch: u32,
+    #[serde(default)]
+    post_merge_checks: bool,
+}
+
+fn one() -> u32 {
+    1
 }
 
 impl Default for RawMerge {
@@ -921,6 +976,8 @@ impl Default for RawMerge {
             strategy: Strategy::default(),
             queue: false,
             revalidate: true,
+            batch: 1,
+            post_merge_checks: false,
         }
     }
 }
@@ -1107,10 +1164,34 @@ impl Policy {
             merge: MergeOptions {
                 queue: raw.merge.queue,
                 revalidate: raw.merge.revalidate,
+                batch: match raw.merge.batch {
+                    n @ 1..=MAX_BATCH => n,
+                    _ => bad::<u32>(format!("[merge] batch is 1 to {MAX_BATCH}"))?,
+                },
+                post_merge_checks: raw.merge.post_merge_checks,
             },
             review: ReviewPolicy {
                 author_may_approve: raw.review.author_may_approve,
                 human_approval: raw.review.human_approval,
+                keep_approvals_on_restack: raw.review.keep_approvals_on_restack,
+            },
+            stacks: StacksPolicy {
+                max_depth: match raw.stacks.max_depth {
+                    Some(n @ 1..=MAX_STACK_DEPTH) => Some(n),
+                    None => None,
+                    Some(_) => bad::<Option<u32>>(format!(
+                        "[stacks] max_depth is 1 to {MAX_STACK_DEPTH}; omit it for no limit"
+                    ))?,
+                },
+                cleanup_days: match raw.stacks.cleanup_days {
+                    Some(n @ 1..=MAX_CLEANUP_DAYS) => Some(n),
+                    None => None,
+                    Some(_) => bad::<Option<u32>>(format!(
+                        "[stacks] cleanup_days is 1 to {MAX_CLEANUP_DAYS}; omit it for the server's setting"
+                    ))?,
+                },
+                restack_on_main_move: raw.stacks.restack_on_main_move,
+                collaborators_may_push: raw.stacks.collaborators_may_push,
             },
         })
     }
@@ -1456,7 +1537,8 @@ maintainer = [\"user:a\"]
             none.review,
             ReviewPolicy {
                 author_may_approve: false,
-                human_approval: true
+                human_approval: true,
+                keep_approvals_on_restack: true
             }
         );
         let loose = format!(
@@ -1470,7 +1552,8 @@ human_approval = false
             p.review,
             ReviewPolicy {
                 author_may_approve: true,
-                human_approval: false
+                human_approval: false,
+                keep_approvals_on_restack: true
             }
         );
         let typo = format!(
@@ -1806,13 +1889,52 @@ revalidate = false
         assert_eq!(d.ci, CiPolicy::default());
         assert_eq!(d.ci.flaky_threshold, 0.02);
         assert!(d.agents.enabled);
+        assert_eq!(d.merge, MergeOptions::default());
+        assert_eq!((d.merge.batch, d.merge.post_merge_checks), (1, false));
+        assert_eq!(d.stacks, StacksPolicy::default());
+        assert!(d.review.keep_approvals_on_restack);
+    }
+
+    #[test]
+    fn the_form_keys_of_the_policy_board_parse_with_bounds() {
+        let p = |extra: &str| Policy::parse(format!("{HEAD}{extra}").as_bytes());
+        let ok = p("[merge]
+queue = true
+batch = 5
+post_merge_checks = true
+[review]
+keep_approvals_on_restack = false
+[stacks]
+max_depth = 8
+cleanup_days = 7
+restack_on_main_move = true
+collaborators_may_push = true
+")
+        .unwrap();
+        assert_eq!((ok.merge.batch, ok.merge.post_merge_checks), (5, true));
+        assert!(!ok.review.keep_approvals_on_restack);
         assert_eq!(
-            d.merge,
-            MergeOptions {
-                queue: false,
-                revalidate: true
+            ok.stacks,
+            StacksPolicy {
+                max_depth: Some(8),
+                cleanup_days: Some(7),
+                restack_on_main_move: true,
+                collaborators_may_push: true
             }
         );
+        for bad in [
+            "[merge]\nbatch = 0\n",
+            "[merge]\nbatch = 21\n",
+            "[stacks]\nmax_depth = 0\n",
+            "[stacks]\nmax_depth = 101\n",
+            "[stacks]\ncleanup_days = 0\n",
+            "[stacks]\ncleanup_days = 4000\n",
+            "[stacks]\nmax_depth = -1\n",
+            "[stacks]\nlongest = 3\n",
+            "[review]\nkeep = true\n",
+        ] {
+            assert!(p(bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

@@ -67,6 +67,16 @@ trusted_proxies = []                 # the exact /32 of your TLS proxy, if any
 # retention_days = 90                    # test cases; 0 keeps them all
 # flaky_window_runs = 100
 
+# Events for the hub's people (docs/BUILDOUT.md section 21). Posted to [forgejo] with its internal token; without
+# a hub nothing is queued. The paths are where the hub links each event; {repo} is owner/name.
+# [notify]
+# enabled = true
+# path_prefix = ""                       # a hub served under a sub-path, e.g. "/hub"
+# change_path = "/{repo}/changes/{change}"
+# run_path = "/{repo}/agents/runs/{run}"
+# queue_path = "/{repo}/merge-queue"
+# policy_path = "/{repo}/settings/policy"
+
 # Dependency scanning and update proposals (docs/DEPENDENCIES.md). On by default; the endpoints below are
 # the only places it calls, each through the network guard and the egress allowlist.
 # [deps]

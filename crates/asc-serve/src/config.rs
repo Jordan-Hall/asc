@@ -1077,6 +1077,8 @@ pub struct ServeConfig {
     pub audit: crate::audit::AuditConfig,
     /// `[ci_insights]`: retention and the flaky window (docs/BUILDOUT.md section 8).
     pub ci_insights: crate::ci::insights::InsightsConfig,
+    /// `[notify]`: events for the hub's people and where they link to (docs/BUILDOUT.md section 21).
+    pub notify: crate::notify::NotifyConfig,
     /// `[secrets]`: bounds of the push-time secret scan (docs/BUILDOUT.md section 4).
     pub secrets: crate::secretscan::Config,
     /// `[signing]`: the server's signing key and the keys per user (docs/BUILDOUT.md section 5).
@@ -1124,6 +1126,7 @@ impl Default for ServeConfig {
             storage: crate::storage::StorageConfig::default(),
             audit: crate::audit::AuditConfig::default(),
             ci_insights: crate::ci::insights::InsightsConfig::default(),
+            notify: crate::notify::NotifyConfig::default(),
             secrets: crate::secretscan::Config::default(),
             signing: crate::signing::Config::default(),
             aikeys: crate::ai::AiKeysConfig::default(),
@@ -1277,6 +1280,9 @@ impl ServeConfig {
         self.ci_insights
             .validate()
             .map_err(|e| ConfigError::Invalid(format!("ci_insights: {e}")))?;
+        self.notify
+            .validate()
+            .map_err(|e| ConfigError::Invalid(format!("notify: {e}")))?;
         self.netguard.validate().or_else(invalid)?;
         self.storage.validate().or_else(invalid)?;
         self.aikeys.validate().or_else(invalid)?;

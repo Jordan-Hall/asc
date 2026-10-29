@@ -63,6 +63,27 @@ impl Sink for Recorder {
     }
 }
 
+/// What the queue holds, oldest first: `(event, users, title, detail, path)`.
+pub(crate) type Note = (String, Vec<String>, String, String, String);
+
+pub(crate) async fn notes(pool: &AnyPool) -> Vec<Note> {
+    sqlx::query("SELECT event, users_json, title, detail, path FROM notify_events ORDER BY id")
+        .fetch_all(pool)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|r| {
+            (
+                r.get("event"),
+                serde_json::from_str(&r.get::<String, _>("users_json")).unwrap(),
+                r.get("title"),
+                r.get("detail"),
+                r.get("path"),
+            )
+        })
+        .collect()
+}
+
 fn retry(m: &str) -> Failure {
     Failure {
         permanent: false,
@@ -614,6 +635,8 @@ mod hub {
             (429, "{}"),
             (500, "{}"),
             (503, "{}"),
+            (401, "{}"),
+            (403, "{}"),
         ])
         .await;
         let s = sink(&url);
@@ -623,9 +646,12 @@ mod hub {
             s.deliver("x-1", &out()).await.unwrap_err(),
             s.deliver("x-1", &out()).await.unwrap_err(),
             s.deliver("x-1", &out()).await.unwrap_err(),
+            s.deliver("x-1", &out()).await.unwrap_err(),
+            s.deliver("x-1", &out()).await.unwrap_err(),
         ];
         let permanent: Vec<bool> = got.iter().map(|f| f.permanent).collect();
-        assert_eq!(permanent, [true, true, false, false, false]);
+        // 400 and 404 are final; 429, 500, 503 and a rotating token (401, 403) are retried.
+        assert_eq!(permanent, [true, true, false, false, false, false, false]);
         // Nothing is listening any more: unreachable is retried.
         let down = s.deliver("x-1", &out()).await.unwrap_err();
         assert!(!down.permanent, "{down:?}");
