@@ -24,10 +24,70 @@ pub const MANIFEST: &str = "manifest.json";
 pub const SIDECAR: &str = "asc-stored.json";
 const PART: usize = 16 * 1024 * 1024;
 
+/// What an S3 backup says about itself. It sits beside the backup and is NOT trusted: the server
+/// compares it with its own record of the run (`encrypted`, and the seal) before it believes it.
 #[derive(Debug, Serialize, Deserialize)]
-struct Sidecar {
+pub struct Sidecar {
+    pub encrypted: bool,
+    pub files: Vec<(String, u64)>,
+}
+
+/// Largest backup a restore will download, in stored bytes.
+pub const MAX_RESTORE_BYTES: u64 = 4 * 1024 * 1024 * 1024 * 1024;
+/// Largest sidecar read.
+const MAX_SIDECAR: u64 = 16 * 1024 * 1024;
+
+fn hex(b: &[u8]) -> String {
+    use std::fmt::Write as _;
+    b.iter().fold(String::new(), |mut s, x| {
+        let _ = write!(s, "{x:02x}");
+        s
+    })
+}
+
+/// The server's record of what a finished backup holds: its id, whether it was encrypted, the
+/// stored size of each file and the SHA-256 of the manifest (which in turn lists the digest of every
+/// other file). It is kept in the database, never beside the backup. With a backup key it is an
+/// HMAC-SHA256 under a key derived from it, so it also proves the key; without one, a SHA-256.
+pub fn seal(
+    key: Option<&[u8; 32]>,
+    id: &str,
     encrypted: bool,
-    files: Vec<(String, u64)>,
+    files: &[(String, u64)],
+    manifest: &[u8],
+) -> String {
+    use hmac::{Hmac, KeyInit, Mac};
+    use sha2::{Digest as _, Sha256};
+    let mut files = files.to_vec();
+    files.sort();
+    let mut input = format!(
+        "asc-backup-seal-v1\nid={id}\nenc={}\nmanifest={}\n",
+        u8::from(encrypted),
+        hex(&Sha256::digest(manifest))
+    );
+    for (rel, size) in &files {
+        input.push_str(&format!("file={size} {rel}\n"));
+    }
+    match key {
+        Some(k) => {
+            let mut okm = [0u8; 32];
+            hkdf::Hkdf::<Sha256>::new(None, k)
+                .expand(b"asc-backup-seal-v1", &mut okm)
+                .expect("32 bytes is a valid output length");
+            let mut mac = <Hmac<Sha256> as KeyInit>::new_from_slice(&okm).expect("any key length");
+            mac.update(input.as_bytes());
+            format!("hmac:{}", hex(&mac.finalize().into_bytes()))
+        }
+        None => format!("sha256:{}", hex(&Sha256::digest(input.as_bytes()))),
+    }
+}
+
+/// The seal of a local backup directory as it is now.
+pub fn local_seal(dir: &Path, id: &str) -> Result<String, String> {
+    let files = list_dir(dir).map_err(err)?;
+    let manifest =
+        std::fs::read(dir.join(MANIFEST)).map_err(|_| "the backup has no manifest".to_owned())?;
+    Ok(seal(None, id, false, &files, &manifest))
 }
 
 /// A target ready to use.
@@ -72,7 +132,7 @@ pub fn open(t: &TargetConfig) -> Result<Place, String> {
                     b.with_secret_access_key(v)
                 };
             }
-            let store = b.build().map_err(|e| err(e))?;
+            let store = b.build().map_err(err)?;
             let mut p = prefix.trim_matches('/').to_owned();
             if !p.is_empty() {
                 p.push('/');
@@ -101,6 +161,8 @@ fn walk(dir: &Path, base: &Path, out: &mut Vec<(String, u64)>) -> std::io::Resul
         let path = e.path();
         if ft.is_dir() {
             walk(&path, base, out)?;
+        } else if ft.is_symlink() {
+            return Err(std::io::Error::other("a link in the backup"));
         } else if ft.is_file() {
             let rel = path
                 .strip_prefix(base)
@@ -156,7 +218,7 @@ impl Place {
         src: &Path,
         key: Option<[u8; 32]>,
         progress: &(dyn Fn(u64) + Send + Sync),
-    ) -> Result<u64, String> {
+    ) -> Result<(u64, String), String> {
         let Self::S3 { store, prefix } = self else {
             return Err("only an S3 target is uploaded to".into());
         };
@@ -195,6 +257,9 @@ impl Place {
             sent += size;
             progress(sent);
         }
+        let manifest = std::fs::read(src.join(MANIFEST))
+            .map_err(|_| "the backup has no manifest".to_owned())?;
+        let sealed = seal(key.as_ref(), id, key.is_some(), &stored, &manifest);
         let side = serde_json::to_vec(&Sidecar {
             encrypted: key.is_some(),
             files: stored,
@@ -207,22 +272,42 @@ impl Place {
             )
             .await
             .map_err(err)?;
-        Ok(stored_total)
+        Ok((stored_total, sealed))
     }
 
-    /// Copies backup `id` of an S3 target to `dst`, decrypting under `key` when it was encrypted.
+    /// Copies backup `id` of an S3 target to `dst` and returns its seal as it now stands.
+    ///
+    /// `encrypted` is what the server recorded for the run, not what the sidecar claims: a
+    /// sidecar that says otherwise is refused, and when the run was encrypted every file but the
+    /// manifest must decrypt and authenticate under `key`. The caller compares the returned seal
+    /// with the one in its database before it uses anything.
     pub async fn download_dir(
         &self,
         id: &str,
         dst: &Path,
         key: Option<[u8; 32]>,
-    ) -> Result<(), String> {
+        encrypted: bool,
+    ) -> Result<String, String> {
         let side = self.sidecar(id).await?;
-        if side.encrypted && key.is_none() {
+        if side.encrypted != encrypted {
+            return Err("the backup's record on the target disagrees with the server's".into());
+        }
+        if encrypted && key.is_none() {
             return Err("the backup is encrypted and no backup key is configured".into());
         }
-        for (rel, _) in &side.files {
-            if !safe_rel(rel) {
+        if side.files.len() > 1_000_000
+            || side
+                .files
+                .iter()
+                .map(|(_, n)| *n)
+                .fold(0u64, u64::saturating_add)
+                > MAX_RESTORE_BYTES
+        {
+            return Err("the backup is larger than a restore will take".into());
+        }
+        let mut seen = std::collections::HashSet::new();
+        for (rel, declared) in &side.files {
+            if !safe_rel(rel) || !seen.insert(rel.as_str()) || rel == SIDECAR {
                 return Err("unsafe file name in the backup".into());
             }
             let (store, path) = self.key(id, rel).ok_or("not an S3 target")?;
@@ -238,11 +323,20 @@ impl Place {
             }
             let mut file = crypto::create_private_file(&raw).map_err(err)?;
             let mut body = store.get(&path).await.map_err(err)?.into_stream();
+            let mut got = 0u64;
             while let Some(chunk) = body.next().await {
-                std::io::Write::write_all(&mut file, &chunk.map_err(err)?).map_err(err)?;
+                let chunk = chunk.map_err(err)?;
+                got += chunk.len() as u64;
+                if got > *declared {
+                    return Err(format!("{rel} is larger on the target than it was stored"));
+                }
+                std::io::Write::write_all(&mut file, &chunk).map_err(err)?;
             }
             file.sync_all().map_err(err)?;
             drop(file);
+            if got != *declared {
+                return Err(format!("{rel} has the wrong size on the target"));
+            }
             if encrypted_file {
                 let (from, to, k) = (raw.clone(), target, key.expect("checked"));
                 let r = tokio::task::spawn_blocking(move || crypto::decrypt_file(&k, &from, &to))
@@ -252,18 +346,21 @@ impl Place {
                 r.map_err(err)?;
             }
         }
-        Ok(())
+        let manifest = std::fs::read(dst.join(MANIFEST))
+            .map_err(|_| "the backup has no manifest".to_owned())?;
+        Ok(seal(key.as_ref(), id, encrypted, &side.files, &manifest))
     }
 
-    async fn sidecar(&self, id: &str) -> Result<Sidecar, String> {
+    pub async fn sidecar(&self, id: &str) -> Result<Sidecar, String> {
         let (store, path) = self.key(id, SIDECAR).ok_or("not an S3 target")?;
-        let bytes = store
+        let got = store
             .get(&path)
             .await
-            .map_err(|_| "the backup's files are not on the target".to_owned())?
-            .bytes()
-            .await
-            .map_err(err)?;
+            .map_err(|_| "the backup's files are not on the target".to_owned())?;
+        if got.meta.size > MAX_SIDECAR {
+            return Err("the backup's record on the target is too large".into());
+        }
+        let bytes = got.bytes().await.map_err(err)?;
         serde_json::from_slice(&bytes)
             .map_err(|_| "the backup's record on the target is damaged".to_owned())
     }
@@ -298,10 +395,20 @@ impl Place {
         }
     }
 
-    /// Whether every file of S3 backup `id` is on the target at the size it was stored with.
-    pub async fn check(&self, id: &str) -> Result<u64, String> {
+    /// Whether every file of S3 backup `id` is on the target at the size it was stored with, and
+    /// its seal as it now stands (compare it with the server's record). `encrypted` is the
+    /// server's record of the run.
+    pub async fn check(
+        &self,
+        id: &str,
+        key: Option<[u8; 32]>,
+        encrypted: bool,
+    ) -> Result<String, String> {
         let side = self.sidecar(id).await?;
-        let mut total = 0;
+        if side.encrypted != encrypted {
+            return Err("the backup's record on the target disagrees with the server's".into());
+        }
+        let mut total = 0u64;
         for (rel, size) in &side.files {
             let (store, path) = self.key(id, rel).ok_or("not an S3 target")?;
             let meta = store
@@ -313,7 +420,9 @@ impl Place {
             }
             total += size;
         }
-        Ok(total)
+        let _ = total;
+        let manifest = self.read_manifest(id).await?;
+        Ok(seal(key.as_ref(), id, encrypted, &side.files, &manifest))
     }
 
     /// Removes backup `id` from the target. A missing backup is not an error.

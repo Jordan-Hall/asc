@@ -18,7 +18,8 @@ CREATE TABLE backup_runs (
     total_bytes BIGINT NOT NULL DEFAULT 0,
     actor       TEXT   NOT NULL DEFAULT '',
     location    TEXT   NOT NULL DEFAULT '',
-    purged      BIGINT NOT NULL DEFAULT 0
+    purged      BIGINT NOT NULL DEFAULT 0,
+    seal        TEXT   NOT NULL DEFAULT ''
 );
 CREATE INDEX backup_runs_by_time ON backup_runs (started);
 

@@ -21,7 +21,7 @@ pub const R_STAGED: i64 = 2;
 pub const R_FAILED: i64 = 3;
 
 const COLS: &str = "id, state, trig, target, started, finished, size_bytes, objects, encrypted, verify, verified_at, \
-                    note, done_bytes, total_bytes, actor, location, purged";
+                    note, done_bytes, total_bytes, actor, location, purged, seal";
 
 /// One run.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -43,6 +43,8 @@ pub struct Run {
     pub actor: String,
     pub location: String,
     pub purged: bool,
+    /// The server's record of what the backup holds (see `place::seal`); empty until it finishes.
+    pub seal: String,
 }
 
 fn run_of(r: &AnyRow) -> Result<Run, sqlx::Error> {
@@ -64,6 +66,7 @@ fn run_of(r: &AnyRow) -> Result<Run, sqlx::Error> {
         actor: r.try_get("actor")?,
         location: r.try_get("location")?,
         purged: r.try_get::<i64, _>("purged")? != 0,
+        seal: r.try_get("seal")?,
     })
 }
 
@@ -219,10 +222,11 @@ impl Store {
         objects: i64,
         encrypted: bool,
         note: &str,
+        seal: &str,
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
             "UPDATE backup_runs SET state = $2, finished = $3, size_bytes = $4, objects = $5, encrypted = $6, \
-             note = $7, done_bytes = CASE WHEN $2 = 2 THEN total_bytes ELSE done_bytes END WHERE id = $1",
+             note = $7, seal = $8, done_bytes = CASE WHEN $2 = 2 THEN total_bytes ELSE done_bytes END WHERE id = $1",
         )
         .bind(id.to_owned())
         .bind(state)
@@ -231,6 +235,7 @@ impl Store {
         .bind(objects)
         .bind(i64::from(encrypted))
         .bind(note.to_owned())
+        .bind(seal.to_owned())
         .execute(&self.pool)
         .await?;
         Ok(())
