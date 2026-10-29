@@ -7,8 +7,8 @@ use asc_rpc::server::wire;
 use tonic::transport::Channel;
 
 use super::acct::{bad, json, size};
-use super::agent::conn::{Conn, MAX_MESSAGE, clean_text, when};
-use super::codeintel::{clean_str, with_stdout};
+use super::acct::{clean_str, clean_text, out, say, warn_};
+use super::agent::conn::{Conn, MAX_MESSAGE, when};
 use super::common::{Ctx, Result};
 use crate::native::NativeSpec;
 use asc_rpc::services::backups_client::BackupsClient;
@@ -197,7 +197,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
             if c.json {
                 return json("asc.v1.ListBackupsResponse", &r);
             }
-            with_stdout(|out| {
+            out(|out| {
                 if let Some(st) = &r.status {
                     writeln!(
                         out,
@@ -230,7 +230,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
             if c.json {
                 return json("asc.v1.ListBackupTargetsResponse", &r);
             }
-            with_stdout(|out| {
+            out(|out| {
                 for t in &r.targets {
                     writeln!(
                         out,
@@ -264,7 +264,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
             if x.common.json {
                 return json("asc.v1.Backup", &b);
             }
-            println!("{}", run_line(&b));
+            say!("{}", run_line(&b));
             Ok(ExitCode::SUCCESS)
         }
         Sub::Verify(x) => {
@@ -282,7 +282,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
                 })
                 .await?;
             let b = r.backup.unwrap_or_default();
-            println!("{}", run_line(&b));
+            say!("{}", run_line(&b));
             Ok(ExitCode::SUCCESS)
         }
         Sub::Schedule(x) => {
@@ -327,7 +327,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
             if x.common.json {
                 return json("asc.v1.BackupSchedule", &s);
             }
-            println!(
+            say!(
                 "{} every {} h at {:02}:{:02} UTC to {}; keep {} days then {} weeks; next {}",
                 if s.enabled { "on" } else { "off" },
                 s.interval_hours,
@@ -355,16 +355,24 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
                 })
                 .await?;
             for w in &p.warnings {
-                eprintln!("asc: warning: {}", clean_text(w));
+                warn_!("asc: warning: {}", clean_text(w));
             }
-            eprintln!(
+            warn_!(
                 "asc: restoring replaces the current data with the state at {}; everything since is lost",
                 when(p.loses_changes_since)
             );
-            let Some(word) = x.confirm.filter(|c| *c == p.confirmation) else {
+            // The word comes from the server: it is shown, and accepted, only as a short plain word,
+            // and it is never typed for the user.
+            let Some(want) = super::acct::confirm_word(&p.confirmation) else {
                 return Err(bad(
                     "backup",
-                    format!("add --confirm {} to stage the restore", p.confirmation),
+                    "the server asked for a confirmation that is not a plain word; refusing",
+                ));
+            };
+            let Some(word) = x.confirm.clone().filter(|c| c == want) else {
+                return Err(bad(
+                    "backup",
+                    format!("add --confirm {want} to stage the restore"),
                 ));
             };
             let msg = wire::RestoreBackupRequest {
@@ -382,7 +390,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
                     }
                 })
                 .await?;
-            eprintln!(
+            warn_!(
                 "asc: restore of {} staged; restart the server to apply it. {}",
                 clean_str(&r.backup_id),
                 clean_text(&r.command)
@@ -417,6 +425,23 @@ mod tests {
             },
             &a,
         )
+    }
+
+    #[test]
+    fn every_field_of_a_backup_line_is_cleaned() {
+        let h = "\u{1b}[2J\u{1b}]0;x\u{7}\u{202e}evil\u{9b}".to_owned();
+        let b = wire::Backup {
+            id: h.clone(),
+            target: h.clone(),
+            note: h.clone(),
+            ..Default::default()
+        };
+        let line = run_line(&b);
+        assert!(
+            !line.chars().any(|c| c.is_control() || c == '\u{202e}'),
+            "{line:?}"
+        );
+        assert!(line.contains("\\x1b"));
     }
 
     #[test]
