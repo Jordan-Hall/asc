@@ -220,7 +220,7 @@ All take `--json` and `--remote <name\|url>`. The scope is `--rev <rev>`, `--cha
 
 ## 9. Agents and workflows
 
-`agent` and `workflow` talk to a server; give `--remote` when the current repository has none.
+`agent`, `workflow` and `release` talk to a server; give `--remote` when the current repository has none.
 
 | Command | What it does | Example |
 |---|---|---|
@@ -245,6 +245,13 @@ All take `--json` and `--remote <name\|url>`. The scope is `--rev <rev>`, `--cha
 | `workflow cancel` | Stops a run. | `asc workflow cancel 21` |
 | `workflow approve`, `reject` | Decides an approval step. | `asc workflow approve 21 deploy --comment ok` |
 | `workflow secret list`, `set`, `rm` | Manages the secrets steps read; `set` takes the value from `--key-file`, `--key-env` or standard input. | `asc workflow secret set DEPLOY_KEY --key-env DEPLOY_KEY` |
+| `release list` | Lists releases, newest first (`--channel stable|pre-release|draft`). | `asc release list --channel pre-release` |
+| `release show` | Shows a release with its provenance and the SHA-256 of each asset. | `asc release show v2.18.0` |
+| `release next` | Counts the changes since the latest release and proposes the next tag. | `asc release next` |
+| `release notes` | Writes notes (Added, Changed, Fixed) from the changes landed since a release. | `asc release notes --from v2.18.0` |
+| `release create` | Records a release. `--asset FILE[=https://address]` records size and SHA-256 of a file; `--generate-notes`, `--pre-release`, `--draft`, `--build-source S --build-run ID` name the build whose checks become the provenance. | `asc release create v2.19.0 --generate-notes --asset dist/asc-linux.tar.gz=https://dl.example.org/asc-linux.tar.gz` |
+| `release publish` | Publishes a draft. | `asc release publish v2.19.0` |
+| `release download` | Downloads assets and refuses a file whose size or SHA-256 differs from the record. | `asc release download v2.18.0 --asset asc-linux.tar.gz -o dist` |
 
 ## 10. Server and API
 
