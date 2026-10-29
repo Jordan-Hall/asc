@@ -33,9 +33,20 @@ use crate::policy::gate::{GateMode, GateRequest, GateUpdate};
 
 /// The longest branch name a `refs/for/` update may name.
 const MAX_BRANCH: usize = 200;
-/// What Forgejo's proc-receive says of a change whose pull request already holds this commit; a
-/// resubmit of an unchanged change is not a refusal.
-const PROC_UNCHANGED: &str = "same as the old commit";
+/// What Forgejo's proc-receive says, whole, of a change whose pull request already holds this
+/// commit (compared without case, surrounding space and a final full stop); a resubmit of an
+/// unchanged change is not a refusal. Any other non-empty `err`, this phrase with more text
+/// around it included, is a refusal.
+const PROC_UNCHANGED: &[&str] = &[
+    "the new commit is the same as the old commit",
+    "new commit is same with old commit",
+];
+
+/// Whether `err` is exactly one of the benign messages of [`PROC_UNCHANGED`].
+fn is_unchanged(err: &str) -> bool {
+    let e = err.trim().trim_end_matches('.').trim_end().to_lowercase();
+    PROC_UNCHANGED.contains(&e.as_str())
+}
 
 struct Submission {
     text: String,
@@ -260,7 +271,7 @@ impl ServerRefs {
             let refused = match hooks.proc_receive(&hook_req).await {
                 Ok(results) => results
                     .into_iter()
-                    .find(|r| !r.err.is_empty() && !r.err.contains(PROC_UNCHANGED))
+                    .find(|r| !r.err.is_empty() && !is_unchanged(&r.err))
                     .map(|r| r.err),
                 Err(e) => Some(e.0),
             };
@@ -758,6 +769,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn only_the_whole_benign_message_is_an_unchanged_change() {
+        for ok in [
+            "The new commit is the same as the old commit",
+            "the new commit is the same as the old commit.",
+            "  New commit is same with old commit 
+",
+        ] {
+            assert!(is_unchanged(ok), "{ok:?}");
+        }
+        for bad in [
+            "",
+            "same as the old commit",
+            "The new commit is the same as the old commit, but not allowed",
+            "denied. The new commit is the same as the old commit",
+            "The new commit is the same as the old commit
+and more",
+        ] {
+            assert!(!is_unchanged(bad), "{bad:?}");
+        }
+    }
+
     /// A forge whose proc-receive answers with `answer` and counts the calls.
     struct ProcForge {
         answer: Result<Vec<crate::forgejo::ProcRefResult>, String>,
@@ -799,6 +832,16 @@ mod tests {
                 ..ProcRefResult::default()
             }]),
             Err("the forge could not be reached for proc-receive".to_owned()),
+            // The benign phrase with more text around it is a refusal, not an unchanged change.
+            Ok(vec![ProcRefResult {
+                err: "The new commit is the same as the old commit, but you may not update it"
+                    .into(),
+                ..ProcRefResult::default()
+            }]),
+            Ok(vec![ProcRefResult {
+                err: "permission denied: same as the old commit".into(),
+                ..ProcRefResult::default()
+            }]),
         ] {
             let forge = Arc::new(ProcForge {
                 answer,
