@@ -650,7 +650,13 @@ impl AiHub {
             KeyState::Untested => return Err(AiError::NotUsable("untested")),
             KeyState::Failed => return Err(AiError::NotUsable("failed")),
         }
-        let capped = key.monthly_cap > 0 || self.cfg.instance_monthly_cap_micro_usd > 0;
+        // A key whose owner turned "stop at the cap" off keeps counting but is not stopped by its own
+        // cap (the instance cap still holds); without a caps row the cap is a hard stop.
+        let key_cap = match self.caps_row(&key.id).await {
+            Ok(Some(c)) if !c.stop_at_cap => 0,
+            _ => key.monthly_cap,
+        };
+        let capped = key_cap > 0 || self.cfg.instance_monthly_cap_micro_usd > 0;
         let priced = self.priced(&req.model);
         if (capped || cost_limited) && !priced {
             return Err(AiError::NoPrice(req.model.clone()));
@@ -665,7 +671,7 @@ impl AiHub {
                 .store
                 .reserve(
                     &key.id,
-                    key.monthly_cap,
+                    key_cap,
                     self.cfg.instance_monthly_cap_micro_usd,
                     worst,
                     now,

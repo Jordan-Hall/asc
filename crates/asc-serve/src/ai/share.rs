@@ -267,6 +267,21 @@ impl AiHub {
         ))
     }
 
+    /// The caps row of a key, when one was set. Without one the key's cap is a hard stop.
+    pub async fn caps_row(&self, key_id: &str) -> Result<Option<Caps>, AiError> {
+        let r = sqlx::query("SELECT warn_percent, stop_at_cap FROM ai_key_caps WHERE key_id = $1")
+            .bind(key_id.to_owned())
+            .fetch_optional(self.store.pool())
+            .await?;
+        r.map(|r| {
+            Ok(Caps {
+                warn_percent: u32::try_from(r.try_get::<i64, _>("warn_percent")?).unwrap_or(0),
+                stop_at_cap: r.try_get::<i64, _>("stop_at_cap")? != 0,
+            })
+        })
+        .transpose()
+    }
+
     pub async fn set_caps(&self, key: &KeyRow, c: Caps) -> Result<(), AiError> {
         if c.warn_percent > 100 {
             return Err(AiError::Invalid("warn_percent is 0 to 100".into()));
