@@ -636,7 +636,7 @@ mod tests {
     }
 
     fn git(dir: &Path, args: &[&str]) -> String {
-        let mut child = Command::new("git") // lint:allow-raw-git
+        let mut child = Command::new(crate::merge::testutil::git_program())
             .args(args)
             .current_dir(dir)
             .env("GIT_AUTHOR_NAME", "A")
@@ -700,7 +700,10 @@ mod tests {
     }
 
     fn have_git() -> bool {
-        Command::new("git").arg("--version").output().is_ok() // lint:allow-raw-git
+        Command::new(crate::merge::testutil::git_program())
+            .arg("--version")
+            .output()
+            .is_ok() // lint:allow-raw-git
     }
 
     /// Asserts our blame of `path` at the last step equals `git blame --porcelain`.

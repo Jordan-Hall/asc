@@ -2,7 +2,7 @@
 
 use std::io::{Cursor, Write};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::Arc;
 
 use asc_core::codec::Enveloped;
@@ -147,7 +147,7 @@ fn sig() -> Signature {
 
 /// Runs git in `dir` with a fixed identity, feeding `stdin`; returns trimmed stdout.
 fn git(dir: &Path, args: &[&str], stdin: &[u8]) -> String {
-    let mut child = Command::new("git") // lint:allow-raw-git
+    let mut child = asc_git::realgit::pinned_command()
         .args(args)
         .current_dir(dir)
         .env("GIT_AUTHOR_NAME", "A")
@@ -180,7 +180,7 @@ fn git(dir: &Path, args: &[&str], stdin: &[u8]) -> String {
 }
 
 fn raw_object(dir: &Path, kind: &str, oid: GitOid) -> Vec<u8> {
-    let out = Command::new("git") // lint:allow-raw-git
+    let out = asc_git::realgit::pinned_command()
         .args(["cat-file", kind, &oid.to_string()])
         .current_dir(dir)
         .output()

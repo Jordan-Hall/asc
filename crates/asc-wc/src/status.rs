@@ -664,7 +664,6 @@ pub fn untracked_abs(root: &Path, u: &Untracked) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use std::process::Command;
 
     use asc_core::codec::Enveloped;
     use asc_core::git::blob_oid;
@@ -734,7 +733,7 @@ mod tests {
     }
 
     fn git(dir: &Path, args: &[&str]) -> String {
-        let out = Command::new("git") // lint:allow-raw-git
+        let out = asc_git::realgit::pinned_command()
             .args(["-c", "core.autocrlf=false", "-c", "user.name=t"])
             .args(["-c", "user.email=t@example.com"])
             .args(args)
