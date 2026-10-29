@@ -1,4 +1,4 @@
-//! Organisation settings the server owns (`orgsettings.proto`, docs/BUILDOUT.md section 26):
+//! Organisation settings the server owns (`orgsettings.proto`, docs/BUILDOUT.md section 28):
 //! the agents card, the default merge policy, the organisation's agent identities, and the
 //! instance's agent switch and default budget.
 //!

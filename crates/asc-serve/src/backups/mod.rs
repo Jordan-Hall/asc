@@ -1,4 +1,4 @@
-//! Scheduled backups of the server (`backups.proto`, docs/BUILDOUT.md section 24, docs/runbooks/backup.md).
+//! Scheduled backups of the server (`backups.proto`, docs/BUILDOUT.md section 26, docs/runbooks/backup.md).
 //!
 //! The hub runs the same backup as `asc serve backup` on a schedule or on request, keeps the
 //! record of each run, copies the result to a target (a local directory, or an S3 bucket with

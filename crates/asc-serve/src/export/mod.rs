@@ -1,4 +1,4 @@
-//! Export of a person's own data (`dataexport.proto`, docs/BUILDOUT.md section 28).
+//! Export of a person's own data (`dataexport.proto`, docs/BUILDOUT.md section 30).
 //!
 //! A job is a row in `export_jobs` and a file `<dir>/<id>.jsonl` (mode 0600). Every table is read
 //! with the person as a bound parameter, and rows whose owner column does not name exactly that

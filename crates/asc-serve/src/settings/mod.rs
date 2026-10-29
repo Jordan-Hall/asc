@@ -1,5 +1,5 @@
 //! The account, organisation and administration settings services the hub's boards call
-//! (docs/BUILDOUT.md sections 24 to 29): backups, usage, organisation settings, sessions,
+//! (docs/BUILDOUT.md sections 26 to 31): backups, usage, organisation settings, sessions,
 //! data export and the sharing of AI keys.
 //!
 //! [`access`] is the one rule they share. [`register`] builds every hub on the server's

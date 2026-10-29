@@ -1,7 +1,7 @@
 syntax = "proto3";
 package asc.v1;
 
-// Organisation settings the asc server owns (docs/BUILDOUT.md section 26): the Agents card of Organization settings (are agents
+// Organisation settings the asc server owns (docs/BUILDOUT.md section 28): the Agents card of Organization settings (are agents
 // allowed, must an agent's changes be approved by a person, a monthly spend ceiling), the organisation's default merge policy that
 // repositories inherit, the organisation's agent identities, and the instance's agent switch and default budget.
 //

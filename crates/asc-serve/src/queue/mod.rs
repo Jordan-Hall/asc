@@ -514,6 +514,22 @@ impl Reviews {
         if stack.is_empty() {
             return Err(Status::failed_precondition("the change has landed already"));
         }
+        // `[stacks] max_depth`: a longer stack is split before it is queued.
+        if let crate::agents::repo::PolicyState::Valid(p) =
+            &*crate::agents::repo::RepoView::new(self.registry.clone())
+                .policy(&entry)
+                .await?
+            && let Some(max) = p.stacks.max_depth
+            && stack.len() > usize::try_from(max).unwrap_or(usize::MAX)
+        {
+            return Err(Status::failed_precondition(queue_error(
+                "QUEUE_STACK_TOO_LONG",
+                &format!(
+                    "the policy allows stacks of at most {max} changes; this one has {}",
+                    stack.len()
+                ),
+            )));
+        }
         if !self.q_queued_among(&ns, &target, &stack).await?.is_empty() {
             return Err(Status::already_exists(queue_error(
                 "QUEUE_ENTRY_EXISTS",

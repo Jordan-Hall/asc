@@ -1,5 +1,5 @@
 //! The credentials a person holds on this server, and revoking them (`sessions.proto`,
-//! docs/BUILDOUT.md section 27).
+//! docs/BUILDOUT.md section 29).
 
 pub mod rpc;
 

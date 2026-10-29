@@ -3,7 +3,7 @@ package asc.v1;
 
 import "asc/v1/common.proto";
 
-// Usage of an account or an organisation (docs/BUILDOUT.md section 25): the Usage and quota board, the Spend and Budget panels,
+// Usage of an account or an organisation (docs/BUILDOUT.md section 27): the Usage and quota board, the Spend and Budget panels,
 // the usage block of Admin users. Four measures: object storage, agent minutes, AI spend and bandwidth, for a calendar month (UTC).
 //
 // Where the numbers come from. AI spend is read from the AI key usage the server records on every model call (`ai_usage`, per

@@ -581,7 +581,45 @@ A client calls it with the user's own credential.
   and an answer are kept for 30 and 60 seconds. There is no email and no avatar in the answer, and none is added. Every call is audited (`agent.profile.read`:
   login and whether it was allowed, never the values).
 
-## 24. Scheduled backups
+## 24. Insights
+
+`Insights.GetStats` and `Insights.ListContributors` (repo read, expensive) are the data behind the Pulse tiles, the Contributors page and "Who writes the code".
+They need no more than repo read and count one repository only. A forwarded claim of the hub is checked as for every repo call.
+
+- **Landed change.** A changeset a land rewrote onto the default branch (`land_map_ref` joined with the `ref_log` entry of that update), counted once per change at
+  its first landing in the window. A land that rewrote nothing is not counted.
+- **Author.** An *agent* when an agent run's change list holds the change or the first version was published under an `agent:` principal; a *person* otherwise
+  (`run_by` is the person who started the run). A person's id is the one recorded with their first version, 0 for a token.
+- **Review time.** From the first version of a change to its first verdict (approved or changes requested). `median_review_seconds` is 0 when nothing landed was reviewed.
+  `agent_changes_reviewed` counts landed agent changes that hold an approval (only people can approve).
+- **Windows.** `days` (1 to 366, default 30) ending at `until` (default now); `landed_previous`, `stacks_opened_previous` and `median_review_previous` cover the window of
+  the same length before it. `kind` narrows the tiles, the series, the sizes and the weeks; `landed_by_people` and `landed_by_agents` are always over everyone.
+  `per_day` has an entry for every UTC day; `weekly` has the 12 weeks ending at `until`.
+- **Sizes.** From stored diff stats only; a landed changeset without one is `unknown`.
+- **Stacks opened.** Changes without a parent change that were first published in the window.
+- **Bounds.** 50,000 landed rows, 100,000 verdicts, 200 contributors; a cut sets `truncated` and the numbers are lower bounds.
+
+## 25. Policy keys of the Policy board
+
+`Repo.GetPolicy` (and `Policy.Validate`'s `parsed`) now answer every key the form edits, so a form needs no second parse of the file:
+`trunk.require_signed`; `agents.enabled`, `max_runtime_seconds`, `max_tokens`, `max_cost_micro_usd` (0 is no limit); `review`; `merge`; `stacks`.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `[review] author_may_approve` | false | the author of a change may approve it |
+| `[review] human_approval` | true | an approval from an agent does not count |
+| `[review] keep_approvals_on_restack` | true | an approval carries to a newer version when no file's patch changed; false makes every approval stand for its own version only (enforced when verdicts are listed and by the gate) |
+| `[merge] queue`, `revalidate` | false, true | as before |
+| `[merge] batch` | 1 | entries the queue tests and lands together, 1 to 20 (read by the queue worker of the host; recorded and returned here) |
+| `[merge] post_merge_checks` | false | the checks of the policy run again on the landed tip (recorded and returned; the host runs them) |
+| `[stacks] max_depth` | none | the longest stack that may be queued, 1 to 100; a longer one is refused with `QUEUE_STACK_TOO_LONG` |
+| `[stacks] cleanup_days` | server setting | days after the last change of a stack lands before its refs are removed, 1 to 3650 (recorded and returned) |
+| `[stacks] restack_on_main_move` | false | the host restacks open stacks when the default branch moves (recorded and returned) |
+| `[stacks] collaborators_may_push` | false | people with write access who did not start a stack may push onto it (recorded and returned; the host enforces) |
+
+A value out of range, or an unknown key in these sections, makes the file invalid with the key named. `strategy = "squash"` is not part of this change.
+
+## 26. Scheduled backups
 
 `backups.proto`, `crates/asc-serve/src/backups/`, migration 0590. Feature `backups.v1`, configuration `[backups]` (targets by name, a local directory or an S3 bucket;
 credentials only as environment variable names; endpoints https). The Admin Backups board: schedule (interval, anchor minute, retention in days then weeks),
@@ -591,7 +629,7 @@ verified, the marker `restore.pending.json` is written in `<data dir>/backups`, 
 administrator only (the host's `instance` claim with role admin, or the host's own credential). Audit: `backup.started`, `backup.finished`, `backup.verified`,
 `backup.purged`, `backup.schedule.updated`, `backup.restore.staged`. Runbook: docs/runbooks/backup.md.
 
-## 25. Usage and quotas
+## 27. Usage and quotas
 
 `usage.proto`, `crates/asc-serve/src/usage/`, migration 0591. Feature `usage.v1`, configuration `[usage] retention_days`. Four measures for a calendar month: storage
 and bandwidth from `usage_counters` (the host reports storage with `Report`; the server adds bandwidth), agent minutes from `agent_runs`, AI spend from
@@ -599,7 +637,7 @@ and bandwidth from `usage_counters` (the host reports storage with `Report`; the
 A person reads their own usage, an organisation's owners the organisation's, the site administrator the server's and sets quotas (`usage_quotas`; an owner
 without a limit inherits the instance default).
 
-## 26. Organisation settings
+## 28. Organisation settings
 
 `orgsettings.proto`, `crates/asc-serve/src/org/`, migration 0592. Feature `orgsettings.v1`. The Agents card, the default merge policy, organisation agent
 identities, and the instance's agent switch and default budget. Resolution order (a later source only tightens): agents allowed = instance AND organisation AND
@@ -608,18 +646,18 @@ repository `[review] human_approval`; merge requirements = organisation defaults
 `allow_force` and `author_may_approve` AND, `require_signed`, `queue`, `revalidate`, `human_approval` OR, an organisation `strategy` wins). `org::policy::apply` is
 the function the land gate calls on `LandRequirements`; `OrgHub::agent_gate` is what the agent runtime asks before a run.
 
-## 27. Sessions
+## 29. Sessions
 
 `sessions.proto`, `crates/asc-serve/src/sessions/`. Feature `sessions.v1`. Lists and revokes the personal access tokens, SSH keys and agent tokens of a person
 (`tok:`, `ssh:`, `agt:` ids); the site administrator may do the same for any account. Another person's id is NOT_FOUND.
 
-## 28. Data export
+## 30. Data export
 
 `dataexport.proto`, `crates/asc-serve/src/export/`, migration 0594. Feature `dataexport.v1`. An asynchronous job producing a JSON Lines archive of the caller's own
 data (metadata only, no secret), kept 7 days, streamed with `Download`. One at a time, one per 24 hours. Audit: `export.requested`, `export.finished`,
 `export.downloaded`, `export.deleted`.
 
-## 29. AI key sharing and cap rules
+## 31. AI key sharing and cap rules
 
 `aikeyshares.proto`, `crates/asc-serve/src/ai/share.rs`, migration 0595. Feature `aikeyshares.v1` is not advertised separately; the service rides on `ai-keys.v1`. A user's or an
 organisation's key is shared with a user, organisation or repository; the grantee's runs use it after their own keys (`AiHub::resolve`), never see it, and the
@@ -676,7 +714,7 @@ string is present.
 <a id="rpc-index"></a>
 ## RPC index
 
-Every method of the build-out services (90). A test keeps this list equal to the protos.
+Every method of the build-out services (92). A test keeps this list equal to the protos.
 
 <!-- rpc-index:begin -->
 **Policy** (`policy.proto`)
@@ -830,6 +868,8 @@ Every method of the build-out services (90). A test keeps this list equal to the
 - `asc.v1.DepsService/ListFindings` — repo read; paged
 - `asc.v1.DepsService/ListUpdates` — repo read; calls the registries
 - `asc.v1.DepsService/ProposeUpdate` — repo maintainer; mutating; never trunk
+- `asc.v1.Insights/GetStats` — repo read; expensive; landed, stacks opened, review time, author mix
+- `asc.v1.Insights/ListContributors` — repo read; expensive; landed and reviews per person and agent
 - `asc.v1.DepsService/SetConfig` — repo maintainer; mutating; never trunk
 - `asc.v1.DepsService/GetConfig` — repo read
 - `asc.v1.DepsService/Dismiss` — repo maintainer; mutating

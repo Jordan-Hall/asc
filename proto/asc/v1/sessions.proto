@@ -1,7 +1,7 @@
 syntax = "proto3";
 package asc.v1;
 
-// The credentials a person has on this server, for the Security page of account settings (docs/BUILDOUT.md section 27): personal
+// The credentials a person has on this server, for the Security page of account settings (docs/BUILDOUT.md section 29): personal
 // access tokens, SSH keys and agent tokens the person made, each with when it was made, last used and expires, and a way to
 // revoke it ("Sign out one" and "Sign out everywhere else"). The hub keeps its own browser sessions; these are the ones the asc
 // server decides on. A secret is never returned: a row has an id, a label and dates.

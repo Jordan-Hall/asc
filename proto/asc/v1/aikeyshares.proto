@@ -4,7 +4,7 @@ package asc.v1;
 import "asc/v1/aiproviders.proto";
 import "asc/v1/common.proto";
 
-// Sharing an AI key, and the warning and stop rules of its monthly cap (docs/BUILDOUT.md section 29), for the AI pages of account and
+// Sharing an AI key, and the warning and stop rules of its monthly cap (docs/BUILDOUT.md section 31), for the AI pages of account and
 // organisation settings. It sits beside `AiProviders` (bring your own keys) and changes nothing there: a key still has exactly one
 // owner, is sealed in the Vault and is never returned.
 //

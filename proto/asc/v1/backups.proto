@@ -1,7 +1,7 @@
 syntax = "proto3";
 package asc.v1;
 
-// Scheduled backups of the server (docs/BUILDOUT.md section 24, docs/runbooks/backup.md). The Admin Backups board: a schedule
+// Scheduled backups of the server (docs/BUILDOUT.md section 26, docs/runbooks/backup.md). The Admin Backups board: a schedule
 // with retention, a target, the history with the result of each run, "Back up now", Verify, and a restore that needs the word
 // RESTORE. It runs the same backup as `asc serve backup` (database snapshot, instance objects, optionally the sealed vault key).
 //
