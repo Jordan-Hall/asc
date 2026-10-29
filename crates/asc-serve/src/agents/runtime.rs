@@ -196,6 +196,25 @@ impl AgentsHub {
         if policy.as_ref().is_some_and(|p| !p.agents.enabled) {
             return Err(errors::disabled("repository policy"));
         }
+        // The instance switch and the organisation's agent card: allowed, and under its monthly ceiling.
+        if let Some(org) = self.org.get() {
+            let owner = name.as_str().split('/').next().unwrap_or("").to_owned();
+            let gate = org.agent_gate(&owner).await.map_err(|e| e.status())?;
+            if !gate.allowed {
+                return Err(errors::disabled("organisation"));
+            }
+            if gate.ceiling > 0
+                && org
+                    .month_agent_spend(&owner)
+                    .await
+                    .map_err(|e| e.status())?
+                    >= gate.ceiling
+            {
+                return Err(Status::resource_exhausted(
+                    "the organisation's monthly agent spend ceiling is reached",
+                ));
+            }
+        }
         let agent_who = Who::new(Kind::Agent, req.agent.clone());
 
         // Paths: globs the repository policy admits an agent of this name to write.
