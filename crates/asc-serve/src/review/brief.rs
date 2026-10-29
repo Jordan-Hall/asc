@@ -668,17 +668,15 @@ impl Reviews {
         let entry = self.open(ctx).await?;
         self.known(&entry, change).await?;
         let vs = self.all_versions(&entry, change).await?;
-        if state != wire::ApprovalState::Dismissed
-            && (!req.reviewer.is_empty() || req.reviewer_id != 0)
-        {
+        let names_someone = !req.reviewer.is_empty() || req.reviewer_id != 0;
+        if names_someone && state != wire::ApprovalState::Dismissed {
             return Err(Status::invalid_argument(
                 "only a dismissal can name another reviewer",
             ));
         }
-        if state == wire::ApprovalState::Dismissed
-            && (!req.reviewer.is_empty() || req.reviewer_id != 0)
-            && !(req.reviewer == reviewer && req.reviewer_id == 0)
-        {
+        // Naming oneself by login is the old dismissal of one's own verdict.
+        let names_self = req.reviewer == reviewer && req.reviewer_id == 0;
+        if names_someone && !names_self {
             return self
                 .dismiss_verdicts(&entry, ctx, change, &vs, reviewer, &req)
                 .await;
