@@ -214,6 +214,132 @@ pub const CATALOGUE: &[ActionInfo] = &[
         &["provider", "scope"],
     ),
     a(
+        "backup.started",
+        "A backup of the server was started.",
+        &["target", "trigger"],
+    ),
+    a(
+        "backup.finished",
+        "A backup of the server finished.",
+        &["target", "result", "bytes"],
+    ),
+    a(
+        "backup.verify.started",
+        "A check of a backup was started.",
+        &["result"],
+    ),
+    a(
+        "backup.verified",
+        "A check of a backup finished.",
+        &["result"],
+    ),
+    a(
+        "backup.purged",
+        "Retention removed a backup from its target.",
+        &["target"],
+    ),
+    a(
+        "backup.schedule.updated",
+        "The backup schedule or its retention was changed.",
+        &[
+            "enabled",
+            "target",
+            "interval_hours",
+            "keep_days",
+            "keep_weeks",
+        ],
+    ),
+    a(
+        "backup.restore.staged",
+        "A restore of a backup was staged for the next start.",
+        &["target"],
+    ),
+    a(
+        "usage.quota.set",
+        "The quota of an owner was set.",
+        &[
+            "storage_bytes",
+            "agent_minutes",
+            "ai_spend_micro_usd",
+            "bandwidth_bytes",
+        ],
+    ),
+    a(
+        "org.agents.updated",
+        "An organisation's agent policy was changed.",
+        &["allow_agents", "need_person", "ceiling"],
+    ),
+    a(
+        "org.merge.updated",
+        "An organisation's default merge policy was changed.",
+        &["approvals", "checks", "strategy"],
+    ),
+    a(
+        "org.agent.created",
+        "An organisation agent identity was created.",
+        &["run_by"],
+    ),
+    a(
+        "org.agent.updated",
+        "An organisation agent identity was changed.",
+        &["paused"],
+    ),
+    a(
+        "org.agent.deleted",
+        "An organisation agent identity was deleted.",
+        &["run_by"],
+    ),
+    a(
+        "instance.agents.updated",
+        "The instance's agent switch or default budget was changed.",
+        &["allow_agents", "ceiling"],
+    ),
+    a(
+        "session.revoked",
+        "A credential of a person was revoked.",
+        &["kind"],
+    ),
+    a(
+        "export.requested",
+        "A person asked to export their data.",
+        &["result"],
+    ),
+    a(
+        "export.finished",
+        "An export of a person's data finished.",
+        &["result"],
+    ),
+    a(
+        "export.downloaded",
+        "A person downloaded their data export.",
+        &["result"],
+    ),
+    a(
+        "export.deleted",
+        "A person deleted their data export.",
+        &["result"],
+    ),
+    a(
+        "ai.key.shared",
+        "An AI key was shared with a user, organisation or repository.",
+        &["grantee", "allow_use", "see_spend"],
+    ),
+    a(
+        "ai.key.unshared",
+        "The sharing of an AI key was withdrawn.",
+        &["grantee"],
+    ),
+    a(
+        "ai.key.caps.updated",
+        "The warning or stop rule of an AI key's cap was changed.",
+        &["warn_percent", "stop_at_cap"],
+    ),
+    a(
+        "ai.key.cap.warning",
+        "An AI key's spend crossed its warning percentage.",
+        &["percent", "scope"],
+    ),
+    a(
         "vault.rotated",
         "The master key of the vault was rotated.",
         &["generation"],

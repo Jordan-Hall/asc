@@ -18,7 +18,13 @@ use tonic::Code;
 const BUILDOUT_FILES: &[&str] = &[
     "asc/v1/agents.proto",
     "asc/v1/aiproviders.proto",
+    "asc/v1/aikeyshares.proto",
     "asc/v1/audit.proto",
+    "asc/v1/backups.proto",
+    "asc/v1/dataexport.proto",
+    "asc/v1/orgsettings.proto",
+    "asc/v1/sessions.proto",
+    "asc/v1/usage.proto",
     "asc/v1/ciinsights.proto",
     "asc/v1/crosssearch.proto",
     "asc/v1/deps.proto",
