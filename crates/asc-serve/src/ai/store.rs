@@ -435,6 +435,15 @@ impl AiStore {
             .bind(id.to_owned())
             .execute(&self.pool)
             .await?;
+        // A key's shares and caps go with it.
+        sqlx::query("DELETE FROM ai_key_shares WHERE key_id = $1")
+            .bind(id.to_owned())
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("DELETE FROM ai_key_caps WHERE key_id = $1")
+            .bind(id.to_owned())
+            .execute(&self.pool)
+            .await?;
         Ok(r.rows_affected() == 1)
     }
 
