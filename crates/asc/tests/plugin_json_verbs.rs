@@ -235,7 +235,7 @@ fn worktree_add_list_remove_print_their_details() {
 fn remote_with_commit(r: &Repo) -> PathBuf {
     let bare = r.sb.dir("remote.git");
     let run = |dir: &Path, args: &[&str]| {
-        let o = std::process::Command::new("git") // lint:allow-raw-git
+        let o = asc_git::realgit::pinned_command()
             .current_dir(dir)
             .env("HOME", &r.sb.user)
             .env("USERPROFILE", &r.sb.user)

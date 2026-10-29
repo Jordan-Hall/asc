@@ -619,6 +619,50 @@ They need no more than repo read and count one repository only. A forwarded clai
 
 A value out of range, or an unknown key in these sections, makes the file invalid with the key named. `strategy = "squash"` is not part of this change.
 
+## 26. Scheduled backups
+
+`backups.proto`, `crates/asc-serve/src/backups/`, migration 0590. Feature `backups.v1`, configuration `[backups]` (targets by name, a local directory or an S3 bucket;
+credentials only as environment variable names; endpoints https). The Admin Backups board: schedule (interval, anchor minute, retention in days then weeks),
+history with the result of each run, Back up now, Verify, and a restore that needs the word RESTORE. A run is `asc serve backup`; an S3 target is encrypted in
+4 MiB chunks (XChaCha20-Poly1305 under `[backups] key_file`) before upload and keeps a plain sidecar of stored sizes. Restore is staged: the backup must be
+verified, the marker `restore.pending.json` is written in `<data dir>/backups`, and the server applies it before opening its database at the next start. Site
+administrator only (the host's `instance` claim with role admin, or the host's own credential). Audit: `backup.started`, `backup.finished`, `backup.verified`,
+`backup.purged`, `backup.schedule.updated`, `backup.restore.staged`. Runbook: docs/runbooks/backup.md.
+
+## 27. Usage and quotas
+
+`usage.proto`, `crates/asc-serve/src/usage/`, migration 0591. Feature `usage.v1`, configuration `[usage] retention_days`. Four measures for a calendar month: storage
+and bandwidth from `usage_counters` (the host reports storage with `Report`; the server adds bandwidth), agent minutes from `agent_runs`, AI spend from
+`agent_spend` (organisation, instance) or the runs a person started (person). Spend on the owner's own keys and bring-your-own storage do not count against a quota.
+A person reads their own usage, an organisation's owners the organisation's, the site administrator the server's and sets quotas (`usage_quotas`; an owner
+without a limit inherits the instance default).
+
+## 28. Organisation settings
+
+`orgsettings.proto`, `crates/asc-serve/src/org/`, migration 0592. Feature `orgsettings.v1`. The Agents card, the default merge policy, organisation agent
+identities, and the instance's agent switch and default budget. Resolution order (a later source only tightens): agents allowed = instance AND organisation AND
+repository policy; spend ceiling = smallest non-zero of instance default, organisation ceiling and repository budget; a person approves = organisation OR
+repository `[review] human_approval`; merge requirements = organisation defaults under the repository's `.asc/policy.toml` (approvals the larger, checks the union,
+`allow_force` and `author_may_approve` AND, `require_signed`, `queue`, `revalidate`, `human_approval` OR, an organisation `strategy` wins). `org::policy::apply` is
+the function the land gate calls on `LandRequirements`; `OrgHub::agent_gate` is what the agent runtime asks before a run.
+
+## 29. Sessions
+
+`sessions.proto`, `crates/asc-serve/src/sessions/`. Feature `sessions.v1`. Lists and revokes the personal access tokens, SSH keys and agent tokens of a person
+(`tok:`, `ssh:`, `agt:` ids); the site administrator may do the same for any account. Another person's id is NOT_FOUND.
+
+## 30. Data export
+
+`dataexport.proto`, `crates/asc-serve/src/export/`, migration 0594. Feature `dataexport.v1`. An asynchronous job producing a JSON Lines archive of the caller's own
+data (metadata only, no secret), kept 7 days, streamed with `Download`. One at a time, one per 24 hours. Audit: `export.requested`, `export.finished`,
+`export.downloaded`, `export.deleted`.
+
+## 31. AI key sharing and cap rules
+
+`aikeyshares.proto`, `crates/asc-serve/src/ai/share.rs`, migration 0595. Feature `aikeyshares.v1` is not advertised separately; the service rides on `ai-keys.v1`. A user's or an
+organisation's key is shared with a user, organisation or repository; the grantee's runs use it after their own keys (`AiHub::resolve`), never see it, and the
+owner sees the use per sharer. `SetKeyCaps` adds the warning percentage (one audit event per month, `ai.key.cap.warning`) and the stop rule (`stop_at_cap`).
+
 ## Error codes
 
 All are `ErrorDetail.code` values, registered in `crates/asc-rpc/src/errors.rs` and mapped in `server.rs`; the test
@@ -829,4 +873,41 @@ Every method of the build-out services (92). A test keeps this list equal to the
 - `asc.v1.DepsService/SetConfig` — repo maintainer; mutating; never trunk
 - `asc.v1.DepsService/GetConfig` — repo read
 - `asc.v1.DepsService/Dismiss` — repo maintainer; mutating
+- `asc.v1.Backups/ListBackups` — site admin
+- `asc.v1.Backups/ListTargets` — site admin
+- `asc.v1.Backups/RunBackup` — site admin
+- `asc.v1.Backups/SetSchedule` — site admin
+- `asc.v1.Backups/VerifyBackup` — site admin
+- `asc.v1.Backups/PreviewRestore` — site admin
+- `asc.v1.Backups/Restore` — site admin
+- `asc.v1.Usage/GetUsage` — owner: the four measures and the repository table
+- `asc.v1.Usage/ListSpend` — owner: AI spend grouped by key, user, repository, day or month
+- `asc.v1.Usage/GetQuota` — owner: the limits that apply
+- `asc.v1.Usage/SetQuota` — site admin
+- `asc.v1.Usage/Report` — host service or site admin
+- `asc.v1.OrgSettings/GetOrgSettings` — org read
+- `asc.v1.OrgSettings/SetAgentPolicy` — org admin
+- `asc.v1.OrgSettings/SetMergeDefaults` — org admin
+- `asc.v1.OrgSettings/ResolveMergePolicy` — org read
+- `asc.v1.OrgSettings/ListAgents` — org read
+- `asc.v1.OrgSettings/CreateAgent` — org admin
+- `asc.v1.OrgSettings/UpdateAgent` — org admin
+- `asc.v1.OrgSettings/DeleteAgent` — org admin
+- `asc.v1.OrgSettings/GetInstanceAgents` — site admin
+- `asc.v1.OrgSettings/SetInstanceAgents` — site admin
+- `asc.v1.Sessions/ListSessions`
+- `asc.v1.Sessions/RevokeSession` — mutating
+- `asc.v1.Sessions/RevokeOtherSessions` — mutating
+- `asc.v1.DataExport/RequestExport` — mutating
+- `asc.v1.DataExport/ListExports`
+- `asc.v1.DataExport/GetExport`
+- `asc.v1.DataExport/Download` — a ready archive, in chunks of at most 1 MiB
+- `asc.v1.DataExport/DeleteExport` — mutating
+- `asc.v1.AiKeyShares/ShareKey` — key owner
+- `asc.v1.AiKeyShares/ListShares` — key owner
+- `asc.v1.AiKeyShares/RevokeShare` — key owner
+- `asc.v1.AiKeyShares/ShareUsage` — key owner: use per sharer
+- `asc.v1.AiKeyShares/ListSharedWithMe` — grantee administrators
+- `asc.v1.AiKeyShares/GetKeyCaps` — key owner
+- `asc.v1.AiKeyShares/SetKeyCaps` — key owner
 <!-- rpc-index:end -->

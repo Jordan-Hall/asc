@@ -118,9 +118,20 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+/// The git the tests compare with: the pinned build `ASC_REAL_GIT` names (docs/git-fidelity.md),
+/// else the first `git` on `PATH`. A runner's own git moves on its own, and the oracle must not.
+pub fn git_program() -> std::ffi::OsString {
+    std::env::var_os("ASC_REAL_GIT")
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "git".into())
+}
+
 /// False when `git` cannot be spawned; golden tests then skip.
 pub fn git_available() -> bool {
-    Command::new("git").arg("--version").output().is_ok() // lint:allow-raw-git
+    Command::new(git_program())
+        .arg("--version")
+        .output()
+        .is_ok() // lint:allow-raw-git
 }
 
 /// `crates/asc-engine/tests/merge_golden`.
@@ -165,7 +176,7 @@ pub fn read_dir_files(dir: &Path) -> BTreeMap<String, Vec<u8>> {
 
 /// Runs git in `dir` with extra environment and returns its output (any exit status).
 pub fn git(dir: &Path, envs: &[(&str, &str)], args: &[&str]) -> Output {
-    let mut cmd = Command::new("git"); // lint:allow-raw-git
+    let mut cmd = Command::new(git_program()); // lint:allow-raw-git
     cmd.current_dir(dir)
         .env(
             "GIT_CONFIG_GLOBAL",
