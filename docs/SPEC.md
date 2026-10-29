@@ -901,7 +901,8 @@ message CopyClosureRequest { RepoRef from = 1; RepoRef to = 2; repeated bytes ch
 message CopyClosureResponse { uint64 copied = 1; }
 
 message RepoAdminRequest { RepoRef repo = 1;
-  oneof op { InitOp init = 2; ForkOp fork = 3; bool delete = 4; string rename_to = 5; bool size = 6; bool verify = 7; } }
+  oneof op { InitOp init = 2; ForkOp fork = 3; bool delete = 4; string rename_to = 5; bool size = 6; bool verify = 7;
+    string set_default_branch = 8; /* trunk: the branch the gate protects (secret scan, path rules, review) */ } }
 message InitOp { string default_branch = 1; bool windows_safe = 2; string mode = 3; /* "primary"|"mirror" */
   string mirror_url = 4; repeated string land_branches = 5; }
 message ForkOp { RepoRef from = 1; }
