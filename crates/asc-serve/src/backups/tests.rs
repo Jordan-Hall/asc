@@ -15,7 +15,7 @@ use sha2::Digest as _;
 use tonic::Code;
 
 use super::config::{BackupsConfig, TargetConfig};
-use super::place::Place;
+use super::place::{self, Place};
 use super::rpc::BackupsService;
 use super::store::{self, Schedule};
 use super::{BackupsHub, DumpOptions, Engine};
@@ -819,17 +819,27 @@ async fn a_plain_file_in_place_of_an_encrypted_one_and_a_traversal_name_are_refu
         .execute(&f.k.pool)
         .await
         .unwrap();
-    // A sidecar that names a path outside the backup.
+    // A sidecar that names a path outside the backup, with sizes that still add up.
+    let mut side = f
+        .hub
+        .place_for_test("r2-backup")
+        .sidecar(&r.id)
+        .await
+        .unwrap();
+    side.files[0].0 = "../../evil".to_owned();
     put(
         &f,
         &r.id,
         "asc-stored.json",
-        br#"{"encrypted":true,"files":[["../../evil",5],["manifest.json",10]]}"#.to_vec(),
+        serde_json::to_vec(&side).unwrap(),
     )
     .await;
     let (staged, note) = restore_outcome(&f, &r.id, 4).await;
     assert!(!staged);
-    assert!(note.contains("unsafe"), "{note}");
+    assert!(
+        note.contains("does not match") || note.contains("unsafe"),
+        "{note}"
+    );
     assert!(
         !f.k.dir.path().join("evil").exists()
             && !f.k.dir.path().join("state").join("evil").exists()
@@ -845,16 +855,19 @@ async fn the_wrong_backup_key_opens_nothing_and_proves_nothing() {
         prefix: "p/".into(),
     };
     let dst = f.k.dir.path().join("wrongkey");
+    let expected = place::Expected {
+        encrypted: true,
+        size: u64::try_from(r.size_bytes).unwrap(),
+        seal: r.seal.clone(),
+    };
     let e = place
-        .download_dir(&r.id, &dst, Some([9u8; 32]), true)
+        .download_dir(&r.id, &dst, Some([9u8; 32]), &expected)
         .await
         .unwrap_err();
-    assert!(
-        e.contains("does not open") || e.contains("not an encrypted"),
-        "{e}"
-    );
+    assert!(e.contains("does not match"), "{e}");
+    assert!(!dst.exists(), "nothing was downloaded");
     let e = place
-        .download_dir(&r.id, &f.k.dir.path().join("nokey"), None, true)
+        .download_dir(&r.id, &f.k.dir.path().join("nokey"), None, &expected)
         .await
         .unwrap_err();
     assert!(e.contains("no backup key"), "{e}");
@@ -908,24 +921,142 @@ async fn a_local_backup_changed_after_the_fact_is_not_restored() {
         format!(r#"{{"format":1,"db_kind":"sqlite","objects":2,"db_sha256":"{sha}"}}"#),
     )
     .unwrap();
-    let e = f
-        .svc
-        .restore(admin(
-            &f,
-            wire::RestoreBackupRequest {
-                id: r.id.clone(),
-                confirm: "RESTORE".into(),
-            },
-            3,
-        ))
-        .await
-        .unwrap_err();
-    assert_eq!(e.code(), Code::FailedPrecondition);
+    let (staged, note) = restore_outcome(&f, &r.id, 3).await;
+    assert!(!staged);
+    assert!(note.contains("does not match the record"), "{note}");
     assert!(
         !f.k.dir
             .path()
             .join("state")
-            .join("restore.pending.json")
-            .exists()
+            .join("restore")
+            .join(&r.id)
+            .exists(),
+        "the refused copy is removed"
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_sidecar_with_inflated_sizes_is_refused_before_anything_is_downloaded() {
+    let f = fx().await;
+    let r = verified_s3(&f).await;
+    let side = f
+        .hub
+        .place_for_test("r2-backup")
+        .sidecar(&r.id)
+        .await
+        .unwrap();
+    let inflated: Vec<(String, u64)> = side
+        .files
+        .iter()
+        .map(|(n, s)| (n.clone(), s + 10_000_000_000))
+        .collect();
+    let body =
+        serde_json::to_vec(&serde_json::json!({"encrypted": true, "files": inflated})).unwrap();
+    put(&f, &r.id, "asc-stored.json", body).await;
+    let place = Place::S3 {
+        store: f.bucket.clone(),
+        prefix: "p/".into(),
+    };
+    let dst = f.k.dir.path().join("inflated");
+    let expected = place::Expected {
+        encrypted: true,
+        size: u64::try_from(r.size_bytes).unwrap(),
+        seal: r.seal.clone(),
+    };
+    let e = place
+        .download_dir(&r.id, &dst, Some([5u8; 32]), &expected)
+        .await
+        .unwrap_err();
+    assert!(e.contains("disagrees"), "{e}");
+    assert!(!dst.exists(), "no bulk download happened");
+    // The same total, reshuffled between files, fails the seal instead.
+    let mut moved = side.files.clone();
+    moved[0].1 += 1;
+    moved[1].1 -= 1;
+    let body = serde_json::to_vec(&serde_json::json!({"encrypted": true, "files": moved})).unwrap();
+    put(&f, &r.id, "asc-stored.json", body).await;
+    let e = place
+        .download_dir(&r.id, &dst, Some([5u8; 32]), &expected)
+        .await
+        .unwrap_err();
+    assert!(e.contains("does not match"), "{e}");
+    assert!(!dst.exists());
+}
+
+/// A staged local restore and a configuration whose state directory is where it was staged.
+async fn staged_local(
+    f: &Fx,
+) -> (
+    crate::config::ServeConfig,
+    std::path::PathBuf,
+    std::path::PathBuf,
+) {
+    let r = run_now(f, "local-disk", 1).await;
+    f.svc
+        .verify_backup(admin(f, wire::VerifyBackupRequest { id: r.id.clone() }, 2))
+        .await
+        .unwrap();
+    assert_eq!(settle(f, &r.id).await.verify, store::V_OK);
+    let (staged, note) = restore_outcome(f, &r.id, 3).await;
+    assert!(staged, "{note}");
+    let state = f.k.dir.path().join("state");
+    // The marker points at a private copy, not at the backup directory.
+    let marker: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(state.join("restore.pending.json")).unwrap())
+            .unwrap();
+    let from = std::path::PathBuf::from(marker["from"].as_str().unwrap());
+    assert_eq!(from, state.join("restore").join(&r.id));
+    assert_ne!(from, f.local.join(&r.id));
+    // Apply from a configuration whose state directory is this one.
+    let cfg_dir = f.k.dir.path().join("cfg");
+    std::fs::create_dir_all(&cfg_dir).unwrap();
+    let cfg = crate::config::ServeConfig {
+        db: Some(format!("sqlite:{}/x.db", cfg_dir.display()).replace('\\', "/")),
+        ..crate::config::ServeConfig::default()
+    };
+    let applied = super::state_dir(&cfg);
+    std::fs::create_dir_all(&applied).unwrap();
+    std::fs::copy(
+        state.join("restore.pending.json"),
+        applied.join("restore.pending.json"),
+    )
+    .unwrap();
+    (cfg, from, applied)
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_file_swapped_after_staging_is_refused_when_the_restore_is_applied() {
+    let f = fx().await;
+    let (cfg, copy, applied) = staged_local(&f).await;
+    // Changing the original after staging changes nothing: the copy is what is applied.
+    let r = f.hub.list(1).await.unwrap().remove(0);
+    std::fs::write(
+        f.local.join(&r.id).join("db.sqlite"),
+        b"swapped in the original",
+    )
+    .unwrap();
+    // Changing the staged copy is caught.
+    std::fs::write(copy.join("db.sqlite"), b"swapped in the staged copy!!!!!!").unwrap();
+    let e = super::apply_pending(&cfg).await.unwrap_err();
+    assert!(e.contains("changed after they were checked"), "{e}");
+    assert!(applied.join("restore.failed.json").exists());
+    assert!(
+        !applied.join("restore.pending.json").exists(),
+        "a refused restore is not tried again"
+    );
+    assert!(!copy.exists(), "the refused copy is removed");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_marker_whose_seal_does_not_match_the_copy_is_refused() {
+    let f = fx().await;
+    let (cfg, copy, applied) = staged_local(&f).await;
+    let path = applied.join("restore.pending.json");
+    let mut m: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    m["seal"] = serde_json::json!("sha256:0000");
+    std::fs::write(&path, serde_json::to_vec(&m).unwrap()).unwrap();
+    let e = super::apply_pending(&cfg).await.unwrap_err();
+    assert!(e.contains("changed after they were checked"), "{e}");
+    // A marker with no seal at all is refused too.
+    let _ = copy;
 }
