@@ -72,6 +72,14 @@ pub fn register(
         sessions: SessionsHub::new(pool.clone(), audit.clone()),
         export: ExportHub::new(pool, crate::workdir::default_dir(cfg, "exports"), audit),
     });
+    // The land gate, the agent runtime and the object server find the hubs through these slots.
+    if let Some(s) = ext.security.get() {
+        let _ = s.org_slot.set(hubs.org.clone());
+    }
+    if let Some(a) = ext.agents.get() {
+        let _ = a.org.set(hubs.org.clone());
+    }
+    let _ = ext.usage.set(hubs.usage.clone());
     if !ext.settings.set(hubs.clone()) {
         return Err("the settings services were already registered".into());
     }

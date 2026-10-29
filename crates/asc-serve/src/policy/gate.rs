@@ -103,6 +103,8 @@ pub struct ServerGate {
     scanner: Arc<Scanner>,
     signing: Arc<Signing>,
     deps: Arc<crate::deps::gate::DepsGateSlot>,
+    /// The organisation settings, whose merge defaults a repository can only tighten.
+    org: Arc<crate::org::OrgSlot>,
 }
 
 /// The first 12 hex characters of a changeset id.
@@ -212,7 +214,20 @@ impl ServerGate {
             scanner,
             signing,
             deps: Arc::default(),
+            org: Arc::default(),
         }
+    }
+
+    /// Where the organisation settings plug in (tests install a hub here).
+    pub fn org_slot(&self) -> &Arc<crate::org::OrgSlot> {
+        &self.org
+    }
+
+    /// Lets the gate apply the organisation's default merge requirements.
+    #[must_use]
+    pub fn with_org(mut self, slot: Arc<crate::org::OrgSlot>) -> Self {
+        self.org = slot;
+        self
     }
 
     /// Lets the gate ask the dependency scanner (`[deps] block_severity` of the policy).
@@ -625,7 +640,11 @@ impl ServerGate {
             }
             if is_trunk {
                 self.check_review(entry, p, &added, &rewrites).await?;
-                if p.signing.require_signed {
+                let org_signed = match self.org.get() {
+                    Some(h) => h.requires_signed(entry.name.as_str()).await,
+                    None => false,
+                };
+                if p.signing.require_signed || org_signed {
                     self.check_signed(entry, &added, &rewrites).await?;
                 }
             }
@@ -817,7 +836,12 @@ impl ServerGate {
         added: &Added,
         rewrites: &HashMap<ChangesetId, ChangesetId>,
     ) -> Result<(), Status> {
-        let need = policy.land_requirements();
+        // The organisation's defaults sit under the repository's policy: more approvals, more checks.
+        let own = policy.land_requirements();
+        let need = match self.org.get() {
+            Some(h) => h.apply_requirements(entry.name.as_str(), own).await,
+            None => own,
+        };
         self.check_approvals(
             entry,
             need.approvals,
