@@ -84,6 +84,13 @@ offers a compatibility layer, and an optional `git` shim (`asc install-shim`, se
   The server answers 401, then git asks its credential helper (same token as above, as the
   password; use a helper or `http.extraHeader`, never the URL). Pushes go through the same
   checks as `asc push`. With `[git] enabled = false` the git routes answer 403 with `X-Asc-Git`.
+  - **A token alone in the URL fails.** `git clone https://TOKEN@host/...` gets a 401 on git 2.55
+    with libcurl 8.5: git takes the token as the user name, asks for a password, and an empty
+    askpass answer makes libcurl send no credentials at all. These forms work:
+    `https://TOKEN:@host/...` (an empty password after the colon), a credential helper that
+    answers with the token, or `git -c http.proactiveAuth=basic clone https://TOKEN@host/...`
+    (git 2.46 or later). A token in a URL ends up in shell history and in `.git/config`, so
+    prefer the helper; the colon form is for CI, where the job's log and config are discarded.
 - **SSH:** `git clone ssh://git@<host>:<port>/<owner>/<repo>`. The listener is in the default
   build (feature `git-ssh`, config `[ssh]`, default port 2222, off unless `[ssh] enabled = true`).
   The staging compose file enables it and publishes container port 2222 as host port 22223:

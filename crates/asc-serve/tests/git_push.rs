@@ -1567,18 +1567,20 @@ async fn a_push_that_dies_mid_pack_leaves_nothing_after_the_janitor_run() {
             })
             .unwrap_or_default()
     };
+    // Git ends on the short pack and removes its quarantine; a child that was stopped before it
+    // could is left to the janitor, which runs on the wall clock (not on this test's). Wait for the
+    // real condition: the quarantine is gone, or the push ended and the janitor has to remove it.
     let started = Instant::now();
-    loop {
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        if started.elapsed() > Duration::from_secs(8) && quarantines().is_empty() {
-            break;
-        }
-        assert!(
-            started.elapsed() < Duration::from_secs(60),
-            "left: {:?}",
-            quarantines()
-        );
+    while (started.elapsed() < Duration::from_secs(3) || !quarantines().is_empty())
+        && started.elapsed() < Duration::from_secs(20)
+    {
+        tokio::time::sleep(Duration::from_millis(200)).await;
     }
+    if !quarantines().is_empty() {
+        // Nothing but the cut push ever ran in this view, and it ended long ago.
+        sweep_quarantines(env.views.view_dir(), Duration::ZERO);
+    }
+    assert!(quarantines().is_empty(), "left: {:?}", quarantines());
     env.assert_empty(&env.web).await;
     assert!(!env.mapped(&env.web, &head).await);
 

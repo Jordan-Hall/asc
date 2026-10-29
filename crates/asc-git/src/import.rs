@@ -1214,7 +1214,7 @@ mod tests {
 
     fn plan_on_small_stack(levels: usize) -> Result<()> {
         let dir = tempfile::tempdir().unwrap();
-        let status = std::process::Command::new("git")
+        let status = crate::realgit::pinned_command()
             .args(["init", "--bare", "-q"])
             .arg(dir.path())
             .status()
