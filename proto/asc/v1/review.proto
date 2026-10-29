@@ -262,6 +262,12 @@ message RecordApprovalRequest {
   bytes change = 2 [(asc.v1.json) = JSON_KIND_CHANGE];
   uint32 version = 3;
   ApprovalState state = 4;
+  // With state DISMISSED only: dismisses the verdicts of another reviewer instead of the caller's own (a maintainer
+  // dismissing a review on the hub). The reviewer is named by login, by the hub's immutable user id or by both; a
+  // caller without write is refused as for any verdict, and a reviewer with no verdict on the change is NOT_FOUND.
+  // Every verdict of that reviewer on the change stops counting, whatever its version; the audit event names both people.
+  string reviewer = 5;
+  uint64 reviewer_id = 6;
 }
 message RecordApprovalResponse {
   repeated ApprovalInfo approvals = 1;
