@@ -11,6 +11,7 @@ use asc_rpc::services::backups_server::Backups;
 use async_trait::async_trait;
 use object_store::ObjectStoreExt as _;
 use object_store::memory::InMemory;
+use sha2::Digest as _;
 use tonic::Code;
 
 use super::config::{BackupsConfig, TargetConfig};
@@ -34,17 +35,33 @@ impl Engine for Fake {
             return Err("object store: timeout\nsecond line is dropped".into());
         }
         std::fs::create_dir_all(out).map_err(|e| e.to_string())?;
-        std::fs::write(out.join("db.sqlite"), b"the database rows of the instance").unwrap();
+        let db = b"the database rows of the instance";
+        std::fs::write(out.join("db.sqlite"), db).unwrap();
+        let sha = sha2::Sha256::digest(db)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
         std::fs::write(
             out.join("manifest.json"),
-            br#"{"format":1,"created":1700000000,"db_kind":"sqlite","vault_key":"sealed","objects":2,"object_bytes":9}"#,
+            format!(
+                r#"{{"format":1,"created":1700000000,"db_kind":"sqlite","vault_key":"sealed","objects":2,"object_bytes":9,"db_sha256":"{sha}"}}"#
+            ),
         )
         .unwrap();
         Ok(())
     }
 
     fn verify(&self, dir: &Path) -> Result<u64, String> {
-        if self.fail_verify.load(Ordering::Relaxed) || !dir.join("db.sqlite").exists() {
+        let manifest = std::fs::read_to_string(dir.join("manifest.json")).unwrap_or_default();
+        let sha = std::fs::read(dir.join("db.sqlite"))
+            .map(|b| {
+                sha2::Sha256::digest(b)
+                    .iter()
+                    .map(|x| format!("{x:02x}"))
+                    .collect::<String>()
+            })
+            .unwrap_or_default();
+        if self.fail_verify.load(Ordering::Relaxed) || sha.is_empty() || !manifest.contains(&sha) {
             return Err("db.sqlite does not match the manifest: the backup is damaged".into());
         }
         Ok(2)
@@ -406,7 +423,7 @@ async fn a_damaged_backup_fails_its_check_and_a_missing_one_is_not_found() {
         .unwrap();
     let v = settle(&f, &r.id).await;
     assert_eq!(v.verify, store::V_FAILED);
-    assert!(v.note.contains("damaged"), "{}", v.note);
+    assert!(v.note.contains("does not match the record"), "{}", v.note);
     let e = f
         .svc
         .verify_backup(admin(
@@ -656,4 +673,259 @@ async fn nothing_staged_means_nothing_to_apply() {
         ..crate::config::ServeConfig::default()
     };
     assert_eq!(super::apply_pending(&cfg).await.unwrap(), None);
+}
+
+// ------------------------------------------------------------------------------ restore input is not trusted
+
+/// An encrypted, verified S3 backup in the fixture's bucket.
+async fn verified_s3(f: &Fx) -> store::Run {
+    let r = run_now(f, "r2-backup", 1).await;
+    f.svc
+        .verify_backup(admin(f, wire::VerifyBackupRequest { id: r.id.clone() }, 2))
+        .await
+        .unwrap();
+    let v = settle(f, &r.id).await;
+    assert_eq!(v.verify, store::V_OK, "{}", v.note);
+    v
+}
+
+async fn put(f: &Fx, id: &str, rel: &str, bytes: Vec<u8>) {
+    f.bucket
+        .put(
+            &object_store::path::Path::from(format!("p/{id}/{rel}")),
+            bytes.into(),
+        )
+        .await
+        .unwrap();
+}
+
+async fn restore_outcome(f: &Fx, id: &str, n: u32) -> (bool, String) {
+    let _ = f
+        .svc
+        .restore(admin(
+            f,
+            wire::RestoreBackupRequest {
+                id: id.into(),
+                confirm: "RESTORE".into(),
+            },
+            n,
+        ))
+        .await;
+    let marker = f.k.dir.path().join("state").join("restore.pending.json");
+    for _ in 0..200 {
+        let row: Option<(i64, String)> = sqlx::query_as(
+            "SELECT state, note FROM backup_restores ORDER BY requested DESC LIMIT 1",
+        )
+        .fetch_optional(&f.k.pool)
+        .await
+        .unwrap();
+        if let Some((st, note)) = row
+            && st != store::R_PREPARING
+        {
+            return (marker.exists(), note);
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    (marker.exists(), "timeout".into())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_flipped_sidecar_cannot_downgrade_an_encrypted_backup() {
+    let f = fx().await;
+    let r = verified_s3(&f).await;
+    // The attacker rewrites the record beside the backup to say it was never encrypted.
+    put(
+        &f,
+        &r.id,
+        "asc-stored.json",
+        br#"{"encrypted":false,"files":[["db.sqlite",33],["manifest.json",100]]}"#.to_vec(),
+    )
+    .await;
+    let (staged, note) = restore_outcome(&f, &r.id, 3).await;
+    assert!(!staged, "nothing is staged");
+    assert!(note.contains("disagrees"), "{note}");
+    f.svc
+        .verify_backup(admin(&f, wire::VerifyBackupRequest { id: r.id.clone() }, 4))
+        .await
+        .unwrap();
+    let v = settle(&f, &r.id).await;
+    assert_eq!(v.verify, store::V_FAILED);
+    assert!(v.note.contains("disagrees"), "{}", v.note);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_tampered_manifest_fails_the_seal() {
+    let f = fx().await;
+    let r = verified_s3(&f).await;
+    let key = object_store::path::Path::from(format!("p/{}/manifest.json", r.id));
+    let mut m = f
+        .bucket
+        .get(&key)
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap()
+        .to_vec();
+    let at = m.windows(2).position(|w| w == b"17").unwrap();
+    m[at] = b'9';
+    put(&f, &r.id, "manifest.json", m).await;
+    let (staged, note) = restore_outcome(&f, &r.id, 3).await;
+    assert!(!staged);
+    assert!(note.contains("does not match the record"), "{note}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_swapped_file_is_refused_even_when_it_decrypts_and_has_the_right_size() {
+    let f = fx().await;
+    let r = verified_s3(&f).await;
+    // A valid encrypted file of the same length under the same key, with other content.
+    let dir = f.k.dir.path().join("swap");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("a"), &b"another database, the same length!"[..33]).unwrap();
+    super::crypto::encrypt_file(&[5u8; 32], &dir.join("a"), &dir.join("b")).unwrap();
+    put(
+        &f,
+        &r.id,
+        "db.sqlite",
+        std::fs::read(dir.join("b")).unwrap(),
+    )
+    .await;
+    let (staged, note) = restore_outcome(&f, &r.id, 3).await;
+    assert!(!staged);
+    assert!(
+        note.contains("damaged") || note.contains("does not match"),
+        "{note}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_plain_file_in_place_of_an_encrypted_one_and_a_traversal_name_are_refused() {
+    let f = fx().await;
+    let r = verified_s3(&f).await;
+    put(
+        &f,
+        &r.id,
+        "db.sqlite",
+        vec![b'x'; super::crypto::sealed_len(33) as usize],
+    )
+    .await;
+    let (staged, _) = restore_outcome(&f, &r.id, 3).await;
+    assert!(
+        !staged,
+        "an unauthenticated file is not accepted for an encrypted run"
+    );
+    sqlx::query("DELETE FROM backup_restores")
+        .execute(&f.k.pool)
+        .await
+        .unwrap();
+    // A sidecar that names a path outside the backup.
+    put(
+        &f,
+        &r.id,
+        "asc-stored.json",
+        br#"{"encrypted":true,"files":[["../../evil",5],["manifest.json",10]]}"#.to_vec(),
+    )
+    .await;
+    let (staged, note) = restore_outcome(&f, &r.id, 4).await;
+    assert!(!staged);
+    assert!(note.contains("unsafe"), "{note}");
+    assert!(
+        !f.k.dir.path().join("evil").exists()
+            && !f.k.dir.path().join("state").join("evil").exists()
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_wrong_backup_key_opens_nothing_and_proves_nothing() {
+    let f = fx().await;
+    let r = verified_s3(&f).await;
+    let place = Place::S3 {
+        store: f.bucket.clone(),
+        prefix: "p/".into(),
+    };
+    let dst = f.k.dir.path().join("wrongkey");
+    let e = place
+        .download_dir(&r.id, &dst, Some([9u8; 32]), true)
+        .await
+        .unwrap_err();
+    assert!(
+        e.contains("does not open") || e.contains("not an encrypted"),
+        "{e}"
+    );
+    let e = place
+        .download_dir(&r.id, &f.k.dir.path().join("nokey"), None, true)
+        .await
+        .unwrap_err();
+    assert!(e.contains("no backup key"), "{e}");
+    // Another server key makes another seal: a check under it fails against the recorded one.
+    let hub2 = BackupsHub::new(
+        f.k.pool.clone(),
+        f.hub.cfg.clone(),
+        f.fake.clone(),
+        f.k.dir.path().join("s2"),
+        f.audit.clone(),
+    );
+    hub2.set_key(Some([9u8; 32]));
+    hub2.set_place(
+        "r2-backup",
+        Place::S3 {
+            store: f.bucket.clone(),
+            prefix: "p/".into(),
+        },
+    );
+    hub2.start_verify(&r.id).await.unwrap();
+    for _ in 0..200 {
+        let x = hub2.run(&r.id).await.unwrap();
+        if x.verify != store::V_RUNNING {
+            assert_eq!(x.verify, store::V_FAILED, "{}", x.note);
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("no verdict");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_local_backup_changed_after_the_fact_is_not_restored() {
+    let f = fx().await;
+    let r = run_now(&f, "local-disk", 1).await;
+    f.svc
+        .verify_backup(admin(&f, wire::VerifyBackupRequest { id: r.id.clone() }, 2))
+        .await
+        .unwrap();
+    assert_eq!(settle(&f, &r.id).await.verify, store::V_OK);
+    // Database and manifest rewritten together so they agree with each other.
+    let dir = f.local.join(&r.id);
+    let db = b"rows an attacker wrote 123456789";
+    std::fs::write(dir.join("db.sqlite"), db).unwrap();
+    let sha = sha2::Sha256::digest(db)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    std::fs::write(
+        dir.join("manifest.json"),
+        format!(r#"{{"format":1,"db_kind":"sqlite","objects":2,"db_sha256":"{sha}"}}"#),
+    )
+    .unwrap();
+    let e = f
+        .svc
+        .restore(admin(
+            &f,
+            wire::RestoreBackupRequest {
+                id: r.id.clone(),
+                confirm: "RESTORE".into(),
+            },
+            3,
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Code::FailedPrecondition);
+    assert!(
+        !f.k.dir
+            .path()
+            .join("state")
+            .join("restore.pending.json")
+            .exists()
+    );
 }

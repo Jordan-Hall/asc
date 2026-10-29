@@ -450,9 +450,15 @@ impl BackupsHub {
     async fn execute(self: Arc<Self>, run: Run, sched: Schedule) {
         let outcome = self.copy(&run, &sched).await;
         let now = clock::now();
-        let (state, size, objects, note) = match &outcome {
-            Ok((size, objects)) => (store::SUCCEEDED, *size, *objects, String::new()),
-            Err(m) => (store::FAILED, 0, 0, note_of(m)),
+        let (state, size, objects, note, sealed) = match &outcome {
+            Ok((size, objects, sealed)) => (
+                store::SUCCEEDED,
+                *size,
+                *objects,
+                String::new(),
+                sealed.clone(),
+            ),
+            Err(m) => (store::FAILED, 0, 0, note_of(m), String::new()),
         };
         if let Err(e) = self
             .store
@@ -464,6 +470,7 @@ impl BackupsHub {
                 i64::try_from(objects).unwrap_or(i64::MAX),
                 run.encrypted && outcome.is_ok(),
                 &note,
+                &sealed,
             )
             .await
         {
@@ -493,7 +500,7 @@ impl BackupsHub {
     }
 
     /// Writes the backup and moves it to its target. `(stored bytes, objects)`.
-    async fn copy(&self, run: &Run, sched: &Schedule) -> Result<(u64, u64), String> {
+    async fn copy(&self, run: &Run, sched: &Schedule) -> Result<(u64, u64, String), String> {
         let key = self.backup_key()?;
         if sched.include_vault_key && key.is_none() {
             return Err("the vault key is included only with a backup key file".into());
@@ -537,7 +544,8 @@ impl BackupsHub {
                     i64::try_from(total).unwrap_or(0),
                 )
                 .await;
-            return Ok((total, view.objects));
+            let sealed = place::local_seal(&out, &run.id)?;
+            return Ok((total, view.objects, sealed));
         }
         let _ = self
             .store
@@ -558,7 +566,7 @@ impl BackupsHub {
         };
         let up = place.upload_dir(&run.location, &out, key, &progress).await;
         let _ = std::fs::remove_dir_all(&out);
-        up.map(|stored| (stored, view.objects))
+        up.map(|(stored, sealed)| (stored, view.objects, sealed))
     }
 
     fn staging(&self) -> PathBuf {
@@ -620,6 +628,14 @@ impl BackupsHub {
                 if !dir.exists() {
                     return Err("the backup's files are not on the target".into());
                 }
+                // The files must be the ones the server recorded, then they must match their manifest.
+                let (d, id, want) = (dir.clone(), run.id.clone(), run.seal.clone());
+                let now = tokio::task::spawn_blocking(move || place::local_seal(&d, &id))
+                    .await
+                    .map_err(|e| e.to_string())??;
+                if want.is_empty() || now != want {
+                    return Err("the backup does not match the record the server made of it".into());
+                }
                 let engine = self.engine.clone();
                 tokio::task::spawn_blocking(move || engine.verify(&dir))
                     .await
@@ -627,7 +643,18 @@ impl BackupsHub {
                 Ok("Restore test passed".into())
             }
             None => {
-                place.check(&run.location).await?;
+                let key = if run.encrypted {
+                    self.backup_key()?
+                } else {
+                    None
+                };
+                if run.encrypted && key.is_none() {
+                    return Err("the backup is encrypted and no backup key is configured".into());
+                }
+                let now = place.check(&run.location, key, run.encrypted).await?;
+                if run.seal.is_empty() || now != run.seal {
+                    return Err("the backup does not match the record the server made of it".into());
+                }
                 Ok("Files present at their stored size".into())
             }
         }
@@ -686,6 +713,23 @@ impl BackupsHub {
             .await?;
         match place.local_dir(&run.location) {
             Some(dir) => {
+                let (d, id) = (dir.clone(), run.id.clone());
+                let now = tokio::task::spawn_blocking(move || place::local_seal(&d, &id))
+                    .await
+                    .ok()
+                    .and_then(Result::ok);
+                if run.seal.is_empty() || now.as_deref() != Some(run.seal.as_str()) {
+                    self.store
+                        .set_restore(
+                            &rid,
+                            store::R_FAILED,
+                            "the backup does not match the record the server made of it",
+                        )
+                        .await?;
+                    return Err(BackupsError::Precondition(
+                        "the backup does not match the record the server made of it",
+                    ));
+                }
                 self.write_marker(&run, dir, false).map_err(|_| {
                     BackupsError::Precondition("the restore could not be written down")
                 })?;
@@ -722,7 +766,12 @@ impl BackupsHub {
             let place = self.place(&run.target).map_err(|e| format!("{e:?}"))?;
             let dir = self.state_dir.join("restore").join(&run.id);
             let _ = std::fs::remove_dir_all(&dir);
-            place.download_dir(&run.location, &dir, key).await?;
+            let got = place
+                .download_dir(&run.location, &dir, key, run.encrypted)
+                .await?;
+            if run.seal.is_empty() || got != run.seal {
+                return Err("the backup does not match the record the server made of it".into());
+            }
             let (engine, d) = (self.engine.clone(), dir.clone());
             tokio::task::spawn_blocking(move || engine.verify(&d))
                 .await
