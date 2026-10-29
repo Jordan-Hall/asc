@@ -13,7 +13,7 @@ REFS_UPDATE='\b[A-Za-z_]*refs[A-Za-z_]*(\(\))?\s*\.update\('
 # hits <pattern> <path>...: matching lines minus the marker and fixtures.
 hits() {
   local pat=$1; shift
-  grep -rnHI --include='*.rs' -P -e "$pat" -- "$@" 2>/dev/null \
+  grep -rnHa --include='*.rs' -P -e "$pat" -- "$@" 2>/dev/null \
     | grep -v -e '^build/lint/fixtures/' -e 'lint:allow-raw-git'
 }
 
