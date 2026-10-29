@@ -247,10 +247,11 @@ impl ServerRefs {
                 new: Some(RefTarget::Changeset(s.cs)),
             })
             .collect();
+        let acting = acting_principal(ctx);
         let hook_req = HookRequest {
             repo: &ctx.repo,
             op_id,
-            principal: &ctx.principal,
+            principal: &acting,
             updates: &hook_updates,
             push_options: &req.push_options,
         };
@@ -444,7 +445,7 @@ impl ServerRefs {
         // The effects a push queues: post-receive and what hangs on it.
         let outbox = serde_json::to_vec(&OutboxEffects {
             effects: hooks.outbox_effects(),
-            pusher: &ctx.principal.id,
+            pusher: &acting_principal(ctx).id,
             refs: hook_updates
                 .iter()
                 .map(|u| EffectRef {
