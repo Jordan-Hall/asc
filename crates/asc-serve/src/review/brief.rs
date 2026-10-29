@@ -668,6 +668,21 @@ impl Reviews {
         let entry = self.open(ctx).await?;
         self.known(&entry, change).await?;
         let vs = self.all_versions(&entry, change).await?;
+        if state != wire::ApprovalState::Dismissed
+            && (!req.reviewer.is_empty() || req.reviewer_id != 0)
+        {
+            return Err(Status::invalid_argument(
+                "only a dismissal can name another reviewer",
+            ));
+        }
+        if state == wire::ApprovalState::Dismissed
+            && (!req.reviewer.is_empty() || req.reviewer_id != 0)
+            && !(req.reviewer == reviewer && req.reviewer_id == 0)
+        {
+            return self
+                .dismiss_verdicts(&entry, ctx, change, &vs, reviewer, &req)
+                .await;
+        }
         if state == wire::ApprovalState::Approved {
             let e = self.eligibility(&entry, change, &vs).await?;
             if !e.policy.author_may_approve && e.authors.contains(reviewer) {
@@ -730,6 +745,80 @@ impl Reviews {
         .await;
         Ok(wire::RecordApprovalResponse {
             approvals: self.approvals_of(&entry, change, &vs).await?,
+        })
+    }
+
+    /// A reviewer's verdicts stop counting because someone with write access dismissed them: every
+    /// approval and request for changes of that reviewer on the change, on every version, becomes a
+    /// dismissal. The reviewer is named by login, by the hub's user id, or both.
+    async fn dismiss_verdicts(
+        &self,
+        entry: &RepoEntry,
+        ctx: &CallCtx,
+        change: ChangeId,
+        vs: &[versions::Version],
+        by: &str,
+        req: &wire::RecordApprovalRequest,
+    ) -> Result<wire::RecordApprovalResponse, Status> {
+        if !req.reviewer.is_empty() && !super::valid_handle(&req.reviewer) {
+            return Err(Status::invalid_argument("a reviewer is a login"));
+        }
+        let id = i64::try_from(req.reviewer_id)
+            .map_err(|_| Status::invalid_argument("reviewer_id is out of range"))?;
+        let ns = entry.ns.as_bytes().to_vec();
+        let at = now();
+        let mut tx = self.registry.pool().begin().await.map_err(sql)?;
+        self.registry.guard(&mut tx, entry).await?;
+        // The rows of that person: by login, or by the user id the verdict was recorded with.
+        let rows: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT DISTINCT reviewer, reviewer_id FROM review_approvals              WHERE ns = $1 AND change = $2 AND state IN ($3, $4)                AND (reviewer = $5 OR ($6 <> 0 AND reviewer_id = $6))",
+        )
+        .bind(ns.clone())
+        .bind(change.as_bytes().to_vec())
+        .bind(wire::ApprovalState::Approved as i64)
+        .bind(wire::ApprovalState::ChangesRequested as i64)
+        .bind(req.reviewer.clone())
+        .bind(id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(sql)?;
+        if rows.is_empty() {
+            return Err(Status::not_found(
+                "that reviewer has no verdict on this change",
+            ));
+        }
+        let done = sqlx::query(
+            "UPDATE review_approvals SET state = $3, at = $4              WHERE ns = $1 AND change = $2 AND state IN ($5, $6)                AND (reviewer = $7 OR ($8 <> 0 AND reviewer_id = $8))",
+        )
+        .bind(ns)
+        .bind(change.as_bytes().to_vec())
+        .bind(wire::ApprovalState::Dismissed as i64)
+        .bind(at)
+        .bind(wire::ApprovalState::Approved as i64)
+        .bind(wire::ApprovalState::ChangesRequested as i64)
+        .bind(req.reviewer.clone())
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(sql)?;
+        tx.commit().await.map_err(sql)?;
+        let (name, user_id) = rows
+            .first()
+            .cloned()
+            .unwrap_or_else(|| (req.reviewer.clone(), id));
+        super::acting::record(
+            self.registry.pool(),
+            super::acting::event(ctx, "review.approval.recorded", &hex(change.as_bytes()))
+                .detail("state", (wire::ApprovalState::Dismissed as i32).to_string())
+                .detail("version", "all")
+                .detail("verdicts", done.rows_affected().to_string())
+                .detail("reviewer", name)
+                .detail("reviewer_id", user_id.to_string()),
+        )
+        .await;
+        let _ = by;
+        Ok(wire::RecordApprovalResponse {
+            approvals: self.approvals_of(entry, change, vs).await?,
         })
     }
 

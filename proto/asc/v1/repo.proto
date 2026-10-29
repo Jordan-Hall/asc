@@ -67,7 +67,7 @@ message PutObjectsRequest { RepoRef repo = 1; repeated Object objects = 2; }
 message PutObjectsResponse { uint64 stored = 1; uint64 already_present = 2; }
 
 message ListRefsRequest { RepoRef repo = 1; string prefix = 2; bytes contains = 3 [(asc.v1.json) = JSON_KIND_HEX]; string after = 4; uint32 limit = 5; }
-message ListRefsResponse { repeated Ref refs = 1; string next = 2; string head = 3; }   // after/next = opaque page token; head = symbolic HEAD
+message ListRefsResponse { repeated Ref refs = 1; string next = 2; string head = 3; }   // after/next = opaque page token; head = the full name of the default branch (the trunk the policy protects), e.g. refs/heads/master
 message RefUpdate { string name = 1;
   oneof expect { bool any = 2; bool absent = 3; RefTarget value = 4; }
   RefTarget new = 5;  bool delete = 6; }

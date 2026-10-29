@@ -269,17 +269,15 @@ async fn start(ctx: &Ctx, ws: &WsCtx, gitdir: &std::path::Path, a: &Args) -> Res
     if a.commits.is_empty() {
         return Err(CliError::Fatal("No remote for the current branch.".into()));
     }
+    let favor = conflict::favor_of(&a.strategy_option)?;
+    let Some(head) = ws.head_commit().await? else {
+        return merge_into_unborn(ctx, ws, gitdir, a).await;
+    };
     if a.commits.len() > 1 {
         return Err(fatal(
             "asc: octopus merges (more than one commit) are not supported yet",
         ));
     }
-    let favor = conflict::favor_of(&a.strategy_option)?;
-    let Some(head) = ws.head_commit().await? else {
-        return Err(fatal(
-            "asc: merging into an unborn branch is not supported yet",
-        ));
-    };
     let name = a.commits[0].to_string_lossy().into_owned();
     let Some(id) = resolve_commit(ctx, &name).await? else {
         return Err(CliError::Raw(
@@ -349,6 +347,71 @@ async fn start(ctx: &Ctx, ws: &WsCtx, gitdir: &std::path::Path, a: &Args) -> Res
         return fast_forward(ctx, ws, gitdir, a, head, &target).await;
     }
     real_merge(ctx, ws, gitdir, a, head, &bases, &target, favor).await
+}
+
+// ---------------------------------------------------------------- unborn branch
+
+/// `merge <commit>` on a branch with no commit yet: the branch takes the commit and the work
+/// tree and index take its tree, as git does. Git refuses `--squash`, `--no-ff` and several
+/// commits here, with these words.
+async fn merge_into_unborn(
+    ctx: &Ctx,
+    ws: &WsCtx,
+    _gitdir: &std::path::Path,
+    a: &Args,
+) -> Result<ExitCode> {
+    if a.squash {
+        return Err(CliError::Fatal(
+            "Squash commit into empty head not supported yet".into(),
+        ));
+    }
+    if a.ff_mode() == FfMode::Never {
+        return Err(CliError::Fatal(
+            "Non-fast-forward commit does not make sense into an empty head".into(),
+        ));
+    }
+    if a.commits.len() != 1 {
+        return Err(CliError::Fatal(
+            "Can merge only exactly one commit into empty head".into(),
+        ));
+    }
+    let name = a.commits[0].to_string_lossy().into_owned();
+    let Some(id) = resolve_commit(ctx, &name).await? else {
+        return Err(CliError::Raw(
+            format!("merge: {name} - not something we can merge"),
+            1,
+        ));
+    };
+    conflict::git_id(ws, id).await?;
+    let empty_root = root_of(ws, None).await?;
+    let target_root = root_of(ws, Some(id)).await?;
+    let outcome = MergeOutcome {
+        root: target_root,
+        conflicts: Vec::new(),
+    };
+    conflict::precheck(ctx, ws, Op::FastForward, empty_root, &outcome, true).await?;
+    let touched: Vec<_> = ws
+        .engine
+        .leafdiff(empty_root, target_root, None)
+        .await?
+        .into_iter()
+        .map(|(p, _)| p)
+        .collect();
+    conflict::index_result(ws, empty_root, target_root).await?;
+    sync_worktree(ctx, target_root, &touched, true).await?;
+    let kept = stage::overlay(&ws.db, ws.workspace.ws.id, StageSet::Default).await?;
+    conflict::move_head(
+        ctx,
+        ws,
+        None,
+        id,
+        &format!("merge {name}: initial pull"),
+        StagingAfterMove::Set(kept),
+        None,
+    )
+    .await?;
+    post_merge(ctx, ws, false).await?;
+    Ok(ExitCode::SUCCESS)
 }
 
 // ---------------------------------------------------------------- output helpers
