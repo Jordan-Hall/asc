@@ -1,0 +1,127 @@
+syntax = "proto3";
+package asc.v1;
+
+import "asc/v1/aiproviders.proto";
+import "asc/v1/common.proto";
+
+// Sharing an AI key, and the warning and stop rules of its monthly cap (docs/BUILDOUT.md section 29), for the AI pages of account and
+// organisation settings. It sits beside `AiProviders` (bring your own keys) and changes nothing there: a key still has exactly one
+// owner, is sealed in the Vault and is never returned.
+//
+// Sharing. The owner of a key (a user, or an organisation's owners) shares it with an organisation, a repository or a person. Agents
+// and workflows of the grantee then use the key when they have none of their own at a more specific level: the resolution order of
+// a run is the repository's keys and keys shared with the repository, the organisation's keys and keys shared with the organisation,
+// the starter's keys and keys shared with the starter, then the instance's. The grantee never sees the key, its hint or its settings:
+// `ListSharedWithMe` shows a label, the provider, whether the key works and, when the owner allows `see_spend`, what the grantee's
+// own use cost this month. The owner sees the use of each sharer with `ShareUsage`. Sharing with a team is done by sharing with the
+// repositories of the team. Only keys of a user or an organisation can be shared (an instance key already serves everyone, a
+// repository key is the repository's). A share is removed when its key is deleted.
+//
+// Caps. The monthly cap stays on the key (`AiProviders.UpdateKey`). `SetKeyCaps` adds the warning percentage ("warn me at 80%": one
+// audit event and one notification event per month when spend crosses it) and the stop rule (`stop_at_cap`: a run that meets the cap
+// pauses with a question instead of failing).
+//
+// Authorisation is that of the key's owner: a user's own claim or token, an organisation's owners (claim `org:<name>`, role admin).
+// The grantee side (`ListSharedWithMe`) is for the grantee's administrators (organisation: admin; repository: admin; person: self).
+// A caller without the role gets NOT_FOUND, the same as for a key that does not exist. Mutating calls need `x-asc-op-id` and are
+// written to the audit log with the person and the host as the relay. Advertised as Version.features "aikeyshares.v1".
+service AiKeyShares {
+  rpc ShareKey(ShareAiKeyRequest) returns (ShareAiKeyResponse);                       // key owner; mutating; the same grantee again changes the permissions
+  rpc ListShares(ListAiKeySharesRequest) returns (ListAiKeySharesResponse);           // key owner
+  rpc RevokeShare(RevokeAiKeyShareRequest) returns (RevokeAiKeyShareResponse);        // key owner; mutating
+  rpc ShareUsage(AiKeyShareUsageRequest) returns (AiKeyShareUsageResponse);           // key owner: use per sharer
+  rpc ListSharedWithMe(ListSharedAiKeysRequest) returns (ListSharedAiKeysResponse);   // grantee administrators
+  rpc GetKeyCaps(GetAiKeyCapsRequest) returns (GetAiKeyCapsResponse);                 // key owner
+  rpc SetKeyCaps(SetAiKeyCapsRequest) returns (SetAiKeyCapsResponse);                 // key owner; mutating
+}
+
+message AiKeyShare {
+  string id = 1;                       // "as_" + 20 characters
+  string key_id = 2;
+  OwnerRef grantee = 3;                // USER, ORG or REPO
+  bool allow_use = 4;                  // the grantee's agents and workflows may use the key
+  bool see_spend = 5;                  // the grantee's administrators see what their own use cost
+  int64 created = 6;
+  string created_by = 7;
+}
+
+message ShareAiKeyRequest {
+  string key_id = 1;
+  OwnerRef grantee = 2;
+  bool allow_use = 3;
+  bool see_spend = 4;
+}
+message ShareAiKeyResponse {
+  AiKeyShare share = 1;
+}
+
+message ListAiKeySharesRequest {
+  string key_id = 1;
+}
+message ListAiKeySharesResponse {
+  repeated AiKeyShare shares = 1;
+}
+
+message RevokeAiKeyShareRequest {
+  string key_id = 1;
+  string share_id = 2;
+}
+message RevokeAiKeyShareResponse {}
+
+// `since` and `until` are unix seconds; 0 = this month so far. At most 400 days.
+message AiKeyShareUsageRequest {
+  string key_id = 1;
+  int64 since = 2;
+  int64 until = 3;
+}
+message AiKeyShareUsageRow {
+  string share_id = 1;                 // empty for the owner's own use
+  OwnerRef grantee = 2;
+  uint64 requests = 3;
+  uint64 input_tokens = 4;
+  uint64 output_tokens = 5;
+  uint64 cost_micro_usd = 6;
+}
+message AiKeyShareUsageResponse {
+  repeated AiKeyShareUsageRow rows = 1;   // one per share, then the owner's own use as the last row
+}
+
+message ListSharedAiKeysRequest {
+  OwnerRef grantee = 1;
+}
+message SharedAiKey {
+  string share_id = 1;
+  string key_id = 2;
+  string label = 3;
+  AiProvider provider = 4;
+  OwnerRef owner = 5;
+  bool usable = 6;                     // tested, enabled and under its cap
+  bool allow_use = 7;
+  bool see_spend = 8;
+  uint64 month_spent_micro_usd = 9;    // the grantee's own use this month; 0 unless see_spend
+}
+message ListSharedAiKeysResponse {
+  repeated SharedAiKey keys = 1;
+}
+
+message AiKeyCaps {
+  uint32 warn_percent = 1;             // 0 = no warning; 1 to 100 of the monthly cap
+  bool stop_at_cap = 2;                // pause the run with a question at the cap instead of failing it
+  uint64 monthly_cap_micro_usd = 3;    // output only: the key's cap (set with AiProviders.UpdateKey)
+  uint64 month_spent_micro_usd = 4;    // output only
+  bool warned = 5;                     // output only: the warning went out this month
+}
+message GetAiKeyCapsRequest {
+  string key_id = 1;
+}
+message GetAiKeyCapsResponse {
+  AiKeyCaps caps = 1;
+}
+message SetAiKeyCapsRequest {
+  string key_id = 1;
+  uint32 warn_percent = 2;
+  bool stop_at_cap = 3;
+}
+message SetAiKeyCapsResponse {
+  AiKeyCaps caps = 1;
+}

@@ -41,6 +41,21 @@ pub fn month_start(unix: i64) -> i64 {
     days_from_civil(y, m, 1) * 86_400
 }
 
+/// The unix time of the first second of month `m` (1 to 12) of year `y`.
+pub fn month_start_of(y: i64, m: u32) -> i64 {
+    days_from_civil(y, m, 1) * 86_400
+}
+
+/// The first second of the month after the one `start` (a month start) begins.
+pub fn next_month_start(start: i64) -> i64 {
+    let (y, m, _) = ymd(start);
+    if m == 12 {
+        month_start_of(y + 1, 1)
+    } else {
+        month_start_of(y, m + 1)
+    }
+}
+
 fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
     let era = y.div_euclid(400);

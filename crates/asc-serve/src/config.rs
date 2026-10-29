@@ -1091,6 +1091,10 @@ pub struct ServeConfig {
     pub workflows: crate::workflows::WorkflowsConfig,
     /// `[deps]`: dependency scanning and update proposals (docs/DEPENDENCIES.md).
     pub deps: crate::deps::Config,
+    /// `[backups]`: scheduled backups and where they go (docs/runbooks/backup.md).
+    pub backups: crate::backups::config::BackupsConfig,
+    /// `[usage]`: how long usage counters are kept (docs/BUILDOUT.md section 25).
+    pub usage: crate::usage::UsageConfig,
     pub composition_grants: Vec<CompositionGrant>,
 }
 
@@ -1133,6 +1137,8 @@ impl Default for ServeConfig {
             agents: crate::agents::AgentsConfig::default(),
             workflows: crate::workflows::WorkflowsConfig::default(),
             deps: crate::deps::Config::default(),
+            backups: crate::backups::config::BackupsConfig::default(),
+            usage: crate::usage::UsageConfig::default(),
             composition_grants: Vec::new(),
         }
     }

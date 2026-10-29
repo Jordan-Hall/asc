@@ -14,6 +14,7 @@ pub mod audit;
 pub mod authn;
 pub mod authz;
 pub mod backup;
+pub mod backups;
 pub mod cache_role;
 pub mod changes;
 pub mod ci;
@@ -25,6 +26,7 @@ pub mod commit_graph_rpc;
 pub mod config;
 pub mod deps;
 pub mod expire;
+pub mod export;
 #[cfg(feature = "forgejo")]
 pub mod forgejo;
 pub mod gc;
@@ -56,6 +58,7 @@ pub mod netguard;
 pub mod notify;
 pub mod objects;
 pub mod obs;
+pub mod org;
 pub mod outbox;
 pub mod pagetoken;
 pub mod policy;
@@ -71,12 +74,15 @@ pub mod registry;
 pub mod review;
 pub mod secretscan;
 pub mod seeds;
+pub mod sessions;
+pub mod settings;
 pub mod signing;
 #[cfg(feature = "git-ssh")]
 pub mod ssh;
 pub mod storage;
 pub mod turbo;
 pub mod update;
+pub mod usage;
 pub mod vault;
 pub mod watch_refs;
 pub mod web;
@@ -409,6 +415,10 @@ pub fn build_grpc(ext: &Extensions, authorizer: Arc<dyn Authorizer>, info: Serve
         grpc = grpc.add_service(
             ai::rpc::AiService::new(h.clone(), authorizer.clone(), info.clone()).into_service(),
         );
+        grpc = grpc.add_service(
+            ai::share_rpc::AiKeySharesService::new(h.clone(), authorizer.clone(), info.clone())
+                .into_service(),
+        );
     }
     if let Some(h) = ext.agents.get() {
         let svc = agents::rpc::AgentService::new(h.clone(), authorizer.clone(), info.clone());
@@ -421,6 +431,37 @@ pub fn build_grpc(ext: &Extensions, authorizer: Arc<dyn Authorizer>, info: Serve
             workflows::rpc::WorkflowService::new(h.clone(), authorizer.clone(), info.clone())
                 .into_service(),
         );
+    }
+    if let Some(s) = ext.settings.get() {
+        grpc = grpc
+            .add_service(
+                backups::rpc::BackupsService::new(
+                    s.backups.clone(),
+                    authorizer.clone(),
+                    info.clone(),
+                )
+                .into_service(),
+            )
+            .add_service(
+                usage::rpc::UsageService::new(s.usage.clone(), authorizer.clone(), info.clone())
+                    .into_service(),
+            )
+            .add_service(
+                org::rpc::OrgService::new(s.org.clone(), authorizer.clone(), info.clone())
+                    .into_service(),
+            )
+            .add_service(
+                sessions::rpc::SessionsService::new(
+                    s.sessions.clone(),
+                    authorizer.clone(),
+                    info.clone(),
+                )
+                .into_service(),
+            )
+            .add_service(
+                export::rpc::ExportService::new(s.export.clone(), authorizer.clone(), info.clone())
+                    .into_service(),
+            );
     }
     if let Some(h) = ext.deps.get() {
         grpc = grpc.add_service(
@@ -498,6 +539,13 @@ pub async fn serve(
     let (Some(db), Some(store)) = (&cfg.db, &cfg.store) else {
         return Err(ConfigError::Invalid("`store` and `db` are required".into()).into());
     };
+    // A restore a person staged is applied before the database opens.
+    if let Some(report) = backups::apply_pending(&cfg)
+        .await
+        .map_err(ConfigError::Invalid)?
+    {
+        tracing::info!("{report}");
+    }
     // Every decision passes through here, so the access log can name the caller.
     let authorizer: Arc<dyn Authorizer> = Arc::new(logging::LoggingAuthorizer::new(authorizer));
     let pool = migrate::connect(db, DB_CONNECTIONS).await?;
@@ -589,6 +637,7 @@ pub async fn serve(
             .agents
             .set_profiles(Arc::new(profile::AgentProfiles::new(source)));
     }
+    let settings = settings::register(&ext, &registry, &cfg).map_err(ConfigError::Invalid)?;
     let authorizer = ai_agents.agents.authorizer(authorizer);
     // Workflows: definitions in the repository, runs in the database, agents and commands as steps.
     let workflows = workflows::register(
@@ -697,6 +746,7 @@ pub async fn serve(
     features.extend(codeintel::features::features(&ext.codeintel));
     features.extend(storage::features(&ext.byos));
     features.extend(ai_agents.features());
+    features.extend(settings.features());
     features.extend(workflows::features(&workflows));
     features.extend(deps::features(&ext));
     if ext.security.get().is_some() {
@@ -738,6 +788,7 @@ pub async fn serve(
     }
     // The agent runtime calls the server's own services through this router, as the run's agent.
     let agent_tasks = ai_agents.start(build_grpc(&ext, authorizer.clone(), info.clone()));
+    let settings_tasks = settings.start();
     let workflow_tasks = if workflows.cfg.enabled {
         workflows.start_workers()
     } else {
@@ -878,6 +929,7 @@ pub async fn serve(
         t.abort();
     }
     ai_agents.stop(&agent_tasks);
+    settings.stop(&settings_tasks);
     // Delivery is at least once, so stopping the worker mid-row is safe.
     worker.abort();
     sweeper.abort();
