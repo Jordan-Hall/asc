@@ -90,6 +90,7 @@ pub(crate) struct Entry {
     pub state: i64,
     pub style: i64,
     pub enqueued_by: String,
+    pub queued_by_id: i64,
     pub enqueued_at: i64,
     pub reval: Option<(bool, Vec<i32>, i64)>,
     pub started_at: i64,
@@ -101,7 +102,7 @@ pub(crate) struct Entry {
     pub detail: String,
 }
 
-const COLS: &str = "id, target, change, stack_json, state, style, enqueued_by, enqueued_at, reval_json, reval_at, started_at, \
+const COLS: &str = "id, target, change, stack_json, state, style, enqueued_by, queued_by_id, enqueued_at, reval_json, reval_at, started_at, \
      landed_as, landed_at, removed_reason, stage, progress, detail";
 
 fn row_of(r: &sqlx::any::AnyRow) -> Result<Entry, Status> {
@@ -121,6 +122,7 @@ fn row_of(r: &sqlx::any::AnyRow) -> Result<Entry, Status> {
         state: r.try_get("state").map_err(sql)?,
         style: r.try_get("style").map_err(sql)?,
         enqueued_by: r.try_get("enqueued_by").map_err(sql)?,
+        queued_by_id: r.try_get("queued_by_id").map_err(sql)?,
         enqueued_at: r.try_get("enqueued_at").map_err(sql)?,
         reval,
         started_at: r.try_get("started_at").map_err(sql)?,
@@ -308,6 +310,7 @@ impl Reviews {
             style: i32::try_from(row.style).unwrap_or(0),
             position: if live(row.state) { position } else { 0 },
             enqueued_by: row.enqueued_by.clone(),
+            queued_by_id: u64::try_from(row.queued_by_id).unwrap_or(0),
             enqueued_at: row.enqueued_at,
             revalidation: row
                 .reval
@@ -419,6 +422,7 @@ impl Reviews {
             state: WAITING,
             style: 0,
             enqueued_by: String::new(),
+            queued_by_id: 0,
             enqueued_at: 0,
             reval: None,
             started_at: 0,
@@ -498,6 +502,7 @@ impl Reviews {
         let entry = self.open(ctx).await?;
         self.q_known(&entry, change).await?;
         let ns = entry.ns.as_bytes().to_vec();
+        let queued_by_id = crate::review::user_id_col(&ctx.principal.id);
         let (paused, why) = self.q_paused(&ns, &target).await?;
         if paused {
             return Err(Status::failed_precondition(queue_error(
@@ -508,6 +513,22 @@ impl Reviews {
         let stack = self.q_stack(&entry, change).await?;
         if stack.is_empty() {
             return Err(Status::failed_precondition("the change has landed already"));
+        }
+        // `[stacks] max_depth`: a longer stack is split before it is queued.
+        if let crate::agents::repo::PolicyState::Valid(p) =
+            &*crate::agents::repo::RepoView::new(self.registry.clone())
+                .policy(&entry)
+                .await?
+            && let Some(max) = p.stacks.max_depth
+            && stack.len() > usize::try_from(max).unwrap_or(usize::MAX)
+        {
+            return Err(Status::failed_precondition(queue_error(
+                "QUEUE_STACK_TOO_LONG",
+                &format!(
+                    "the policy allows stacks of at most {max} changes; this one has {}",
+                    stack.len()
+                ),
+            )));
         }
         if !self.q_queued_among(&ns, &target, &stack).await?.is_empty() {
             return Err(Status::already_exists(queue_error(
@@ -557,8 +578,8 @@ impl Reviews {
                     .await?;
             }
             sqlx::query(
-                "INSERT INTO queue_entries (ns, id, target, change, stack_json, state, style, enqueued_by, enqueued_at, reval_json, reval_at, landed_as) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $9, $11)",
+                "INSERT INTO queue_entries (ns, id, target, change, stack_json, state, style, enqueued_by, enqueued_at, reval_json, reval_at, landed_as, queued_by_id) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $9, $11, $12)",
             )
             .bind(ns.clone())
             .bind(id)
@@ -571,6 +592,7 @@ impl Reviews {
             .bind(now())
             .bind(reval.clone())
             .bind(Vec::<u8>::new())
+            .bind(queued_by_id)
             .execute(&mut *tx)
             .await?;
             self.q_event(&mut tx, &ns, id).await.map_err(WriteError::Status)?;

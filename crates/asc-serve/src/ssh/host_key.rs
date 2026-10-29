@@ -273,6 +273,17 @@ fn create(path: &Path) -> Result<PrivateKey, HostKeyError> {
     let text = key
         .to_openssh(LineEnding::LF)
         .map_err(|_| unusable(path, "cannot encode the new key"))?;
+    // Published whole: written to a private sibling first, then linked to the final name, which
+    // fails when the name exists. A reader (or a second starter) sees no file or the whole key,
+    // never a half-written one.
+    match publish(path, &text) {
+        Published::Done => return Ok(key),
+        Published::Lost => return reopen_winner(path),
+        Published::Failed(e) => return Err(unusable(path, e)),
+        // The file system has no hard links: create the name and write into it, and let a
+        // second starter wait for the writer.
+        Published::Unsupported => {}
+    }
     match key_file::create_private(path) {
         Ok(mut file) => {
             let written = key_file::check_private(&file)
@@ -289,6 +300,61 @@ fn create(path: &Path) -> Result<PrivateKey, HostKeyError> {
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => reopen_winner(path),
         Err(e) => Err(unusable(path, e)),
     }
+}
+
+enum Published {
+    Done,
+    /// Another starter created the name first.
+    Lost,
+    Unsupported,
+    Failed(std::io::Error),
+}
+
+/// The name of a protected sibling of `path` that no other starter uses.
+fn temp_sibling(path: &Path) -> std::io::Result<PathBuf> {
+    let mut suffix = [0u8; 6];
+    getrandom::fill(&mut suffix).map_err(std::io::Error::other)?;
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let dir = path
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    Ok(dir.join(format!(
+        ".{name}.new-{}",
+        suffix.iter().fold(String::new(), |mut s, b| {
+            let _ = write!(s, "{b:02x}");
+            s
+        })
+    )))
+}
+
+/// Writes `text` to a protected sibling and links it to `path` if `path` does not exist.
+fn publish(path: &Path, text: &str) -> Published {
+    let temp = match temp_sibling(path) {
+        Ok(t) => t,
+        Err(e) => return Published::Failed(e),
+    };
+    let mut file = match key_file::create_private(&temp) {
+        Ok(f) => f,
+        Err(e) => return Published::Failed(e),
+    };
+    let written = key_file::check_private(&file)
+        .and_then(|()| file.write_all(text.as_bytes()))
+        .and_then(|()| file.sync_all());
+    drop(file);
+    let out = match written {
+        Err(e) => Published::Failed(e),
+        Ok(()) => match std::fs::hard_link(&temp, path) {
+            Ok(()) => Published::Done,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Published::Lost,
+            Err(_) => Published::Unsupported,
+        },
+    };
+    let _ = std::fs::remove_file(&temp);
+    out
 }
 
 /// Another process created the file between our look and our create: wait for it to finish
@@ -336,19 +402,7 @@ pub fn rotate(files: &[PathBuf]) -> Result<String, HostKeyError> {
         .map_err(|_| unusable(path, "cannot encode the new key"))?;
     // Written to a protected sibling first, then moved over the old file in one step, so a
     // crash leaves either the old key or the new one and never a partial file.
-    let mut suffix = [0u8; 6];
-    getrandom::fill(&mut suffix).map_err(|e| unusable(path, e))?;
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let temp = dir.join(format!(
-        ".{name}.new-{}",
-        suffix.iter().fold(String::new(), |mut s, b| {
-            let _ = write!(s, "{b:02x}");
-            s
-        })
-    ));
+    let temp = temp_sibling(path).map_err(|e| unusable(path, e))?;
     let mut file = key_file::create_private(&temp).map_err(|e| unusable(path, e))?;
     let written = key_file::check_private(&file)
         .and_then(|()| file.write_all(text.as_bytes()))

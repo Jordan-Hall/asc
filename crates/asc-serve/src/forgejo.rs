@@ -229,6 +229,27 @@ impl ForgejoClient {
         Ok(decode::<Told>(&answer)?.notified)
     }
 
+    /// `POST /api/internal/asc/agent-profile`: the profile of `login` that the person lets agents read.
+    /// `None` when the hub says no, whatever the reason; any failure is an error for the caller to
+    /// treat as no.
+    pub(crate) async fn agent_profile(
+        &self,
+        login: &str,
+    ) -> Result<Option<crate::profile::Profile>, ForgejoError> {
+        let req = self
+            .internal_request(&["api", "internal", "asc", "agent-profile"])?
+            .json_body(&serde_json::json!({ "login": login }))?;
+        let (status, answer) = Self::send(req).await?;
+        if status != StatusCode::OK {
+            return Err(ForgejoError::Status {
+                status: status.as_u16(),
+                message: failure_message("agent-profile", status, &answer),
+            });
+        }
+        let got: crate::profile::HubAnswer = decode(&answer)?;
+        Ok(got.allowed.then(|| got.into_profile()))
+    }
+
     /// Sends `req` and reads at most [`MAX_BODY`] bytes of the answer.
     async fn send(req: RequestBuilder) -> Result<(StatusCode, Vec<u8>), ForgejoError> {
         let mut resp = req

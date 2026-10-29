@@ -246,6 +246,7 @@ impl Reviews {
                 op_id,
                 external,
                 suggestion,
+                super::user_id_col(&ctx.principal.id),
             )
         })
         .await?;
@@ -291,6 +292,7 @@ impl Reviews {
         op_id: Uuid,
         external: &str,
         suggestion: &str,
+        author_id: i64,
     ) -> Result<(i64, i64), WriteError> {
         // A retry of a call that already committed answers with the first result.
         if let Some(done) = self.stored(entry, op_id).await? {
@@ -384,6 +386,7 @@ impl Reviews {
                 id: comment,
                 thread,
                 author: handle,
+                author_id,
                 body,
                 at,
                 external_id: external,
@@ -816,5 +819,29 @@ impl Review for ReviewService {
             .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
             .await?;
         self.hub.hunk_context(&ctx, msg).await.map(Response::new)
+    }
+
+    async fn get_conflicts(
+        &self,
+        request: Request<wire::GetChangeConflictsRequest>,
+    ) -> Result<Response<wire::GetChangeConflictsResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
+            .await?;
+        self.hub.get_conflicts(&ctx, msg).await.map(Response::new)
+    }
+
+    async fn draft_context(
+        &self,
+        request: Request<wire::DraftContextRequest>,
+    ) -> Result<Response<wire::DraftContextResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
+            .await?;
+        self.hub.draft_context(&ctx, msg).await.map(Response::new)
     }
 }

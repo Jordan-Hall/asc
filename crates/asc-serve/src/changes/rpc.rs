@@ -260,6 +260,7 @@ impl Reader<'_> {
         let landed = self.landed(change).await?;
         let review = self.review(change).await?;
         let git = self.ids.git_of(head.cs).await?;
+        let (by_agent, agent_run) = self.agent_of(change).await?;
         let mut visible = Vec::with_capacity(head.visible.len());
         for v in &head.visible {
             visible.push(self.ids.changeset_out(*v).await?);
@@ -280,7 +281,39 @@ impl Reader<'_> {
             },
             review,
             visible,
+            by_agent,
+            agent_run,
         }))
+    }
+
+    /// Whether an agent made `change`, and the newest agent run that holds it: a run of this repository
+    /// whose change list names it, or a first version published under an `agent:` principal.
+    async fn agent_of(&mut self, change: ChangeId) -> Result<(bool, u64), Status> {
+        let hexed: String = change
+            .as_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let run: Option<i64> = sqlx::query_scalar(
+            "SELECT a.id FROM agent_runs a JOIN repos r ON LOWER(r.name) = a.repo              WHERE r.ns = $1 AND a.changes_json LIKE $2 ORDER BY a.id DESC LIMIT 1",
+        )
+        .bind(self.ns.as_bytes().to_vec())
+        .bind(format!("%{hexed}%"))
+        .fetch_optional(&mut *self.conn)
+        .await
+        .map_err(sql_status)?;
+        if let Some(id) = run {
+            return Ok((true, u64::try_from(id).unwrap_or(0)));
+        }
+        let actor: Option<String> = sqlx::query_scalar(
+            "SELECT actor FROM change_versions WHERE ns = $1 AND change = $2 AND v = 1",
+        )
+        .bind(self.ns.as_bytes().to_vec())
+        .bind(change.as_bytes().to_vec())
+        .fetch_optional(&mut *self.conn)
+        .await
+        .map_err(sql_status)?;
+        Ok((actor.is_some_and(|a| a.starts_with("agent:")), 0))
     }
 
     /// Changes whose newest version names `parent` as parent, sorted by id.
@@ -1086,6 +1119,49 @@ mod tests {
         assert_eq!(c3.visible.len(), 1);
         assert_eq!(c3.git.len(), 20);
         assert!(c3.landed_as.is_empty() && c3.review.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_change_says_whether_an_agent_made_it_and_which_run() {
+        let f = fx().await;
+        // Change 2 is held by an agent run of this repository (and a run of another repository
+        // holding change 3 counts for nothing); change 4 was first published under an agent principal.
+        sqlx::query(
+            "INSERT INTO agent_runs (id, repo, agent, state, target, base, task, created_by, created, changes_json)              VALUES (7, 'o/r', 'fixer', 4, 'master', $1, 't', '1:a', 1, $2),                     (8, 'o/other', 'fixer', 4, 'master', $1, 't', '1:a', 1, $3)",
+        )
+        .bind(vec![1u8])
+        .bind(format!("[\"{}\"]", "02".repeat(16)))
+        .bind(format!("[\"{}\"]", "03".repeat(16)))
+        .execute(f.reg.pool())
+        .await
+        .unwrap();
+        sqlx::query("UPDATE change_versions SET actor = 'agent:helper' WHERE change = $1")
+            .bind(cid(4).as_bytes().to_vec())
+            .execute(f.reg.pool())
+            .await
+            .unwrap();
+        let got = f
+            .svc
+            .resolve_changes(req(
+                resolve(
+                    IdMode::Asc,
+                    vec![id_bytes(1), id_bytes(2), id_bytes(3), id_bytes(4)],
+                    vec![],
+                ),
+                READER,
+            ))
+            .await
+            .unwrap()
+            .into_inner();
+        let seen: Vec<(u8, bool, u64)> = got
+            .changes
+            .iter()
+            .map(|c| (c.change[0], c.by_agent, c.agent_run))
+            .collect();
+        assert_eq!(
+            seen,
+            [(1, false, 0), (2, true, 7), (3, false, 0), (4, true, 0)]
+        );
     }
 
     /// Points `name` at `cs`, whatever it held.

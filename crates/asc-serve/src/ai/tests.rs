@@ -911,7 +911,7 @@ async fn the_cap_holds_across_concurrent_calls() {
         .unwrap();
     let k = f.hub.get_key(&k.id).await.unwrap();
     f.fake.set_default(Reply::Delay(
-        Duration::from_millis(600),
+        Duration::from_secs(5),
         Box::new(Reply::Text {
             text: "x".into(),
             input: 1,

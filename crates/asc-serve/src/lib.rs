@@ -59,6 +59,7 @@ pub mod obs;
 pub mod outbox;
 pub mod pagetoken;
 pub mod policy;
+pub mod profile;
 pub mod projects;
 pub mod projects_warm;
 pub mod queue;
@@ -73,6 +74,7 @@ pub mod seeds;
 pub mod signing;
 #[cfg(feature = "git-ssh")]
 pub mod ssh;
+pub mod stats;
 pub mod storage;
 pub mod turbo;
 pub mod update;
@@ -335,6 +337,10 @@ pub fn build_grpc(ext: &Extensions, authorizer: Arc<dyn Authorizer>, info: Serve
                     .into_service(),
             )
             .add_service(
+                stats::rpc::InsightsService::new(h.clone(), authorizer.clone(), info.clone())
+                    .into_service(),
+            )
+            .add_service(
                 ci::rpc::CiService::new(h.clone(), authorizer.clone(), info.clone()).into_service(),
             )
             .add_service(
@@ -578,6 +584,16 @@ pub async fn serve(
         },
     )
     .map_err(ConfigError::Invalid)?;
+    // The profile of a person is given to an agent only when the hub says the person allows it.
+    #[cfg(feature = "forgejo")]
+    {
+        let source = forgejo::event_client(cfg.forgejo.as_ref())
+            .map_err(|e| ConfigError::Invalid(e.to_string()))?
+            .map(|c| Arc::new(profile::HubProfiles(c)) as Arc<dyn profile::ProfileSource>);
+        ai_agents
+            .agents
+            .set_profiles(Arc::new(profile::AgentProfiles::new(source)));
+    }
     let authorizer = ai_agents.agents.authorizer(authorizer);
     // Workflows: definitions in the repository, runs in the database, agents and commands as steps.
     let workflows = workflows::register(
@@ -806,6 +822,7 @@ pub async fn serve(
         .effects()
         .register(notify::policy::PolicyChanged::effect(&registry));
     let notify_sink = notify_sink(&cfg)?;
+    notify::configure(&cfg.notify, notify_sink.is_some());
     let notifier = tokio::spawn(
         Arc::new(notify::worker::Dispatcher::new(
             registry.pool().clone(),

@@ -52,6 +52,7 @@ async fn fx_with(window: u64) -> Fx {
         let parents: Vec<ChangesetId> = cs.last().copied().into_iter().collect();
         cs.push(commit(&entry, &parents, &[("f.txt", &[n])]).await);
     }
+    crate::graph_sql::index_for_tests(&entry, reg.pool(), &cs).await;
     Fx {
         reg,
         entry,
@@ -715,4 +716,76 @@ async fn the_list_filters_and_pages() {
 #[tokio::test]
 async fn the_config_default_window_is_ten_minutes() {
     assert_eq!(AuditConfig::default().undo_window_secs, 600);
+}
+
+#[tokio::test]
+async fn a_dry_run_says_which_changes_go_back_and_which_approvals_are_kept() {
+    let f = fx().await;
+    f.mv(OWN_STORED, None, Some(0), ALICE).await;
+    let seq = f.mv(OWN_STORED, Some(0), Some(3), ALICE).await;
+    let ns = f.entry.ns.as_bytes().to_vec();
+    let version = |change: u8, v: i64, cs: usize| {
+        let (ns, cs) = (ns.clone(), f.cs[cs].as_bytes().to_vec());
+        let pool = f.reg.pool().clone();
+        async move {
+            sqlx::query(
+                "INSERT INTO change_versions (ns, change, v, cs, parent_change, at, actor, op_id) \
+                 VALUES ($1, $2, $3, $4, NULL, 1, '7:alice', $5)",
+            )
+            .bind(ns)
+            .bind(vec![change; 16])
+            .bind(v)
+            .bind(cs)
+            .bind(vec![change, v as u8])
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+    };
+    // Changes 1 and 2 are at cs1 and cs2; change 3 was at cs3 and has a newer version outside the range;
+    // change 9 is not on the ref at all.
+    version(1, 1, 1).await;
+    version(2, 1, 2).await;
+    version(3, 1, 3).await;
+    version(3, 2, 5).await;
+    version(9, 1, 5).await;
+    let approve = |change: u8, v: i64, state: i64| {
+        let (ns, pool) = (ns.clone(), f.reg.pool().clone());
+        async move {
+            sqlx::query(
+                "INSERT INTO review_approvals (ns, change, reviewer, version, state, at) VALUES ($1, $2, 'priya', $3, $4, 1)",
+            )
+            .bind(ns)
+            .bind(vec![change; 16])
+            .bind(v)
+            .bind(state)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+    };
+    let approved = wire::ApprovalState::Approved as i64;
+    approve(1, 1, approved).await; // the newest version of change 1: kept
+    approve(2, 1, wire::ApprovalState::ChangesRequested as i64).await; // not an approval
+    approve(3, 1, approved).await; // on a version that is no longer the newest: not kept
+    approve(9, 1, approved).await; // not going back
+    let mut req = undo_req(OWN, seq);
+    req.dry_run = true;
+    let out = f
+        .log
+        .undo(&ctx(ALICE), &caller(ALICE, false), req)
+        .await
+        .unwrap();
+    assert!(!out.applied);
+    assert_eq!((out.changes_back, out.approvals_kept), (3, 1), "{out:?}");
+    let listed: Vec<&[u8]> = out.changes.iter().map(|c| c.as_ref()).collect();
+    assert_eq!(listed, [&[1u8; 16][..], &[2; 16][..], &[3; 16][..]]);
+    assert!(!out.preview_truncated);
+    // Doing it for real does not carry the preview: the answer is the one of an undo.
+    let done = f
+        .log
+        .undo(&ctx(ALICE), &caller(ALICE, false), undo_req(OWN, seq))
+        .await
+        .unwrap();
+    assert!(done.applied && done.changes_back == 0);
 }
