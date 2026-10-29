@@ -1899,3 +1899,72 @@ async fn the_code_index_and_edit_tools_report_plainly_when_they_cannot_help() {
 
 #[allow(dead_code)]
 fn _json(_: Value) {}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_organisations_agent_card_and_spend_ceiling_gate_a_run() {
+    use crate::org::{AgentPolicy, OrgHub};
+    let w = World::new().await;
+    w.key(alice(), "mine").await;
+    let org = OrgHub::new(
+        w.pool.clone(),
+        std::sync::Arc::new(crate::ai::audit::PoolAudit::new(w.pool.clone())),
+    );
+    assert!(w.hub.org.set(org.clone()));
+    // The repository is acme/app. Agents off for acme.
+    org.set_agents(
+        "acme",
+        AgentPolicy {
+            allow_agents: false,
+            need_person: true,
+            ceiling: 0,
+        },
+        "9:owner",
+    )
+    .await
+    .unwrap();
+    let e = create(&w, "alice-token", base_msg()).await.unwrap_err();
+    assert_eq!(code(&e), "AGENTS_DISABLED");
+    // Allowed, but the month's agent spend has reached the ceiling.
+    org.set_agents(
+        "acme",
+        AgentPolicy {
+            allow_agents: true,
+            need_person: true,
+            ceiling: 1_000,
+        },
+        "9:owner",
+    )
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO agent_spend (repo, day, agent, tokens, cost, requests) VALUES ('acme/app', $1, 'fixer', 1, 5000, 1)")
+        .bind(crate::ai::clock::day(crate::ai::clock::now()))
+        .execute(&w.pool)
+        .await
+        .unwrap();
+    let e = create(&w, "alice-token", base_msg()).await.unwrap_err();
+    assert_eq!(e.code(), Code::ResourceExhausted);
+    // A larger ceiling lets the run start; the instance switch still wins.
+    org.set_agents(
+        "acme",
+        AgentPolicy {
+            allow_agents: true,
+            need_person: true,
+            ceiling: 1_000_000,
+        },
+        "9:owner",
+    )
+    .await
+    .unwrap();
+    assert!(create(&w, "alice-token", base_msg()).await.is_ok());
+    org.set_instance(
+        crate::org::InstanceAgents {
+            allow_agents: false,
+            default_budget: 0,
+        },
+        "1:root",
+    )
+    .await
+    .unwrap();
+    let e = create(&w, "alice-token", base_msg()).await.unwrap_err();
+    assert_eq!(code(&e), "AGENTS_DISABLED");
+}

@@ -333,6 +333,49 @@ impl OrgHub {
         })
     }
 
+    /// The land requirements of `repo` (`owner/name`) under its organisation's defaults. A failure
+    /// to read them leaves the repository's own requirements (the stricter side is never lost
+    /// silently: an unreadable default is logged).
+    pub async fn apply_requirements(
+        &self,
+        repo: &str,
+        own: asc_core::policy::LandRequirements,
+    ) -> asc_core::policy::LandRequirements {
+        let owner = repo.split('/').next().unwrap_or("").to_ascii_lowercase();
+        match self.row(&owner).await {
+            Ok(r) => policy::apply(r.merge.as_ref(), own),
+            Err(e) => {
+                tracing::error!(error = ?e, "organisation merge defaults unreadable");
+                own
+            }
+        }
+    }
+
+    /// Whether the organisation of `repo` requires signed changes on trunk.
+    pub async fn requires_signed(&self, repo: &str) -> bool {
+        let owner = repo.split('/').next().unwrap_or("").to_ascii_lowercase();
+        self.row(&owner)
+            .await
+            .ok()
+            .and_then(|r| r.merge)
+            .is_some_and(|m| m.require_signed)
+    }
+
+    /// What the organisation's agents have spent this month (UTC), in micro-USD.
+    pub async fn month_agent_spend(&self, org: &str) -> Result<u64, OrgError> {
+        let prefix = format!("{}/", org.to_ascii_lowercase());
+        let first = clock::day(clock::month_start(clock::now()));
+        let n: i64 = sqlx::query_scalar(
+            "SELECT CAST(COALESCE(SUM(cost), 0) AS BIGINT) FROM agent_spend WHERE SUBSTR(repo, 1, $2) = $1 AND day >= $3",
+        )
+        .bind(prefix.clone())
+        .bind(i64::try_from(prefix.len()).unwrap_or(0))
+        .bind(first)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(u64::try_from(n).unwrap_or(0))
+    }
+
     // -------------------------------------------------------------------------- agents
 
     pub async fn agent_count(&self, org: &str) -> Result<i64, OrgError> {

@@ -2699,3 +2699,63 @@ async fn an_unowned_changeset_cannot_be_published_by_a_non_administrator() {
     assert_eq!(code(&e), "CHANGE_NOT_ALLOWED");
     f.submit(ALICE, n6, cs6).await.unwrap();
 }
+
+#[tokio::test]
+async fn an_organisations_defaults_tighten_what_a_repository_requires_to_land() {
+    use crate::ai::audit::PoolAudit;
+    use crate::org::{OrgHub, policy::MergeDefaults};
+    let f = fx().await;
+    let a = commit(
+        &f.e,
+        &[],
+        &[
+            (
+                POLICY_PATH,
+                policy_text("[trunk]\nrequire_approvals = 1\n").as_bytes(),
+            ),
+            ("x", b"1"),
+        ],
+    )
+    .await;
+    f.set_master(a).await;
+    let b = commit(&f.e, &[a], &[("y", b"2")]).await;
+    f.register(b, 1, 1, ALICE).await;
+    f.review(1, 1, 1).await;
+    // The organisation "o" (the repository is o/r) asks for two approvals.
+    let pool = f.reg.pool().clone();
+    let hub = OrgHub::new(pool.clone(), Arc::new(PoolAudit::new(pool)));
+    assert!(f.gate.org_slot().set(hub.clone()));
+    hub.set_merge(
+        "o",
+        MergeDefaults {
+            require_approvals: 2,
+            ..MergeDefaults::default()
+        },
+        "9:owner",
+    )
+    .await
+    .unwrap();
+    let err = f.land(ALICE, b).await.unwrap_err();
+    assert_eq!(code(&err), "POLICY_DENIED");
+    assert!(
+        paths(&err)[1].contains("1 of 2 approvals"),
+        "{:?}",
+        paths(&err)
+    );
+    // Another organisation's defaults do not apply to this repository.
+    hub.set_merge("o", MergeDefaults::default(), "9:owner")
+        .await
+        .unwrap();
+    hub.set_merge(
+        "zed",
+        MergeDefaults {
+            require_approvals: 5,
+            ..MergeDefaults::default()
+        },
+        "9:owner",
+    )
+    .await
+    .unwrap();
+    f.land(ALICE, b).await.unwrap();
+    assert_eq!(f.tip().await, b);
+}
