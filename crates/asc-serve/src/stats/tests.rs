@@ -34,33 +34,53 @@ async fn opened(f: &Fx, change: u8, at: i64) {
         .unwrap();
 }
 
-/// One landing of `change` (its first version's changeset) at `at`, on `seq`.
-async fn landed(f: &Fx, change: u8, at: i64, seq: i64) {
-    let reference = format!("refs/heads/{}", f.e.default_branch);
+/// A changeset the graph knows, with no parents, that is not in the object store.
+async fn graph_only(f: &Fx, fill: u8) -> asc_core::id::ChangesetId {
+    let id = asc_core::id::ChangesetId::from_bytes([fill; 32]);
+    sqlx::query("INSERT INTO cs_graph (ns, cs, gen, parents) VALUES ($1, $2, 1, $3)")
+        .bind(f.e.ns.as_bytes().to_vec())
+        .bind(id.as_bytes().to_vec())
+        .bind(Vec::<u8>::new())
+        .execute(f.reg.pool())
+        .await
+        .unwrap();
+    id
+}
+
+/// An update of a ref at `at`, as the ref log records it.
+async fn moved_on(
+    f: &Fx,
+    (repo_id, name): (i64, &str),
+    (seq, at): (i64, i64),
+    old: Option<asc_core::id::ChangesetId>,
+    new: asc_core::id::ChangesetId,
+) {
+    use asc_core::id::RefTarget;
     sqlx::query(
-        "INSERT INTO ref_log (seq, repo_id, name, old, new, actor, via, reason, op_id, at) \
-         VALUES ($1, $2, $3, NULL, NULL, 'x', 'land', 't', $4, $5)",
+        "INSERT INTO ref_log (seq, repo_id, name, old, new, actor, via, reason, op_id, at)          VALUES ($1, $2, $3, $4, $5, 'x', 'land', 't', $6, $7)",
     )
     .bind(seq)
-    .bind(f.e.key.0)
-    .bind(reference.clone())
-    .bind(vec![seq as u8])
+    .bind(repo_id)
+    .bind(name.to_owned())
+    .bind(old.map(|c| RefTarget::Changeset(c).to_bytes().to_vec()))
+    .bind(RefTarget::Changeset(new).to_bytes().to_vec())
+    .bind(vec![u8::try_from(seq).unwrap()])
     .bind(at)
     .execute(f.reg.pool())
     .await
     .unwrap();
-    sqlx::query(
-        "INSERT INTO land_map_ref (ns, ref, old_cs, new_cs, ref_log_seq, op_id) VALUES ($1, $2, $3, $4, $5, $6)",
-    )
-    .bind(f.e.ns.as_bytes().to_vec())
-    .bind(reference)
-    .bind(f.css[usize::from(change) - 1].as_bytes().to_vec())
-    .bind(vec![change; 32])
-    .bind(seq)
-    .bind(vec![seq as u8])
-    .execute(f.reg.pool())
-    .await
-    .unwrap();
+}
+
+/// An update of the default branch.
+async fn moved(
+    f: &Fx,
+    seq: i64,
+    at: i64,
+    old: Option<asc_core::id::ChangesetId>,
+    new: asc_core::id::ChangesetId,
+) {
+    let name = format!("refs/heads/{}", f.e.default_branch);
+    moved_on(f, (f.e.key.0, &name), (seq, at), old, new).await;
 }
 
 async fn verdict(f: &Fx, change: u8, reviewer: &str, state: i64, at: i64) {
@@ -86,9 +106,25 @@ async fn world() -> Fx {
     opened(&f, 1, U - 12 * DAY).await;
     opened(&f, 2, U - 41 * DAY).await;
     opened(&f, 3, U - 4 * DAY).await;
-    landed(&f, 1, U - 10 * DAY, 1).await;
-    landed(&f, 2, U - 40 * DAY, 2).await;
-    landed(&f, 3, U - 3 * DAY, 3).await;
+    // The graph knows the three changesets of the changes; none has a parent.
+    crate::graph_sql::index_for_tests(&f.e, f.reg.pool(), &f.css).await;
+    // Change 2 landed 40 days before by a rewrite (the land map names the changeset it became); changes 1
+    // and 3 landed by fast-forward, which rewrites nothing and so has no land map row at all.
+    let rewritten = graph_only(&f, 0x22).await;
+    sqlx::query(
+        "INSERT INTO land_map_ref (ns, ref, old_cs, new_cs, ref_log_seq, op_id) VALUES ($1, $2, $3, $4, 1, $5)",
+    )
+    .bind(f.e.ns.as_bytes().to_vec())
+    .bind(format!("refs/heads/{}", f.e.default_branch))
+    .bind(f.css[1].as_bytes().to_vec())
+    .bind(rewritten.as_bytes().to_vec())
+    .bind(vec![1u8])
+    .execute(f.reg.pool())
+    .await
+    .unwrap();
+    moved(&f, 1, U - 40 * DAY, None, rewritten).await;
+    moved(&f, 2, U - 10 * DAY, Some(rewritten), f.css[0]).await;
+    moved(&f, 3, U - 3 * DAY, Some(f.css[0]), f.css[2]).await;
     verdict(&f, 1, "carol", 1, U - 12 * DAY + 3600).await;
     verdict(&f, 2, "dave", 1, U - 41 * DAY + 7200).await;
     verdict(&f, 3, "dave", 1, U - 4 * DAY + 1800).await;
@@ -196,29 +232,108 @@ async fn the_kind_narrows_the_tiles_and_a_longer_window_reaches_further() {
 #[tokio::test]
 async fn a_landing_of_another_repository_or_branch_is_not_counted() {
     let f = world().await;
-    // The same changeset landing in another namespace and on another branch of this one.
-    sqlx::query(
-        "INSERT INTO land_map_ref (ns, ref, old_cs, new_cs, ref_log_seq, op_id) VALUES ($1, 'refs/heads/master', $2, $3, 1, $4)",
+    let other = graph_only(&f, 0x33).await;
+    // The same moment on another branch of this repository and on the default branch of another one.
+    moved_on(
+        &f,
+        (f.e.key.0, "refs/heads/release"),
+        (10, U - 2 * DAY),
+        None,
+        other,
     )
-    .bind(vec![9u8; 4])
-    .bind(f.css[1].as_bytes().to_vec())
-    .bind(vec![7u8; 32])
-    .bind(vec![9u8])
-    .execute(f.reg.pool())
-    .await
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO land_map_ref (ns, ref, old_cs, new_cs, ref_log_seq, op_id) VALUES ($1, 'refs/heads/release', $2, $3, 1, $4)",
+    .await;
+    moved_on(
+        &f,
+        (
+            f.e.key.0 + 1000,
+            &format!("refs/heads/{}", f.e.default_branch),
+        ),
+        (11, U - 2 * DAY),
+        None,
+        other,
     )
-    .bind(f.e.ns.as_bytes().to_vec())
-    .bind(f.css[1].as_bytes().to_vec())
-    .bind(vec![7u8; 32])
-    .bind(vec![8u8])
-    .execute(f.reg.pool())
-    .await
-    .unwrap();
+    .await;
+    // A user's own ref is no landing either.
+    moved_on(
+        &f,
+        (f.e.key.0, "refs/users/7/heads/x"),
+        (12, U - 2 * DAY),
+        None,
+        other,
+    )
+    .await;
     let got = get(&f, stats(30, wire::AuthorKind::Unspecified)).await;
     assert_eq!((got.landed, got.landed_previous), (2, 1));
+}
+
+#[tokio::test]
+async fn a_window_that_ends_in_the_far_future_or_before_time_is_refused_not_looped_over() {
+    let f = world().await;
+    let s = svc(&f, auth(&f));
+    for until in [
+        i64::MAX,
+        i64::MAX - 1,
+        i64::MIN,
+        -1,
+        -86_400 * 400,
+        4_000_000_000_000,
+    ] {
+        let err = s
+            .get_stats(req(
+                wire::InsightsStatsRequest {
+                    repo: repo_ref(),
+                    days: 366,
+                    kind: 0,
+                    until,
+                },
+                DEPLOY,
+                false,
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), Code::InvalidArgument, "{until}");
+        let err = s
+            .list_contributors(req(
+                wire::ListContributorsRequest {
+                    repo: repo_ref(),
+                    days: 30,
+                    kind: 0,
+                    until,
+                },
+                DEPLOY,
+                false,
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), Code::InvalidArgument, "{until}");
+    }
+    // Tomorrow is allowed (clocks differ), the day after is not; the longest window has 367 day entries at most.
+    let now = crate::review::now();
+    let ok = get(
+        &f,
+        wire::InsightsStatsRequest {
+            repo: repo_ref(),
+            days: 366,
+            kind: 0,
+            until: now + 86_000,
+        },
+    )
+    .await;
+    assert!(ok.per_day.len() <= 367, "{}", ok.per_day.len());
+    let err = s
+        .get_stats(req(
+            wire::InsightsStatsRequest {
+                repo: repo_ref(),
+                days: 1,
+                kind: 0,
+                until: now + 2 * 86_400,
+            },
+            DEPLOY,
+            false,
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::InvalidArgument);
 }
 
 #[tokio::test]
