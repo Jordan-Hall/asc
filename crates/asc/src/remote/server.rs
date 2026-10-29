@@ -812,6 +812,11 @@ impl Remote for ServerRemote {
         }
     }
 
+    async fn default_branch(&self) -> sync::Result<Option<String>> {
+        let s = self.session();
+        s.client.default_branch().await.map_err(too_old_error)
+    }
+
     async fn has_many(&self, keys: &[ObjKey]) -> sync::Result<Vec<bool>> {
         let s = self.session();
         let r = s.client.has_many(keys).await.map_err(too_old_error);
@@ -893,6 +898,9 @@ impl Remote for Shared {
     }
     async fn list_refs(&self) -> sync::Result<Vec<RefEntry>> {
         self.0.list_refs().await
+    }
+    async fn default_branch(&self) -> sync::Result<Option<String>> {
+        self.0.default_branch().await
     }
     async fn has_many(&self, keys: &[ObjKey]) -> sync::Result<Vec<bool>> {
         self.0.has_many(keys).await
