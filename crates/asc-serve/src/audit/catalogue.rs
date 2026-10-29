@@ -410,8 +410,8 @@ pub const CATALOGUE: &[ActionInfo] = &[
     ),
     a(
         "review.approval.recorded",
-        "A verdict on a version of a change was recorded.",
-        &["version", "state"],
+        "A verdict on a version of a change was recorded, or a reviewer's verdicts were dismissed by someone else.",
+        &["version", "state", "verdicts", "reviewer", "reviewer_id"],
     ),
     a(
         "review.suggestion.applied",
@@ -477,6 +477,16 @@ pub const CATALOGUE: &[ActionInfo] = &[
         "agent.run.continued",
         "A finished agent run was continued by a new run.",
         &["run", "new_run"],
+    ),
+    a(
+        "release.created",
+        "A release was recorded, as a draft or published.",
+        &["tag", "draft", "assets"],
+    ),
+    a(
+        "release.published",
+        "A draft release was published.",
+        &["tag"],
     ),
     a(
         "agent.profile.read",
