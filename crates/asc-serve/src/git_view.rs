@@ -832,6 +832,45 @@ impl crate::forgejo::BridgeHold for PromoteHold {
             .map(|_| ())
             .map_err(|e| e.to_string())
     }
+
+    async fn release(&self, repo: &Arc<RepoEntry>, names: &[String]) -> Result<(), String> {
+        let prefix = crate::forgejo::HOLD_PREFIX;
+        if let Some(bad) = names.iter().find(|n| !n.starts_with(prefix)) {
+            return Err(format!("{bad} is not a hold"));
+        }
+        let plan = PromotePlan {
+            sets: Vec::new(),
+            deletes: names.to_vec(),
+        };
+        let (root, repo_name) = (self.root.clone(), repo.name.as_str().to_owned());
+        let dir = tokio::task::spawn_blocking(move || bridge_dir(&root, &repo_name))
+            .await
+            .map_err(|e| e.to_string())??;
+        self.service
+            .promote(repo, dir, plan)
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    async fn held(&self, repo: &Arc<RepoEntry>) -> Result<Vec<String>, String> {
+        let (root, repo_name) = (self.root.clone(), repo.name.as_str().to_owned());
+        let service = self.service.clone();
+        tokio::task::spawn_blocking(move || {
+            let dir = bridge_dir(&root, &repo_name)?;
+            let refs = service
+                .server()
+                .list_refs(&dir)
+                .map_err(|e| e.to_string())?;
+            Ok(refs
+                .into_iter()
+                .map(|(n, _)| n)
+                .filter(|n| n.starts_with(crate::forgejo::HOLD_PREFIX))
+                .collect())
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
 }
 
 /// Stands in for [`BridgePromoteEffect`] when the git layer cannot start: the rows fail and are
@@ -1168,6 +1207,52 @@ mod tests {
             ..job
         };
         effect.run(&gone).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_hold_is_listed_and_released_in_the_forges_git_directory() {
+        use crate::forgejo::{BridgeHold, HOLD_PREFIX};
+        let env = env().await;
+        let a = commit(&env.repo, None, "f.txt", b"one").await;
+        let root = tempfile::tempdir().unwrap();
+        let root_path = std::fs::canonicalize(root.path()).unwrap();
+        let git_dir = root_path.join("o").join("r.git");
+        std::fs::create_dir_all(&git_dir).unwrap();
+        env.service.server().init_bare(&git_dir).unwrap();
+        let hold = PromoteHold::new(env.service.clone(), root_path);
+
+        let name = format!("{HOLD_PREFIX}{}", "ab".repeat(32));
+        hold.hold(&env.repo, &[(name.clone(), a)]).await.unwrap();
+        assert_eq!(hold.held(&env.repo).await.unwrap(), vec![name.clone()]);
+        // Only the holds are listed: the forge's own refs are not the sweep's business.
+        let want = env.repo.backend.engine().git_commit_of(a).await.unwrap();
+        env.service
+            .server()
+            .update_refs(
+                &git_dir,
+                &[asc_git::compat::RefUpdate::Set {
+                    name: "refs/heads/master".into(),
+                    oid: want,
+                }],
+            )
+            .unwrap();
+        assert_eq!(hold.held(&env.repo).await.unwrap(), vec![name.clone()]);
+
+        // A ref that is gone is no error, and only holds can be released.
+        hold.release(
+            &env.repo,
+            &[name.clone(), format!("{HOLD_PREFIX}{}", "cd".repeat(32))],
+        )
+        .await
+        .unwrap();
+        assert!(hold.held(&env.repo).await.unwrap().is_empty());
+        assert!(
+            hold.release(&env.repo, &["refs/heads/master".to_owned()])
+                .await
+                .is_err()
+        );
+        let refs = env.service.server().list_refs(&git_dir).unwrap();
+        assert!(refs.iter().any(|(n, _)| n == "refs/heads/master"));
     }
 
     #[tokio::test]
