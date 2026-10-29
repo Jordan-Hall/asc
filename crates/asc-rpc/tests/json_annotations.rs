@@ -27,6 +27,7 @@ const FILES: &[&str] = &[
     "asc/v1/insights.proto",
     "asc/v1/mergequeue.proto",
     "asc/v1/policy.proto",
+    "asc/v1/releases.proto",
     "asc/v1/secretscan.proto",
     "asc/v1/signing.proto",
     "asc/v1/stacks.proto",

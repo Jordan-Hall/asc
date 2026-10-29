@@ -67,6 +67,7 @@ async fn approve(
                 change: cbytes(change),
                 version,
                 state: state as i32,
+                ..Default::default()
             },
             token,
             true,
@@ -725,6 +726,7 @@ async fn an_author_and_an_agent_cannot_approve_and_an_old_verdict_of_either_does
         change: cbytes(2),
         version: 0,
         state: wire::ApprovalState::Approved as i32,
+        ..Default::default()
     };
     let e = svc
         .record_approval(host(&v, m(), "50:robot", Role::Write, "o/r", true))

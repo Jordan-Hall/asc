@@ -663,7 +663,24 @@ data (metadata only, no secret), kept 7 days, streamed with `Download`. One at a
 organisation's key is shared with a user, organisation or repository; the grantee's runs use it after their own keys (`AiHub::resolve`), never see it, and the
 owner sees the use per sharer. `SetKeyCaps` adds the warning percentage (one audit event per month, `ai.key.cap.warning`) and the stop rule (`stop_at_cap`).
 
-## 32. Hub integration guide for sections 26 to 31
+## 32. Releases
+
+`Releases` keeps the record of a tagged release; the hub's pages and `asc release` read and write it. asc stores no asset bytes: an asset is a name, a size, a
+SHA-256 and the https address the bytes are served from.
+
+- **Notes.** `DraftNotes` lists the changesets in `from..to` (default: the newest published release to the default branch), newest first, at most 500. A change
+  is grouped by a `Release-Note: added|changed|fixed|skip` trailer, else by the leading word of its subject (`feat`/`add` is added, `fix`/`bug` is fixed), else
+  "changed"; `skip` leaves it out. Each note names its change (when the change index knows the changeset), its author and whether an agent made it. `markdown`
+  is the same text as "### Added", "### Changed", "### Fixed".
+- **Next.** The newest published release, the number of changesets since it, a proposed tag (`v1.2.3` becomes `v1.2.4`; any other tag gets none) and an existing draft.
+- **Create.** Tag 1 to 128 characters of letters, digits and `._+-/`; notes up to 64 KiB; at most 100 assets whose SHA-256 is 64 lowercase hex characters and whose
+  address, when given, is https; a tag is taken once (`ALREADY_EXISTS`). The server computes the provenance and keeps it: the jobs of the run that built the release
+  (`build_source` and `build_run` name a run reported with `Ci.ReportRun`; passed and total jobs, skipped jobs not counted) and the signature on the release commit
+  (the key's owner and fingerprint, and whether it was valid when submitted). `previous_tag` and `changes` say how many changesets are new since the previous release.
+- **Drafts.** `draft = true` keeps a release unpublished; only writers list, read or publish it.
+- Audit actions: `release.created`, `release.published`.
+
+## 33. Hub integration guide for sections 26 to 31
 
 How the hub calls these services. Every call is made with the hub's service credential (principal `host-service`) and, for a person, the
 forwarded claim (`asc-rpc::forwarded`): the person `<id>:<login>`, a role `read`, `write` or `admin`, and the subject the hub's own check
@@ -792,7 +809,7 @@ string is present.
 <a id="rpc-index"></a>
 ## RPC index
 
-Every method of the build-out services (92). A test keeps this list equal to the protos.
+Every method of the build-out services (98). A test keeps this list equal to the protos.
 
 <!-- rpc-index:begin -->
 **Policy** (`policy.proto`)
@@ -948,6 +965,12 @@ Every method of the build-out services (92). A test keeps this list equal to the
 - `asc.v1.DepsService/ProposeUpdate` — repo maintainer; mutating; never trunk
 - `asc.v1.Insights/GetStats` — repo read; expensive; landed, stacks opened, review time, author mix
 - `asc.v1.Insights/ListContributors` — repo read; expensive; landed and reviews per person and agent
+- `asc.v1.Releases/DraftNotes` — repo read; expensive; the changes since a release, grouped
+- `asc.v1.Releases/Next` — repo read; changes since the latest release and a proposed tag
+- `asc.v1.Releases/Create` — repo write; mutating; a draft or a published release
+- `asc.v1.Releases/Publish` — repo write; mutating
+- `asc.v1.Releases/List` — repo read (drafts: repo write); paged
+- `asc.v1.Releases/Get` — repo read (a draft: repo write)
 - `asc.v1.DepsService/SetConfig` — repo maintainer; mutating; never trunk
 - `asc.v1.DepsService/GetConfig` — repo read
 - `asc.v1.DepsService/Dismiss` — repo maintainer; mutating

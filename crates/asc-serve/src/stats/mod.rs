@@ -16,7 +16,9 @@ pub mod rpc;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use asc_core::id::ChangesetId;
+use asc_engine::graph::LogQuery;
 use asc_rpc::server::{CallCtx, wire};
+use futures::TryStreamExt as _;
 use sqlx::Row;
 use tonic::Status;
 
@@ -29,6 +31,8 @@ const DAY: i64 = 86_400;
 pub const WEEKS: usize = 12;
 /// Landed rows read at most.
 pub const MAX_LANDED: i64 = 50_000;
+/// Updates of the default branch read at most.
+pub const MAX_UPDATES: i64 = 5_000;
 /// Verdict rows read at most.
 pub const MAX_VERDICTS: i64 = 100_000;
 /// Contributors returned.
@@ -84,30 +88,37 @@ impl Window {
             1..=MAX_DAYS => days,
             _ => return Err(Status::invalid_argument("days is 1 to 366")),
         };
-        let until = if until == 0 { now() } else { until };
-        if until < 0 {
-            return Err(Status::invalid_argument("until is a Unix time"));
+        let current = now();
+        let until = if until == 0 { current } else { until };
+        // The end of a window is a time that has come (a day of slack for clocks that differ): an
+        // `until` of the far future would make every loop over the window as long as the window.
+        if until < 0 || until > current.saturating_add(DAY) {
+            return Err(Status::invalid_argument(
+                "until is a Unix time not later than tomorrow",
+            ));
         }
+        let days = i64::from(days);
+        // With `until` in [0, now + 1 day] and `days` at most 366, none of this can overflow.
         Ok(Self {
-            from: until - i64::from(days) * DAY,
+            from: until - days * DAY,
             until,
-            days: i64::from(days),
+            days,
         })
     }
 
     fn previous_from(&self) -> i64 {
-        self.from - self.days * DAY
+        self.from.saturating_sub(self.days.saturating_mul(DAY))
     }
 
     /// The oldest time the data must reach: the previous window and the weekly series.
     fn reach(&self) -> i64 {
         self.previous_from()
-            .min(self.until - WEEKS as i64 * 7 * DAY)
+            .min(self.until.saturating_sub(WEEKS as i64 * 7 * DAY))
     }
 
     /// Start of week `i` of the weekly series (oldest first).
     fn week(&self, i: usize) -> i64 {
-        self.until - (WEEKS - i) as i64 * 7 * DAY
+        self.until.saturating_sub((WEEKS - i) as i64 * 7 * DAY)
     }
 }
 
@@ -154,7 +165,7 @@ pub struct Data {
     pub truncated: bool,
 }
 
-type Runs = HashMap<String, (String, String)>;
+pub(crate) type Runs = HashMap<String, (String, String)>;
 
 impl Reviews {
     /// Reads the landed changes of `[reach, until)` with their authors and review times, and the
@@ -168,40 +179,94 @@ impl Reviews {
         let pool = self.registry.pool();
         let ns = entry.ns.as_bytes().to_vec();
         let refname = format!("refs/heads/{}", entry.default_branch);
-        let rows = sqlx::query(
-            "SELECT m.old_cs AS old_cs, m.new_cs AS new_cs, l.at AS at FROM land_map_ref m \
-             JOIN ref_log l ON l.repo_id = $1 AND l.seq = m.ref_log_seq \
-             WHERE m.ns = $2 AND m.ref = $3 AND l.at >= $4 AND l.at < $5 \
-             ORDER BY l.at, m.old_cs LIMIT $6",
+        let cap = usize::try_from(MAX_LANDED).unwrap_or(usize::MAX);
+        // The changesets each update of the default branch brought in. A land that fast-forwarded
+        // rewrote nothing and so has no row in the land map: the ref log is the record of what landed.
+        let updates = sqlx::query(
+            "SELECT old, new, at FROM ref_log WHERE repo_id = $1 AND name = $2 AND at >= $3 AND at < $4 \
+             ORDER BY seq LIMIT $5",
         )
         .bind(entry.key.0)
-        .bind(ns.clone())
         .bind(refname)
         .bind(w.reach())
         .bind(w.until)
-        .bind(MAX_LANDED + 1)
+        .bind(MAX_UPDATES + 1)
         .fetch_all(pool)
         .await
         .map_err(sql)?;
-        let cap = usize::try_from(MAX_LANDED).unwrap_or(usize::MAX);
-        let mut truncated = rows.len() > cap;
-        let mut by_cs: Vec<(Vec<u8>, Vec<u8>, i64)> = Vec::new();
-        for r in rows.iter().take(cap) {
-            by_cs.push((
-                r.try_get("old_cs").map_err(sql)?,
-                r.try_get("new_cs").map_err(sql)?,
-                r.try_get("at").map_err(sql)?,
-            ));
+        let mut truncated = i64::try_from(updates.len()).unwrap_or(i64::MAX) > MAX_UPDATES;
+        let graph = crate::policy::graph_of(&self.registry, entry);
+        let mut by_cs: Vec<(Vec<u8>, i64)> = Vec::new();
+        let mut seen_cs: HashSet<Vec<u8>> = HashSet::new();
+        for u in updates
+            .iter()
+            .take(usize::try_from(MAX_UPDATES).unwrap_or(usize::MAX))
+        {
+            let at: i64 = u.try_get("at").map_err(sql)?;
+            let target = |col: &str| -> Result<Option<ChangesetId>, Status> {
+                let raw: Option<Vec<u8>> = u.try_get(col).map_err(sql)?;
+                Ok(raw
+                    .and_then(|b| asc_core::id::RefTarget::from_bytes(&b).ok())
+                    .and_then(|t| match t {
+                        asc_core::id::RefTarget::Changeset(c) => Some(c),
+                        asc_core::id::RefTarget::Tag(_) => None,
+                    }))
+            };
+            let Some(new) = target("new")? else { continue };
+            let left = cap.saturating_sub(by_cs.len());
+            if left == 0 {
+                truncated = true;
+                break;
+            }
+            let list: Vec<ChangesetId> = graph
+                .log(LogQuery {
+                    include: vec![new],
+                    exclude: target("old")?.into_iter().collect(),
+                    limit: Some(left + 1),
+                    ..LogQuery::default()
+                })
+                .try_collect()
+                .await
+                .map_err(|e| crate::update::internal("history", &e))?;
+            truncated |= list.len() > left;
+            for cs in list.into_iter().take(left) {
+                let key = cs.as_bytes().to_vec();
+                if seen_cs.insert(key.clone()) {
+                    by_cs.push((key, at));
+                }
+            }
+        }
+        // What a land rewrote maps new changeset to old; the change index knows either.
+        let mut old_of: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
+        for part in by_cs.chunks(CHUNK) {
+            let marks = in_list(part.len(), 2);
+            let q = format!(
+                "SELECT old_cs, new_cs FROM land_map_ref WHERE ns = $1 AND new_cs IN ({marks})"
+            );
+            let mut query = sqlx::query(sqlx::AssertSqlSafe(q)).bind(ns.clone());
+            for (cs, _) in part {
+                query = query.bind(cs.clone());
+            }
+            for r in query.fetch_all(pool).await.map_err(sql)? {
+                old_of.insert(
+                    r.try_get("new_cs").map_err(sql)?,
+                    r.try_get("old_cs").map_err(sql)?,
+                );
+            }
         }
         let mut change_of: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
         for part in by_cs.chunks(CHUNK) {
-            let marks = in_list(part.len(), 2);
+            let keys: Vec<Vec<u8>> = part
+                .iter()
+                .flat_map(|(cs, _)| std::iter::once(cs.clone()).chain(old_of.get(cs).cloned()))
+                .collect();
+            let marks = in_list(keys.len(), 2);
             let q = format!(
                 "SELECT DISTINCT cs, change FROM change_versions WHERE ns = $1 AND cs IN ({marks})"
             );
             let mut query = sqlx::query(sqlx::AssertSqlSafe(q)).bind(ns.clone());
-            for (old, _, _) in part {
-                query = query.bind(old.clone());
+            for k in &keys {
+                query = query.bind(k.clone());
             }
             for r in query.fetch_all(pool).await.map_err(sql)? {
                 change_of.insert(
@@ -213,11 +278,14 @@ impl Reviews {
         // A change counts once, at its first landing.
         let mut seen = HashSet::new();
         let mut landed: Vec<(Vec<u8>, Vec<u8>, i64)> = Vec::new();
-        for (old, new, at) in &by_cs {
-            if let Some(ch) = change_of.get(old)
+        for (cs, at) in &by_cs {
+            let change = change_of
+                .get(cs)
+                .or_else(|| old_of.get(cs).and_then(|o| change_of.get(o)));
+            if let Some(ch) = change
                 && seen.insert(ch.clone())
             {
-                landed.push((ch.clone(), new.clone(), *at));
+                landed.push((ch.clone(), cs.clone(), *at));
             }
         }
         let changes: Vec<Vec<u8>> = landed.iter().map(|(c, _, _)| c.clone()).collect();
@@ -302,7 +370,7 @@ impl Reviews {
     }
 
     /// The agent runs of the repository that hold changes: change (hex) -> (agent, run starter).
-    async fn agent_runs_of(&self, ctx: &CallCtx) -> Result<Runs, Status> {
+    pub(crate) async fn agent_runs_of(&self, ctx: &CallCtx) -> Result<Runs, Status> {
         let rows = sqlx::query(
             "SELECT agent, starter, created_by, changes_json FROM agent_runs \
              WHERE repo = $1 AND changes_json <> '[]' ORDER BY id DESC LIMIT 5000",
@@ -333,7 +401,7 @@ impl Reviews {
     }
 }
 
-fn author_of(runs: &Runs, change: &[u8], actor: &str) -> Author {
+pub(crate) fn author_of(runs: &Runs, change: &[u8], actor: &str) -> Author {
     if let Some((agent, by)) = runs.get(&hex(change)) {
         return Author {
             agent: true,
@@ -416,10 +484,14 @@ impl Reviews {
             .count();
         let roots = |lo: i64, hi: i64| data.roots.iter().filter(|a| **a >= lo && **a < hi).count();
         let mut per_day: BTreeMap<i64, (u32, u32)> = BTreeMap::new();
-        let mut d = w.from - w.from.rem_euclid(DAY);
-        while d < w.until {
-            per_day.insert(d, (0, 0));
-            d += DAY;
+        // One entry for each day of the window, a count fixed by `days` (at most 366, and one more for
+        // the day the window starts in), never a loop that runs until a time.
+        let first_day = w.from - w.from.rem_euclid(DAY);
+        for i in 0..=w.days {
+            let day = first_day + i * DAY;
+            if day < w.until {
+                per_day.insert(day, (0, 0));
+            }
         }
         for l in &in_window {
             let e = per_day.entry(l.at - l.at.rem_euclid(DAY)).or_default();

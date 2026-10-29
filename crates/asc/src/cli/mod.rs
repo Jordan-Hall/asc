@@ -100,6 +100,7 @@ pub mod rebase_todo;
 pub mod ref_filter;
 pub mod reflog;
 pub mod refs_plumbing;
+pub mod release;
 pub mod remote;
 pub mod reset;
 pub mod restore;
@@ -263,6 +264,7 @@ pub static COMMANDS: &[Command] = &[
     entry!("data-export", data_export),
     entry!("ai", ai),
     entry!("workflow", workflow),
+    entry!("release", release),
     entry!("deps", deps),
     entry!("codeintel", codeintel_cmd),
     entry!("search", search),

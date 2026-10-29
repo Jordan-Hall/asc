@@ -55,6 +55,7 @@ async fn approve(f: &Fx, change: u8) {
                 change: cbytes(change),
                 version: 0,
                 state: wire::ApprovalState::Approved as i32,
+                ..Default::default()
             },
             CAROL,
             true,
@@ -233,6 +234,7 @@ async fn an_entry_waits_until_it_is_approved_and_the_queue_knows_its_position_an
                 change: cbytes(2),
                 version: 0,
                 state: wire::ApprovalState::ChangesRequested as i32,
+                ..Default::default()
             },
             CAROL,
             true,
@@ -680,6 +682,7 @@ async fn an_entry_that_stopped_passing_is_refused_at_the_moment_of_landing() {
                 change: cbytes(1),
                 version: 0,
                 state: wire::ApprovalState::ChangesRequested as i32,
+                ..Default::default()
             },
             ADMIN,
             true,
@@ -895,4 +898,128 @@ max_depth = 1
     );
     // One change is within the limit.
     assert!(enqueue(&q, CAROL, 1).await.is_ok());
+}
+
+async fn dismiss(
+    f: &Fx,
+    token: &str,
+    reviewer: &str,
+    reviewer_id: u64,
+) -> Result<wire::RecordApprovalResponse, tonic::Status> {
+    f.review
+        .record_approval(req(
+            wire::RecordApprovalRequest {
+                repo: repo_ref(),
+                change: cbytes(1),
+                version: 0,
+                state: wire::ApprovalState::Dismissed as i32,
+                reviewer: reviewer.into(),
+                reviewer_id,
+            },
+            token,
+            true,
+        ))
+        .await
+        .map(|r| r.into_inner())
+}
+
+async fn revalidated(q: &QueueService, id: u64) -> wire::QueueEntry {
+    q.revalidate(req(
+        wire::RevalidateRequest {
+            repo: repo_ref(),
+            id,
+        },
+        CAROL,
+        false,
+    ))
+    .await
+    .unwrap()
+    .into_inner()
+    .entry
+    .unwrap()
+}
+
+#[tokio::test]
+async fn dismissing_an_approval_takes_the_entry_back_from_ready_and_is_audited_with_both_people() {
+    let f = fx().await;
+    let (q, _v) = svc(&f);
+    approve(&f, 1).await; // carol, user 44
+    let entry = enqueue(&q, CAROL, 1).await.unwrap();
+    assert_eq!(
+        revalidated(&q, entry.id).await.state,
+        wire::QueueEntryState::Ready as i32,
+        "approved, so ready"
+    );
+    // Only someone with write dismisses another person's verdict; an unknown reviewer is not found.
+    assert_eq!(
+        dismiss(&f, ALICE, "carol", 0).await.unwrap_err().code(),
+        Code::PermissionDenied
+    );
+    assert_eq!(
+        dismiss(&f, ADMIN, "nobody", 0).await.unwrap_err().code(),
+        Code::NotFound
+    );
+    assert_eq!(
+        dismiss(&f, ADMIN, "$bad", 0).await.unwrap_err().code(),
+        Code::InvalidArgument
+    );
+    // A reviewer cannot be named on a verdict that is not a dismissal.
+    let err = f
+        .review
+        .record_approval(req(
+            wire::RecordApprovalRequest {
+                repo: repo_ref(),
+                change: cbytes(1),
+                version: 0,
+                state: wire::ApprovalState::Approved as i32,
+                reviewer: "carol".into(),
+                reviewer_id: 0,
+            },
+            ADMIN,
+            true,
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::InvalidArgument);
+    // The maintainer dismisses carol's approval, naming her by the hub's id alone.
+    let done = dismiss(&f, ADMIN, "", 44).await.unwrap();
+    assert!(
+        done.approvals
+            .iter()
+            .all(|a| !a.applies && a.state == wire::ApprovalState::Dismissed as i32),
+        "{done:?}"
+    );
+    // The entry is not ready any more, and landing it is refused.
+    let after = revalidated(&q, entry.id).await;
+    assert_ne!(
+        after.state,
+        wire::QueueEntryState::Ready as i32,
+        "{after:?}"
+    );
+    assert_eq!(
+        report(&q, ADMIN, entry.id, wire::QueueEntryState::Landing, &[])
+            .await
+            .unwrap_err()
+            .code(),
+        Code::FailedPrecondition
+    );
+    // The audit event names the maintainer as the actor and the reviewer and her id.
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT actor_name, details_json FROM audit_events WHERE action = 'review.approval.recorded' ORDER BY seq DESC LIMIT 1",
+    )
+    .fetch_all(f.reg.pool())
+    .await
+    .unwrap();
+    assert_eq!(rows[0].0, "root");
+    assert!(
+        rows[0].1.contains("carol") && rows[0].1.contains("44"),
+        "{}",
+        rows[0].1
+    );
+    // Approving again brings it back.
+    approve(&f, 1).await;
+    assert_eq!(
+        revalidated(&q, entry.id).await.state,
+        wire::QueueEntryState::Ready as i32
+    );
 }

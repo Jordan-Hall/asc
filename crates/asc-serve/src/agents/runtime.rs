@@ -1378,25 +1378,29 @@ impl AgentsHub {
                 let shown = masker.mask(&call.input.to_string());
                 self.event(&fresh, EventKind::ToolCall, &shown, &call.name, &[], "")
                     .await;
-                match self.hold(run, live).await {
-                    super::control::Hold::Go => {}
-                    super::control::Hold::Stop(e) => return e,
-                    super::control::Hold::Rollback(cp) => {
-                        if let Err(why) = self
-                            .do_rollback(
-                                run,
-                                &cp,
-                                ws,
-                                secret,
-                                &ref_name,
-                                &mut tip,
-                                &mut ref_exists,
-                                &mut committed,
-                            )
-                            .await
-                        {
-                            self.event(&fresh, EventKind::Error, &why, "rollback", &[], "")
-                                .await;
+                // A rollback is done at the hold, and the run holds again after it: it was paused
+                // before and stays paused until a person resumes it.
+                loop {
+                    match self.hold(run, live).await {
+                        super::control::Hold::Go => break,
+                        super::control::Hold::Stop(e) => return e,
+                        super::control::Hold::Rollback(cp) => {
+                            if let Err(why) = self
+                                .do_rollback(
+                                    run,
+                                    &cp,
+                                    ws,
+                                    secret,
+                                    &ref_name,
+                                    &mut tip,
+                                    &mut ref_exists,
+                                    &mut committed,
+                                )
+                                .await
+                            {
+                                self.event(&fresh, EventKind::Error, &why, "rollback", &[], "")
+                                    .await;
+                            }
                         }
                     }
                 }
