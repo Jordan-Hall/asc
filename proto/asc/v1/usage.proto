@@ -1,0 +1,126 @@
+syntax = "proto3";
+package asc.v1;
+
+import "asc/v1/common.proto";
+
+// Usage of an account or an organisation (docs/BUILDOUT.md section 25): the Usage and quota board, the Spend and Budget panels,
+// the usage block of Admin users. Four measures: object storage, agent minutes, AI spend and bandwidth, for a calendar month (UTC).
+//
+// Where the numbers come from. AI spend is read from the AI key usage the server records on every model call (`ai_usage`, per
+// key, day and repository) and from the spend of agent runs. Agent minutes are the running time of agent runs, started to
+// finished (a run still going counts up to now). Storage and bandwidth are counters the server keeps (`usage_counters`): bandwidth
+// is added by the server as it serves objects, and the host service reports storage figures it knows with `Report`. Bring-your-own
+// storage and bring-your-own AI keys are not counted against a quota: the board shows them under `byo_*` and `Quota` ignores them.
+//
+// Who sees what. A person sees their own usage (`USER` owner named like them); an organisation's usage is for its owners (the hub's
+// claim `org:<name>` with role admin); the instance's totals are for the site administrator. Any other call is PERMISSION_DENIED.
+// `SetQuota` and `Report` are the site administrator's (or the host service's own credential). Counters older than
+// `[usage] retention_days` (default 400) are deleted; a report outside that range is INVALID_ARGUMENT. Mutating calls need
+// `x-asc-op-id`. Advertised as Version.features "usage.v1".
+service Usage {
+  rpc GetUsage(GetUsageRequest) returns (GetUsageResponse);        // owner: the four measures and the repository table
+  rpc ListSpend(ListSpendRequest) returns (ListSpendResponse);     // owner: AI spend grouped by key, user, repository, day or month
+  rpc GetQuota(GetQuotaRequest) returns (GetQuotaResponse);        // owner: the limits that apply
+  rpc SetQuota(SetQuotaRequest) returns (SetQuotaResponse);        // site admin; mutating
+  rpc Report(ReportUsageRequest) returns (ReportUsageResponse);    // host service or site admin; mutating
+}
+
+// The limits of an owner. 0 = unlimited. A measure the owner has no limit for inherits the instance default.
+message UsageQuota {
+  uint64 storage_bytes = 1;
+  uint64 agent_minutes = 2;
+  uint64 ai_spend_micro_usd = 3;
+  uint64 bandwidth_bytes = 4;
+}
+
+// One measure with its limit.
+message UsageMeter {
+  uint64 used = 1;
+  uint64 limit = 2;                    // 0 = no limit
+  bool over = 3;                       // limit > 0 and used > limit
+}
+
+message UsageRepo {
+  string repo = 1;                     // "owner/name"
+  uint64 storage_bytes = 2;
+  uint64 agent_minutes = 3;
+  uint64 ai_spend_micro_usd = 4;
+  uint64 bandwidth_bytes = 5;
+}
+
+// `owner` is a USER or ORG; INSTANCE gives the totals of the server (site administrator). `period` is "YYYY-MM"; empty = this month.
+message GetUsageRequest {
+  OwnerRef owner = 1;
+  string period = 2;
+}
+message GetUsageResponse {
+  string period = 1;
+  int64 period_start = 2;              // unix seconds
+  int64 resets_at = 3;                 // the first second of the next month
+  UsageMeter storage = 4;
+  UsageMeter agent_minutes = 5;
+  UsageMeter ai_spend = 6;             // micro-USD
+  UsageMeter bandwidth = 7;
+  uint32 ai_keys = 8;                  // keys that spent this period
+  uint64 byo_ai_spend_micro_usd = 9;   // spend on the owner's own keys; not counted against the quota
+  bool byo_storage = 10;               // some repository of the owner is on storage the owner brought; its bytes are not counted
+  bool empty = 11;                     // nothing was used this period
+  bool over_quota = 12;                // any meter is over
+  repeated UsageRepo repos = 13;       // largest AI spend, then storage, first; at most 200
+}
+
+enum SpendGroup {
+  SPEND_GROUP_KEY = 0;
+  SPEND_GROUP_USER = 1;
+  SPEND_GROUP_REPO = 2;
+  SPEND_GROUP_DAY = 3;
+  SPEND_GROUP_MONTH = 4;
+}
+
+// `since` and `until` are unix seconds; 0 = this month so far. At most 400 days.
+message ListSpendRequest {
+  OwnerRef owner = 1;
+  SpendGroup group_by = 2;
+  int64 since = 3;
+  int64 until = 4;
+}
+message SpendRow {
+  string group = 1;                    // a key id, a login, "owner/name", YYYY-MM-DD or YYYY-MM
+  string label = 2;                    // the key's label for KEY rows
+  uint64 requests = 3;
+  uint64 input_tokens = 4;
+  uint64 output_tokens = 5;
+  uint64 cost_micro_usd = 6;
+}
+message ListSpendResponse {
+  repeated SpendRow rows = 1;
+  SpendRow total = 2;
+  // Spend of agent runs started by people has no tokens; it is counted in `cost_micro_usd` of USER rows only.
+}
+
+message GetQuotaRequest {
+  OwnerRef owner = 1;
+}
+message GetQuotaResponse {
+  UsageQuota effective = 1;            // what applies: the owner's limits, else the instance default
+  UsageQuota override = 2;             // the owner's own limits; 0 = inherits
+  UsageQuota instance_default = 3;
+}
+
+message SetQuotaRequest {
+  OwnerRef owner = 1;                  // USER, ORG or INSTANCE (the default)
+  UsageQuota quota = 2;
+}
+message SetQuotaResponse {
+  GetQuotaResponse quota = 1;
+}
+
+// Storage is a gauge (the last value of the day wins); bandwidth is added. `repo` is "owner/name".
+message ReportUsageRequest {
+  string repo = 1;
+  optional uint64 storage_bytes = 2;
+  uint64 bandwidth_bytes = 3;
+  bool byo_storage = 4;                // the repository is on storage its owner brought
+  int64 at = 5;                        // unix seconds; 0 = now
+}
+message ReportUsageResponse {}

@@ -24,10 +24,14 @@ pub mod owner;
 pub mod prices;
 pub mod provider;
 pub mod rpc;
+pub mod share;
+pub mod share_rpc;
 pub mod store;
 
 #[cfg(test)]
 pub(crate) mod fake;
+#[cfg(test)]
+pub(crate) mod share_tests;
 #[cfg(test)]
 pub(crate) mod tests;
 
@@ -545,7 +549,7 @@ impl AiHub {
     ) -> Result<KeyRow, AiError> {
         if let Some(id) = explicit.filter(|s| !s.is_empty()) {
             let k = self.get_key(id).await?;
-            return if chain.contains(&k.owner) {
+            return if chain.contains(&k.owner) || self.shared_into(&k.id, chain).await? {
                 Ok(k)
             } else {
                 Err(AiError::NotFound)
@@ -553,6 +557,14 @@ impl AiHub {
         }
         for owner in chain {
             let mut keys = self.store.list(owner).await?;
+            // Keys other owners share with this one come after its own.
+            keys.extend(
+                self.shared_keys_for(owner)
+                    .await?
+                    .into_iter()
+                    .filter(|(s, _)| s.allow_use)
+                    .map(|(_, k)| k),
+            );
             keys.retain(|k| !k.disabled);
             // A tested key first; an untested one is returned so the caller can say why it cannot run.
             keys.sort_by_key(|k| match k.state {
@@ -705,6 +717,7 @@ impl AiHub {
                 // The key's month is shown in the report even when no cap is set.
                 self.add_spent(&key.id, actual, at).await;
             }
+            self.check_warn(key, at).await;
         }
         match outcome {
             Ok(response) => Ok(Completion {

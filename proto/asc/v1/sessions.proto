@@ -1,0 +1,58 @@
+syntax = "proto3";
+package asc.v1;
+
+// The credentials a person has on this server, for the Security page of account settings (docs/BUILDOUT.md section 27): personal
+// access tokens, SSH keys and agent tokens the person made, each with when it was made, last used and expires, and a way to
+// revoke it ("Sign out one" and "Sign out everywhere else"). The hub keeps its own browser sessions; these are the ones the asc
+// server decides on. A secret is never returned: a row has an id, a label and dates.
+//
+// A person lists and revokes their own credentials (the hub's claim `user:<login>` with role write to revoke, read to list; or the
+// person's own token). The site administrator does the same for any account (the `instance` claim, role admin; the Admin user
+// page). Another person's credential id is NOT_FOUND, never PERMISSION_DENIED, so ids cannot be probed. Revoking is immediate for
+// new requests (the token cache lives at most 5 seconds). Every revocation is written to the audit log with the person and the host
+// as the relay. Mutating calls need `x-asc-op-id`. Advertised as Version.features "sessions.v1".
+service Sessions {
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+  rpc RevokeSession(RevokeSessionRequest) returns (RevokeSessionResponse);          // mutating
+  rpc RevokeOtherSessions(RevokeOtherSessionsRequest) returns (RevokeOtherSessionsResponse);   // mutating
+}
+
+enum SessionKind {
+  SESSION_KIND_UNSPECIFIED = 0;
+  SESSION_KIND_TOKEN = 1;          // a personal access token
+  SESSION_KIND_SSH_KEY = 2;
+  SESSION_KIND_AGENT_TOKEN = 3;    // a token the person made for an agent
+}
+
+message Session {
+  string id = 1;                   // "tok:<id>", "ssh:<id>" or "agt:<id>"
+  SessionKind kind = 2;
+  string label = 3;                // the token label, the key title, the agent token name
+  string scope = 4;                // "acme/* write" style summary; for an agent token its repository
+  int64 created = 5;               // unix seconds
+  int64 last_used = 6;             // 0 = unknown or never
+  int64 expires = 7;               // 0 = does not expire
+}
+
+// `login` empty = the caller's own account.
+message ListSessionsRequest {
+  string login = 1;
+}
+message ListSessionsResponse {
+  repeated Session sessions = 1;   // live ones only, newest first; at most 500
+}
+
+message RevokeSessionRequest {
+  string login = 1;
+  string id = 2;
+}
+message RevokeSessionResponse {}
+
+// Revokes every live credential of the account except `keep_id` (the one in use). Returns how many.
+message RevokeOtherSessionsRequest {
+  string login = 1;
+  string keep_id = 2;
+}
+message RevokeOtherSessionsResponse {
+  uint32 revoked = 1;
+}

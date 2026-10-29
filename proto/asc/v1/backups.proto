@@ -1,0 +1,158 @@
+syntax = "proto3";
+package asc.v1;
+
+// Scheduled backups of the server (docs/BUILDOUT.md section 24, docs/runbooks/backup.md). The Admin Backups board: a schedule
+// with retention, a target, the history with the result of each run, "Back up now", Verify, and a restore that needs the word
+// RESTORE. It runs the same backup as `asc serve backup` (database snapshot, instance objects, optionally the sealed vault key).
+//
+// Targets are named in the server configuration (`[backups.targets.<name>]`, a local directory or an S3 bucket); no call
+// carries a credential, and no response shows one. An S3 target is encrypted before upload (XChaCha20-Poly1305 in 4 MiB chunks
+// under the key in `[backups] key_file`, which the operator holds); a local target is written as `asc serve backup` writes it.
+//
+// Every call is for the site administrator: the host service with an `instance` claim of role admin, or the host service's own
+// credential. Any other caller gets PERMISSION_DENIED. Mutating calls need `x-asc-op-id`. Every mutation is written to the
+// audit log with the person and the host as the relay. A restore is staged: it is verified, written down, and applied when the
+// server next starts (the server cannot replace its own database while it serves). Advertised as Version.features "backups.v1".
+// ErrorDetail.code also carries nothing new: a refusal is PERMISSION_DENIED, INVALID_ARGUMENT, NOT_FOUND, FAILED_PRECONDITION
+// (a run is already going, no such target, backups are off, the backup is not verified) or ABORTED.
+service Backups {
+  rpc ListBackups(ListBackupsRequest) returns (ListBackupsResponse);               // site admin; history, schedule, status
+  rpc ListTargets(ListBackupTargetsRequest) returns (ListBackupTargetsResponse);   // site admin; targets named in the configuration
+  rpc RunBackup(RunBackupRequest) returns (RunBackupResponse);                     // site admin; mutating; starts a run and returns at once
+  rpc SetSchedule(SetBackupScheduleRequest) returns (SetBackupScheduleResponse);   // site admin; mutating
+  rpc VerifyBackup(VerifyBackupRequest) returns (VerifyBackupResponse);            // site admin; mutating; starts a check and returns at once
+  rpc PreviewRestore(PreviewRestoreRequest) returns (PreviewRestoreResponse);      // site admin; changes nothing
+  rpc Restore(RestoreBackupRequest) returns (RestoreBackupResponse);               // site admin; mutating; stages a restore
+}
+
+enum BackupState {
+  BACKUP_STATE_UNSPECIFIED = 0;
+  BACKUP_STATE_RUNNING = 1;
+  BACKUP_STATE_SUCCEEDED = 2;
+  BACKUP_STATE_FAILED = 3;
+}
+
+enum BackupVerify {
+  BACKUP_VERIFY_NOT_VERIFIED = 0;
+  BACKUP_VERIFY_RUNNING = 1;
+  BACKUP_VERIFY_VERIFIED = 2;
+  BACKUP_VERIFY_FAILED = 3;
+}
+
+enum BackupTrigger {
+  BACKUP_TRIGGER_UNSPECIFIED = 0;
+  BACKUP_TRIGGER_MANUAL = 1;
+  BACKUP_TRIGGER_SCHEDULE = 2;
+}
+
+message Backup {
+  string id = 1;                       // "bk_" + 20 characters
+  BackupState state = 2;
+  BackupTrigger trigger = 3;
+  string target = 4;
+  int64 started = 5;                   // unix seconds
+  int64 finished = 6;                  // 0 while running
+  uint64 size_bytes = 7;               // 0 until finished
+  uint64 objects = 8;
+  bool encrypted = 9;
+  BackupVerify verify = 10;
+  int64 verified_at = 11;
+  string note = 12;                    // "Target unreachable: timeout", "Restore test passed"; sanitised, no credential
+  uint64 done_bytes = 13;              // progress of a running copy to the target
+  uint64 total_bytes = 14;             // 0 while unknown
+  string actor = 15;                   // the person who started a manual run
+  bool restorable = 16;                // succeeded, and its files are still on the target
+}
+
+message BackupSchedule {
+  bool enabled = 1;
+  uint32 interval_hours = 2;           // 1 to 168
+  uint32 minute_of_day = 3;            // 0 to 1439, UTC: the anchor of the interval ("every day at 02:00" is 24 and 120)
+  string target = 4;
+  uint32 keep_days = 5;                // every successful backup of the last N days is kept (1 to 3650)
+  uint32 keep_weeks = 6;               // then the newest of each week for N weeks (0 to 520)
+  int64 next_run = 7;                  // unix seconds, 0 when disabled
+  bool include_vault_key = 8;          // needs a backup key file in the configuration
+  bool include_objects = 9;
+}
+
+message BackupStatus {
+  int64 last_success = 1;              // 0 = never
+  int64 last_failure = 2;
+  bool overdue = 3;                    // enabled, and no success within one and a half intervals
+  bool running = 4;
+  bool restore_staged = 5;
+  string restore_backup_id = 6;
+  bool configured = 7;                 // at least one target exists and backups are enabled in the configuration
+}
+
+message ListBackupsRequest {
+  uint32 limit = 1;                    // 0 = 50, at most 200
+}
+message ListBackupsResponse {
+  repeated Backup backups = 1;         // newest first
+  BackupSchedule schedule = 2;
+  BackupStatus status = 3;
+}
+
+message BackupTarget {
+  string name = 1;
+  string kind = 2;                     // "local" or "s3"
+  string location = 3;                 // a directory, or "bucket/prefix"; never a credential
+  bool encrypted = 4;
+}
+message ListBackupTargetsRequest {}
+message ListBackupTargetsResponse {
+  repeated BackupTarget targets = 1;
+}
+
+// `target` empty = the schedule's target.
+message RunBackupRequest {
+  string target = 1;
+}
+message RunBackupResponse {
+  Backup backup = 1;
+}
+
+message SetBackupScheduleRequest {
+  BackupSchedule schedule = 1;         // next_run is ignored
+}
+message SetBackupScheduleResponse {
+  BackupSchedule schedule = 1;
+}
+
+// Restores the backup into a scratch area and checks the result (files against the manifest; an S3 target also checks
+// the objects it holds). The answer arrives in the backup's `verify` and `note`.
+message VerifyBackupRequest {
+  string id = 1;
+}
+message VerifyBackupResponse {
+  Backup backup = 1;
+}
+
+message PreviewRestoreRequest {
+  string id = 1;
+}
+message PreviewRestoreResponse {
+  Backup backup = 1;
+  string confirmation = 2;             // the word the person must type: "RESTORE"
+  int64 loses_changes_since = 3;       // everything after this time is lost
+  bool read_only_during = 4;
+  bool verified = 5;                   // a restore of a backup that was never verified is refused
+  string database = 6;                 // "sqlite" or "postgres"
+  uint64 objects = 7;
+  uint64 object_bytes = 8;
+  bool has_vault_key = 9;
+  repeated string warnings = 10;
+}
+
+// `confirm` must be exactly "RESTORE". The backup must be verified and restorable.
+message RestoreBackupRequest {
+  string id = 1;
+  string confirm = 2;
+}
+message RestoreBackupResponse {
+  string backup_id = 1;
+  bool restart_required = 2;           // the restore is applied when the server next starts
+  string command = 3;                  // what to run instead to apply it by hand
+}
