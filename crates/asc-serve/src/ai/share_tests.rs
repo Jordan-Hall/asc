@@ -536,3 +536,83 @@ async fn the_warning_goes_out_once_a_month_and_needs_a_cap() {
     s.f.hub.check_warn(&key, now).await;
     assert_eq!(s.audit.of("ai.key.cap.warning").len(), 2);
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_key_whose_owner_turned_the_stop_off_is_not_stopped_by_its_own_cap() {
+    use super::fake::Reply;
+    use super::model::{Message, ModelRequest};
+    use tokio_util::sync::CancellationToken;
+    let s = setup().await;
+    let key = active_key(&s.f, &user("alice"), "mine").await;
+    s.f.hub
+        .update_key(
+            &key.id,
+            KeyPatch {
+                monthly_cap: Some(2300),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let key = s.f.hub.get_key(&key.id).await.unwrap();
+    s.f.fake.set_default(Reply::Text {
+        text: "x".into(),
+        input: 1000,
+        output: 600,
+    });
+    let who = super::CallInfo {
+        repo: "alice/lab",
+        agent: "fixer",
+    };
+    let req = ModelRequest {
+        model: "model-x".into(),
+        system: "be brief".into(),
+        messages: vec![Message::User("hi".into())],
+        tools: vec![],
+        max_output_tokens: 100,
+    };
+    let c = CancellationToken::new();
+    // Without a caps row the cap is a hard stop: the second call does not fit.
+    s.f.hub.complete(&key, &who, &req, false, &c).await.unwrap();
+    let err =
+        s.f.hub
+            .complete(&key, &who, &req, false, &c)
+            .await
+            .unwrap_err();
+    assert!(matches!(err, super::AiError::CapReached("key")), "{err:?}");
+    // The owner turns the stop off: the cap is a warning level, and calls go on.
+    s.svc
+        .set_key_caps(as_user(
+            &s,
+            wire::SetAiKeyCapsRequest {
+                key_id: key.id.clone(),
+                warn_percent: 50,
+                stop_at_cap: false,
+            },
+            "alice",
+            1,
+        ))
+        .await
+        .unwrap();
+    s.f.hub.complete(&key, &who, &req, false, &c).await.unwrap();
+    // Turned back on, it stops again.
+    s.svc
+        .set_key_caps(as_user(
+            &s,
+            wire::SetAiKeyCapsRequest {
+                key_id: key.id.clone(),
+                warn_percent: 50,
+                stop_at_cap: true,
+            },
+            "alice",
+            2,
+        ))
+        .await
+        .unwrap();
+    let err =
+        s.f.hub
+            .complete(&key, &who, &req, false, &c)
+            .await
+            .unwrap_err();
+    assert!(matches!(err, super::AiError::CapReached("key")), "{err:?}");
+}

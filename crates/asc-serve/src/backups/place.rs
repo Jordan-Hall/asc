@@ -364,9 +364,24 @@ impl Place {
             if !safe_rel(rel) || !seen.insert(rel.as_str()) || rel == SIDECAR {
                 return Err("unsafe file name in the backup".into());
             }
-            let (store, path) = self.key(id, rel).ok_or("not an S3 target")?;
             let target = dst.join(rel);
-            let encrypted_file = side.encrypted && rel != MANIFEST;
+            if rel == MANIFEST {
+                // The bytes the seal was checked on are the bytes that are used: the manifest is
+                // never fetched a second time.
+                if manifest.len() as u64 != *declared {
+                    return Err(format!("{rel} has the wrong size on the target"));
+                }
+                if let Some(p) = target.parent() {
+                    std::fs::create_dir_all(p).map_err(err)?;
+                }
+                let mut file = crypto::create_private_file(&target).map_err(err)?;
+                std::io::Write::write_all(&mut file, &manifest).map_err(err)?;
+                file.sync_all().map_err(err)?;
+                downloaded += *declared;
+                continue;
+            }
+            let (store, path) = self.key(id, rel).ok_or("not an S3 target")?;
+            let encrypted_file = side.encrypted;
             let raw = if encrypted_file {
                 dst.join(format!(".dl-{id}"))
             } else {

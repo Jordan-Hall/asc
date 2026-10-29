@@ -23,11 +23,22 @@ use crate::registry::{Extensions, Registry, RegistryError, RepoEntry};
 /// The objects handler over a registry.
 pub struct ServerObjects {
     registry: Arc<Registry>,
+    usage: Arc<crate::usage::UsageSlot>,
 }
 
 impl ServerObjects {
     pub fn new(registry: Arc<Registry>) -> Self {
-        Self { registry }
+        Self {
+            registry,
+            usage: Arc::default(),
+        }
+    }
+
+    /// Counts the bytes of every fetch against the repository's bandwidth.
+    #[must_use]
+    pub fn with_usage(mut self, slot: Arc<crate::usage::UsageSlot>) -> Self {
+        self.usage = slot;
+        self
     }
 
     async fn entry(&self, ctx: &CallCtx) -> Result<Arc<RepoEntry>, Status> {
@@ -89,13 +100,30 @@ impl ObjectsHandler for ServerObjects {
         ctx: &CallCtx,
         req: wire::GetObjectsRequest,
     ) -> Result<RpcStream<wire::GetObjectsResponse>, Status> {
-        self.entry(ctx).await?.backend.get_objects(ctx, req).await
+        use prost::Message as _;
+        let entry = self.entry(ctx).await?;
+        let stream = entry.backend.get_objects(ctx, req).await?;
+        let Some(hub) = self.usage.get().cloned() else {
+            return Ok(stream);
+        };
+        // Bytes are counted as they are polled and flushed when the stream is dropped, so a read
+        // the client cuts off still counts what was sent.
+        Ok(Box::pin(crate::usage::meter::Metered::new(
+            stream,
+            hub,
+            entry.name.as_str().to_owned(),
+            |r: &Result<wire::GetObjectsResponse, Status>| {
+                r.as_ref().map_or(0, |m| m.encoded_len() as u64)
+            },
+        )))
     }
 }
 
 /// Registers the objects group.
 pub fn register(ext: &Extensions, registry: &Arc<Registry>) {
     ext.handlers
-        .set_objects(Arc::new(ServerObjects::new(registry.clone())))
+        .set_objects(Arc::new(
+            ServerObjects::new(registry.clone()).with_usage(ext.usage.clone()),
+        ))
         .expect("the objects handler group is registered once");
 }

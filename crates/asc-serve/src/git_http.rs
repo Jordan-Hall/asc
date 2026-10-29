@@ -364,6 +364,7 @@ pub struct GitServices {
     pub(crate) limits: Arc<GitLimits>,
     /// Receive-pack: the hook socket, tokens and push slots. `None` refuses pushes.
     pub(crate) push: Option<GitPush>,
+    pub(crate) usage: Arc<crate::usage::UsageSlot>,
 }
 
 // ------------------------------------------------------------------------------ state
@@ -378,6 +379,8 @@ pub struct GitHttp {
     limits: Arc<GitLimits>,
     /// Receive-pack: the hook socket, tokens and push slots. `None` answers pushes with `403`.
     push: Option<GitPush>,
+    /// Counts the bytes a response sends against the repository's bandwidth.
+    usage: Arc<crate::usage::UsageSlot>,
 }
 
 /// A refused request: the status, the reason for metrics and audit, and the answer.
@@ -715,7 +718,8 @@ fn drive(
                         let msg = Msg::Data(Bytes::copy_from_slice(&buf[..n]));
                         if !send_bounded(&tx, msg, limits.idle_timeout, deadline) {
                             // The client went away or stopped reading: the child has no reader.
-                            child.kill();
+                            // SIGTERM first: a git killed outright leaves its push quarantine.
+                            child.terminate(Duration::from_secs(2));
                             break;
                         }
                         sent_any = true;
@@ -1037,6 +1041,7 @@ impl GitHttp {
         let state = body_state.clone();
         let handle = tokio::runtime::Handle::current();
         let (views, registry) = (self.views.clone(), self.registry.clone());
+        let meter_repo = audit.repo.clone();
         let finish: Finish = Box::new(move |report, sent_any, out_bytes| {
             let cut_by = state.as_ref().map_or(0, |s| s.cut.load(Ordering::SeqCst));
             let mut audit = audit;
@@ -1185,7 +1190,17 @@ impl GitHttp {
             }
             None => return Err(Refusal::internal("child_lost")),
         };
-        let mut response = Response::new(stream_body(head, rx, finished));
+        let body = stream_body(head, rx, finished);
+        let body = match self.usage.get() {
+            Some(hub) => Body::from_stream(crate::usage::meter::Metered::new(
+                Box::pin(body.into_data_stream()),
+                hub.clone(),
+                meter_repo,
+                |r: &Result<Bytes, axum::Error>| r.as_ref().map_or(0, |b| b.len() as u64),
+            )),
+            None => body,
+        };
+        let mut response = Response::new(body);
         let h = response.headers_mut();
         if let Ok(v) = HeaderValue::from_str(&content_type) {
             h.insert(header::CONTENT_TYPE, v);
@@ -1673,6 +1688,7 @@ fn register_routes(
         metrics,
         limits,
         push,
+        usage: ext.usage.clone(),
     };
     let shared = services.clone();
     let factory: GitRouterFactory = Arc::new(move |authorizer| {
@@ -1683,6 +1699,7 @@ fn register_routes(
             metrics: shared.metrics.clone(),
             limits: shared.limits.clone(),
             push: shared.push.clone(),
+            usage: shared.usage.clone(),
         })
     });
     if ext.git.set(factory).is_err() {

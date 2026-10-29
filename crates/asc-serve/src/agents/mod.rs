@@ -91,6 +91,8 @@ pub(crate) struct Live {
 
 /// The agent services' shared state.
 pub struct AgentsHub {
+    /// The organisation settings (allow, ceiling), set once the settings services are built.
+    pub org: Arc<crate::org::OrgSlot>,
     pub core: Arc<Core>,
     pub ai: Arc<AiHub>,
     pub(crate) registry: Arc<Registry>,
@@ -177,6 +179,7 @@ impl AgentsHub {
             work_dir,
             shutdown: CancellationToken::new(),
             audit,
+            org: Arc::default(),
         })
     }
 

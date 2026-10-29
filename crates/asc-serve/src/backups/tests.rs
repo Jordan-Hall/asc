@@ -1060,3 +1060,140 @@ async fn a_marker_whose_seal_does_not_match_the_copy_is_refused() {
     // A marker with no seal at all is refused too.
     let _ = copy;
 }
+
+/// A store that answers the second read of the manifest with other bytes.
+#[derive(Debug)]
+struct Flip {
+    inner: Arc<InMemory>,
+    manifest_reads: std::sync::atomic::AtomicUsize,
+}
+
+impl std::fmt::Display for Flip {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Flip")
+    }
+}
+
+#[async_trait]
+impl object_store::ObjectStore for Flip {
+    async fn put_opts(
+        &self,
+        l: &object_store::path::Path,
+        p: object_store::PutPayload,
+        o: object_store::PutOptions,
+    ) -> object_store::Result<object_store::PutResult> {
+        self.inner.put_opts(l, p, o).await
+    }
+
+    async fn put_multipart_opts(
+        &self,
+        l: &object_store::path::Path,
+        o: object_store::PutMultipartOptions,
+    ) -> object_store::Result<Box<dyn object_store::MultipartUpload>> {
+        self.inner.put_multipart_opts(l, o).await
+    }
+
+    async fn get_opts(
+        &self,
+        l: &object_store::path::Path,
+        o: object_store::GetOptions,
+    ) -> object_store::Result<object_store::GetResult> {
+        if l.as_ref().ends_with("manifest.json")
+            && self
+                .manifest_reads
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                > 0
+        {
+            // The attacker's manifest: same length, other content.
+            let other = object_store::path::Path::from("attacker/manifest.json");
+            return self.inner.get_opts(&other, o).await;
+        }
+        self.inner.get_opts(l, o).await
+    }
+
+    fn delete_stream(
+        &self,
+        l: futures::stream::BoxStream<'static, object_store::Result<object_store::path::Path>>,
+    ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::path::Path>> {
+        self.inner.delete_stream(l)
+    }
+
+    fn list(
+        &self,
+        p: Option<&object_store::path::Path>,
+    ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>> {
+        self.inner.list(p)
+    }
+
+    async fn list_with_delimiter(
+        &self,
+        p: Option<&object_store::path::Path>,
+    ) -> object_store::Result<object_store::ListResult> {
+        self.inner.list_with_delimiter(p).await
+    }
+
+    async fn copy_opts(
+        &self,
+        a: &object_store::path::Path,
+        b: &object_store::path::Path,
+        o: object_store::CopyOptions,
+    ) -> object_store::Result<()> {
+        self.inner.copy_opts(a, b, o).await
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_manifest_that_was_sealed_is_the_manifest_that_is_used() {
+    let f = fx().await;
+    let r = verified_s3(&f).await;
+    let real = f
+        .bucket
+        .get(&object_store::path::Path::from(format!(
+            "p/{}/manifest.json",
+            r.id
+        )))
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap();
+    // The attacker's manifest, same length, ready to be served on any later read.
+    let mut other = real.to_vec();
+    let at = other.windows(2).position(|w| w == b"17").unwrap();
+    other[at] = b'9';
+    f.bucket
+        .put(
+            &object_store::path::Path::from("attacker/manifest.json"),
+            other.into(),
+        )
+        .await
+        .unwrap();
+    let flip = Arc::new(Flip {
+        inner: f.bucket.clone(),
+        manifest_reads: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let place = Place::S3 {
+        store: flip.clone(),
+        prefix: "p/".into(),
+    };
+    let expected = place::Expected {
+        encrypted: true,
+        size: u64::try_from(r.size_bytes).unwrap(),
+        seal: r.seal.clone(),
+    };
+    let dst = f.k.dir.path().join("once");
+    place
+        .download_dir(&r.id, &dst, Some([5u8; 32]), &expected)
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read(dst.join("manifest.json")).unwrap(),
+        real.to_vec()
+    );
+    assert_eq!(
+        flip.manifest_reads
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the manifest is fetched once"
+    );
+}

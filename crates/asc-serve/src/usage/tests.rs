@@ -647,3 +647,103 @@ fn periods_are_calendar_months_and_never_in_the_future() {
     let dec = Period::parse("2025-12", now).unwrap();
     assert_eq!(clock::month(dec.end), "2026-01");
 }
+
+// ------------------------------------------------------------------------------ bandwidth metering
+
+async fn month_bandwidth(f: &Fx, org: &str) -> u64 {
+    let now = clock::now();
+    f.hub
+        .totals(
+            &crate::settings::access::Subject::Org(org.into()),
+            Period::parse("", now).unwrap(),
+            now,
+        )
+        .await
+        .unwrap()
+        .bandwidth_bytes
+}
+
+async fn settled(f: &Fx, org: &str, want: u64) -> u64 {
+    for _ in 0..100 {
+        let got = month_bandwidth(f, org).await;
+        if got >= want {
+            return got;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    month_bandwidth(f, org).await
+}
+
+fn chunks(n: usize) -> impl futures::Stream<Item = Vec<u8>> + Unpin {
+    futures::stream::iter((0..n).map(|_| vec![0u8; 1000]))
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_stream_cut_off_after_k_bytes_counts_k_and_a_finished_one_counts_all_once() {
+    use futures::StreamExt as _;
+    let f = fx().await;
+    // Read three of ten chunks, then drop the stream.
+    let mut s = super::meter::Metered::with_flush(
+        chunks(10),
+        f.hub.clone(),
+        "acme/web".into(),
+        |c: &Vec<u8>| c.len() as u64,
+        u64::MAX,
+    );
+    for _ in 0..3 {
+        s.next().await.unwrap();
+    }
+    drop(s);
+    assert_eq!(settled(&f, "acme", 3000).await, 3000);
+    // Read everything, with a small flush interval: every byte once, none twice.
+    let mut s = super::meter::Metered::with_flush(
+        chunks(10),
+        f.hub.clone(),
+        "acme/web".into(),
+        |c: &Vec<u8>| c.len() as u64,
+        2500,
+    );
+    while s.next().await.is_some() {}
+    drop(s);
+    assert_eq!(settled(&f, "acme", 13_000).await, 13_000);
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert_eq!(
+        month_bandwidth(&f, "acme").await,
+        13_000,
+        "nothing is counted twice"
+    );
+    // A stream that never yields counts nothing; another repository is its own.
+    drop(super::meter::Metered::new(
+        chunks(0),
+        f.hub.clone(),
+        "zed/x".into(),
+        |c: &Vec<u8>| c.len() as u64,
+    ));
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert_eq!(month_bandwidth(&f, "zed").await, 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn counters_saturate_and_never_overflow() {
+    let f = fx().await;
+    let day = clock::day(clock::now());
+    f.hub
+        .store
+        .report("acme/a", &day, None, u64::MAX, false)
+        .await
+        .unwrap();
+    f.hub
+        .store
+        .report("acme/a", &day, None, u64::MAX, false)
+        .await
+        .unwrap();
+    f.hub
+        .store
+        .report("acme/b", &day, None, 5, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        month_bandwidth(&f, "acme").await,
+        u64::try_from(i64::MAX).unwrap() + 5
+    );
+}
