@@ -168,7 +168,13 @@ impl Server {
     }
 
     fn create_repo(&self, name: &str) {
-        let req = format!(r#"{{"repo":{{"name":"{name}"}},"init":{{}}}}"#);
+        self.create_repo_on(name, "");
+    }
+
+    /// A repository whose default branch is `branch` (the server's own default when empty).
+    fn create_repo_on(&self, name: &str, branch: &str) {
+        let req =
+            format!(r#"{{"repo":{{"name":"{name}"}},"init":{{"default_branch":"{branch}"}}}}"#);
         let mut cmd = Command::new(asc_exe());
         clean(&mut cmd, self.dir.path());
         let out = cmd
@@ -275,4 +281,59 @@ fn a_stack_of_three_is_submitted_and_a_fourth_change_extends_it() {
     let json: serde_json::Value = serde_json::from_str(text(&second.stdout).trim()).unwrap();
     assert_eq!(json["status"], "submitted", "{json}");
     assert_eq!(json["changes"].as_array().unwrap().len(), 4, "{json}");
+}
+
+/// A clone sets the stack's trunk to the branch the server calls its default, empty remote or not,
+/// so the first `asc submit` after a clone finds its trunk instead of guessing `master`.
+#[test]
+fn a_clone_takes_the_servers_default_branch_as_the_stack_trunk() {
+    let server = Server::start();
+    server.create_repo_on("acme/main-repo", "main");
+    let sb = Sandbox::new();
+    let c = Client {
+        sb: &sb,
+        dir: sb.dir("work"),
+        token: &server.admin,
+    };
+
+    // An empty repository: the clone is on the server's default branch and its trunk.
+    let out = c.ok(&["clone", &server.url("acme/main-repo"), "empty"]);
+    let _ = out;
+    let work = Client {
+        sb: &sb,
+        dir: c.dir.join("empty"),
+        token: &server.admin,
+    };
+    let trunk = text(&work.ok(&["config", "asc.stack.trunk"]).stdout);
+    assert_eq!(trunk.trim(), "main", "server: {}", server.log());
+    let branch = text(&work.ok(&["branch", "--show-current"]).stdout);
+    assert_eq!(branch.trim(), "main");
+
+    // Work pushed to that branch, then submitted from a fresh clone.
+    work.commit_file(
+        "base.txt", "base
+",
+    );
+    work.ok(&["push", "origin", "main"]);
+    let again = c.ok(&["clone", &server.url("acme/main-repo"), "second"]);
+    let _ = again;
+    let second = Client {
+        sb: &sb,
+        dir: c.dir.join("second"),
+        token: &server.admin,
+    };
+    let trunk = text(&second.ok(&["config", "asc.stack.trunk"]).stdout);
+    assert_eq!(trunk.trim(), "main");
+    second.commit_file(
+        "one.txt", "one
+",
+    );
+    let sub = second.run(&["submit", "-s", "--json"]);
+    assert!(
+        sub.status.success(),
+        "submit after a clone failed: {}
+server: {}",
+        text(&sub.stderr),
+        server.log()
+    );
 }

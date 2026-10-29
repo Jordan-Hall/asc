@@ -98,6 +98,11 @@ pub trait Remote: Send + Sync {
     /// Name used in error messages and remote-tracking refs.
     fn name(&self) -> &str;
     async fn list_refs(&self) -> Result<Vec<RefEntry>>;
+    /// The branch the remote calls its default (its HEAD, the trunk its policy protects), by short
+    /// name, when it says so. A bucket has none, and neither has a server too old to report it.
+    async fn default_branch(&self) -> Result<Option<String>> {
+        Ok(None)
+    }
     async fn has_many(&self, keys: &[ObjKey]) -> Result<Vec<bool>>;
     /// Stored bytes (`codec ‖ data`) of the keys that exist, in any order.
     fn get_many(&self, keys: Vec<ObjKey>) -> BoxStream<'_, Result<(ObjKey, Bytes)>>;
