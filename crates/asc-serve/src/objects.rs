@@ -100,27 +100,22 @@ impl ObjectsHandler for ServerObjects {
         ctx: &CallCtx,
         req: wire::GetObjectsRequest,
     ) -> Result<RpcStream<wire::GetObjectsResponse>, Status> {
-        use futures::StreamExt as _;
         use prost::Message as _;
         let entry = self.entry(ctx).await?;
         let stream = entry.backend.get_objects(ctx, req).await?;
         let Some(hub) = self.usage.get().cloned() else {
             return Ok(stream);
         };
-        // Bytes out are counted as the stream is read and written once, when it ends.
-        let sent = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let (counter, repo) = (sent.clone(), entry.name.as_str().to_owned());
-        let counted = stream.inspect(move |r| {
-            if let Ok(m) = r {
-                counter.fetch_add(m.encoded_len() as u64, std::sync::atomic::Ordering::Relaxed);
-            }
-        });
-        let done = futures::stream::once(async move {
-            hub.add_bandwidth(&repo, sent.load(std::sync::atomic::Ordering::Relaxed))
-                .await;
-        })
-        .filter_map(|()| async { None });
-        Ok(Box::pin(counted.chain(done)))
+        // Bytes are counted as they are polled and flushed when the stream is dropped, so a read
+        // the client cuts off still counts what was sent.
+        Ok(Box::pin(crate::usage::meter::Metered::new(
+            stream,
+            hub,
+            entry.name.as_str().to_owned(),
+            |r: &Result<wire::GetObjectsResponse, Status>| {
+                r.as_ref().map_or(0, |m| m.encoded_len() as u64)
+            },
+        )))
     }
 }
 
