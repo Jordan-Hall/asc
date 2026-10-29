@@ -51,7 +51,7 @@ fn run(cmd: &mut Command) -> Out {
 
 /// Real git in `dir`: hermetic, UTC, no pager.
 fn git_cmd(dir: &Path, home: &Path) -> Command {
-    let mut c = Command::new("git"); // lint:allow-raw-git
+    let mut c = asc_git::realgit::pinned_command(); // lint:allow-raw-git
     for (key, _) in std::env::vars_os() {
         if key
             .to_string_lossy()

@@ -6,13 +6,13 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 
 use support::{Fixture, Sandbox, text};
 
 /// Real git in `dir`, hermetic.
 fn git(dir: &Path, sb: &Sandbox, args: &[&str]) {
-    let out = Command::new("git") // lint:allow-raw-git
+    let out = asc_git::realgit::pinned_command()
         .current_dir(dir)
         .env("HOME", &sb.user)
         .env("USERPROFILE", &sb.user)
