@@ -7,8 +7,8 @@ use asc_rpc::server::wire;
 use tonic::transport::Channel;
 
 use super::acct::{bad, json, size};
+use super::acct::{clean_str, out, say, warn_};
 use super::agent::conn::{Conn, MAX_MESSAGE, when};
-use super::codeintel::{clean_str, with_stdout};
 use super::common::{Ctx, Result};
 use crate::native::NativeSpec;
 use asc_rpc::services::data_export_client::DataExportClient;
@@ -127,7 +127,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
             if c.json {
                 return json("asc.v1.ExportJob", &j);
             }
-            println!("{}", job_line(&j));
+            say!("{}", job_line(&j));
             Ok(ExitCode::SUCCESS)
         }
         Sub::List(c) => {
@@ -143,7 +143,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
             if c.json {
                 return json("asc.v1.ListExportsResponse", &r);
             }
-            with_stdout(|out| {
+            out(|out| {
                 for j in &r.jobs {
                     writeln!(out, "{}", job_line(j))?;
                 }
@@ -164,7 +164,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
                 }
             })
             .await?;
-            eprintln!("asc: {} deleted", clean_str(&x.id));
+            warn_!("asc: {} deleted", clean_str(&x.id));
             Ok(ExitCode::SUCCESS)
         }
         Sub::Download(x) => {
@@ -204,7 +204,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
             match res {
                 Ok(n) => {
                     std::io::Write::flush(&mut file).ok();
-                    eprintln!("asc: {} bytes written to {}", n, clean_str(&x.output));
+                    warn_!("asc: {} bytes written to {}", n, clean_str(&x.output));
                     Ok(ExitCode::SUCCESS)
                 }
                 Err(e) => {
@@ -219,6 +219,21 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_field_of_a_job_line_is_cleaned() {
+        let h = "\u{1b}[2J\u{1b}]0;x\u{7}\u{202e}evil\u{9b}".to_owned();
+        let j = wire::ExportJob {
+            id: h.clone(),
+            error: h.clone(),
+            ..Default::default()
+        };
+        let line = job_line(&j);
+        assert!(
+            !line.chars().any(|c| c.is_control() || c == '\u{202e}'),
+            "{line:?}"
+        );
+    }
 
     #[test]
     fn ids_and_the_output_file_are_checked() {

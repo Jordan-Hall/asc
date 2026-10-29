@@ -7,8 +7,8 @@ use asc_rpc::server::wire;
 use tonic::transport::Channel;
 
 use super::acct::{bad, json, size};
+use super::acct::{clean_str, out};
 use super::agent::conn::{Conn, MAX_MESSAGE, when};
-use super::codeintel::{clean_str, with_stdout};
 use super::common::{Ctx, Result};
 use crate::native::NativeSpec;
 use asc_rpc::services::usage_client::UsageClient;
@@ -113,7 +113,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         if a.json {
             return json("asc.v1.ListSpendResponse", &r);
         }
-        return with_stdout(|out| {
+        return out(|out| {
             for row in &r.rows {
                 let label = if row.label.is_empty() {
                     String::new()
@@ -150,7 +150,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     if a.json {
         return json("asc.v1.GetUsageResponse", &r);
     }
-    with_stdout(|out| {
+    out(|out| {
         writeln!(
             out,
             "period {} (resets {})",
@@ -163,7 +163,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
             "{}",
             meter("agent minutes", r.agent_minutes.as_ref(), false)
         )?;
-        let ai = r.ai_spend.clone().unwrap_or_default();
+        let ai = r.ai_spend.unwrap_or_default();
         writeln!(
             out,
             "{:<14}{}{}{}",

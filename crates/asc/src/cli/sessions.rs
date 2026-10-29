@@ -7,8 +7,8 @@ use asc_rpc::server::wire;
 use tonic::transport::Channel;
 
 use super::acct::{bad, json};
+use super::acct::{clean_str, out, warn_};
 use super::agent::conn::{Conn, MAX_MESSAGE, when};
-use super::codeintel::{clean_str, with_stdout};
 use super::common::{Ctx, Result};
 use crate::native::NativeSpec;
 use asc_rpc::services::sessions_client::SessionsClient;
@@ -109,7 +109,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
             if c.json {
                 return json("asc.v1.ListSessionsResponse", &r);
             }
-            with_stdout(|out| {
+            out(|out| {
                 for x in &r.sessions {
                     writeln!(
                         out,
@@ -141,7 +141,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
                 }
             })
             .await?;
-            eprintln!("asc: {} revoked", clean_str(&x.id));
+            warn_!("asc: {} revoked", clean_str(&x.id));
             Ok(ExitCode::SUCCESS)
         }
         Sub::Others(x) => {
@@ -164,7 +164,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
                     }
                 })
                 .await?;
-            eprintln!("asc: {} signed out", r.revoked);
+            warn_!("asc: {} signed out", r.revoked);
             Ok(ExitCode::SUCCESS)
         }
     }

@@ -591,7 +591,7 @@ pub(crate) async fn run(
             old: current,
             new: Some(new),
         }];
-        let acting = crate::update::acting_principal(&job.ctx);
+        let acting = crate::update::acting_principal(job.ctx);
         let hook_req = HookRequest {
             repo: &job.ctx.repo,
             op_id: job.op_id,

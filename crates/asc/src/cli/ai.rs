@@ -8,8 +8,8 @@ use asc_rpc::server::wire;
 use tonic::transport::Channel;
 
 use super::acct::{bad, json};
+use super::acct::{clean_str, out, say, warn_};
 use super::agent::conn::{Conn, MAX_MESSAGE};
-use super::codeintel::{clean_str, with_stdout};
 use super::common::{Ctx, Result};
 use crate::native::NativeSpec;
 use asc_rpc::services::ai_key_shares_client::AiKeySharesClient;
@@ -173,7 +173,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
             if x.common.json {
                 return json("asc.v1.AiKeyShare", &sh);
             }
-            println!("{} shared with {}", clean_str(&sh.id), clean_str(&x.with));
+            say!("{} shared with {}", clean_str(&sh.id), clean_str(&x.with));
             Ok(ExitCode::SUCCESS)
         }
         Sub::Shares(x) => {
@@ -196,7 +196,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
             if x.common.json {
                 return json("asc.v1.ListAiKeySharesResponse", &r);
             }
-            with_stdout(|out| {
+            out(|out| {
                 for s in &r.shares {
                     let g = s.grantee.clone().unwrap_or_default();
                     writeln!(
@@ -229,7 +229,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
                 }
             })
             .await?;
-            eprintln!("asc: share {} withdrawn", clean_str(&x.share));
+            warn_!("asc: share {} withdrawn", clean_str(&x.share));
             Ok(ExitCode::SUCCESS)
         }
         Sub::Caps(x) => {
@@ -276,7 +276,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
             if x.common.json {
                 return json("asc.v1.AiKeyCaps", &caps);
             }
-            println!(
+            say!(
                 "warn at {}%  stop at cap: {}  cap {} micro-USD  spent {}{}",
                 caps.warn_percent,
                 caps.stop_at_cap,

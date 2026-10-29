@@ -676,8 +676,7 @@ impl Reviews {
             ));
         }
         if state == wire::ApprovalState::Dismissed
-            && (!req.reviewer.is_empty() || req.reviewer_id != 0)
-            && !(req.reviewer == reviewer && req.reviewer_id == 0)
+            && (req.reviewer_id != 0 || req.reviewer != reviewer && !req.reviewer.is_empty())
         {
             return self
                 .dismiss_verdicts(&entry, ctx, change, &vs, reviewer, &req)
