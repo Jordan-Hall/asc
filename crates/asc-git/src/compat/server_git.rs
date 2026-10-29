@@ -1130,6 +1130,26 @@ impl ServerChild {
         self.group.kill();
     }
 
+    /// Asks the tree to stop (SIGTERM on Unix, so git removes its quarantine and lock files),
+    /// waits up to `grace` for the child to exit, then kills the whole tree.
+    pub fn terminate(&mut self, grace: Duration) {
+        let _ = self.shared.reason.compare_exchange(
+            0,
+            KillReason::Requested.code(),
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        );
+        self.group.terminate();
+        let until = Instant::now() + grace;
+        while Instant::now() < until {
+            match self.child.as_mut().map(Child::try_wait) {
+                Some(Ok(None)) => std::thread::sleep(Duration::from_millis(20)),
+                _ => return,
+            }
+        }
+        self.group.kill();
+    }
+
     fn stop_watchdog(&mut self) {
         *self
             .shared
@@ -1366,6 +1386,13 @@ mod os {
     }
 
     impl Group {
+        /// SIGTERM to every process of the group: git removes its quarantine on this signal.
+        pub fn terminate(&self) {
+            if let Some(pid) = i32::try_from(self.pgid).ok().and_then(Pid::from_raw) {
+                let _ = kill_process_group(pid, Signal::TERM);
+            }
+        }
+
         /// SIGKILL to every process of the group.
         pub fn kill(&self) {
             if let Some(pid) = i32::try_from(self.pgid).ok().and_then(Pid::from_raw) {
@@ -1511,6 +1538,11 @@ mod os {
     }
 
     impl Group {
+        /// A job has no gentle stop: this is [`Group::kill`].
+        pub fn terminate(&self) {
+            self.kill();
+        }
+
         /// Terminates every process in the job.
         pub fn kill(&self) {
             // SAFETY: the job handle is open until `drop`.
@@ -1680,8 +1712,11 @@ mod tests {
         let _gate = spawn_gate();
         // `git hash-object --stdin` holds the whole blob in memory.
         let git = RealGit::resolve(None, None).expect("real git");
+        // Outside any repository: a checkout the user does not own makes a newer git refuse to run.
+        let cwd = tempfile::tempdir().unwrap();
         let hash = || {
             let mut cmd = git.command().expect("command");
+            cmd.current_dir(cwd.path());
             cmd.args(["hash-object", "--stdin", "--no-filters"]);
             cmd
         };
@@ -1697,7 +1732,9 @@ mod tests {
         let out = run_captured(hash(), &big, &roomy).unwrap();
         assert!(
             out.status.success(),
-            "{}",
+            "{:?} {:?} {}",
+            out.status,
+            out.killed,
             String::from_utf8_lossy(&out.stderr)
         );
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim().len(), 40);

@@ -186,6 +186,9 @@ pub fn git(dir: &Path, envs: &[(&str, &str)], args: &[&str]) -> Output {
             "GIT_CONFIG_SYSTEM",
             if cfg!(windows) { "NUL" } else { "/dev/null" },
         )
+        // Never discover a repository above `dir`: a checkout the user does not own makes a newer
+        // git die before `merge-file`, which needs no repository.
+        .env("GIT_CEILING_DIRECTORIES", dir.parent().unwrap_or(dir))
         .env("GIT_AUTHOR_NAME", "t")
         .env("GIT_AUTHOR_EMAIL", "t@x")
         .env("GIT_COMMITTER_NAME", "t")
