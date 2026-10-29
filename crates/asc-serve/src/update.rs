@@ -1120,6 +1120,10 @@ impl RefsHandler for ServerRefs {
             listed
                 .refs
                 .retain(|r| !r.name.starts_with(refpolicy::USER_NS));
+            // The engine does not know the repository's default branch; the policy does (the registry's trunk).
+            if listed.head.is_empty() {
+                listed.head = policy.head();
+            }
             return Ok(listed);
         }
         if ctx.id_mode != IdMode::Asc {

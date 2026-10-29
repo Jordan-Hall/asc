@@ -337,8 +337,10 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
                     .map(str::to_owned)
             })
             .collect();
+        // The server's own default branch (what its HEAD would be), or none if it does not say.
+        let head = probe.remote.default_branch().await.ok().flatten();
         drop(probe);
-        (branches, None)
+        (branches, head)
     } else if git_mode {
         let advertised = remote::git::ls_remote(ctx, &stored).await?;
         let heads: Vec<String> = advertised
@@ -389,11 +391,14 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         _ => choose_branch(ctx, o.branch.as_deref(), &branches)?,
     };
     let empty = picked.is_none();
-    let branch = picked.unwrap_or_else(|| {
-        ctx.config
-            .get("init.defaultBranch")
-            .unwrap_or_else(|| super::init::DEFAULT_BRANCH.to_owned())
-    });
+    // An empty server repository still has a default branch: the first push creates it under that name.
+    let branch = picked
+        .or_else(|| remote_head.clone().filter(|_| server_mode))
+        .unwrap_or_else(|| {
+            ctx.config
+                .get("init.defaultBranch")
+                .unwrap_or_else(|| super::init::DEFAULT_BRANCH.to_owned())
+        });
     let branch_ok = branch_ok(&branch);
     if !branch_ok {
         return Err(CliError::Fatal(format!(
@@ -533,6 +538,10 @@ async fn build(
         write_server_remote_config(&setup, origin, stored).await?;
     } else {
         write_remote_config(&setup, origin, stored, refs).await?;
+    }
+    if server_mode {
+        // The stack's trunk is the branch the server calls its default, not a guess of the client.
+        set_config(&setup, "asc.stack.trunk", branch).await?;
     }
     if !empty {
         set_config(&setup, &format!("branch.{branch}.remote"), origin).await?;
