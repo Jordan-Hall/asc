@@ -581,6 +581,44 @@ A client calls it with the user's own credential.
   and an answer are kept for 30 and 60 seconds. There is no email and no avatar in the answer, and none is added. Every call is audited (`agent.profile.read`:
   login and whether it was allowed, never the values).
 
+## 24. Insights
+
+`Insights.GetStats` and `Insights.ListContributors` (repo read, expensive) are the data behind the Pulse tiles, the Contributors page and "Who writes the code".
+They need no more than repo read and count one repository only. A forwarded claim of the hub is checked as for every repo call.
+
+- **Landed change.** A changeset a land rewrote onto the default branch (`land_map_ref` joined with the `ref_log` entry of that update), counted once per change at
+  its first landing in the window. A land that rewrote nothing is not counted.
+- **Author.** An *agent* when an agent run's change list holds the change or the first version was published under an `agent:` principal; a *person* otherwise
+  (`run_by` is the person who started the run). A person's id is the one recorded with their first version, 0 for a token.
+- **Review time.** From the first version of a change to its first verdict (approved or changes requested). `median_review_seconds` is 0 when nothing landed was reviewed.
+  `agent_changes_reviewed` counts landed agent changes that hold an approval (only people can approve).
+- **Windows.** `days` (1 to 366, default 30) ending at `until` (default now); `landed_previous`, `stacks_opened_previous` and `median_review_previous` cover the window of
+  the same length before it. `kind` narrows the tiles, the series, the sizes and the weeks; `landed_by_people` and `landed_by_agents` are always over everyone.
+  `per_day` has an entry for every UTC day; `weekly` has the 12 weeks ending at `until`.
+- **Sizes.** From stored diff stats only; a landed changeset without one is `unknown`.
+- **Stacks opened.** Changes without a parent change that were first published in the window.
+- **Bounds.** 50,000 landed rows, 100,000 verdicts, 200 contributors; a cut sets `truncated` and the numbers are lower bounds.
+
+## 25. Policy keys of the Policy board
+
+`Repo.GetPolicy` (and `Policy.Validate`'s `parsed`) now answer every key the form edits, so a form needs no second parse of the file:
+`trunk.require_signed`; `agents.enabled`, `max_runtime_seconds`, `max_tokens`, `max_cost_micro_usd` (0 is no limit); `review`; `merge`; `stacks`.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `[review] author_may_approve` | false | the author of a change may approve it |
+| `[review] human_approval` | true | an approval from an agent does not count |
+| `[review] keep_approvals_on_restack` | true | an approval carries to a newer version when no file's patch changed; false makes every approval stand for its own version only (enforced when verdicts are listed and by the gate) |
+| `[merge] queue`, `revalidate` | false, true | as before |
+| `[merge] batch` | 1 | entries the queue tests and lands together, 1 to 20 (read by the queue worker of the host; recorded and returned here) |
+| `[merge] post_merge_checks` | false | the checks of the policy run again on the landed tip (recorded and returned; the host runs them) |
+| `[stacks] max_depth` | none | the longest stack that may be queued, 1 to 100; a longer one is refused with `QUEUE_STACK_TOO_LONG` |
+| `[stacks] cleanup_days` | server setting | days after the last change of a stack lands before its refs are removed, 1 to 3650 (recorded and returned) |
+| `[stacks] restack_on_main_move` | false | the host restacks open stacks when the default branch moves (recorded and returned) |
+| `[stacks] collaborators_may_push` | false | people with write access who did not start a stack may push onto it (recorded and returned; the host enforces) |
+
+A value out of range, or an unknown key in these sections, makes the file invalid with the key named. `strategy = "squash"` is not part of this change.
+
 ## Error codes
 
 All are `ErrorDetail.code` values, registered in `crates/asc-rpc/src/errors.rs` and mapped in `server.rs`; the test
@@ -632,7 +670,7 @@ string is present.
 <a id="rpc-index"></a>
 ## RPC index
 
-Every method of the build-out services (90). A test keeps this list equal to the protos.
+Every method of the build-out services (92). A test keeps this list equal to the protos.
 
 <!-- rpc-index:begin -->
 **Policy** (`policy.proto`)
@@ -786,6 +824,8 @@ Every method of the build-out services (90). A test keeps this list equal to the
 - `asc.v1.DepsService/ListFindings` — repo read; paged
 - `asc.v1.DepsService/ListUpdates` — repo read; calls the registries
 - `asc.v1.DepsService/ProposeUpdate` — repo maintainer; mutating; never trunk
+- `asc.v1.Insights/GetStats` — repo read; expensive; landed, stacks opened, review time, author mix
+- `asc.v1.Insights/ListContributors` — repo read; expensive; landed and reviews per person and agent
 - `asc.v1.DepsService/SetConfig` — repo maintainer; mutating; never trunk
 - `asc.v1.DepsService/GetConfig` — repo read
 - `asc.v1.DepsService/Dismiss` — repo maintainer; mutating

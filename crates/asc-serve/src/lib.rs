@@ -74,6 +74,7 @@ pub mod seeds;
 pub mod signing;
 #[cfg(feature = "git-ssh")]
 pub mod ssh;
+pub mod stats;
 pub mod storage;
 pub mod turbo;
 pub mod update;
@@ -333,6 +334,10 @@ pub fn build_grpc(ext: &Extensions, authorizer: Arc<dyn Authorizer>, info: Serve
             )
             .add_service(
                 inbox::rpc::InboxService::new(h.clone(), authorizer.clone(), info.clone())
+                    .into_service(),
+            )
+            .add_service(
+                stats::rpc::InsightsService::new(h.clone(), authorizer.clone(), info.clone())
                     .into_service(),
             )
             .add_service(
