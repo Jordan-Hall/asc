@@ -34,6 +34,16 @@ pub struct Sidecar {
 
 /// Largest backup a restore will download, in stored bytes.
 pub const MAX_RESTORE_BYTES: u64 = 4 * 1024 * 1024 * 1024 * 1024;
+/// What the server recorded of a run, which a restore believes instead of anything stored
+/// beside the backup.
+#[derive(Clone, Debug)]
+pub struct Expected {
+    pub encrypted: bool,
+    /// The stored bytes of all files.
+    pub size: u64,
+    pub seal: String,
+}
+
 /// Largest sidecar read.
 const MAX_SIDECAR: u64 = 16 * 1024 * 1024;
 
@@ -80,6 +90,42 @@ pub fn seal(
         }
         None => format!("sha256:{}", hex(&Sha256::digest(input.as_bytes()))),
     }
+}
+
+/// Copies a local backup directory into a new private one (mode 0700 directories, 0600 files).
+/// A link inside the backup is an error; the copy never reads the original again.
+pub fn copy_private(src: &Path, dst: &Path) -> Result<(), String> {
+    let files = list_dir(src).map_err(err)?;
+    let total = files
+        .iter()
+        .map(|(_, n)| *n)
+        .fold(0u64, u64::saturating_add);
+    if files.len() > 1_000_000 || total > MAX_RESTORE_BYTES {
+        return Err("the backup is larger than a restore will take".into());
+    }
+    crate::workdir::create_private_all(dst).map_err(err)?;
+    for (rel, size) in files {
+        if !safe_rel(&rel) {
+            return Err("unsafe file name in the backup".into());
+        }
+        let from = src.join(&rel);
+        if std::fs::symlink_metadata(&from)
+            .map_err(err)?
+            .file_type()
+            .is_symlink()
+        {
+            return Err("a link in the backup".into());
+        }
+        let to = dst.join(&rel);
+        if let Some(p) = to.parent() {
+            crate::workdir::create_private_all(p).map_err(err)?;
+        }
+        let mut input = std::io::Read::take(std::fs::File::open(&from).map_err(err)?, size);
+        let mut out = crypto::create_private_file(&to).map_err(err)?;
+        std::io::copy(&mut input, &mut out).map_err(err)?;
+        out.sync_all().map_err(err)?;
+    }
+    Ok(())
 }
 
 /// The seal of a local backup directory as it is now.
@@ -286,8 +332,9 @@ impl Place {
         id: &str,
         dst: &Path,
         key: Option<[u8; 32]>,
-        encrypted: bool,
-    ) -> Result<String, String> {
+        expected: &Expected,
+    ) -> Result<(), String> {
+        let encrypted = expected.encrypted;
         let side = self.sidecar(id).await?;
         if side.encrypted != encrypted {
             return Err("the backup's record on the target disagrees with the server's".into());
@@ -295,16 +342,23 @@ impl Place {
         if encrypted && key.is_none() {
             return Err("the backup is encrypted and no backup key is configured".into());
         }
-        if side.files.len() > 1_000_000
-            || side
-                .files
-                .iter()
-                .map(|(_, n)| *n)
-                .fold(0u64, u64::saturating_add)
-                > MAX_RESTORE_BYTES
-        {
-            return Err("the backup is larger than a restore will take".into());
+        // The sidecar is untrusted input. Before anything is downloaded it must add up to what the
+        // server recorded, and (with the manifest, read under its own cap) match the server's seal.
+        let total = side
+            .files
+            .iter()
+            .map(|(_, n)| *n)
+            .fold(0u64, u64::saturating_add);
+        if side.files.len() > 1_000_000 || total > MAX_RESTORE_BYTES || total != expected.size {
+            return Err("the backup's record on the target disagrees with the server's".into());
         }
+        let manifest = self.read_manifest(id).await?;
+        if seal(key.as_ref(), id, encrypted, &side.files, &manifest) != expected.seal
+            || expected.seal.is_empty()
+        {
+            return Err("the backup does not match the record the server made of it".into());
+        }
+        let mut downloaded = 0u64;
         let mut seen = std::collections::HashSet::new();
         for (rel, declared) in &side.files {
             if !safe_rel(rel) || !seen.insert(rel.as_str()) || rel == SIDECAR {
@@ -327,7 +381,8 @@ impl Place {
             while let Some(chunk) = body.next().await {
                 let chunk = chunk.map_err(err)?;
                 got += chunk.len() as u64;
-                if got > *declared {
+                downloaded += chunk.len() as u64;
+                if got > *declared || downloaded > expected.size {
                     return Err(format!("{rel} is larger on the target than it was stored"));
                 }
                 std::io::Write::write_all(&mut file, &chunk).map_err(err)?;
@@ -346,9 +401,7 @@ impl Place {
                 r.map_err(err)?;
             }
         }
-        let manifest = std::fs::read(dst.join(MANIFEST))
-            .map_err(|_| "the backup has no manifest".to_owned())?;
-        Ok(seal(key.as_ref(), id, encrypted, &side.files, &manifest))
+        Ok(())
     }
 
     pub async fn sidecar(&self, id: &str) -> Result<Sidecar, String> {

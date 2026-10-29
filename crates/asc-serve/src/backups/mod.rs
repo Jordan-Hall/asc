@@ -168,8 +168,11 @@ struct Marker {
     backup_id: String,
     from: PathBuf,
     key_file: Option<PathBuf>,
-    /// The directory was downloaded for this restore and is removed after it.
+    /// The directory was copied for this restore and is removed after it.
     cleanup: bool,
+    /// The seal of the private copy at staging; recomputed before anything is written.
+    #[serde(default)]
+    seal: String,
 }
 
 /// Applies a staged restore, if there is one. Call it before the database is opened. The marker
@@ -185,6 +188,22 @@ pub async fn apply_pending(cfg: &ServeConfig) -> Result<Option<String>, String> 
     std::fs::rename(&marker, &attempt).map_err(|e| format!("restore marker: {e}"))?;
     let m: Marker =
         serde_json::from_slice(&raw).map_err(|_| "restore marker is damaged".to_owned())?;
+    // The copy must still be exactly what was staged: nothing is read from anywhere else.
+    let (copy, id) = (m.from.clone(), m.backup_id.clone());
+    let now = tokio::task::spawn_blocking(move || place::local_seal(&copy, &id))
+        .await
+        .ok()
+        .and_then(Result::ok);
+    if m.seal.is_empty() || now.as_deref() != Some(m.seal.as_str()) {
+        let _ = std::fs::rename(&attempt, dir.join("restore.failed.json"));
+        if m.cleanup {
+            let _ = std::fs::remove_dir_all(&m.from);
+        }
+        return Err(format!(
+            "the staged restore of {} was refused: the staged files changed after they were checked",
+            m.backup_id
+        ));
+    }
     let result = crate::backup::restore(
         cfg,
         &crate::backup::RestoreOptions {
@@ -270,6 +289,12 @@ impl BackupsHub {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .insert(name.to_owned(), Arc::new(place));
+    }
+
+    /// The opened target `name` (tests).
+    #[cfg(test)]
+    pub(crate) fn place_for_test(&self, name: &str) -> Arc<Place> {
+        self.place(name).expect("a configured target")
     }
 
     fn place(&self, name: &str) -> Result<Arc<Place>, BackupsError> {
@@ -699,7 +724,7 @@ impl BackupsHub {
         if self.store.pending_restore().await?.is_some() {
             return Err(BackupsError::Precondition("a restore is already staged"));
         }
-        let place = self.place(&run.target)?;
+        self.place(&run.target)?;
         let rid = rand_id("rs_", 20);
         self.store
             .insert_restore(&Restore {
@@ -711,45 +736,21 @@ impl BackupsHub {
                 note: String::new(),
             })
             .await?;
-        match place.local_dir(&run.location) {
-            Some(dir) => {
-                let (d, id) = (dir.clone(), run.id.clone());
-                let now = tokio::task::spawn_blocking(move || place::local_seal(&d, &id))
-                    .await
-                    .ok()
-                    .and_then(Result::ok);
-                if run.seal.is_empty() || now.as_deref() != Some(run.seal.as_str()) {
-                    self.store
-                        .set_restore(
-                            &rid,
-                            store::R_FAILED,
-                            "the backup does not match the record the server made of it",
-                        )
-                        .await?;
-                    return Err(BackupsError::Precondition(
-                        "the backup does not match the record the server made of it",
-                    ));
-                }
-                self.write_marker(&run, dir, false).map_err(|_| {
-                    BackupsError::Precondition("the restore could not be written down")
-                })?;
-                self.store.set_restore(&rid, store::R_STAGED, "").await?;
-            }
-            None => {
-                let (hub, r) = (self.clone(), run.clone());
-                tokio::spawn(async move { hub.prepare_download(r, rid).await });
-            }
-        }
+        // Both kinds are staged the same way: a private copy under the state directory is made,
+        // checked against the server's record and staged. The original is never read again.
+        let (hub, r) = (self.clone(), run.clone());
+        tokio::spawn(async move { hub.prepare_copy(r, rid).await });
         Ok(run)
     }
 
-    fn write_marker(&self, run: &Run, from: PathBuf, cleanup: bool) -> Result<(), String> {
+    fn write_marker(&self, run: &Run, from: PathBuf, seal: String) -> Result<(), String> {
         crate::workdir::create_private_all(&self.state_dir).map_err(|e| e.to_string())?;
         let m = Marker {
             backup_id: run.id.clone(),
             from,
             key_file: self.cfg.key_file.clone(),
-            cleanup,
+            cleanup: true,
+            seal,
         };
         let tmp = self.state_dir.join("restore.pending.tmp");
         let _ = std::fs::remove_file(&tmp);
@@ -760,23 +761,50 @@ impl BackupsHub {
         std::fs::rename(&tmp, self.state_dir.join(PENDING)).map_err(|e| e.to_string())
     }
 
-    async fn prepare_download(self: Arc<Self>, run: Run, rid: String) {
+    async fn prepare_copy(self: Arc<Self>, run: Run, rid: String) {
         let res = async {
             let key = self.backup_key()?;
             let place = self.place(&run.target).map_err(|e| format!("{e:?}"))?;
             let dir = self.state_dir.join("restore").join(&run.id);
             let _ = std::fs::remove_dir_all(&dir);
-            let got = place
-                .download_dir(&run.location, &dir, key, run.encrypted)
-                .await?;
-            if run.seal.is_empty() || got != run.seal {
-                return Err("the backup does not match the record the server made of it".into());
+            crate::workdir::create_private_all(&self.state_dir).map_err(|e| e.to_string())?;
+            match place.local_dir(&run.location) {
+                Some(src) => {
+                    let d = dir.clone();
+                    tokio::task::spawn_blocking(move || place::copy_private(&src, &d))
+                        .await
+                        .map_err(|e| e.to_string())??;
+                    // The record is checked on the copy, never on the original.
+                    let (d, id) = (dir.clone(), run.id.clone());
+                    let now = tokio::task::spawn_blocking(move || place::local_seal(&d, &id))
+                        .await
+                        .map_err(|e| e.to_string())??;
+                    if run.seal.is_empty() || now != run.seal {
+                        return Err(
+                            "the backup does not match the record the server made of it".to_owned()
+                        );
+                    }
+                }
+                None => {
+                    let expected = place::Expected {
+                        encrypted: run.encrypted,
+                        size: u64::try_from(run.size_bytes).unwrap_or(0),
+                        seal: run.seal.clone(),
+                    };
+                    place
+                        .download_dir(&run.location, &dir, key, &expected)
+                        .await?;
+                }
             }
             let (engine, d) = (self.engine.clone(), dir.clone());
             tokio::task::spawn_blocking(move || engine.verify(&d))
                 .await
                 .map_err(|e| e.to_string())??;
-            self.write_marker(&run, dir, true)
+            let (d, id) = (dir.clone(), run.id.clone());
+            let copy_seal = tokio::task::spawn_blocking(move || place::local_seal(&d, &id))
+                .await
+                .map_err(|e| e.to_string())??;
+            self.write_marker(&run, dir, copy_seal)
         }
         .await;
         let (state, note) = match &res {
