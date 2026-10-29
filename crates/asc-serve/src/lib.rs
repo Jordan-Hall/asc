@@ -612,7 +612,7 @@ pub async fn serve(
     ci::insights::register(&ext, &registry, &cfg.ci_insights);
     let warmer = projects::register(&ext, &registry);
     #[cfg(feature = "forgejo")]
-    forgejo::register(&ext, &registry, &outbox, cfg.forgejo.as_ref())
+    let bridge_slot = forgejo::register(&ext, &registry, &outbox, cfg.forgejo.as_ref())
         .map_err(|e| ConfigError::Invalid(e.to_string()))?;
     let mirror =
         mirror::register(&ext, &registry, &cfg).map_err(|e| ConfigError::Invalid(e.to_string()))?;
@@ -623,8 +623,16 @@ pub async fn serve(
     // The git protocol layer (SPEC §25): the views, then the routes that serve them. With the
     // layer off, `build_routes` serves the disabled stub and `Version` omits `git.smart_http`.
     #[cfg(feature = "git-compat")]
-    let git_services = git_view::register(&registry, &outbox, &cfg)
-        .map(|views| git_http::register(&ext, views, registry.clone(), &metrics, &cfg));
+    let views = git_view::register(&registry, &outbox, &cfg);
+    // The forge hooks, built before the views, are given the means to fill the forge's git
+    // directory for a `refs/for` submit.
+    #[cfg(all(feature = "git-compat", feature = "forgejo"))]
+    if let (Some(views), Some(root)) = (&views, cfg.bridge_promote_root()) {
+        bridge_slot.set(Arc::new(git_view::PromoteHold::new(views.clone(), root)));
+    }
+    #[cfg(feature = "git-compat")]
+    let git_services =
+        views.map(|views| git_http::register(&ext, views, registry.clone(), &metrics, &cfg));
     #[cfg(feature = "git-compat")]
     let git_live = git_services.is_some();
     #[cfg(not(feature = "git-compat"))]

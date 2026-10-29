@@ -823,6 +823,7 @@ fn admission_sheds_over_limit_logins_and_fetches() {
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    no_tty(&mut holder);
     let mut held = holder.spawn().unwrap();
     std::thread::sleep(Duration::from_secs(2));
     let r = git.ssh(&a, &cmd, &["ls-remote", &srv.url(WEB)]);

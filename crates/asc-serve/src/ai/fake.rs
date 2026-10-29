@@ -35,6 +35,9 @@ pub(crate) enum Reply {
     Status(u16, Value),
     /// Waits, then answers with `then`.
     Delay(Duration, Box<Reply>),
+    /// Waits until the test calls `notify_one` on the gate (a call made before the wait is kept),
+    /// then answers with `then`: a pause in a model call that no clock decides.
+    Gate(Arc<tokio::sync::Notify>, Box<Reply>),
     /// A body of this many bytes.
     Huge(usize),
     /// Chosen from the request body.
@@ -213,6 +216,10 @@ async fn handle(State(st): State<Arc<Mutex<Inner>>>, req: Request<Body>) -> Resp
                 tokio::time::sleep(d).await;
                 reply = *then;
             }
+            Reply::Gate(gate, then) => {
+                gate.notified().await;
+                reply = *then;
+            }
             Reply::Dynamic(f) => reply = f(&body_json),
             other => {
                 reply = other;
@@ -237,7 +244,7 @@ async fn handle(State(st): State<Arc<Mutex<Inner>>>, req: Request<Body>) -> Resp
             input,
             output,
         } => completion(anthropic, &text, &calls, input, output),
-        Reply::Delay(..) | Reply::Dynamic(_) => unreachable!(),
+        Reply::Delay(..) | Reply::Gate(..) | Reply::Dynamic(_) => unreachable!(),
     }
 }
 

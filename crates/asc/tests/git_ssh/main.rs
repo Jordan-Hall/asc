@@ -39,12 +39,51 @@ pub mod h {
 
     use asc_git::realgit::RealGit;
 
+    /// Keeps a child `ssh` (and anything it starts) from opening `/dev/tty`. Run from a terminal,
+    /// an unknown host key or a passphrase would otherwise be asked for there and the test would
+    /// wait for a person (or stop on SIGTTIN when the group is in the background). With
+    /// `SSH_ASKPASS_REQUIRE=force` every prompt goes to a program that answers nothing, so ssh
+    /// fails the way it does with no terminal. OpenSSH 8.4 and later; older ones ignore both
+    /// variables and keep the terminal.
+    pub fn no_tty(cmd: &mut Command) -> &mut Command {
+        #[cfg(unix)]
+        {
+            use std::sync::OnceLock;
+            static ASKPASS: OnceLock<PathBuf> = OnceLock::new();
+            let path = ASKPASS.get_or_init(|| {
+                use std::os::unix::fs::PermissionsExt;
+                let path =
+                    std::env::temp_dir().join(format!("asc-no-askpass-{}.sh", std::process::id()));
+                std::fs::write(
+                    &path,
+                    "#!/bin/sh
+exit 1
+",
+                )
+                .unwrap();
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+                path
+            });
+            cmd.env("SSH_ASKPASS", path)
+                .env("SSH_ASKPASS_REQUIRE", "force");
+        }
+        cmd
+    }
+
     pub fn free_port() -> u16 {
         TcpListener::bind("127.0.0.1:0")
             .unwrap()
             .local_addr()
             .unwrap()
             .port()
+    }
+
+    /// Whether the log of a server that exited at once says one of its ports was taken.
+    pub fn bind_race(log: &str) -> bool {
+        let log = log.to_lowercase();
+        log.contains("address already in use")
+            || log.contains("address in use")
+            || log.contains("transport error")
     }
 
     pub fn fwd(p: &Path) -> String {
@@ -238,6 +277,7 @@ pub mod h {
                 .env("USERPROFILE", home)
                 .env_remove("SSH_AUTH_SOCK")
                 .stdin(Stdio::null());
+            no_tty(&mut cmd);
             let out = cmd.output().unwrap();
             Run {
                 ok: out.status.success(),
@@ -365,6 +405,7 @@ pub mod h {
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
+            no_tty(&mut cmd);
             for (k, v) in env {
                 cmd.env(k, v);
             }
@@ -478,7 +519,23 @@ pub mod h {
 
     impl Stack {
         /// `ssh` is extra lines of `[ssh]`, `extra` further tables.
+        ///
+        /// The ports are picked by binding port 0 and letting go, so another test of this binary
+        /// (or the source port of one of its own connections) can take one before the server
+        /// binds it. The server then exits at once with "Address already in use"; that, and only
+        /// that, is tried again with new ports.
         pub fn start_with(ssh: &str, extra: &str) -> Self {
+            let mut attempt = 1;
+            loop {
+                match Self::start_once(ssh, extra) {
+                    Ok(stack) => return stack,
+                    Err(log) if attempt < 5 && bind_race(&log) => attempt += 1,
+                    Err(log) => panic!("asc serve exited early: {log}"),
+                }
+            }
+        }
+
+        fn start_once(ssh: &str, extra: &str) -> Result<Self, String> {
             let dir = tempfile::tempdir().unwrap();
             let port = free_port();
             let admin_port = free_port();
@@ -533,8 +590,8 @@ pub mod h {
                 .stdout(Stdio::from(log.try_clone().unwrap()))
                 .stderr(Stdio::from(log));
             stack.child = Some(cmd.spawn().expect("spawn asc serve"));
-            stack.wait_ready();
-            stack
+            stack.wait_ready()?;
+            Ok(stack)
         }
 
         pub fn start() -> Self {
@@ -553,13 +610,14 @@ pub mod h {
             std::fs::read_to_string(self.dir.path().join("serve.log")).unwrap_or_default()
         }
 
-        fn wait_ready(&mut self) {
+        /// `Err` carries the log of a server that exited before it was ready.
+        fn wait_ready(&mut self) -> Result<(), String> {
             let end = Instant::now() + Duration::from_secs(90);
             loop {
                 if let Some(c) = self.child.as_mut()
                     && let Ok(Some(status)) = c.try_wait()
                 {
-                    panic!("asc serve exited early ({status}): {}", self.log());
+                    return Err(format!("({status}): {}", self.log()));
                 }
                 let http_up =
                     TcpStream::connect_timeout(&self.http_addr(), Duration::from_millis(200))
@@ -586,6 +644,7 @@ pub mod h {
             }
             #[cfg(feature = "git-ssh")]
             self.seed_known_hosts();
+            Ok(())
         }
 
         /// Writes the `known_hosts` file from `asc serve ssh host-key show`.

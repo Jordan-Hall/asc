@@ -302,6 +302,12 @@ pub trait SyncExt: Send + Sync {
     fn extra_closure(&self, _new: &[ChangesetId]) -> Vec<ObjKey> {
         Vec::new()
     }
+    /// The stored bytes of extra objects the local store may not hold yet (a change meta is
+    /// recorded as a row, and its object is made when a push needs it). A push writes these to
+    /// the local store before it uploads [`extra_closure`](Self::extra_closure).
+    fn extra_objects(&self, _new: &[ChangesetId]) -> Vec<(ObjKey, Bytes)> {
+        Vec::new()
+    }
     /// Called with the verified `Log` entries a fetch receives.
     fn on_log_entries(&self, _entries: &[LogEntry]) {}
 }
@@ -1406,6 +1412,11 @@ impl<O: Objects, R: Refs> Engine<O, R> {
         let tag_keys: Vec<ObjKey> = tags.iter().map(|&t| ObjKey::Tag(t)).collect();
         let tag_keys = self.missing_on_remote(remote, tag_keys).await?;
         sent.extend(self.upload(remote, tag_keys, &mut report).await?);
+        for (key, stored) in opts.ext.extra_objects(&new_cs) {
+            if self.objects.get_stored(&key).await?.is_none() {
+                self.objects.put(&key, stored).await?;
+            }
+        }
         let mut extra = opts.ext.extra_closure(&new_cs);
         dedup_keys(&mut extra);
         let extra = self.missing_on_remote(remote, extra).await?;
