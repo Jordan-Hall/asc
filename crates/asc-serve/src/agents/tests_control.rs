@@ -382,13 +382,14 @@ async fn a_paused_run_holds_at_its_next_tool_call_and_a_checkpoint_can_be_rolled
             ("commit", json!({"message": format!("Change {n}")})),
         ])
     };
+    // The third model call waits for the test to open this gate, not for a clock: however slow
+    // the machine, the run cannot reach its next tool call (and so cannot finish) while the test
+    // is still pausing, resuming and asking for the rollback.
+    let gate = Arc::new(tokio::sync::Notify::new());
     w.script(vec![
         write(1),
         write(2),
-        Reply::Delay(
-            Duration::from_secs(6),
-            Box::new(tools(vec![("status", json!({}))])),
-        ),
+        Reply::Gate(gate.clone(), Box::new(tools(vec![("status", json!({}))]))),
         done("done"),
     ]);
     let run = w
@@ -483,6 +484,9 @@ async fn a_paused_run_holds_at_its_next_tool_call_and_a_checkpoint_can_be_rolled
     );
     pause("alice-token", true).await.unwrap();
     rollback("alice-token", cps[0].id).await.unwrap();
+    // Now the run may reach its next tool call: it holds there, takes the rollback, and goes on
+    // only when it is resumed.
+    gate.notify_one();
     // The run changes first and the checkpoints are marked after it: wait for the mark.
     until("the rollback", || async {
         let r = w.hub.core.runs.get(run.id).await.unwrap().unwrap();

@@ -12,7 +12,9 @@
 
 use std::sync::Arc;
 
+use asc_core::change::MetaId;
 use asc_rpc::server::{CallCtx, ObjectsHandler, RpcStream, wire};
+use asc_store::key::ObjKey;
 use async_trait::async_trait;
 use tonic::Status;
 
@@ -54,7 +56,32 @@ impl ObjectsHandler for ServerObjects {
         ctx: &CallCtx,
         req: wire::PutObjectsRequest,
     ) -> Result<wire::PutObjectsResponse, Status> {
-        self.entry(ctx).await?.backend.put_objects(ctx, req).await
+        let entry = self.entry(ctx).await?;
+        // The change metas of the upload, so the push that names their changesets finds them.
+        let metas: Vec<MetaId> = req
+            .objects
+            .iter()
+            .filter_map(|o| o.key.as_ref())
+            .filter_map(|k| ObjKey::try_from(k).ok())
+            .filter_map(|k| match k {
+                ObjKey::ChangeMeta(id) => Some(id),
+                _ => None,
+            })
+            .collect();
+        let stored = entry.backend.put_objects(ctx, req).await?;
+        if !metas.is_empty()
+            && let Err(e) = crate::changes::staged::stage(
+                self.registry.pool(),
+                &entry,
+                &ctx.principal.id,
+                &metas,
+            )
+            .await
+        {
+            // The upload stands; the push that needs the meta reports it missing.
+            tracing::warn!(error = %e, "staging the uploaded change metas failed");
+        }
+        Ok(stored)
     }
 
     async fn get_objects(

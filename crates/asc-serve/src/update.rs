@@ -100,6 +100,15 @@ pub trait PushHooks: Send + Sync {
         Ok(())
     }
 
+    /// AGit `refs/for/*` (a submit): Forgejo's proc-receive creates or updates the pull request
+    /// of each update and answers per ref (SPEC section 13.5). The default has no forge to ask.
+    async fn proc_receive(
+        &self,
+        _req: &HookRequest<'_>,
+    ) -> Result<Vec<crate::forgejo::ProcRefResult>, HookRejected> {
+        Ok(Vec::new())
+    }
+
     /// The push did not commit after step 6; remove the quarantine.
     async fn abort(&self, _req: &HookRequest<'_>) {}
 
@@ -674,7 +683,8 @@ impl ServerRefs {
             &entry,
             windows_safe,
         )
-        .by(user_owner);
+        .by(user_owner)
+        .staged_for(&ctx.principal.id);
         if let Some(left) = budget {
             ingestor = ingestor.with_budget(left);
         }

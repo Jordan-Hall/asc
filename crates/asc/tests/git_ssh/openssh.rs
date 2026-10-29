@@ -50,6 +50,7 @@ fn asc(sb: &Sandbox, cwd: &Path, ssh: Option<&str>, env: &[(&str, &str)], args: 
         cmd.env("GIT_SSH_COMMAND", s);
     }
     cmd.envs(env.iter().copied()).args(args);
+    no_tty(&mut cmd);
     output_within(cmd, 180)
 }
 
@@ -371,6 +372,7 @@ fn hold_ssh(rig: &Rig, args: &[&str], port: u16) -> (std::process::Child, PathBu
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(std::fs::File::create(&err).unwrap());
+    no_tty(&mut cmd);
     let mut child = cmd.spawn().unwrap();
     let end = Instant::now() + Duration::from_secs(30);
     loop {

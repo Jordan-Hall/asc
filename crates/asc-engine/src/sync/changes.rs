@@ -10,10 +10,12 @@ use std::collections::{BTreeMap, HashSet};
 use std::sync::Mutex;
 
 use asc_core::change::{ChangeId, ChangeMeta, MetaId};
-use asc_core::codec::{CodecError, decode_envelope};
+use asc_core::codec::{CodecError, Enveloped, decode_envelope};
 use asc_core::id::ChangesetId;
+use asc_store::codec::encode_stored;
 use asc_store::key::ObjKey;
 use asc_store::objects::{self, decode_verified};
+use bytes::Bytes;
 use futures::StreamExt;
 
 use super::{Remote, SyncExt};
@@ -62,6 +64,9 @@ pub struct ChangesExt<R: ChangeRows> {
     advertised: bool,
     /// Meta ids of changesets [`warm`](Self::warm) loaded, for the synchronous hook.
     known: Mutex<BTreeMap<ChangesetId, MetaId>>,
+    /// The stored bytes of those metas, rebuilt from the rows: a row records the meta id, and
+    /// nothing else writes the `m/` object into the local store.
+    objects: Mutex<BTreeMap<ChangesetId, (ObjKey, Bytes)>>,
     pending: Mutex<Vec<LogMeta>>,
 }
 
@@ -76,6 +81,7 @@ impl<R: ChangeRows> ChangesExt<R> {
             rows,
             advertised,
             known: Mutex::default(),
+            objects: Mutex::default(),
             pending: Mutex::default(),
         }
     }
@@ -96,6 +102,22 @@ impl<R: ChangeRows> ChangesExt<R> {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .insert(cs, row.meta);
+                // The meta is a function of the row and its predecessors; it is rebuilt only
+                // when that gives back the id the row names.
+                let preds = self.rows.preds(cs).await?;
+                let meta = ChangeMeta::new(cs, row.change, preds, row.op);
+                if meta.id() == row.meta {
+                    self.objects
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(
+                            cs,
+                            (
+                                ObjKey::ChangeMeta(row.meta),
+                                encode_stored(&meta.to_envelope()),
+                            ),
+                        );
+                }
             }
         }
         Ok(())
@@ -189,6 +211,16 @@ impl<R: ChangeRows> SyncExt for ChangesExt<R> {
             .filter_map(|cs| known.get(cs).map(|&m| ObjKey::ChangeMeta(m)))
             .collect()
     }
+
+    fn extra_objects(&self, new: &[ChangesetId]) -> Vec<(ObjKey, Bytes)> {
+        if !self.advertised {
+            return Vec::new();
+        }
+        let objects = self.objects.lock().unwrap_or_else(|e| e.into_inner());
+        new.iter()
+            .filter_map(|cs| objects.get(cs).cloned())
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -280,6 +312,36 @@ mod tests {
                 assert_eq!(extra, vec![ObjKey::ChangeMeta(m.id())]);
             }
         }
+    }
+
+    /// A row records only the meta id; the push must be able to make the object it names.
+    #[tokio::test]
+    async fn the_meta_object_is_rebuilt_from_its_row_for_the_push() {
+        let m = meta(1, 7, vec![cs(9)]);
+        let rows = MemRows::default();
+        indexed(&rows, &m).await;
+        let ext = ChangesExt::new(rows, &["changes.v1"]);
+        ext.warm(&[cs(1)]).await.unwrap();
+        let objects = ext.extra_objects(&[cs(1), cs(2)]);
+        assert_eq!(objects, vec![stored(&m)]);
+        // A row whose id is not the id of the meta its fields give is not made up.
+        let rows = MemRows::default();
+        let wrong = ChangeRow {
+            cs: cs(1),
+            change: m.change,
+            meta: MetaId::from_bytes([5; 32]),
+            op: m.op,
+        };
+        rows.insert(&wrong, &m.preds).await.unwrap();
+        let ext = ChangesExt::new(rows, &["changes.v1"]);
+        ext.warm(&[cs(1)]).await.unwrap();
+        assert!(ext.extra_objects(&[cs(1)]).is_empty());
+        // Nothing without the feature.
+        let rows = MemRows::default();
+        indexed(&rows, &m).await;
+        let ext = ChangesExt::new(rows, &Vec::<String>::new());
+        ext.warm(&[cs(1)]).await.unwrap();
+        assert!(ext.extra_objects(&[cs(1)]).is_empty());
     }
 
     fn ids(ns: &[u8]) -> HashSet<ChangesetId> {

@@ -33,6 +33,20 @@ use crate::policy::gate::{GateMode, GateRequest, GateUpdate};
 
 /// The longest branch name a `refs/for/` update may name.
 const MAX_BRANCH: usize = 200;
+/// What Forgejo's proc-receive says, whole, of a change whose pull request already holds this
+/// commit (compared without case, surrounding space and a final full stop); a resubmit of an
+/// unchanged change is not a refusal. Any other non-empty `err`, this phrase with more text
+/// around it included, is a refusal.
+const PROC_UNCHANGED: &[&str] = &[
+    "the new commit is the same as the old commit",
+    "new commit is same with old commit",
+];
+
+/// Whether `err` is exactly one of the benign messages of [`PROC_UNCHANGED`].
+fn is_unchanged(err: &str) -> bool {
+    let e = err.trim().trim_end_matches('.').trim_end().to_lowercase();
+    PROC_UNCHANGED.contains(&e.as_str())
+}
 
 struct Submission {
     text: String,
@@ -166,6 +180,7 @@ impl ServerRefs {
             windows_safe,
         )
         .by(submitter)
+        .staged_for(&ctx.principal.id)
         .ingest(&targets, self.hooks.observer())
         .await
         .map_err(ingest_status)?;
@@ -249,6 +264,22 @@ impl ServerRefs {
             hooks.abort(&hook_req).await;
             return Err(rpc(RpcError::HookRejected(info(vec![e.0]))));
         }
+        // The forge creates or updates the pull request of every change (SPEC section 13.5); it
+        // moves `refs/pull/<n>/head` through asc itself. Without this call a submit published
+        // versions and no review ever existed on the forge.
+        if req.hooks != wire::HookMode::SkipPre as i32 {
+            let refused = match hooks.proc_receive(&hook_req).await {
+                Ok(results) => results
+                    .into_iter()
+                    .find(|r| !r.err.is_empty() && !is_unchanged(&r.err))
+                    .map(|r| r.err),
+                Err(e) => Some(e.0),
+            };
+            if let Some(why) = refused {
+                hooks.abort(&hook_req).await;
+                return Err(rpc(RpcError::HookRejected(info(vec![why]))));
+            }
+        }
 
         // An agent's budget is charged for what it publishes and given back if the commit fails.
         let agent_updates: Vec<RefChange> = subs
@@ -310,13 +341,16 @@ impl ServerRefs {
         hook_updates: &[HookUpdate],
         hooks: &dyn PushHooks,
     ) -> Result<wire::UpdateRefsResponse, Status> {
+        // The admin question can reach the forge and bind the repository's forge id in the
+        // database; asked inside the transaction below it would wait for the write lock this
+        // very transaction holds (SQLite: thirty seconds, then "database is locked").
+        let admin = ctx.admin.holds().await;
         let mut tx = self
             .registry
             .refs()
             .begin()
             .await
             .map_err(|e| internal("refs", &e))?;
-        let admin = ctx.admin.holds().await;
         let actor = ctx.principal.id.clone();
         let at = now();
         let mut parent = None;
@@ -632,5 +666,210 @@ mod tests {
             .unwrap_err();
         assert_eq!(e.code(), tonic::Code::InvalidArgument);
         assert!(versions_of(&r, 1).await.is_empty());
+    }
+
+    /// What a client does: the meta object goes up with `PutObjects` (which stages it), nothing
+    /// writes the index row, and the push names only changesets.
+    async fn upload_meta(
+        r: &Arc<Registry>,
+        e: &RepoEntry,
+        who: &str,
+        change: u8,
+        cs: ChangesetId,
+        preds: Vec<ChangesetId>,
+    ) {
+        use asc_core::codec::Enveloped;
+        use asc_store::codec::encode_stored;
+        use asc_store::key::ObjKey;
+        use asc_store::objects::Objects;
+        let op = if preds.is_empty() {
+            RewriteOp::New
+        } else {
+            RewriteOp::Amend
+        };
+        let m = ChangeMeta::new(cs, cid(change), preds, op);
+        e.objects
+            .put(&ObjKey::ChangeMeta(m.id()), encode_stored(&m.to_envelope()))
+            .await
+            .unwrap();
+        crate::changes::staged::stage(r.pool(), e, who, &[m.id()])
+            .await
+            .unwrap();
+    }
+
+    /// A server with the change index registered as the ingest observer, as in production.
+    fn indexing_server(r: &Arc<Registry>) -> ServerRefs {
+        let hooks = Arc::new(crate::update::PipelineHooks::default());
+        hooks
+            .set_observer(Arc::new(index::ChangeIndex::new(r.clone())))
+            .unwrap_or_else(|_| panic!("the observer is set once"));
+        ServerRefs::new(r.clone(), hooks)
+    }
+
+    async fn staged_rows(r: &Registry) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM staged_metas")
+            .fetch_one(r.pool())
+            .await
+            .unwrap()
+    }
+
+    /// The end-to-end gap: the change index was only ever written by tests that called the index
+    /// directly, so a real client's uploaded metas were stored and never indexed, and every
+    /// `asc submit` failed with "not a version of the change its topic names".
+    #[tokio::test]
+    async fn metas_a_client_uploaded_are_indexed_by_the_submit_that_names_their_changesets() {
+        let r = registry().await;
+        let e = repo(&r).await;
+        let s = indexing_server(&r);
+        let a = commit(&e, &[], &[("a", b"1")]).await;
+        let b = commit(&e, &[a], &[("b", b"2")]).await;
+        let c = commit(&e, &[b], &[("c", b"3")]).await;
+        for (n, cs) in [(1, a), (2, b), (3, c)] {
+            upload_meta(&r, &e, "alice", n, cs, vec![]).await;
+        }
+        assert_eq!(staged_rows(&r).await, 3);
+        s.update_refs(
+            &call("alice", Uuid::new_v4()),
+            submit_req(&[(1, a), (2, b), (3, c)], &[]),
+        )
+        .await
+        .unwrap();
+        for n in [1, 2, 3] {
+            assert_eq!(versions_of(&r, n).await, [(1, "alice".to_owned())], "{n}");
+        }
+        assert_eq!(staged_rows(&r).await, 0, "the push consumed what it used");
+    }
+
+    #[tokio::test]
+    async fn a_meta_staged_by_another_principal_or_for_another_changeset_is_not_used() {
+        let r = registry().await;
+        let e = repo(&r).await;
+        let s = indexing_server(&r);
+        let a = commit(&e, &[], &[("a", b"1")]).await;
+        let b = commit(&e, &[], &[("b", b"2")]).await;
+        // Mallory claims change 9 for alice's changeset before alice pushes it.
+        upload_meta(&r, &e, "mallory", 9, a, vec![]).await;
+        upload_meta(&r, &e, "alice", 1, a, vec![]).await;
+        // Alice's own meta for a changeset she does not push stays staged.
+        upload_meta(&r, &e, "alice", 2, b, vec![]).await;
+        let squat = s
+            .update_refs(&call("alice", Uuid::new_v4()), submit_req(&[(9, a)], &[]))
+            .await
+            .unwrap_err();
+        assert_eq!(squat.code(), tonic::Code::InvalidArgument);
+        s.update_refs(&call("alice", Uuid::new_v4()), submit_req(&[(1, a)], &[]))
+            .await
+            .unwrap();
+        assert_eq!(versions_of(&r, 9).await.len(), 0);
+        assert_eq!(versions_of(&r, 1).await.len(), 1);
+        assert_eq!(
+            staged_rows(&r).await,
+            2,
+            "mallory's and the unpushed one remain"
+        );
+    }
+
+    #[test]
+    fn only_the_whole_benign_message_is_an_unchanged_change() {
+        for ok in [
+            "The new commit is the same as the old commit",
+            "the new commit is the same as the old commit.",
+            "  New commit is same with old commit 
+",
+        ] {
+            assert!(is_unchanged(ok), "{ok:?}");
+        }
+        for bad in [
+            "",
+            "same as the old commit",
+            "The new commit is the same as the old commit, but not allowed",
+            "denied. The new commit is the same as the old commit",
+            "The new commit is the same as the old commit
+and more",
+        ] {
+            assert!(!is_unchanged(bad), "{bad:?}");
+        }
+    }
+
+    /// A forge whose proc-receive answers with `answer` and counts the calls.
+    struct ProcForge {
+        answer: Result<Vec<crate::forgejo::ProcRefResult>, String>,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::update::PushHooks for ProcForge {
+        async fn proc_receive(
+            &self,
+            _req: &crate::update::HookRequest<'_>,
+        ) -> Result<Vec<crate::forgejo::ProcRefResult>, crate::update::HookRejected> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.answer.clone().map_err(crate::update::HookRejected)
+        }
+    }
+
+    fn forge_server(r: &Arc<Registry>, forge: Arc<ProcForge>) -> ServerRefs {
+        let hooks = Arc::new(crate::update::PipelineHooks::default());
+        hooks
+            .set_push_hooks(forge)
+            .unwrap_or_else(|_| panic!("the push hooks are set once"));
+        ServerRefs::new(r.clone(), hooks)
+    }
+
+    #[tokio::test]
+    async fn the_forge_is_asked_for_every_change_and_its_refusal_publishes_nothing() {
+        use crate::forgejo::ProcRefResult;
+        use std::sync::atomic::Ordering;
+        let r = registry().await;
+        let e = repo(&r).await;
+        let a = commit(&e, &[], &[("a", b"1")]).await;
+        meta(&r, &e, 1, a, vec![]).await;
+
+        // A refusal for a ref, a refusal of the call: the submit fails and publishes nothing.
+        for answer in [
+            Ok(vec![ProcRefResult {
+                err: "not allowed to update change 0101".into(),
+                ..ProcRefResult::default()
+            }]),
+            Err("the forge could not be reached for proc-receive".to_owned()),
+            // The benign phrase with more text around it is a refusal, not an unchanged change.
+            Ok(vec![ProcRefResult {
+                err: "The new commit is the same as the old commit, but you may not update it"
+                    .into(),
+                ..ProcRefResult::default()
+            }]),
+            Ok(vec![ProcRefResult {
+                err: "permission denied: same as the old commit".into(),
+                ..ProcRefResult::default()
+            }]),
+        ] {
+            let forge = Arc::new(ProcForge {
+                answer,
+                calls: Default::default(),
+            });
+            let s = forge_server(&r, forge.clone());
+            let err = s
+                .update_refs(&call("alice", Uuid::new_v4()), submit_req(&[(1, a)], &[]))
+                .await
+                .unwrap_err();
+            assert_eq!(crate::update::tests_code(&err), "HOOK_REJECTED");
+            assert_eq!(forge.calls.load(Ordering::SeqCst), 1);
+            assert!(versions_of(&r, 1).await.is_empty());
+        }
+
+        // An unchanged pull request is no refusal; a clean answer publishes.
+        let forge = Arc::new(ProcForge {
+            answer: Ok(vec![ProcRefResult {
+                err: "The new commit is the same as the old commit".into(),
+                ..ProcRefResult::default()
+            }]),
+            calls: Default::default(),
+        });
+        let s = forge_server(&r, forge.clone());
+        s.update_refs(&call("alice", Uuid::new_v4()), submit_req(&[(1, a)], &[]))
+            .await
+            .unwrap();
+        assert_eq!(forge.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(versions_of(&r, 1).await.len(), 1);
     }
 }
