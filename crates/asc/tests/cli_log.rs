@@ -48,9 +48,14 @@ fn run(cmd: &mut Command) -> Out {
     }
 }
 
-/// Real git in `dir`: hermetic, UTC, no pager.
+/// Real git in `dir`: hermetic, UTC, no pager. It is the pinned git (`ASC_REAL_GIT`, docs/git-fidelity.md),
+/// not whatever `git` is first on `PATH`: a CI runner ships git 2.56, which draws the lanes around a
+/// root commit differently from the pinned 2.55 that `asc log --graph` matches.
 fn git_cmd(dir: &Path, home: &Path) -> Command {
-    let mut c = Command::new("git"); // lint:allow-raw-git
+    let mut c = asc_git::realgit::RealGit::resolve(None, None)
+        .expect("a real git")
+        .command()
+        .expect("a git command");
     c.current_dir(dir)
         .env_remove("GIT_DIR")
         .env("HOME", home)
@@ -978,13 +983,20 @@ async fn random_scenario(seed: u64, n: usize, skew: bool) -> Built {
 #[tokio::test]
 async fn graph_and_order_match_git_on_random_histories() {
     // `ASC_LOG_SEED=<n>` runs one history; a failure names its seed.
-    let only: Option<u64> = std::env::var("ASC_LOG_SEED").ok().and_then(|v| v.parse().ok());
+    let only: Option<u64> = std::env::var("ASC_LOG_SEED")
+        .ok()
+        .and_then(|v| v.parse().ok());
     for seed in 1..=14u64 {
         if only.is_some_and(|o| o != seed) {
             continue;
         }
-        eprintln!("history seed {seed}");
         let b = random_scenario(seed, 22, seed % 3 == 0).await;
+        eprintln!(
+            "history seed {seed}: {}",
+            b.git(&["log", "--all", "--format=%h %p|%at"])
+                .stdout
+                .replace('\n', " / ")
+        );
         b.same_log(&[
             &["--oneline"],
             &["--graph", "--oneline"],
