@@ -1,0 +1,145 @@
+syntax = "proto3";
+package asc.v1;
+
+import "asc/v1/options.proto";
+import "asc/v1/repo.proto";
+
+// Releases (docs/BUILDOUT.md section 26). asc keeps the record of a release: its tag, notes written from the changes that landed
+// since the previous release, its provenance (the run that built it, the checks of that run, the signature on the release commit)
+// and the SHA-256 checksum of each asset. The asset bytes live where the asset's `url` says; asc never stores them. The same
+// calls serve `asc release`.
+service Releases {
+  rpc DraftNotes(DraftReleaseNotesRequest) returns (DraftReleaseNotesResponse);   // repo read; expensive; the changes since a release, grouped
+  rpc Next(NextReleaseRequest) returns (NextReleaseResponse);                     // repo read; "6 changes since v2.18.0" and a proposed tag
+  rpc Create(CreateReleaseRequest) returns (CreateReleaseResponse);               // repo write; mutating, x-asc-op-id; a draft or a published release
+  rpc Publish(PublishReleaseRequest) returns (PublishReleaseResponse);            // repo write; mutating, x-asc-op-id
+  rpc List(ListReleasesRequest) returns (ListReleasesResponse);                   // repo read; paged, newest first
+  rpc Get(GetReleaseRequest) returns (GetReleaseResponse);                        // repo read
+}
+
+enum ReleaseChannel {
+  RELEASE_CHANNEL_UNSPECIFIED = 0;   // in a request: stable
+  RELEASE_CHANNEL_STABLE = 1;
+  RELEASE_CHANNEL_PRE_RELEASE = 2;
+  RELEASE_CHANNEL_DRAFT = 3;         // only in ListReleasesRequest.channel: the drafts
+}
+
+message ReleaseAsset {
+  string name = 1;                   // a file name, no slash
+  uint64 size = 2;
+  string sha256 = 3;                 // 64 lowercase hex characters
+  string url = 4;                    // https where the file can be downloaded, or empty
+  string content_type = 5;
+}
+
+// What the server found out about how the release was made. It is computed when the release is created and kept.
+message ReleaseProvenance {
+  string build_source = 1;           // the CI source that reported the run, as in Ci.ReportRun
+  string build_run = 2;              // the run's external id
+  string build_url = 3;
+  string built_from = 4;             // the revision the release was cut from: the ref or tag as asked
+  uint32 checks_passed = 5;          // jobs of that run that succeeded
+  uint32 checks_total = 6;           // jobs of that run that were not skipped
+  string signed_by = 7;              // the owner of the key that signed the release commit; empty when unsigned
+  string signing_key = 8;            // that key's fingerprint
+  bool signature_valid = 9;          // the signature was valid when it was submitted
+}
+
+message Release {
+  uint64 id = 1;
+  string tag = 2;
+  string title = 3;
+  string notes = 4;
+  ReleaseChannel channel = 5;        // STABLE or PRE_RELEASE
+  bool draft = 6;                    // not published yet; only repo writers see it
+  bytes target = 7 [(asc.v1.json) = JSON_KIND_HEX];   // the changeset the release was cut from
+  string previous_tag = 8;
+  uint32 changes = 9;                // changes landed since the previous release
+  int64 created = 10;
+  int64 published = 11;              // 0 for a draft
+  string created_by = 12;
+  uint64 created_by_id = 13;
+  ReleaseProvenance provenance = 14;
+  repeated ReleaseAsset assets = 15;
+}
+
+message ReleaseNote {
+  bytes change = 1 [(asc.v1.json) = JSON_KIND_CHANGE];   // empty when the changeset belongs to no known change
+  bytes changeset = 2 [(asc.v1.json) = JSON_KIND_HEX];
+  string subject = 3;                // the first line of the message, at most 200 bytes
+  string author = 4;
+  bool by_agent = 5;
+  string category = 6;               // "added", "changed" or "fixed"
+}
+
+// The changes in `from..to`, newest first, in the category their message gives them: a `Release-Note: added|changed|fixed|skip`
+// trailer wins, then a leading `feat`, `add`, `fix`, `bug` word of the subject, then "changed". `skip` leaves the change out.
+message DraftReleaseNotesRequest {
+  RepoRef repo = 1;
+  string from = 2;                   // a tag, branch or changeset; empty means the newest published release, or the first changeset
+  string to = 3;                     // empty means the default branch
+}
+message DraftReleaseNotesResponse {
+  repeated ReleaseNote notes = 1;
+  string markdown = 2;               // the notes as Markdown: "### Added" and so on, one line per change
+  string from_tag = 3;
+  uint32 total = 4;
+  bool truncated = 5;                // more than 500 changesets: the oldest are left out
+}
+
+message NextReleaseRequest {
+  RepoRef repo = 1;
+}
+message NextReleaseResponse {
+  string latest_tag = 1;             // the newest published release, or empty
+  uint32 changes_since = 2;
+  string proposed_tag = 3;           // the patch number raised by one when the latest tag is v<major>.<minor>.<patch>; empty otherwise
+  string draft_tag = 4;              // a draft that exists already, or empty
+  bool truncated = 5;
+}
+
+message CreateReleaseRequest {
+  RepoRef repo = 1;
+  string tag = 2;                    // 1 to 128 characters of letters, digits and ._+-/
+  string title = 3;                  // at most 200 bytes; empty means the tag
+  string notes = 4;                  // at most 64 KiB
+  ReleaseChannel channel = 5;        // STABLE (also when unspecified) or PRE_RELEASE
+  string target = 6;                 // the revision to cut from; empty means the default branch
+  string build_source = 7;           // the run that built the release: its CI source and external id, or both empty
+  string build_run = 8;
+  repeated ReleaseAsset assets = 9;  // at most 100; sha256 and size are what the file has
+  bool draft = 10;                   // keep it unpublished until Publish
+}
+message CreateReleaseResponse {
+  Release release = 1;
+}
+
+message PublishReleaseRequest {
+  RepoRef repo = 1;
+  string tag = 2;
+}
+message PublishReleaseResponse {
+  Release release = 1;
+}
+
+message ListReleasesRequest {
+  RepoRef repo = 1;
+  ReleaseChannel channel = 2;        // UNSPECIFIED: all that the caller may see (drafts need repo write)
+  uint32 limit = 3;                  // 0 means 30, at most 100
+  string page_token = 4;
+}
+message ListReleasesResponse {
+  repeated Release releases = 1;
+  string next_page_token = 2;
+  uint32 stable = 3;                 // counts of the whole list the caller may see
+  uint32 pre_release = 4;
+  uint32 draft = 5;
+}
+
+message GetReleaseRequest {
+  RepoRef repo = 1;
+  string tag = 2;
+}
+message GetReleaseResponse {
+  Release release = 1;
+}

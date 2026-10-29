@@ -78,6 +78,8 @@ pub mod services {
     pub use crate::pb::policy_server;
     pub use crate::pb::projects_client;
     pub use crate::pb::projects_server;
+    pub use crate::pb::releases_client;
+    pub use crate::pb::releases_server;
     pub use crate::pb::repo_client;
     pub use crate::pb::repo_server;
     pub use crate::pb::review_client;

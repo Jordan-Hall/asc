@@ -80,6 +80,8 @@ struct Opts {
     prune: bool,
     tags: Option<bool>,
     no_verify: bool,
+    /// `--autostash` / `--no-autostash`; the configuration decides when absent.
+    autostash: Option<bool>,
     words: Vec<String>,
 }
 
@@ -124,13 +126,9 @@ fn parse(argv: &[OsString]) -> Result<Opts> {
             | "-e"
             | "--progress"
             | "--no-progress"
-            | "--no-recurse-submodules"
-            | "--no-autostash" => {}
-            "--autostash" => {
-                return Err(CliError::Fatal(
-                    "asc: pull --autostash is not supported yet".into(),
-                ));
-            }
+            | "--no-recurse-submodules" => {}
+            "--autostash" => o.autostash = Some(true),
+            "--no-autostash" => o.autostash = Some(false),
             w if w.starts_with("--rebase=") => {
                 o.rebase = Some(rebase_value(&w["--rebase=".len()..])?)
             }
@@ -290,7 +288,77 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         );
         argv.push(tracking.clone().into());
     }
-    super::run_command(ctx, argv).await
+    let rebasing = matches!(rebase, Some(Rebase::Yes | Rebase::Merges));
+    let autostash = o.autostash.unwrap_or_else(|| {
+        let key = if rebasing {
+            "rebase.autostash"
+        } else {
+            "merge.autostash"
+        };
+        ctx.config
+            .get(key)
+            .is_some_and(|v| matches!(v.to_ascii_lowercase().as_str(), "true" | "yes" | "on" | "1"))
+    });
+    if !autostash {
+        return super::run_command(ctx, argv).await;
+    }
+    // Local changes are put away before the integration and brought back after it. A tree with
+    // no changes stashes nothing.
+    let stashed = super::stash::save::make(
+        ctx,
+        ws,
+        &super::stash::save::Opts {
+            quiet: true,
+            ..Default::default()
+        },
+        false,
+    )
+    .await?;
+    if let Some(made) = &stashed {
+        super::stash::stack::push(ctx, ws, made.commit, &made.message).await?;
+        super::stash::save::clean(ctx, ws, &Default::default(), made).await?;
+        if !o.quiet {
+            eprintln!("Created autostash: {}", short_id(ws, made.commit).await);
+        }
+    }
+    let code = super::run_command(ctx, argv).await;
+    if stashed.is_none() {
+        return code;
+    }
+    match code {
+        Ok(c) if c == ExitCode::SUCCESS => {
+            let pop =
+                super::run_command(ctx, vec!["stash".into(), "pop".into(), "-q".into()]).await;
+            match pop {
+                Ok(p) if p == ExitCode::SUCCESS => {
+                    if !o.quiet {
+                        eprintln!("Applied autostash.");
+                    }
+                    Ok(ExitCode::SUCCESS)
+                }
+                other => {
+                    eprintln!(
+                        "Your local changes are stored in the stash; applying them gave conflicts. Resolve them, then run `stash drop`."
+                    );
+                    other
+                }
+            }
+        }
+        other => {
+            eprintln!(
+                "Your local changes were put in the stash; run `stash pop` when the integration is done or aborted."
+            );
+            other
+        }
+    }
+}
+
+/// The first seven characters of the git id of `c`, for a message.
+async fn short_id(ws: &WsCtx, c: asc_core::id::ChangesetId) -> String {
+    match super::conflict::git_id(ws, c).await {
+        Ok(g) => g.to_string().chars().take(7).collect(),
+        Err(_) => c.to_string().chars().take(7).collect(),
+    }
 }
 
 #[cfg(test)]

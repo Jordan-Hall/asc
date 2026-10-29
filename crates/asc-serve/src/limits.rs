@@ -251,6 +251,9 @@ const TABLE: &[(&str, Class, &[&str])] = &[
         Class::Expensive,
         &["GetStats", "ListContributors"],
     ),
+    ("Releases", Class::Cheap, &["List", "Get", "Next"]),
+    ("Releases", Class::Expensive, &["DraftNotes"]),
+    ("Releases", Class::Background, &["Create", "Publish"]),
     ("Inbox", Class::Cheap, &["List", "Count"]),
     ("Inbox", Class::Background, &["SetState"]),
     (

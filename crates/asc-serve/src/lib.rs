@@ -71,6 +71,7 @@ pub mod refauthz;
 pub mod refpolicy;
 pub mod reftl;
 pub mod registry;
+pub mod releases;
 pub mod review;
 pub mod secretscan;
 pub mod seeds;
@@ -344,6 +345,10 @@ pub fn build_grpc(ext: &Extensions, authorizer: Arc<dyn Authorizer>, info: Serve
             )
             .add_service(
                 stats::rpc::InsightsService::new(h.clone(), authorizer.clone(), info.clone())
+                    .into_service(),
+            )
+            .add_service(
+                releases::rpc::ReleasesService::new(h.clone(), authorizer.clone(), info.clone())
                     .into_service(),
             )
             .add_service(
