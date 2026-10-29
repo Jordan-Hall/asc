@@ -747,7 +747,7 @@ async fn an_author_and_an_agent_cannot_approve_and_an_old_verdict_of_either_does
     );
 }
 
-async fn set_trunk_policy(f: &Fx, toml: &str) {
+pub(crate) async fn set_trunk_policy(f: &Fx, toml: &str) {
     use asc_core::id::RefTarget;
     use asc_store::refs::{Actor, Expect, RefTxn, RefUpdate, Refs as _};
     let cs = commit(&f.e, &[], &[(".asc/policy.toml", toml.as_bytes())]).await;
@@ -952,4 +952,30 @@ async fn marking_a_suggestion_applied_needs_a_version_that_holds_it() {
     .await;
     add_version(&f, 1, 4, right, "44:carol").await;
     assert!(mark(4).await.is_ok());
+}
+
+#[tokio::test]
+async fn the_policy_can_stop_approvals_carrying_over_a_restack() {
+    let f = fx().await;
+    set_trunk_policy(
+        &f,
+        "version = 1
+[roles]
+maintainer = [\"user:a\"]
+[review]
+keep_approvals_on_restack = false
+",
+    )
+    .await;
+    // Versions 1 and 2 of change 1 are the same changeset, which carries over by default.
+    let r = approve(&f, CAROL, 1, 1, wire::ApprovalState::Approved)
+        .await
+        .unwrap();
+    let a = &r.approvals[0];
+    assert!(!a.applies && !a.carried, "{a:?}");
+    // An approval of the newest version stands.
+    let r = approve(&f, CAROL, 1, 2, wire::ApprovalState::Approved)
+        .await
+        .unwrap();
+    assert!(r.approvals.iter().any(|a| a.version == 2 && a.applies));
 }

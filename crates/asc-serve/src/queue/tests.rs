@@ -864,3 +864,35 @@ async fn an_entry_carries_the_hub_id_of_the_person_who_queued_it_and_none_for_a_
     ids.sort();
     assert_eq!(ids, [("carol".to_owned(), 44), ("dave".to_owned(), 0)]);
 }
+
+#[tokio::test]
+async fn a_stack_longer_than_the_policy_allows_is_not_queued() {
+    let f = fx().await;
+    crate::review::tests_brief::set_trunk_policy(
+        &f,
+        "version = 1
+[roles]
+maintainer = [\"user:a\"]
+[stacks]
+max_depth = 1
+",
+    )
+    .await;
+    // Change 2 sits on change 1: its stack has two changes.
+    sqlx::query("UPDATE change_versions SET parent_change = $1 WHERE change = $2")
+        .bind(crate::review::tests::cid(1).as_bytes().to_vec())
+        .bind(crate::review::tests::cid(2).as_bytes().to_vec())
+        .execute(f.reg.pool())
+        .await
+        .unwrap();
+    let (q, _v) = svc(&f);
+    let err = enqueue(&q, CAROL, 2).await.unwrap_err();
+    assert_eq!(err.code(), Code::FailedPrecondition);
+    assert!(
+        err.message().contains("QUEUE_STACK_TOO_LONG"),
+        "{}",
+        err.message()
+    );
+    // One change is within the limit.
+    assert!(enqueue(&q, CAROL, 1).await.is_ok());
+}
