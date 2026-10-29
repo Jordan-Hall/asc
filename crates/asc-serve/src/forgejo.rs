@@ -8,11 +8,11 @@
 //! Everything Forgejo returns is untrusted: bodies are size-capped, identities are validated, and
 //! any failure to get a clear "yes" is a refusal.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::future::Future;
 use std::path::Path as FsPath;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use asc_core::id::{ChangesetId, RefTarget};
@@ -1720,6 +1720,71 @@ pub trait BridgeHold: Send + Sync {
         repo: &Arc<crate::registry::RepoEntry>,
         items: &[(String, ChangesetId)],
     ) -> Result<(), String>;
+
+    /// Removes the named refs a [`hold`](Self::hold) made; a ref that is already gone is no error.
+    async fn release(
+        &self,
+        repo: &Arc<crate::registry::RepoEntry>,
+        names: &[String],
+    ) -> Result<(), String>;
+
+    /// The names of the refs under [`HOLD_PREFIX`] now in the repository's git directory.
+    async fn held(&self, repo: &Arc<crate::registry::RepoEntry>) -> Result<Vec<String>, String>;
+}
+
+/// The ref namespace of the holds of a submit in the forge's git directory.
+pub const HOLD_PREFIX: &str = "refs/asc/for/";
+
+/// How long a hold ref may stay in the forge's git directory, unclaimed by any submit this process
+/// is running, before [`ForgejoHooks::sweep_orphans`] removes it.
+pub const HOLD_TTL: Duration = Duration::from_secs(15 * 60);
+
+/// How often the background sweep runs.
+const HOLD_SWEEP_EVERY: Duration = Duration::from_secs(5 * 60);
+
+/// The holds the submits running in this process own: which refs each operation made, and how many
+/// operations name each ref (the same changeset can be submitted twice at once, and the ref is
+/// named by the changeset), plus when a sweep first saw each unowned ref.
+#[derive(Default)]
+struct HoldBook {
+    by_op: HashMap<Uuid, (RepoName, Vec<String>)>,
+    live: HashMap<(String, String), usize>,
+    seen: HashMap<(String, String), Instant>,
+}
+
+impl HoldBook {
+    fn claim(&mut self, op: Uuid, repo: &RepoName, names: &[String]) {
+        for n in names {
+            *self
+                .live
+                .entry((repo.as_str().to_owned(), n.clone()))
+                .or_default() += 1;
+        }
+        let e = self
+            .by_op
+            .entry(op)
+            .or_insert_with(|| (repo.clone(), Vec::new()));
+        e.1.extend(names.iter().cloned());
+    }
+
+    /// Gives up what `op` claimed; returns the repository and the refs no other operation names.
+    fn unclaim(&mut self, op: Uuid) -> Option<(RepoName, Vec<String>)> {
+        let (repo, names) = self.by_op.remove(&op)?;
+        let mut free = Vec::new();
+        for n in names {
+            let key = (repo.as_str().to_owned(), n.clone());
+            match self.live.get_mut(&key) {
+                Some(c) if *c > 1 => *c -= 1,
+                _ => {
+                    self.live.remove(&key);
+                    if !free.contains(&n) {
+                        free.push(n);
+                    }
+                }
+            }
+        }
+        Some((repo, free))
+    }
 }
 
 /// Where the git layer, which starts after the forge hooks, hands them its [`BridgeHold`].
@@ -1740,6 +1805,7 @@ pub struct ForgejoHooks {
     ids: GitIds,
     bridge_promote: bool,
     bridge: BridgeSlot,
+    holds: Mutex<HoldBook>,
 }
 
 impl ForgejoHooks {
@@ -1753,7 +1819,105 @@ impl ForgejoHooks {
             ids,
             bridge_promote: false,
             bridge: BridgeSlot::default(),
+            holds: Mutex::default(),
         }
+    }
+
+    fn book(&self) -> std::sync::MutexGuard<'_, HoldBook> {
+        self.holds.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Removes the hold refs the submit `op` made and no other running submit needs. Idempotent:
+    /// proc-receive calls it when the forge has answered, and `abort` calls it again.
+    async fn release_holds(&self, op: Uuid) {
+        let Some(hold) = self.bridge.0.get() else {
+            return;
+        };
+        let Some((repo, names)) = self.book().unclaim(op) else {
+            return;
+        };
+        if names.is_empty() {
+            return;
+        }
+        let released = async {
+            let entry = self.registry.open(&repo).await.map_err(|e| e.to_string())?;
+            hold.release(&entry, &names).await
+        }
+        .await;
+        if let Err(e) = released {
+            // The sweep removes what is left.
+            tracing::warn!(error = %e, repo = %repo, "the holds of a submit could not be removed");
+        }
+    }
+
+    /// Removes the hold refs of every repository that no submit of this process owns and that
+    /// sweeps have seen for `ttl` (the sweep of [`HOLD_TTL`], run in the background by
+    /// [`spawn_hold_sweep`]; `now` is the sweep's clock). Returns how many it removed.
+    pub async fn sweep_orphans(&self, now: Instant, ttl: Duration) -> usize {
+        let Some(hold) = self.bridge.0.get() else {
+            return 0;
+        };
+        let names: Vec<String> = match sqlx::query("SELECT name FROM repos")
+            .fetch_all(self.registry.pool())
+            .await
+        {
+            Ok(rows) => rows
+                .iter()
+                .filter_map(|r| r.try_get::<String, _>("name").ok())
+                .collect(),
+            Err(e) => {
+                tracing::warn!(error = %e, "hold sweep: the repositories cannot be listed");
+                return 0;
+            }
+        };
+        let mut removed = 0;
+        let mut listed: HashSet<(String, String)> = HashSet::new();
+        for name in names {
+            let Ok(repo) = RepoName::parse(&name) else {
+                continue;
+            };
+            let Ok(entry) = self.registry.open(&repo).await else {
+                continue;
+            };
+            // A repository without a git directory in the forge has nothing to sweep.
+            let Ok(held) = hold.held(&entry).await else {
+                continue;
+            };
+            let mut stale = Vec::new();
+            {
+                let mut book = self.book();
+                for h in held {
+                    let key = (name.clone(), h.clone());
+                    listed.insert(key.clone());
+                    if book.live.contains_key(&key) {
+                        book.seen.remove(&key);
+                        continue;
+                    }
+                    let first = *book.seen.entry(key).or_insert(now);
+                    if now.saturating_duration_since(first) >= ttl {
+                        stale.push(h);
+                    }
+                }
+            }
+            if stale.is_empty() {
+                continue;
+            }
+            match hold.release(&entry, &stale).await {
+                Ok(()) => {
+                    removed += stale.len();
+                    let mut book = self.book();
+                    for h in &stale {
+                        book.seen.remove(&(name.clone(), h.clone()));
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, repo = %name, "hold sweep: removal failed");
+                }
+            }
+        }
+        // Forget what is no longer there.
+        self.book().seen.retain(|k, _| listed.contains(k));
+        removed
     }
 
     /// The slot the git layer fills with the means to put commits in the forge's git directory.
@@ -1832,14 +1996,31 @@ impl PushHooks for ForgejoHooks {
                     tracing::warn!(error = %e, "proc-receive: the repository cannot be opened");
                     HookRejected("the push cannot be checked by the forge".into())
                 })?;
-                hold.hold(&entry, &items).await.map_err(|e| {
+                // Claimed before they exist, so a sweep never takes them from under the call.
+                let names: Vec<String> = items.iter().map(|(n, _)| n.clone()).collect();
+                self.book().claim(req.op_id, req.repo, &names);
+                if let Err(e) = hold.hold(&entry, &items).await {
                     tracing::warn!(error = %e, "proc-receive: the forge's git directory is not current");
-                    HookRejected("the forge's git directory cannot be made current".into())
-                })?;
+                    self.release_holds(req.op_id).await;
+                    return Err(HookRejected(
+                        "the forge's git directory cannot be made current".into(),
+                    ));
+                }
             }
         }
-        let opts = self.options(req).await?;
-        self.client.proc_receive(req.repo, &opts).await
+        // The forge has taken what it needs from the holds (the pull request's own ref) when it
+        // answers, and a refusal has no use for them: they go either way.
+        let answer = async {
+            let opts = self.options(req).await?;
+            self.client.proc_receive(req.repo, &opts).await
+        }
+        .await;
+        self.release_holds(req.op_id).await;
+        answer
+    }
+
+    async fn abort(&self, req: &HookRequest<'_>) {
+        self.release_holds(req.op_id).await;
     }
 
     fn outbox_effects(&self) -> &'static [&'static str] {
@@ -1858,6 +2039,27 @@ impl PushHooks for ForgejoHooks {
             ]
         }
     }
+}
+
+/// Runs [`ForgejoHooks::sweep_orphans`] every few minutes for as long as `hooks` lives: a crash
+/// between a hold and its release leaves a ref that nothing else removes.
+pub fn spawn_hold_sweep(hooks: &Arc<ForgejoHooks>) {
+    let Ok(rt) = tokio::runtime::Handle::try_current() else {
+        return;
+    };
+    let weak = Arc::downgrade(hooks);
+    rt.spawn(async move {
+        loop {
+            tokio::time::sleep(HOLD_SWEEP_EVERY).await;
+            let Some(hooks) = weak.upgrade() else {
+                return;
+            };
+            let n = hooks.sweep_orphans(Instant::now(), HOLD_TTL).await;
+            if n > 0 {
+                tracing::info!(removed = n, "hold sweep removed orphaned submit holds");
+            }
+        }
+    });
 }
 
 // ------------------------------------------------------------------------------ outbox
@@ -2014,13 +2216,15 @@ pub fn register(
     // With a forge attached, `RequestMerge` is the forge's queue and never lands by itself.
     request_merge::attach_queue(ext, Arc::new(hooks.clone()))
         .map_err(|e| ForgejoError::Config(e.into()))?;
+    let forge_hooks = Arc::new(
+        ForgejoHooks::new(hooks.clone(), registry.clone())
+            .with_bridge_promote(cfg.bridge_promote)
+            .with_bridge(slot.clone()),
+    );
     ext.pipeline
-        .set_push_hooks(Arc::new(
-            ForgejoHooks::new(hooks.clone(), registry.clone())
-                .with_bridge_promote(cfg.bridge_promote)
-                .with_bridge(slot.clone()),
-        ))
+        .set_push_hooks(forge_hooks.clone())
         .map_err(|_| ForgejoError::Config("push hooks are already set".into()))?;
+    spawn_hold_sweep(&forge_hooks);
     outbox.effects().register(Arc::new(PostReceiveEffect::new(
         hooks,
         registry.pool().clone(),
