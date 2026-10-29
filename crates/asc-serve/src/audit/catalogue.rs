@@ -64,6 +64,11 @@ pub const CATALOGUE: &[ActionInfo] = &[
     a("repo.deleted", "A repository was deleted.", &["name"]),
     a("repo.renamed", "A repository was renamed.", &["from", "to"]),
     a(
+        "repo.default_branch",
+        "The default branch (trunk) of a repository was changed.",
+        &["from", "to"],
+    ),
+    a(
         "settings.updated",
         "A setting of a repository, an owner or the server changed.",
         &["setting", "old", "new"],

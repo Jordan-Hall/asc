@@ -237,6 +237,17 @@ pub struct RealGit {
     depth: u32,
 }
 
+/// A command for the git that tests and tools compare asc with: the one `ASC_REAL_GIT` names
+/// (the pinned oracle, docs/git-fidelity.md), else the first `git` on `PATH`. Panics when there is
+/// none, so a test never runs against nothing. Test code spawns git through this, never through
+/// `Command::new("git")` (`build/lint/no-raw-git.sh`): a runner's own git moves on its own.
+pub fn pinned_command() -> Command {
+    RealGit::resolve(None, None)
+        .expect("a real git (ASC_REAL_GIT, else PATH)")
+        .command()
+        .expect("a git command")
+}
+
 impl RealGit {
     /// Resolves from the process environment (see [`Resolver::from_process`]).
     pub fn resolve(config: Option<PathBuf>, asc_home: Option<&Path>) -> Result<Self, RealGitError> {

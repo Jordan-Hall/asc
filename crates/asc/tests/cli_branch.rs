@@ -129,7 +129,7 @@ impl World {
     }
 
     fn gcmd(&self) -> Command {
-        let mut cmd = Command::new("git"); // lint:allow-raw-git
+        let mut cmd = asc_git::realgit::pinned_command(); // lint:allow-raw-git
         cmd.current_dir(&self.git)
             .env("HOME", &self.f.sandbox.user)
             .env("USERPROFILE", &self.f.sandbox.user)

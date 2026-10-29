@@ -29,7 +29,7 @@ fn run(cmd: &mut Command) -> Out {
 
 /// Real git in `dir`, hermetic and with the fixture's commit identity.
 fn git(dir: &Path, home: &Path, args: &[&str]) -> Out {
-    run(Command::new("git") // lint:allow-raw-git
+    run(asc_git::realgit::pinned_command()
         .current_dir(dir)
         .env("HOME", home)
         .env("USERPROFILE", home)

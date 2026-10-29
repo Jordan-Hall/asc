@@ -143,7 +143,8 @@ async fn send_end(out: &Out, id: u32, status: &Status) {
     let end = End {
         code: status.code() as i32,
         message,
-        error_detail: Bytes::copy_from_slice(status.details()),
+        // The frame carries the bare `ErrorDetail`, whatever the trailer wraps it in.
+        error_detail: asc_rpc::server::status_error_detail_bytes(status),
     };
     let _ = out
         .send(BridgeFrame {
