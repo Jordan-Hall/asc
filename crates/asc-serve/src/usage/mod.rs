@@ -5,6 +5,7 @@
 //! the subject (see [`crate::settings::access`]); every query here is scoped to one owner and
 //! takes the owner as a bound parameter, never as part of the SQL text.
 
+pub mod meter;
 pub mod rpc;
 pub mod store;
 

@@ -97,7 +97,8 @@ impl Store {
             "INSERT INTO usage_counters (repo, day, storage_bytes, bandwidth_bytes, byo_storage) \
              VALUES ($1, $2, $3, $4, $5) ON CONFLICT (repo, day) DO UPDATE SET \
              storage_bytes = CASE WHEN $6 = 1 THEN $3 ELSE usage_counters.storage_bytes END, \
-             bandwidth_bytes = usage_counters.bandwidth_bytes + $4, \
+             bandwidth_bytes = CASE WHEN usage_counters.bandwidth_bytes > 9223372036854775807 - $4 \
+             THEN 9223372036854775807 ELSE usage_counters.bandwidth_bytes + $4 END, \
              byo_storage = CASE WHEN $6 = 1 THEN $5 ELSE usage_counters.byo_storage END",
         )
         .bind(repo.to_owned())
@@ -205,9 +206,11 @@ impl Store {
                 x.storage_bytes = bytes;
             }
         }
+        // Rows, not SUM: counters saturate at the largest signed number, and a sum of saturated
+        // rows would overflow the database's integer.
         for r in sqlx::query(
-            "SELECT repo, CAST(SUM(bandwidth_bytes) AS BIGINT) AS b FROM usage_counters \
-             WHERE SUBSTR(repo, 1, $2) = $1 AND day >= $3 AND day <= $4 GROUP BY repo",
+            "SELECT repo, bandwidth_bytes AS b FROM usage_counters \
+             WHERE SUBSTR(repo, 1, $2) = $1 AND day >= $3 AND day <= $4",
         )
         .bind(pre.clone())
         .bind(len)
@@ -218,8 +221,9 @@ impl Store {
         {
             let repo: String = r.try_get("repo")?;
             let b = u(r.try_get("b")?);
-            t.bandwidth_bytes += b;
-            slot(&mut repos, &repo).bandwidth_bytes = b;
+            t.bandwidth_bytes = t.bandwidth_bytes.saturating_add(b);
+            let x = slot(&mut repos, &repo);
+            x.bandwidth_bytes = x.bandwidth_bytes.saturating_add(b);
         }
 
         // Agent minutes: the running time of runs that started in the period.
