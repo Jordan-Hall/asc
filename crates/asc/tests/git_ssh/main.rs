@@ -78,6 +78,14 @@ exit 1
             .port()
     }
 
+    /// Whether the log of a server that exited at once says one of its ports was taken.
+    pub fn bind_race(log: &str) -> bool {
+        let log = log.to_lowercase();
+        log.contains("address already in use")
+            || log.contains("address in use")
+            || log.contains("transport error")
+    }
+
     pub fn fwd(p: &Path) -> String {
         p.to_string_lossy().replace('\\', "/")
     }
@@ -511,7 +519,23 @@ exit 1
 
     impl Stack {
         /// `ssh` is extra lines of `[ssh]`, `extra` further tables.
+        ///
+        /// The ports are picked by binding port 0 and letting go, so another test of this binary
+        /// (or the source port of one of its own connections) can take one before the server
+        /// binds it. The server then exits at once with "Address already in use"; that, and only
+        /// that, is tried again with new ports.
         pub fn start_with(ssh: &str, extra: &str) -> Self {
+            let mut attempt = 1;
+            loop {
+                match Self::start_once(ssh, extra) {
+                    Ok(stack) => return stack,
+                    Err(log) if attempt < 5 && bind_race(&log) => attempt += 1,
+                    Err(log) => panic!("asc serve exited early: {log}"),
+                }
+            }
+        }
+
+        fn start_once(ssh: &str, extra: &str) -> Result<Self, String> {
             let dir = tempfile::tempdir().unwrap();
             let port = free_port();
             let admin_port = free_port();
@@ -566,8 +590,8 @@ exit 1
                 .stdout(Stdio::from(log.try_clone().unwrap()))
                 .stderr(Stdio::from(log));
             stack.child = Some(cmd.spawn().expect("spawn asc serve"));
-            stack.wait_ready();
-            stack
+            stack.wait_ready()?;
+            Ok(stack)
         }
 
         pub fn start() -> Self {
@@ -586,13 +610,14 @@ exit 1
             std::fs::read_to_string(self.dir.path().join("serve.log")).unwrap_or_default()
         }
 
-        fn wait_ready(&mut self) {
+        /// `Err` carries the log of a server that exited before it was ready.
+        fn wait_ready(&mut self) -> Result<(), String> {
             let end = Instant::now() + Duration::from_secs(90);
             loop {
                 if let Some(c) = self.child.as_mut()
                     && let Ok(Some(status)) = c.try_wait()
                 {
-                    panic!("asc serve exited early ({status}): {}", self.log());
+                    return Err(format!("({status}): {}", self.log()));
                 }
                 let http_up =
                     TcpStream::connect_timeout(&self.http_addr(), Duration::from_millis(200))
@@ -619,6 +644,7 @@ exit 1
             }
             #[cfg(feature = "git-ssh")]
             self.seed_known_hosts();
+            Ok(())
         }
 
         /// Writes the `known_hosts` file from `asc serve ssh host-key show`.
