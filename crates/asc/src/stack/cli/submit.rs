@@ -571,10 +571,10 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         .map_err(stack_err)?
         .trunk
         .ok_or_else(|| {
-            CliError::Fatal(
-                "asc: submit: the stack has no trunk (set asc.stack.trunk to a branch that exists)"
-                    .into(),
-            )
+            CliError::Fatal(format!(
+                "asc: submit: the stack has no trunk: asc.stack.trunk is {:?} and no such branch exists here (set it to the branch the server calls its default; a clone sets it)",
+                l.env.trunk_names()
+            ))
         })?;
     let trunk = l
         .env
