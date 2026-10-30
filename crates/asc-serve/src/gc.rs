@@ -592,7 +592,7 @@ impl GcService {
             pool: pool.clone(),
         };
         let extra = self.hooks.gc_roots().all();
-        Collector {
+        let report = Collector {
             ns: &ns,
             objects: &*entry.objects,
             refs: &roots,
@@ -602,7 +602,17 @@ impl GcService {
             cfg: &self.cfg,
         }
         .collect(now, dry_run, &fence)
-        .await
+        .await?;
+        // A purge means the bytes must go. A purged object that sat in a pack is only forgotten
+        // by the sweep; rewrite the packs now rather than wait for half of one to die.
+        if report.sweep.purged > 0
+            && !dry_run
+            && entry.objects.pack_layer().is_some()
+            && let Err(e) = entry.objects.pack_compact_all(&fence, now).await
+        {
+            tracing::warn!(repo = %name, error = %e, "compacting packs after a purge failed");
+        }
+        Ok(report)
     }
 
     /// Collects every repository in turn. One repository failing does not stop the others.
@@ -699,6 +709,31 @@ mod tests {
 
     fn name() -> RepoName {
         RepoName::parse("o/r").unwrap()
+    }
+
+    /// As `setup`, with packing on and no minimum age, so a pack run packs everything.
+    async fn setup_packed() -> Setup {
+        let reg = registry().await;
+        assert!(reg.set_pack_config(asc_store::pack::PackConfig {
+            enabled: true,
+            min_age: Duration::ZERO,
+            min_loose: 1,
+            min_batch: 1,
+            ..Default::default()
+        }));
+        let entry = repo(&reg).await;
+        let hooks = Arc::new(PipelineHooks::default());
+        let svc = Arc::new(GcService::new(
+            reg.clone(),
+            hooks.clone(),
+            GcConfig::default(),
+        ));
+        Setup {
+            reg,
+            entry,
+            hooks,
+            svc,
+        }
     }
 
     async fn set_ref(s: &Setup, name: &str, to: Option<ChangesetId>) {
@@ -1099,6 +1134,71 @@ mod tests {
             !has(&s, ObjKey::Changeset(secret)).await,
             "unreachable and old: {r}"
         );
+    }
+
+    #[tokio::test]
+    async fn packed_objects_are_swept_and_the_rest_of_the_pack_stays_readable() {
+        let s = setup_packed().await;
+        let keep = commit(&s.entry, &[], &[("a", b"kept")]).await;
+        let lost = commit(&s.entry, &[], &[("b", b"lost")]).await;
+        set_ref(&s, "refs/heads/master", Some(keep)).await;
+        let t1 = SystemTime::now() + D15;
+        let packs = crate::pack_service::PackService::new(s.reg.clone(), s.hooks.clone());
+        let packed = packs.run_repo(&name(), t1, true).await.unwrap();
+        assert!(packed.packed >= 6, "{packed:?}");
+        assert_eq!(packed.loose_deleted, packed.packed);
+
+        s.svc.run_repo(&name(), t1, false).await.unwrap();
+        let second = s.svc.run_repo(&name(), t1 + H25, false).await.unwrap();
+        assert_eq!(second.sweep.deleted, 3, "{second}");
+        assert!(!has(&s, ObjKey::Changeset(lost)).await);
+        assert!(!has(&s, ObjKey::File(FileId::of(b"lost"))).await);
+        assert!(has(&s, ObjKey::Changeset(keep)).await);
+        assert!(has(&s, ObjKey::File(FileId::of(b"kept"))).await);
+        // The engine still reads what is left, through the pack.
+        let cs = s.entry.backend.engine().get_changeset(keep).await.unwrap();
+        s.entry.backend.engine().get_tree(cs.root).await.unwrap();
+        assert!(packs.verify(&name()).await.unwrap().problems.is_empty());
+        // The pack now holds dead bytes; the next run compacts it (the half-live rule or a
+        // purge), and the survivors are still there after.
+        let status = packs.status(&name()).await.unwrap();
+        assert!(status.dead_bytes > 0);
+        packs.compact_all(&name(), t1 + H25).await.unwrap();
+        assert_eq!(packs.status(&name()).await.unwrap().dead_bytes, 0);
+        assert!(has(&s, ObjKey::Changeset(keep)).await);
+        assert!(packs.verify(&name()).await.unwrap().problems.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_purge_that_swept_packed_bytes_compacts_their_pack_at_once() {
+        struct Src(Vec<ObjKey>);
+        #[async_trait]
+        impl GcRootSource for Src {
+            async fn roots(&self, _: &[u8]) -> Result<Vec<ObjKey>, GcError> {
+                Ok(Vec::new())
+            }
+            async fn purged(&self, _: &[u8]) -> Result<Vec<ObjKey>, GcError> {
+                Ok(self.0.clone())
+            }
+        }
+        let s = setup_packed().await;
+        let a = commit(&s.entry, &[], &[("a", b"first")]).await;
+        let secret = FileId::of(b"purge me please");
+        commit(&s.entry, &[], &[("b", b"purge me please")]).await;
+        set_ref(&s, "refs/heads/master", Some(a)).await;
+        s.hooks
+            .gc_roots()
+            .register(Arc::new(Src(vec![ObjKey::File(secret)])));
+        let t1 = SystemTime::now() + D15;
+        let packs = crate::pack_service::PackService::new(s.reg.clone(), s.hooks.clone());
+        packs.run_repo(&name(), t1, true).await.unwrap();
+        // A purge needs no second mark: the first sweep deletes the object.
+        let r = s.svc.run_repo(&name(), t1, false).await.unwrap();
+        assert!(r.sweep.purged >= 1, "{r}");
+        assert!(!has(&s, ObjKey::File(secret)).await);
+        // The purge did not wait for half the pack to die.
+        assert_eq!(packs.status(&name()).await.unwrap().dead_bytes, 0);
+        assert!(has(&s, ObjKey::Changeset(a)).await);
     }
 
     #[tokio::test]

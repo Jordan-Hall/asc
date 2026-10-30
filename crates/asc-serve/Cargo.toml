@@ -100,6 +100,8 @@ windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem"] }
 rustix = { workspace = true, features = ["process"] }
 
 [dev-dependencies]
+# `run_index_suite`: the pack index contract, run against the SQL index.
+asc-store = { workspace = true, features = ["testkit"] }
 tempfile = { workspace = true }
 rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "ring", "pem"] }
 # Builds gzip request bodies for the upload-pack tests (U81); the backend `zip` already uses.

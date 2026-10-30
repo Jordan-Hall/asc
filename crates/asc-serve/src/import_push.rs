@@ -35,7 +35,7 @@ use asc_core::object::{Change, Changeset, Kind, Tree};
 use asc_core::path::{Name, RefName, RepoPath, casefold, checkout_safe, windows_valid};
 use asc_engine::derive::{self, GitMapRow, GitMapSink};
 use asc_engine::graph::Graph;
-use asc_git::import::{ImportError, ImportMap, ImportPolicy, ImportReport, Importer, Tip};
+use asc_git::import::{ImportError, ImportMap, ImportReport, Importer, Tip};
 use asc_git::odb::{Odb, OdbError};
 use asc_rpc::IdMode;
 use asc_rpc::errors::{ErrorInfo, RpcError};
@@ -908,7 +908,7 @@ async fn import_tips(
                 entry.objects.clone(),
                 &odb,
                 &map,
-                ImportPolicy::default(),
+                entry.import,
             );
             importer.import_commits(&tips).await.map_err(import_status)
         })

@@ -60,6 +60,10 @@ pub mod objects;
 pub mod obs;
 pub mod org;
 pub mod outbox;
+pub mod pack_service;
+pub mod pack_sql;
+#[cfg(test)]
+mod pack_tests;
 pub mod pagetoken;
 pub mod policy;
 pub mod profile;
@@ -561,6 +565,8 @@ pub async fn serve(
     let pool = migrate::connect(db, DB_CONNECTIONS).await?;
     migrate::ensure_current(&pool).await?;
     let registry = Arc::new(Registry::new(pool.clone(), store)?);
+    registry.set_pack_config(cfg.pack.to_config()?);
+    registry.set_import_policy(cfg.import.to_policy()?);
     let metrics = Arc::new(http::Metrics::new());
     let outbox = Arc::new(outbox::Outbox::new(
         pool.clone(),
@@ -931,6 +937,14 @@ pub async fn serve(
     } else {
         None
     };
+    // Packing writes data in a new form, so it runs only when `[pack] enabled` is set.
+    let packer = cfg.pack.enabled.then(|| {
+        Arc::new(pack_service::PackService::new(
+            registry.clone(),
+            ext.pipeline.clone(),
+        ))
+        .spawn_worker(std::time::Duration::from_secs(cfg.pack.repack_interval.0))
+    });
     let served = server
         .add_routes(routes)
         .serve_with_shutdown(cfg.listen, async move {
@@ -969,6 +983,9 @@ pub async fn serve(
     }
     if let Some(c) = collector {
         c.abort();
+    }
+    if let Some(p) = packer {
+        p.abort();
     }
     admin.abort();
     match &served {

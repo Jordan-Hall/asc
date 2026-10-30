@@ -32,6 +32,8 @@ async fn run(
         window: 3,
         batch: 2,
         workers: 2,
+        batch_commits: 2,
+        batch_bytes: 1 << 20,
     };
     let mut importer = Importer::new(&engine, objects, &odb, map, policy);
     importer
