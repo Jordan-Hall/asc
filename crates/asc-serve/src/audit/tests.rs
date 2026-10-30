@@ -1231,6 +1231,19 @@ async fn the_hubs_claim_decides_the_scope_for_the_person_and_nothing_wider() {
         ),
         Ok(1)
     );
+    // The list says how long events are kept, so a page can show it.
+    let kept = list(
+        scope(Repo, "acme/app"),
+        "acme/app",
+        "7:alice",
+        Role::Admin,
+        now,
+    )
+    .await
+    .unwrap()
+    .into_inner()
+    .retention_days;
+    assert_eq!(kept, super::DEFAULT_RETENTION_DAYS);
     assert_eq!(
         count(
             list(

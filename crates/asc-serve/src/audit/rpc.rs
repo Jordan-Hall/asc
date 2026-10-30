@@ -350,6 +350,7 @@ impl AuditApi for AuditService {
                 .next
                 .map(|n| crate::pagetoken::seal(&page_scope, &page_who, &n.to_string()))
                 .unwrap_or_default(),
+            retention_days: self.audit.cfg.retention_days,
         }))
     }
 
