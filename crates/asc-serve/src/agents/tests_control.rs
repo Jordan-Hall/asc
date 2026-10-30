@@ -556,6 +556,14 @@ async fn limits_are_edited_on_a_live_run_never_above_the_policy_cap() {
         )
         .await
         .unwrap();
+    // The run's token is made when it starts; edit the limits only after, so the edit reaches it.
+    for _ in 0..200 {
+        let row = w.hub.core.runs.get(run.id).await.unwrap().unwrap();
+        if !row.token_id.is_empty() || !row.state.is_active() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
     let set = |who: &str, l: wire::AgentBudgetLimits| {
         let r = w.request(
             wire::SetAgentRunLimitsRequest {

@@ -354,3 +354,58 @@ async fn one_at_a_time_one_a_day_expiry_and_delete() {
     assert_eq!(del(5).await.unwrap_err().code(), Code::NotFound);
     assert_eq!(f.audit.of("export.deleted").len(), 1);
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_download_counts_as_bandwidth_of_the_persons_export_pseudo_repository() {
+    use crate::settings::access::Subject;
+    let f = fx().await;
+    let usage = crate::usage::UsageHub::new(
+        f.k.pool.clone(),
+        crate::usage::UsageConfig::default(),
+        f.audit.clone(),
+    );
+    f.hub.set_usage(usage.clone());
+    let job = f
+        .svc
+        .request_export(me(
+            &f,
+            wire::RequestExportRequest {},
+            "alice",
+            Role::Write,
+            1,
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .job
+        .unwrap();
+    let j = ready(&f, &job.id).await;
+    let bytes = download(&f, &job.id, "alice").await.unwrap();
+    assert_eq!(bytes.len() as i64, j.size);
+    let now = crate::ai::clock::now();
+    let want = u64::try_from(j.size).unwrap();
+    for _ in 0..100 {
+        let t = usage
+            .totals(
+                &Subject::User("alice".into()),
+                crate::usage::Period::parse("", now).unwrap(),
+                now,
+            )
+            .await
+            .unwrap();
+        if t.bandwidth_bytes >= want {
+            assert_eq!(t.bandwidth_bytes, want);
+            assert_eq!(
+                t.repos
+                    .iter()
+                    .find(|r| r.repo == "alice/.data-export")
+                    .unwrap()
+                    .bandwidth_bytes,
+                want
+            );
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("the download was not counted");
+}

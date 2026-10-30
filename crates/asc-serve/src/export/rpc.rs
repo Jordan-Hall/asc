@@ -178,6 +178,17 @@ impl DataExport for ExportService {
                 }
             }
         });
+        // The bytes sent are counted as they are polled, so an abandoned download still counts.
+        if let Some(hub) = self.hub.usage.get() {
+            return Ok(Response::new(Box::pin(crate::usage::meter::Metered::new(
+                Box::pin(s),
+                hub.clone(),
+                format!("{login}/.data-export"),
+                |r: &Result<wire::ExportChunk, Status>| {
+                    r.as_ref().map_or(0, |c| c.data.len() as u64)
+                },
+            ))));
+        }
         Ok(Response::new(Box::pin(s)))
     }
 

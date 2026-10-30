@@ -245,6 +245,8 @@ pub struct ExportHub {
     dir: PathBuf,
     pub(crate) ops: Ops,
     pub(crate) audit: Arc<dyn Audit>,
+    /// Counts the bytes a download sends, under `<login>/.data-export`.
+    pub(crate) usage: OnceLock<Arc<crate::usage::UsageHub>>,
 }
 
 /// The place the single [`ExportHub`] is registered.
@@ -285,7 +287,13 @@ impl ExportHub {
             pool,
             dir,
             audit,
+            usage: OnceLock::new(),
         })
+    }
+
+    /// Has downloads counted as bandwidth of the person's `.data-export` pseudo-repository.
+    pub fn set_usage(&self, hub: Arc<crate::usage::UsageHub>) {
+        let _ = self.usage.set(hub);
     }
 
     pub fn path(&self, id: &str) -> PathBuf {
