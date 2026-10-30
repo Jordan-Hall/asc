@@ -768,11 +768,11 @@ impl Reviews {
         })
     }
 
-    /// A reviewer's verdict on one version stops counting because a maintainer dismissed it: the
+    /// A reviewer's verdict on one version stops counting because someone allowed to dismissed it: the
     /// approval or request for changes of that reviewer on `req.version` that counts or blocks now
     /// becomes a dismissal (a verdict on another version, or one that does neither, is left as it
-    /// is). Only a repository admin may, and
-    /// not the author of the change nor an agent: those could clear the way to their own merge.
+    /// is). Who may is `[review] dismiss` (an admin by default); whatever the level, not the author
+    /// of the change nor an agent: those could clear the way to their own merge.
     /// The reviewer is named by login, by the hub's user id, or both.
     #[allow(clippy::too_many_arguments)]
     async fn dismiss_verdicts(
@@ -788,10 +788,33 @@ impl Reviews {
         if !req.reviewer.is_empty() && !super::valid_handle(&req.reviewer) {
             return Err(Status::invalid_argument("a reviewer is a login"));
         }
-        if !can_admin {
-            return Err(Status::permission_denied(
-                "only a maintainer of the repository dismisses another person's verdict",
-            ));
+        // Who may dismiss is the repository's choice (`[review] dismiss`): admin by default. The
+        // call itself already needs write access.
+        let (level, maintainer) = match &*RepoView::new(self.registry.clone()).policy(entry).await?
+        {
+            crate::agents::repo::PolicyState::Valid(p) => (
+                p.review.dismiss,
+                p.is_maintainer(&asc_core::policy::Who::new(
+                    asc_core::policy::Kind::User,
+                    by.to_owned(),
+                )),
+            ),
+            _ => (asc_core::policy::DismissBy::Admin, false),
+        };
+        let allowed = match level {
+            asc_core::policy::DismissBy::Admin => can_admin,
+            asc_core::policy::DismissBy::Maintainer => can_admin || maintainer,
+            asc_core::policy::DismissBy::Write => true,
+        };
+        if !allowed {
+            return Err(Status::permission_denied(format!(
+                "this repository lets only {} dismiss another person's verdict",
+                match level {
+                    asc_core::policy::DismissBy::Admin => "an admin",
+                    asc_core::policy::DismissBy::Maintainer => "an admin or a maintainer",
+                    asc_core::policy::DismissBy::Write => "a writer",
+                }
+            )));
         }
         let e = self.eligibility(entry, change, vs).await?;
         if e.authors.contains(by) || self.agent_handles(entry).await?.contains(by) {

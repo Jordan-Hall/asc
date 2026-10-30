@@ -1196,3 +1196,118 @@ async fn a_dismissal_is_for_one_version_and_a_standing_verdict_on_another_still_
         "the standing verdict on version 3 still counts: {done:?}"
     );
 }
+
+async fn root_blocks_change_2(f: &Fx) {
+    f.review
+        .record_approval(req(
+            wire::RecordApprovalRequest {
+                repo: repo_ref(),
+                change: cbytes(2),
+                version: 0,
+                state: wire::ApprovalState::ChangesRequested as i32,
+                ..Default::default()
+            },
+            ADMIN,
+            true,
+        ))
+        .await
+        .unwrap();
+}
+
+async fn dismiss_root_on_2(f: &Fx, token: &str) -> Result<(), tonic::Status> {
+    f.review
+        .record_approval(req(
+            wire::RecordApprovalRequest {
+                repo: repo_ref(),
+                change: cbytes(2),
+                version: 1,
+                state: wire::ApprovalState::Dismissed as i32,
+                reviewer: "root".into(),
+                reviewer_id: 0,
+            },
+            token,
+            true,
+        ))
+        .await
+        .map(|_| ())
+}
+
+#[tokio::test]
+async fn the_policy_chooses_who_dismisses_another_persons_verdict() {
+    let policy = |level: &str, maintainer: &str| {
+        format!(
+            "version = 1\n[roles]\nmaintainer = [\"user:{maintainer}\"]\n[review]\ndismiss = \"{level}\"\n"
+        )
+    };
+    // The default is an admin: carol (write) is refused, as without any policy.
+    let f = fx().await;
+    root_blocks_change_2(&f).await;
+    crate::review::tests_brief::set_trunk_policy(&f, &policy("admin", "dave")).await;
+    assert_eq!(
+        dismiss_root_on_2(&f, CAROL).await.unwrap_err().code(),
+        Code::PermissionDenied
+    );
+    // "maintainer": a member of the role may, a plain writer may not.
+    let f = fx().await;
+    root_blocks_change_2(&f).await;
+    crate::review::tests_brief::set_trunk_policy(&f, &policy("maintainer", "dave")).await;
+    assert_eq!(
+        dismiss_root_on_2(&f, CAROL).await.unwrap_err().code(),
+        Code::PermissionDenied
+    );
+    let f = fx().await;
+    root_blocks_change_2(&f).await;
+    crate::review::tests_brief::set_trunk_policy(&f, &policy("maintainer", "carol")).await;
+    dismiss_root_on_2(&f, CAROL).await.unwrap();
+    // "write": any writer may.
+    let f = fx().await;
+    root_blocks_change_2(&f).await;
+    crate::review::tests_brief::set_trunk_policy(&f, &policy("write", "dave")).await;
+    dismiss_root_on_2(&f, CAROL).await.unwrap();
+    // Whatever the level, the author of the change may not: alice wrote version 1 of change 1.
+    let f = fx().await;
+    root_blocks_change_2(&f).await;
+    f.review
+        .record_approval(req(
+            wire::RecordApprovalRequest {
+                repo: repo_ref(),
+                change: cbytes(1),
+                version: 0,
+                state: wire::ApprovalState::ChangesRequested as i32,
+                ..Default::default()
+            },
+            ADMIN,
+            true,
+        ))
+        .await
+        .unwrap();
+    crate::review::tests_brief::set_trunk_policy(&f, &policy("write", "dave")).await;
+    sqlx::query(
+        "INSERT INTO change_versions (ns, change, v, cs, parent_change, at, actor, op_id) \
+         SELECT ns, change, 3, cs, NULL, 1, '44:carol', $3 FROM change_versions \
+         WHERE ns = $1 AND change = $2 AND v = 2",
+    )
+    .bind(f.e.ns.as_bytes().to_vec())
+    .bind(cid(1).as_bytes().to_vec())
+    .bind(vec![1u8, 3, 5])
+    .execute(f.reg.pool())
+    .await
+    .unwrap();
+    let err = f
+        .review
+        .record_approval(req(
+            wire::RecordApprovalRequest {
+                repo: repo_ref(),
+                change: cbytes(1),
+                version: 2,
+                state: wire::ApprovalState::Dismissed as i32,
+                reviewer: "root".into(),
+                reviewer_id: 0,
+            },
+            CAROL,
+            true,
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::PermissionDenied, "{err:?}");
+}

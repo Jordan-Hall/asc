@@ -249,8 +249,9 @@ message PolicyTrunk { string branch = 1; uint32 require_approvals = 2; repeated 
 message PolicyAgents { repeated string default_scope = 1; repeated string denied_paths = 2;
   uint32 max_changes_per_run = 3; uint32 max_paths_per_run = 4;   // 0 = no limit
   bool enabled = 5; uint32 max_runtime_seconds = 6; uint64 max_tokens = 7; uint64 max_cost_micro_usd = 8; }   // 0 = no limit
-// `[review]`: who may approve and when an approval stands.
-message PolicyReview { bool author_may_approve = 1; bool human_approval = 2; bool keep_approvals_on_restack = 3; }
+// `[review]`: who may approve, when an approval stands, and who may dismiss another person's verdict
+// (`dismiss`: "admin" (default), "maintainer" or "write"; never an author or agent of the change).
+message PolicyReview { bool author_may_approve = 1; bool human_approval = 2; bool keep_approvals_on_restack = 3; string dismiss = 4; }
 // `[merge]` besides the strategy.
 message PolicyMerge { bool queue = 1; bool revalidate = 2; uint32 batch = 3; bool post_merge_checks = 4; }
 // `[stacks]`; 0 in `max_depth` and `cleanup_days` means no limit and the server's setting.

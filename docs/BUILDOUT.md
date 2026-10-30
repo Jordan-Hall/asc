@@ -609,6 +609,7 @@ They need no more than repo read and count one repository only. A forwarded clai
 | `[review] author_may_approve` | false | the author of a change may approve it |
 | `[review] human_approval` | true | an approval from an agent does not count |
 | `[review] keep_approvals_on_restack` | true | an approval carries to a newer version when no file's patch changed; false makes every approval stand for its own version only (enforced when verdicts are listed and by the gate) |
+| `[review] dismiss` | admin | who may dismiss another person's verdict on a change: `admin`, `maintainer` (an admin or a member of the `maintainer` role) or `write` (anyone with write access); never an author or agent of the change; a dismissal names the version |
 | `[merge] queue`, `revalidate` | false, true | as before |
 | `[merge] batch` | 1 | entries the queue tests and lands together, 1 to 20 (read by the queue worker of the host; recorded and returned here) |
 | `[merge] post_merge_checks` | false | the checks of the policy run again on the landed tip (recorded and returned; the host runs them) |
