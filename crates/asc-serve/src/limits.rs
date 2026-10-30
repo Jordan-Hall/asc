@@ -242,6 +242,7 @@ const TABLE: &[(&str, Class, &[&str])] = &[
             "Mergeability",
             "RequestMerge",
             "RestackChanges",
+            "AmendChange",
         ],
     ),
     ("Cloud", Class::Cheap, &["GetWorkspace", "ListWorkspaces"]),
@@ -447,7 +448,7 @@ const TABLE: &[(&str, Class, &[&str])] = &[
         ],
     ),
     ("AiKeyShares", Class::Expensive, &["ShareUsage"]),
-    ("Audit", Class::Cheap, &["List", "ListActions"]),
+    ("Audit", Class::Cheap, &["Append", "List", "ListActions"]),
     ("Audit", Class::Expensive, &["Export", "VerifyChain"]),
     (
         "Bridge",

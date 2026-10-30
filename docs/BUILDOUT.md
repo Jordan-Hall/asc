@@ -201,7 +201,8 @@ and evaluated through the API and the hub shows it; every key below is parsed st
 
 *Today:* an `asc audit:` line in the hub log. *Done when:* the append is in every mutating path, the chain verifies, the page filters and exports.
 
-- **RPCs** (`audit.proto`, `audit.v1`): `Audit.List`, `Export`, `VerifyChain`, `ListActions`.
+- **RPCs** (`audit.proto`, `audit.v1`): `Audit.List`, `Export`, `VerifyChain`, `ListActions`, `Append` (the host service only; `audit.append.v1`).
+- **Append.** The host application keeps settings asc does not see (who may register, the maintenance notice). It records a change of one with `Audit.Append` after the change is made: an action from the catalogue whose name starts with `host.` (`host.setting.updated`, `host.maintenance.updated`), the login of the person as `actor` and the host service as `on_behalf_of`, details cut to the action's allow-list, and the address of the person's request kept as a /24 or /48. Any other caller is `PERMISSION_DENIED`, any other action `INVALID_ARGUMENT`. The event is written to the instance log (and the repository's, when `repo` is set) in one transaction and returns its sequence number. It is not idempotent.
 - **Data:** `audit_events(scope_kind, scope_name, seq, id, time_ms, actor_kind, actor_name, on_behalf_kind, on_behalf_name, action, repo, target,
   outcome, request_id, remote_addr, details_json, prev_hash, hash)`; primary key `(scope_kind, scope_name, seq)`. Each event is written
   to every scope it belongs to (repository, owner, instance) in the caller's transaction. `hash = BLAKE3(prev_hash || canonical encoding)`.

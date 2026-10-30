@@ -42,6 +42,74 @@ fn db(e: AuditError) -> Status {
     crate::commit_graph_rpc::internal("audit", &e)
 }
 
+/// The coarse form of an address the host names: IPv4 to a /24, IPv6 to a /48; "" for anything else.
+fn coarse_addr(raw: &str) -> String {
+    match raw.trim().parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(a)) => {
+            let [x, y, z, _] = a.octets();
+            format!("{x}.{y}.{z}.0/24")
+        }
+        Ok(std::net::IpAddr::V6(a)) => {
+            let s = a.segments();
+            format!("{:x}:{:x}:{:x}::/48", s[0], s[1], s[2])
+        }
+        Err(_) => String::new(),
+    }
+}
+
+#[cfg(test)]
+pub(super) fn coarse_addr_for_tests(raw: &str) -> String {
+    coarse_addr(raw)
+}
+
+/// The event an `Append` request describes. The action must be one of the host's; the person is the actor and the host service
+/// the relay. The details are cut to the allow-list of the action when the event is written.
+fn host_event(msg: &wire::AppendAuditRequest) -> Result<NewEvent, Status> {
+    if !msg.action.starts_with(super::HOST_ACTION_PREFIX) || catalogue::info(&msg.action).is_none()
+    {
+        return Err(Status::invalid_argument(
+            "the action is not one the host service may append",
+        ));
+    }
+    let actor = msg.actor.trim();
+    if actor.is_empty() || actor.len() > 255 || actor.chars().any(char::is_control) {
+        return Err(Status::invalid_argument(
+            "the actor is a login of 1 to 255 bytes",
+        ));
+    }
+    if msg.target.len() > super::MAX_TARGET_BYTES || msg.details.len() > 32 {
+        return Err(Status::invalid_argument(
+            "the target or the details are too large",
+        ));
+    }
+    let outcome = match wire::AuditOutcome::try_from(msg.outcome) {
+        Ok(wire::AuditOutcome::Unspecified | wire::AuditOutcome::Success) => Outcome::Success,
+        Ok(wire::AuditOutcome::Denied) => Outcome::Denied,
+        Ok(wire::AuditOutcome::Failed) => Outcome::Failed,
+        Err(_) => return Err(Status::invalid_argument("unknown outcome")),
+    };
+    let mut event = NewEvent::new(&msg.action, Actor::new("user", actor))
+        .on_behalf_of(Actor::new("host", "host"))
+        .target(&msg.target)
+        .outcome(outcome)
+        .with_meta(super::meta::RequestMeta {
+            remote_addr: coarse_addr(&msg.remote_addr),
+            user_agent: msg.user_agent.clone(),
+            request_id: msg.request_id.clone(),
+        });
+    if !msg.repo.is_empty() {
+        let repo = RepoName::parse(&msg.repo)
+            .map_err(|_| Status::invalid_argument("the repository is owner/name"))?;
+        event = event.repo(repo.as_str());
+    }
+    let mut details: Vec<(&String, &String)> = msg.details.iter().collect();
+    details.sort();
+    for (k, v) in details {
+        event = event.detail(k, v.clone());
+    }
+    Ok(event)
+}
+
 /// The `Audit` service.
 pub struct AuditService {
     audit: Arc<Audit>,
@@ -448,6 +516,40 @@ impl AuditApi for AuditService {
             reason: v.reason,
             head_hash: Bytes::copy_from_slice(&v.head_hash),
         }))
+    }
+
+    async fn append(
+        &self,
+        request: Request<wire::AppendAuditRequest>,
+    ) -> Result<Response<wire::AppendAuditResponse>, Status> {
+        let (_, ext, msg) = request.into_parts();
+        let principal = self
+            .authorizer
+            .authenticate(ext.get::<Credential>())
+            .await?;
+        if actor_of(&principal.id).kind != "host" {
+            return Err(Status::permission_denied(
+                "only the host service appends to the audit log",
+            ));
+        }
+        let event = host_event(&msg)?;
+        let mut tx = store::begin(self.audit.registry.pool())
+            .await
+            .map_err(|e| db(e.into()))?;
+        let written = store::append_in_tx(&mut tx, &event)
+            .await
+            .map_err(|e| match e {
+                AuditError::Invalid(m) => {
+                    Status::invalid_argument(format!("invalid audit event: {m}"))
+                }
+                e => db(e),
+            })?;
+        tx.commit().await.map_err(|e| db(e.into()))?;
+        let seq = written
+            .iter()
+            .find(|(s, _)| s.kind == super::ScopeKind::Instance)
+            .map_or(0, |(_, n)| *n);
+        Ok(Response::new(wire::AppendAuditResponse { seq }))
     }
 
     async fn list_actions(
