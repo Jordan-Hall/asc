@@ -160,23 +160,14 @@ fn paste_token(
     }
 }
 
-/// The message of a command that needs a credential and may not ask for one: git's wording
-/// (`could not read Username for '<url>': terminal prompts disabled`) and what to do about it.
-pub fn cannot_ask(url: &Url) -> String {
+/// The message of a command that needs a credential and may not ask for one.
+pub fn cannot_ask(url: &Url, why: &str) -> String {
     format!(
-        "could not read Username for '{}': terminal prompts disabled. Authentication is required: set ASC_TOKEN to a personal access token, or store one with a git credential helper (`asc auth login --host {}`, or `git credential approve`), or run the command again in a terminal",
+        "authentication required for '{}' and {why}. Set ASC_TOKEN to a personal access token, \
+         or store one with a git credential helper (`asc auth login --host {}`, or \
+         `git credential approve`), or run the command again in a terminal",
         mask_url(url),
         origin_text(url)
-    )
-}
-
-/// The message when the server refused the credential `source` supplied: git's wording and
-/// how to sign in again.
-pub fn refused(url: &Url, source: &str, hub: &Url) -> String {
-    format!(
-        "Authentication failed for '{}': the credential from {source} was refused; sign in again with `asc auth login --host {}`",
-        mask_url(url),
-        origin_text(hub)
     )
 }
 
@@ -227,7 +218,7 @@ mod tests {
     fn origins_carry_no_user_or_path() {
         let u = Url::parse("https://u:p@hub.example:8443/o/r?x=1").unwrap();
         assert_eq!(origin_text(&u), "https://hub.example:8443");
-        let m = cannot_ask(&u);
+        let m = cannot_ask(&u, "no terminal is available");
         assert!(!m.contains('p') || !m.contains(":p@"));
         assert!(m.contains("ASC_TOKEN"));
         assert!(m.contains("credential helper"));
