@@ -96,7 +96,28 @@ impl UsageService {
         } else {
             Role::Admin
         };
-        self.gate.require(&caller, meta, subject, needed)
+        if let Some(a) = self.gate.allow(&caller, meta, subject, needed) {
+            return Ok(a);
+        }
+        // The site administrator reads any account's or organisation's usage; it is written down.
+        if matches!(subject, Subject::User(_) | Subject::Org(_))
+            && let Some(a) = self
+                .gate
+                .allow(&caller, meta, &Subject::Instance, Role::Admin)
+        {
+            self.hub
+                .audit
+                .record(Entry {
+                    owner: subject.audit_owner(),
+                    target: &subject.label(),
+                    on_behalf: a.relay.as_deref(),
+                    details: &[("scope", subject.label())],
+                    ..Entry::new("usage.admin.read", &a.id)
+                })
+                .await;
+            return Ok(a);
+        }
+        Err(Gate::denied())
     }
 
     async fn site_admin(

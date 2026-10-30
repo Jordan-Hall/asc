@@ -255,6 +255,11 @@ pub const CATALOGUE: &[ActionInfo] = &[
         &["target"],
     ),
     a(
+        "usage.admin.read",
+        "A site administrator read the usage of an account or organisation.",
+        &["scope"],
+    ),
+    a(
         "usage.quota.set",
         "The quota of an owner was set.",
         &[

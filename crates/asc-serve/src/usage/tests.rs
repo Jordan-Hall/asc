@@ -747,3 +747,65 @@ async fn counters_saturate_and_never_overflow() {
         u64::try_from(i64::MAX).unwrap() + 5
     );
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_site_administrator_reads_another_accounts_usage_and_it_is_audited() {
+    let f = fx().await;
+    seed(&f, clock::now()).await;
+    let alice = || get(owner(wire::OwnerKind::User, "alice"));
+    let r = f
+        .svc
+        .get_usage(as_admin(&f, alice(), 1))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(r.agent_minutes.unwrap().used, 90);
+    let spend = f
+        .svc
+        .list_spend(as_admin(
+            &f,
+            wire::ListSpendRequest {
+                owner: owner(wire::OwnerKind::User, "alice"),
+                group_by: 1,
+                since: 0,
+                until: 0,
+            },
+            2,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(spend.rows[0].group, "alice");
+    let rec = f.audit.of("usage.admin.read");
+    assert_eq!(rec.len(), 2);
+    assert_eq!(
+        (rec[0].1.as_str(), rec[0].2.as_deref(), rec[0].3.as_str()),
+        ("1:root", Some("host-service"), "user:alice")
+    );
+    // Not a lesser instance role, not another account, not a person's token.
+    let weak = claim(
+        req(alice(), "host-token", Some(&op(3))),
+        &f.k,
+        "1:root",
+        Role::Write,
+        "instance",
+    );
+    assert_eq!(
+        f.svc.get_usage(weak).await.unwrap_err().code(),
+        Code::PermissionDenied
+    );
+    assert_eq!(
+        f.svc
+            .get_usage(req(alice(), "bob-token", None))
+            .await
+            .unwrap_err()
+            .code(),
+        Code::PermissionDenied
+    );
+    // A person reading their own usage leaves no admin-read event.
+    f.svc
+        .get_usage(as_user(&f, alice(), "alice", Role::Read))
+        .await
+        .unwrap();
+    assert_eq!(f.audit.of("usage.admin.read").len(), 2);
+}

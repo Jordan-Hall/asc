@@ -680,6 +680,84 @@ SHA-256 and the https address the bytes are served from.
 - **Drafts.** `draft = true` keeps a release unpublished; only writers list, read or publish it.
 - Audit actions: `release.created`, `release.published`.
 
+## 33. Hub integration guide for sections 26 to 31
+
+How the hub calls these services. Every call is made with the hub's service credential (principal `host-service`) and, for a person, the
+forwarded claim (`asc-rpc::forwarded`): the person `<id>:<login>`, a role `read`, `write` or `admin`, and the subject the hub's own check
+produced. The claim is the whole of the caller's authority; a claim for another subject, a too-small role, a stale or unsigned claim is
+`PERMISSION_DENIED` (or `NOT_FOUND` for an id owned by someone else: key ids, session ids, export ids, share ids). Mutating calls carry
+`x-asc-op-id` (a UUID); a retry with the same id and the same person gets the first answer. No call returns a secret.
+
+| Subject | Hub check | Claim subject | Role |
+| --- | --- | --- | --- |
+| a person's own account | the signed-in user | `user:<login>` | read to look, write to change |
+| an organisation | owner of the organisation (members read) | `org:<name>` | admin to change, read to look |
+| the server | site administrator | `instance` | admin |
+
+Error codes you will meet: `PERMISSION_DENIED` (no right on the subject), `NOT_FOUND` (no such id, or not yours), `INVALID_ARGUMENT`
+(a bound or spelling; the message names the field), `FAILED_PRECONDITION` (a run is going, no such backup target, verify before restore,
+the export is not ready), `RESOURCE_EXHAUSTED` (one export per 24 hours, 50 shares per key, 100 agents per organisation, a quota),
+`ALREADY_EXISTS` (an agent name), `UNAVAILABLE` with "read-only" (a restore is staged: no ref moves until the restart).
+
+### Backups (`asc.v1.Backups`, subject `instance`, role admin)
+
+* Board load: `ListBackups{limit}` gives `backups[]` (state, size, verify, note, progress `done_bytes/total_bytes`, `restorable`), the `schedule`
+  (`next_run`, retention) and `status` (`overdue`, `last_success`, `running`, `restore_staged`, `configured`). Poll it every few seconds
+  while `status.running`. `ListTargets` fills the target select.
+* Back up now / Retry: `RunBackup{target}` (empty target = the schedule's) returns the running row.
+* Edit: `SetSchedule{schedule}`; Verify: `VerifyBackup{id}`, then poll `ListBackups` for `verify`.
+* Restore dialog: `PreviewRestore{id}` gives `confirmation` ("RESTORE"), `loses_changes_since`, `warnings`; the button sends
+  `Restore{id, confirm}` with the typed word. The answer says `restart_required`: the restore is applied when `asc serve` restarts, and
+  until then `status.restore_staged` is true and the server refuses ref updates (read-only).
+* Restore only works on a backup the server verified and that still matches the record it made of it; any other state is
+  `FAILED_PRECONDITION` and the restore row in `ListBackups.status` is not staged.
+
+### Usage (`asc.v1.Usage`)
+
+* Usage and quota page of a person: `GetUsage{owner: USER login}` (claim `user:<login>` read) gives the four meters (`used`, `limit`, `over`),
+  `byo_ai_spend_micro_usd` and `byo_storage` for the "BYO does not count" note, `empty`, `over_quota`, `resets_at` and `repos[]` for the table.
+  `period` ("YYYY-MM") picks an earlier month. Organisation page: the same with owner ORG and claim `org:<name>` admin.
+* Spend and Budget panels: `ListSpend{owner, group_by KEY|USER|REPO|DAY|MONTH, since, until}`; `GetQuota{owner}` for the "of N" text.
+* The site administrator reads any account with the `instance` admin claim (written to the audit log as `usage.admin.read`) and sets limits
+  with `SetQuota{owner, quota}` (owner INSTANCE sets the default).
+* The hub feeds storage: `Report{repo, storage_bytes, byo_storage}` after a push or on a timer, with `x-asc-op-id`. Bandwidth out is counted
+  by the server itself (object fetches and git smart-HTTP).
+
+### Organisation settings (`asc.v1.OrgSettings`, subject `org:<name>`)
+
+* Options page: `GetOrgSettings{org}` (read) gives `agents` (allow, a person approves, monthly ceiling), `merge` (the default merge policy,
+  `set` says whether any is set), `agent_count`, `instance_allows_agents` and `effective_spend_ceiling_micro_usd`. Save with
+  `SetAgentPolicy` / `SetMergeDefaults` (admin). New organisation form: call `SetAgentPolicy` with the "Allow agents" switch.
+* Repository policy editor: `ResolveMergePolicy{org, repo, repo_values}` returns `effective` and `tightened[]`, the fields the organisation
+  overrides, so the editor can say "your organisation requires 2 approvals". The server enforces the same rule at landing (approvals, checks,
+  signature) and at agent run creation (organisation switch, instance switch, monthly ceiling).
+* People and Teams pages: `ListAgents{org}`, `CreateAgent`, `UpdateAgent{state: PAUSED}`, `DeleteAgent`. Server settings: `GetInstanceAgents`,
+  `SetInstanceAgents` (site administrator).
+
+### Sessions (`asc.v1.Sessions`, subject `user:<login>`)
+
+* Security page: `ListSessions{}` for the signed-in person (claim `user:<login>` read) gives tokens (`tok:`), SSH keys (`ssh:`) and agent tokens
+  (`agt:`) with created, last used and expiry. "Sign out" = `RevokeSession{id}` (write); "Sign out everywhere else" =
+  `RevokeOtherSessions{keep_id}`. Admin user page: the same calls with `login` set and the `instance` admin claim. The hub's own browser
+  sessions stay the hub's.
+
+### Data export (`asc.v1.DataExport`, subject `user:<login>`)
+
+* "Export your data": `RequestExport` (write) returns a job; poll `GetExport{id}` until `state` is READY (or FAILED with `error`). Mail the
+  person a link to a hub route that calls `Download{id}` (server stream of `ExportChunk{offset,data,last}`) and relays the bytes. The archive is
+  deleted after `expires` (7 days); `DeleteExport` removes it earlier. A second request within 24 hours is `RESOURCE_EXHAUSTED`.
+
+### AI keys (`asc.v1.AiKeyShares` beside `AiProviders`)
+
+* Key page of a person or organisation (claim `user:<login>` write, or `org:<name>` admin): `ShareKey{key_id, grantee USER|ORG|REPO,
+  allow_use, see_spend}`, `ListShares{key_id}`, `RevokeShare`, `ShareUsage{key_id}` (use per sharer, the owner's own use last),
+  `GetKeyCaps` / `SetKeyCaps{warn_percent, stop_at_cap}` (the monthly cap itself is `AiProviders.UpdateKey`). `stop_at_cap` off means the
+  key's own cap only warns; the instance cap always stops. Without a caps row the cap is a hard stop (`AI_CAP_REACHED`).
+* Grantee side: `ListSharedWithMe{grantee}` (organisation admin, repository admin or the person) shows label, provider, `usable` and, when the
+  owner allows `see_spend`, the grantee's own spend this month. Never the key.
+* Resolution order of a run: repository keys and keys shared with it, the organisation's and those shared with it, the starter's and those shared with
+  them, then the instance's.
+
 ## Error codes
 
 All are `ErrorDetail.code` values, registered in `crates/asc-rpc/src/errors.rs` and mapped in `server.rs`; the test

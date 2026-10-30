@@ -105,6 +105,8 @@ pub struct ServerGate {
     deps: Arc<crate::deps::gate::DepsGateSlot>,
     /// The organisation settings, whose merge defaults a repository can only tighten.
     org: Arc<crate::org::OrgSlot>,
+    /// Set while a restore waits for the next start: no ref moves in the meantime.
+    read_only: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// The first 12 hex characters of a changeset id.
@@ -215,7 +217,20 @@ impl ServerGate {
             signing,
             deps: Arc::default(),
             org: Arc::default(),
+            read_only: Arc::default(),
         }
+    }
+
+    /// Shares the maintenance flag: while it is set every update is refused.
+    #[must_use]
+    pub fn with_read_only(mut self, flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
+        self.read_only = flag;
+        self
+    }
+
+    /// The maintenance flag.
+    pub fn read_only_flag(&self) -> &Arc<std::sync::atomic::AtomicBool> {
+        &self.read_only
     }
 
     /// Where the organisation settings plug in (tests install a hub here).
@@ -985,6 +1000,11 @@ fn status_word(s: wire::VerificationStatus) -> &'static str {
 #[async_trait]
 impl RefGate for ServerGate {
     async fn check(&self, req: &GateRequest<'_>) -> Result<(), Status> {
+        if self.read_only.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(Status::unavailable(
+                "the server is read-only: a restore is staged and applies when the server restarts",
+            ));
+        }
         let who = who_of(&req.ctx.principal.id);
         if matches!(req.mode, GateMode::Submit) {
             return self.check_submitted(req, &who).await;

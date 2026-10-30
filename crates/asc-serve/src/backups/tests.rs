@@ -997,8 +997,14 @@ async fn staged_local(
         .await
         .unwrap();
     assert_eq!(settle(f, &r.id).await.verify, store::V_OK);
+    let flag = Arc::new(AtomicBool::new(false));
+    f.hub.set_read_only(flag.clone());
     let (staged, note) = restore_outcome(f, &r.id, 3).await;
     assert!(staged, "{note}");
+    assert!(
+        flag.load(Ordering::Relaxed) && f.hub.is_read_only(),
+        "staging puts the server in maintenance"
+    );
     let state = f.k.dir.path().join("state");
     // The marker points at a private copy, not at the backup directory.
     let marker: serde_json::Value =

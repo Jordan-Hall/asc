@@ -75,6 +75,7 @@ pub fn register(
     // The land gate, the agent runtime and the object server find the hubs through these slots.
     if let Some(s) = ext.security.get() {
         let _ = s.org_slot.set(hubs.org.clone());
+        hubs.backups.set_read_only(s.read_only.clone());
     }
     if let Some(a) = ext.agents.get() {
         let _ = a.org.set(hubs.org.clone());
