@@ -201,8 +201,13 @@ async fn set_pin_stages_a_gitlink_and_reprojects_the_work_tree_read_only() {
             .permissions()
             .readonly()
     );
+    // The mode bits say read-only; the super-user writes through them, so that is only asserted for everybody else.
+    #[cfg(unix)]
+    let is_super_user = rustix::process::geteuid().is_root();
+    #[cfg(not(unix))]
+    let is_super_user = false;
     assert!(
-        fs::write(sdk.join("lib.rs"), b"x").is_err(),
+        is_super_user || fs::write(sdk.join("lib.rs"), b"x").is_err(),
         "a composed file is not writable"
     );
     assert!(out(&rig.asc(&["submodule", "status"])).starts_with(&format!(" {hex2} sdk")));
