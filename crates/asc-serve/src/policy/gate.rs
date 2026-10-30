@@ -1038,7 +1038,12 @@ impl RefGate for ServerGate {
         let mut protected: Vec<&GateUpdate> = Vec::new();
         let mut drafts: Vec<&GateUpdate> = Vec::new();
         for u in req.updates {
-            if u.user {
+            // An agent's own drafts: a ref of a branchless repository's user namespace, or, in branch mode, the ref of its own
+            // run or token (`agent/<name>/run-<n>`, `agent/<name>/<token id>/..`). The agent gate has already refused any
+            // other ref of an agent before this runs; here the paths and the run budget of the draft are checked.
+            let own_draft = who.is_agent()
+                && crate::refpolicy::draft_owner_of(&req.ctx.principal, &u.name).is_some();
+            if u.user || own_draft {
                 if who.is_agent() {
                     drafts.push(u);
                 }
