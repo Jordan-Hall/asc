@@ -235,7 +235,7 @@ and evaluated through the API and the hub shows it; every key below is parsed st
 - **Data:** `secret_findings(id, repo, rule_id, severity, state, path, line, col, changeset, change, fingerprint, preview, first_seen,
   last_seen, resolved_by, resolved_at, note)`, unique on `(repo, fingerprint, path)`.
 - **Config:** `[secrets] max_file_bytes` (1 MiB), `max_scan_bytes` (16 MiB), `max_files` (10,000). Policy keys on section 1.
-- **Errors:** `SECRET_DETECTED`. **Audit:** `secret.finding.updated`, `secret.push.blocked`.
+- **Errors:** `SECRET_DETECTED`. **Audit:** `secret.finding.updated`, `secret.push.blocked`, `secret.scan.run`.
 - **Hub:** repository security page listing findings; the push refusal text names rule and location only.
 - **Tests:** each built-in detector with positive and negative samples, fingerprints stable and not reversible, previews never show more
   than 2 characters, a planted secret never appears in logs or errors, bounded work on adversarial input, `block_on_push` off and on,
