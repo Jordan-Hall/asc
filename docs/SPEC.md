@@ -3677,7 +3677,10 @@ enum SearchMode { SEARCH_MODE_LITERAL = 0; SEARCH_MODE_REGEX = 1; SEARCH_MODE_WO
 message SearchRequest { Scope scope = 1; string pattern = 2; SearchMode mode = 3; bool case_sensitive = 4;
   uint32 context_lines = 5; Budget budget = 6; string page_token = 7; }
 message LineMatch { uint32 line = 1; repeated uint32 cols = 2; bytes text = 3; repeated bytes before = 4; repeated bytes after = 5; }
-message FileHit { bytes path = 1; bytes file_id = 2; string lang = 3; repeated bytes also_at = 4; repeated LineMatch matches = 5; bool redacted = 6; }
+enum MatchKind { MATCH_KIND_UNSPECIFIED = 0; MATCH_KIND_SYMBOL = 1; MATCH_KIND_TEXT = 2; MATCH_KIND_MEANING = 3; }
+message MatchSpan { uint32 line = 1; uint32 start_col = 2; uint32 end_col = 3; string term = 4; }   // 1-based line; 1-based byte columns inside the sent text, end exclusive
+message MatchReason { MatchKind kind = 1; double score = 2; repeated MatchSpan spans = 3; repeated string terms = 4; }   // score 0..1; at most 32 spans, 16 terms
+message FileHit { bytes path = 1; bytes file_id = 2; string lang = 3; repeated bytes also_at = 4; repeated LineMatch matches = 5; bool redacted = 6; MatchReason reason = 7; }
 message SearchResponse { ResolvedScope scope = 1; repeated FileHit files = 2; bool truncated = 3; string next_page_token = 4; uint32 est_tokens = 5; }
 enum SymbolOp { SYMBOL_OP_DEF = 0; SYMBOL_OP_REFS = 1; SYMBOL_OP_CALLERS = 2; SYMBOL_OP_OUTLINE = 3; SYMBOL_OP_FIND = 4; }
 message SymbolsRequest { Scope scope = 1; SymbolOp op = 2; string name = 3; bytes path = 4; repeated string kinds = 5;
@@ -3688,7 +3691,7 @@ message SymbolsResponse { ResolvedScope scope = 1; repeated Symbol symbols = 2; 
 enum SemanticMode { SEMANTIC_MODE_HYBRID = 0; SEMANTIC_MODE_VECTOR = 1; }
 message SemanticRequest { Scope scope = 1; string query = 2; SemanticMode mode = 3; uint32 k = 4; Budget budget = 5; bool rerank = 6; }
 message Chunk { bytes path = 1; bytes file_id = 2; uint32 start_line = 3; uint32 end_line = 4; string symbol = 5;
-  double score = 6; repeated string sources = 7; bytes text = 8; bool redacted = 9; }
+  double score = 6; repeated string sources = 7; bytes text = 8; bool redacted = 9; MatchReason reason = 10; }
 message SemanticResponse { ResolvedScope scope = 1; repeated Chunk chunks = 2; string model = 3; uint32 est_tokens = 4; bool ann_exhausted = 5; }
 message IndexStatusRequest { Scope scope = 1; }
 message IndexStatus { string index = 1; float coverage = 2; int64 lag_seconds = 3; uint64 generation = 4; string version = 5; }
@@ -3702,6 +3705,7 @@ service CodeIntel {
 ```
 
 - **Rate class `codeintel`** (new, SPEC §16.3): `Search` and `Symbols` 50 req/s per principal (burst 100); `Semantic` 10 req/s per principal and 32 concurrent per replica (query embedding uses the CPU); `IndexStatus` is `cheap`. Search scans without trigrams count as `expensive`.
+- **Why a result matched (`reason`):** the server fills `MatchReason` on each `FileHit` (`Search` and `CrossSearch`) and each `Chunk` (`Semantic`). `kind` is `TEXT` for a `Search` hit; for a `Chunk` it is `MEANING` when the `vector` source found it, else `SYMBOL` when the `symbol` source did, else `TEXT` (BM25 only). `spans` locate the matched terms in the text sent (1-based line of the file, 1-based byte columns, `end_col` exclusive; at most 32, none for a redacted file, line or chunk); `terms` are the distinct query terms that matched (at most 16). For `Search` the terms are the pattern, and a regex span covers the bytes the regex matched. For `Semantic` the terms are the identifier-like words of the query found case-insensitively in the chunk text (vector-only hits may have none). `score` is relevance in 0..1 and comparable only inside one response: for `Search` it is `0.4 + 0.3·[some span is a whole word] + 0.3·(1 − 1/(1+matched lines))`; for `Semantic` it is the chunk's `score` divided by the largest score of the response. The field is absent from local (workspace) answers.
 - **Permission:** read on every namespace searched. `Repo.Grep` (U47) stays as it is and is the streaming fallback that CI-D7 reuses.
 - **Workspace IPC** (`workspace.proto`, U73 amendment): the same four RPCs; `scope.workspace = true` is accepted only over IPC.
 

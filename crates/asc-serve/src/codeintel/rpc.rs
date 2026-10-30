@@ -84,6 +84,7 @@ use tonic::{Extensions as TonicExt, Request, Response, Status};
 use super::files::{NsSearcher, ServerFiles, file_bytes, secret_of};
 use super::modelgen::{ModelGens, QueryLru};
 use super::ords::{DocInfo, NsDocs, can_block};
+use super::reason;
 use super::scip;
 use super::snaps::{DEFAULT_VECTOR_BYTES, Snaps, VecCache};
 use super::worker::{EmbedModel, SqlManifest, current_versions, ns_name, read_chunk_rows};
@@ -1188,6 +1189,16 @@ impl CodeIntelRpc {
             repo: caller.repo.to_string(),
             changeset: ids.changeset_out(plan.targets[0].cs).await?.to_vec(),
         };
+        let mut raw_spans = reason::RawSpans::new();
+        for r in &raws {
+            for l in &r.lines {
+                raw_spans
+                    .entry((*r.file.as_bytes(), l.line))
+                    .or_default()
+                    .extend(l.spans.iter().copied());
+            }
+        }
+        let regex = mode == Mode::Regex;
         let rendered = render::render_search(&ctx, budget, &raws, truncated);
         let files = rendered
             .files
@@ -1209,6 +1220,11 @@ impl CodeIntelRpc {
                     })
                     .collect(),
                 redacted: f.redacted,
+                reason: None,
+            })
+            .map(|mut f: wire::FileHit| {
+                f.reason = Some(reason::file_reason(&req.pattern, regex, &f, &raw_spans));
+                f
             })
             .collect();
         Ok(wire::SearchResponse {
@@ -1908,6 +1924,12 @@ impl CodeIntelRpc {
         } else {
             covered.0 as f64 / covered.1 as f64
         };
+        let top = rendered
+            .chunks
+            .iter()
+            .map(|c| c.score)
+            .fold(0.0f64, f64::max);
+        let terms = reason::query_terms(&req.query);
         Ok(wire::SemanticResponse {
             scope: Some(self.resolved(caller, &plan, generation, coverage).await?),
             chunks: rendered
@@ -1923,6 +1945,11 @@ impl CodeIntelRpc {
                     sources: c.sources,
                     text: Bytes::from(c.text),
                     redacted: c.redacted,
+                    reason: None,
+                })
+                .map(|mut c: wire::Chunk| {
+                    c.reason = Some(reason::chunk_reason(&terms, top, &c));
+                    c
                 })
                 .collect(),
             model: spec.model_id,

@@ -578,6 +578,7 @@ fn wire_file(f: render::FileOut) -> wire::FileHit {
             })
             .collect(),
         redacted: f.redacted,
+        reason: None,
     }
 }
 
