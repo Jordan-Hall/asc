@@ -455,6 +455,7 @@ impl Reviews {
         &self,
         ctx: &CallCtx,
         _req: wire::NextReleaseRequest,
+        drafts: bool,
     ) -> Result<wire::NextReleaseResponse, Status> {
         let entry = self.open(ctx).await?;
         let ids = IdCodec::new(ctx.id_mode, &self.registry, &entry).for_viewer(&ctx.principal);
@@ -467,13 +468,18 @@ impl Reviews {
             .and_then(|(_, t)| <[u8; 32]>::try_from(t.as_slice()).ok())
             .map(ChangesetId::from_bytes);
         let (list, truncated) = self.release_range(&entry, to, from).await?;
-        let draft: Option<String> = sqlx::query_scalar(
-            "SELECT tag FROM releases WHERE ns = $1 AND published = 0 ORDER BY id DESC LIMIT 1",
-        )
-        .bind(entry.ns.as_bytes().to_vec())
-        .fetch_optional(self.registry.pool())
-        .await
-        .map_err(sql)?;
+        // A draft is invisible to a reader, its tag included.
+        let draft: Option<String> = if drafts {
+            sqlx::query_scalar(
+                "SELECT tag FROM releases WHERE ns = $1 AND published = 0 ORDER BY id DESC LIMIT 1",
+            )
+            .bind(entry.ns.as_bytes().to_vec())
+            .fetch_optional(self.registry.pool())
+            .await
+            .map_err(sql)?
+        } else {
+            None
+        };
         let latest_tag = latest.map(|(t, _)| t).unwrap_or_default();
         Ok(wire::NextReleaseResponse {
             proposed_tag: next_tag(&latest_tag),

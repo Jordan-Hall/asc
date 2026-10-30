@@ -14,7 +14,7 @@ use tonic::Code;
 
 use super::rpc::QueueService;
 use crate::review::Reviews;
-use crate::review::tests::{ADMIN, ALICE, CAROL, Fx, cbytes, fx, repo_ref, req};
+use crate::review::tests::{ADMIN, ALICE, CAROL, Fx, cbytes, cid, fx, repo_ref, req};
 use crate::review::tests_acting::claimkit::{self, host};
 
 fn svc(f: &Fx) -> (QueueService, asc_rpc::forwarded::ForwardedVerifier) {
@@ -883,7 +883,7 @@ max_depth = 1
     .await;
     // Change 2 sits on change 1: its stack has two changes.
     sqlx::query("UPDATE change_versions SET parent_change = $1 WHERE change = $2")
-        .bind(crate::review::tests::cid(1).as_bytes().to_vec())
+        .bind(cid(1).as_bytes().to_vec())
         .bind(crate::review::tests::cid(2).as_bytes().to_vec())
         .execute(f.reg.pool())
         .await
@@ -911,7 +911,7 @@ async fn dismiss(
             wire::RecordApprovalRequest {
                 repo: repo_ref(),
                 change: cbytes(1),
-                version: 0,
+                version: 2,
                 state: wire::ApprovalState::Dismissed as i32,
                 reviewer: reviewer.into(),
                 reviewer_id,
@@ -1021,5 +1021,178 @@ async fn dismissing_an_approval_takes_the_entry_back_from_ready_and_is_audited_w
     assert_eq!(
         revalidated(&q, entry.id).await.state,
         wire::QueueEntryState::Ready as i32
+    );
+}
+
+#[tokio::test]
+async fn only_a_maintainer_who_is_not_an_author_dismisses_and_only_what_counts() {
+    let f = fx().await;
+    approve(&f, 1).await; // carol, user 44
+    // Plain write access is not enough to clear another person's verdict.
+    let blocked = f
+        .review
+        .record_approval(req(
+            wire::RecordApprovalRequest {
+                repo: repo_ref(),
+                change: cbytes(1),
+                version: 0,
+                state: wire::ApprovalState::ChangesRequested as i32,
+                ..Default::default()
+            },
+            ADMIN,
+            true,
+        ))
+        .await;
+    assert!(blocked.is_ok(), "{blocked:?}");
+    assert_eq!(
+        dismiss(&f, CAROL, "root", 0).await.unwrap_err().code(),
+        Code::PermissionDenied
+    );
+    assert_eq!(
+        dismiss(&f, CAROL, "", 45).await.unwrap_err().code(),
+        Code::PermissionDenied
+    );
+    // The verdict is still there.
+    let left: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM review_approvals WHERE reviewer = 'root' AND state = $1",
+    )
+    .bind(wire::ApprovalState::ChangesRequested as i64)
+    .fetch_one(f.reg.pool())
+    .await
+    .unwrap();
+    assert_eq!(left, 1);
+}
+
+#[tokio::test]
+async fn an_author_who_is_a_maintainer_does_not_dismiss_a_verdict_on_their_own_change() {
+    let f = fx().await;
+    approve(&f, 1).await; // carol approves change 1
+    // The maintainer root published a version of change 1 too: root is an author of it.
+    sqlx::query(
+        "INSERT INTO change_versions (ns, change, v, cs, parent_change, at, actor, op_id) \
+         SELECT ns, change, 3, cs, NULL, 1, '45:root', $3 FROM change_versions \
+         WHERE ns = $1 AND change = $2 AND v = 2",
+    )
+    .bind(f.e.ns.as_bytes().to_vec())
+    .bind(cid(1).as_bytes().to_vec())
+    .bind(vec![1u8, 3])
+    .execute(f.reg.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        dismiss(&f, ADMIN, "carol", 0).await.unwrap_err().code(),
+        Code::PermissionDenied
+    );
+    // The same maintainer on a change they did not write: allowed, and once it is dismissed there
+    // is nothing left that counts or blocks.
+    approve(&f, 2).await;
+    let done = f
+        .review
+        .record_approval(req(
+            wire::RecordApprovalRequest {
+                repo: repo_ref(),
+                change: cbytes(2),
+                version: 1,
+                state: wire::ApprovalState::Dismissed as i32,
+                reviewer: "carol".into(),
+                reviewer_id: 0,
+            },
+            ADMIN,
+            true,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(
+        done.approvals
+            .iter()
+            .all(|a| a.state == wire::ApprovalState::Dismissed as i32),
+        "{done:?}"
+    );
+    let again = f
+        .review
+        .record_approval(req(
+            wire::RecordApprovalRequest {
+                repo: repo_ref(),
+                change: cbytes(2),
+                version: 1,
+                state: wire::ApprovalState::Dismissed as i32,
+                reviewer: "carol".into(),
+                reviewer_id: 0,
+            },
+            ADMIN,
+            true,
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(again.code(), Code::NotFound);
+}
+
+#[tokio::test]
+async fn a_dismissal_is_for_one_version_and_a_standing_verdict_on_another_still_counts() {
+    let f = fx().await;
+    // Change 2 gets versions 2 and 3 (the same changeset, so a verdict carries between them).
+    for v in [2i64, 3] {
+        sqlx::query(
+            "INSERT INTO change_versions (ns, change, v, cs, parent_change, at, actor, op_id) \
+             SELECT ns, change, $3, cs, NULL, 1, actor, $4 FROM change_versions \
+             WHERE ns = $1 AND change = $2 AND v = 1",
+        )
+        .bind(f.e.ns.as_bytes().to_vec())
+        .bind(cid(2).as_bytes().to_vec())
+        .bind(v)
+        .bind(vec![2u8, u8::try_from(v).unwrap(), 7])
+        .execute(f.reg.pool())
+        .await
+        .unwrap();
+    }
+    let verdict = |token: &'static str, version: u32, state: wire::ApprovalState| {
+        f.review.record_approval(req(
+            wire::RecordApprovalRequest {
+                repo: repo_ref(),
+                change: cbytes(2),
+                version,
+                state: state as i32,
+                reviewer: if token == ADMIN {
+                    "carol".into()
+                } else {
+                    String::new()
+                },
+                reviewer_id: 0,
+            },
+            token,
+            true,
+        ))
+    };
+    verdict(CAROL, 2, wire::ApprovalState::Approved)
+        .await
+        .unwrap();
+    verdict(CAROL, 3, wire::ApprovalState::Approved)
+        .await
+        .unwrap();
+    // A dismissal without a version is refused.
+    assert_eq!(
+        verdict(ADMIN, 0, wire::ApprovalState::Dismissed)
+            .await
+            .unwrap_err()
+            .code(),
+        Code::InvalidArgument
+    );
+    let done = verdict(ADMIN, 2, wire::ApprovalState::Dismissed)
+        .await
+        .unwrap()
+        .into_inner();
+    let state_of = |v: u32| {
+        done.approvals
+            .iter()
+            .find(|a| a.reviewer == "carol" && a.version == v)
+            .map(|a| (a.state, a.applies))
+            .unwrap()
+    };
+    assert_eq!(state_of(2).0, wire::ApprovalState::Dismissed as i32);
+    assert_eq!(
+        state_of(3),
+        (wire::ApprovalState::Approved as i32, true),
+        "the standing verdict on version 3 still counts: {done:?}"
     );
 }

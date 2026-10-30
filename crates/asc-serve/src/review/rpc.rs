@@ -671,8 +671,9 @@ impl Review for ReviewService {
             .context(&meta, &ext, msg.repo.as_ref(), Access::Write, false)
             .await?;
         let handle = require_handle(&ctx)?;
+        let can_admin = self.env.has(&ext, &ctx, Access::Admin).await;
         self.hub
-            .record_approval(&ctx, &handle, msg)
+            .record_approval(&ctx, &handle, can_admin, msg)
             .await
             .map(Response::new)
     }
