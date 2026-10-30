@@ -210,6 +210,10 @@ jobs:
         with:
           bun-version: 1.4.2
       - run: bun install --frozen-lockfile
+      # The extension imports the generated client, which is not checked in.
+      - name: Generate the TypeScript client
+        run: bun run codegen
+        working-directory: packages/asc-client-ts
       - name: VS Code extension
         run: |
           set -euo pipefail
