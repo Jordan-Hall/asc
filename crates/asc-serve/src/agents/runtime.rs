@@ -610,6 +610,40 @@ impl AgentsHub {
         }
     }
 
+    /// Queues the "run finished" effect of a run that ended with changes, so the forge can open them for review. A
+    /// run with no change has nothing to review. A failure to queue is logged and never fails the run.
+    async fn queue_finished(&self, id: u64, state: RunState) {
+        let run = match self.core.runs.get(id).await {
+            Ok(Some(run)) if !run.changes.is_empty() => run,
+            Ok(_) => return,
+            Err(e) => {
+                tracing::warn!(class = %crate::ai::store::class(&e), "run finished: run not read");
+                return;
+            }
+        };
+        let Ok(name) = RepoName::parse(&run.repo) else {
+            return;
+        };
+        let entry = match self.registry.open(&name).await {
+            Ok(entry) => entry,
+            Err(e) => {
+                tracing::warn!(error = %e, "run finished: repository not opened");
+                return;
+            }
+        };
+        if let Err(e) = super::runs::enqueue_finished(
+            &self.core.pool,
+            entry.key.0,
+            run.id,
+            state,
+            run.changes.len(),
+        )
+        .await
+        {
+            tracing::warn!(class = %crate::ai::store::class(&e), "run finished: not queued");
+        }
+    }
+
     /// Fails the runs whose process died; returns how many.
     pub async fn reap_once(&self) -> Result<usize, sqlx::Error> {
         let stale = self.core.runs.stale(clock::now() - STALE_SECS).await?;
@@ -788,8 +822,12 @@ impl AgentsHub {
         }
         // The state row changes after its last event, so a reader that sees a finished run finds
         // the whole log: the final state event is the last one.
-        if let Err(e) = self.core.runs.finish(id, state, &code, &message).await {
-            tracing::error!(class = %crate::ai::store::class(&e), "agent run not finished");
+        match self.core.runs.finish(id, state, &code, &message).await {
+            Ok(true) => self.queue_finished(id, state).await,
+            Ok(false) => {}
+            Err(e) => {
+                tracing::error!(class = %crate::ai::store::class(&e), "agent run not finished");
+            }
         }
         self.expire_requests(id).await;
         self.audit(

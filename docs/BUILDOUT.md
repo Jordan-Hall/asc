@@ -400,6 +400,8 @@ the `MergeQueue` service: its methods answer `UNIMPLEMENTED` from the router unt
   counted; trunk is never written (also by a hostile tool call); prompt-injection text in a file cannot raise the budget or widen the scope;
   restart recovery; events never hold a planted secret.
 
+- **Run finished (outbox):** when a run ends and has changes, the runtime queues the outbox effect `agent_run_finished` (`agents/runs.rs` `enqueue_finished`). With `[forgejo]` configured, `forgejo::RunFinishedEffect` delivers it, at least once, to `POST /api/internal/asc/agent-run-finished` on the hub with the internal token, `X-Asc-Op-Id` and the body `{repo, run, state, changes}`; the hub opens the changes of a run that succeeded for review. Without a forge the effect is a no-op. The hub answers 503 while a change has no git id yet, which makes the outbox retry.
+
 ## 13. Workflows
 
 - **RPCs** (`workflows.proto`, `workflows.v1`): `Workflows.ListDefinitions`, `GetDefinition`, `Validate`, `SetEnabled`, `Trigger`,
