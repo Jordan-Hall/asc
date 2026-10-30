@@ -246,6 +246,13 @@ impl Changes for FakeChanges {
         Err(Status::unimplemented("restack_changes"))
     }
 
+    async fn amend_change(
+        &self,
+        _: Request<wire::AmendChangeRequest>,
+    ) -> Result<Response<wire::AmendChangeResponse>, Status> {
+        Err(Status::unimplemented("amend_change"))
+    }
+
     async fn set_review_state(
         &self,
         _: Request<wire::SetReviewStateRequest>,
