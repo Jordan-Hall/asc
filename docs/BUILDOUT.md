@@ -522,6 +522,10 @@ A client calls it with the user's own credential.
 - **Suggestions.** A comment may carry replacement text for its lines (`AddComment.suggestion`). `PrepareSuggestion` returns the file as it would be
   (or says it is stale); the host commits it as the next version and calls `MarkSuggestionApplied`, which records the version. The apply is a normal
   commit, so it is undone with the ordinary ref undo.
+  The commit is `Changes.AmendChange` (`changes/restack.rs`): the next version of the change with the same parents, author and message, the newest tree with the named
+  files replaced and the newest version as the predecessor. `base_version` must be the newest version and `update_ref` (only `refs/pull/<n>/head`) moves
+  only while it still points at it (compare-and-set); otherwise the answer is `stale` and nothing is written. User draft refs never move. The committer
+  is the actor; only the forge may name one. Idempotent by `x-asc-op-id`.
 - **Gate history.** The host reports each evaluation (`RecordGateDecision`); `GetGateStats` returns checked, passed first time, held, cleared and open,
   the median time to clear, a count per day (zero days included) and per rule. Overrides need repo admin and a reason, are audited with the person
   and the relay, and are chained by a SHA-256 proof.
