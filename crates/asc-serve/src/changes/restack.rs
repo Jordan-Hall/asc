@@ -850,6 +850,7 @@ impl Restacker {
     }
 
     /// Moves every `refs/pull/<n>/head` in one `UpdateRefs`, then appends the versions.
+    #[allow(clippy::too_many_arguments)]
     async fn publish_refs(
         &self,
         entry: &RepoEntry,
