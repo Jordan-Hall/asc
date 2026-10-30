@@ -47,13 +47,21 @@ async fn enqueue(
     .map(|r| r.into_inner().entry.unwrap())
 }
 
+/// Carol approves the newest version of `change`, which a verdict must name.
 async fn approve(f: &Fx, change: u8) {
+    let version: i64 =
+        sqlx::query_scalar("SELECT MAX(v) FROM change_versions WHERE ns = $1 AND change = $2")
+            .bind(f.e.ns.as_bytes().to_vec())
+            .bind(cid(change).as_bytes().to_vec())
+            .fetch_one(f.reg.pool())
+            .await
+            .unwrap();
     f.review
         .record_approval(req(
             wire::RecordApprovalRequest {
                 repo: repo_ref(),
                 change: cbytes(change),
-                version: 0,
+                version: u32::try_from(version).unwrap(),
                 state: wire::ApprovalState::Approved as i32,
                 ..Default::default()
             },
@@ -232,7 +240,7 @@ async fn an_entry_waits_until_it_is_approved_and_the_queue_knows_its_position_an
             wire::RecordApprovalRequest {
                 repo: repo_ref(),
                 change: cbytes(2),
-                version: 0,
+                version: 1,
                 state: wire::ApprovalState::ChangesRequested as i32,
                 ..Default::default()
             },
@@ -680,7 +688,7 @@ async fn an_entry_that_stopped_passing_is_refused_at_the_moment_of_landing() {
             wire::RecordApprovalRequest {
                 repo: repo_ref(),
                 change: cbytes(1),
-                version: 0,
+                version: 1,
                 state: wire::ApprovalState::ChangesRequested as i32,
                 ..Default::default()
             },
@@ -970,7 +978,7 @@ async fn dismissing_an_approval_takes_the_entry_back_from_ready_and_is_audited_w
             wire::RecordApprovalRequest {
                 repo: repo_ref(),
                 change: cbytes(1),
-                version: 0,
+                version: 1,
                 state: wire::ApprovalState::Approved as i32,
                 reviewer: "carol".into(),
                 reviewer_id: 0,
@@ -1035,7 +1043,7 @@ async fn only_a_maintainer_who_is_not_an_author_dismisses_and_only_what_counts()
             wire::RecordApprovalRequest {
                 repo: repo_ref(),
                 change: cbytes(1),
-                version: 0,
+                version: 2,
                 state: wire::ApprovalState::ChangesRequested as i32,
                 ..Default::default()
             },
