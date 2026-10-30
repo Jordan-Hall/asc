@@ -138,12 +138,6 @@ pub async fn run(ctx: &Ctx, args: Vec<OsString>) -> Result<ExitCode> {
         if let Head::Branch(b) = ws.projection.read_head()? {
             ref_word = format!("refs/heads/{b}");
         }
-    } else if ref_word == "HEAD"
-        && let Head::Branch(_) = ws.projection.read_head()?
-    {
-        return Err(CliError::Fatal(
-            "asc: update-ref --no-deref HEAD on a branch is not supported yet".into(),
-        ));
     }
     if ref_word != "HEAD" && !(ref_word.starts_with("refs/") && valid(&ref_word, Rules::default()))
     {
@@ -219,7 +213,7 @@ pub async fn run(ctx: &Ctx, args: Vec<OsString>) -> Result<ExitCode> {
     };
     let message = o.reason.clone().unwrap_or_default();
     match ctx
-        .update_local_refs(txn, &message, StagingAfterMove::Keep)
+        .update_local_refs_as(txn, &message, StagingAfterMove::Keep, o.no_deref)
         .await
     {
         Ok(()) => Ok(ExitCode::SUCCESS),
