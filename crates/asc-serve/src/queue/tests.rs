@@ -1280,7 +1280,7 @@ async fn the_policy_chooses_who_dismisses_another_persons_verdict() {
             wire::RecordApprovalRequest {
                 repo: repo_ref(),
                 change: cbytes(1),
-                version: 0,
+                version: 2,
                 state: wire::ApprovalState::ChangesRequested as i32,
                 ..Default::default()
             },
