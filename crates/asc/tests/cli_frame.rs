@@ -460,7 +460,12 @@ fn version_lines() {
     let dir = sb.dir("d");
     let out = asc(&sb, &dir, &["--version"]);
     assert_eq!(out.code, 0);
-    assert!(out.stdout.starts_with("asc 0.1.0 (git "), "{}", out.stdout);
+    assert!(
+        out.stdout
+            .starts_with(&format!("asc {} (git ", env!("CARGO_PKG_VERSION"))),
+        "{}",
+        out.stdout
+    );
     let out = git(&sb, &dir, &["--version"]);
     assert_eq!(out.code, 0);
     let rest = out
@@ -476,7 +481,9 @@ fn version_lines() {
         );
     }
     assert!(
-        out.stdout.trim_end().ends_with(".asc.0.1.0"),
+        out.stdout
+            .trim_end()
+            .ends_with(&format!(".asc.{}", env!("CARGO_PKG_VERSION"))),
         "{}",
         out.stdout
     );
