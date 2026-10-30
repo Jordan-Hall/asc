@@ -12,6 +12,7 @@ pub mod conformance_refs;
 pub mod gc;
 pub mod key;
 pub mod objects;
+pub mod pack;
 pub mod probe;
 pub mod refs;
 pub mod s3;

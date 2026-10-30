@@ -229,3 +229,58 @@ async fn a_second_import_finds_the_first_in_the_map_and_writes_nothing() {
     // Only the annotated tag is recorded again, in the one call after the commits.
     assert_eq!(run.map.calls.load(Ordering::SeqCst), calls + 1);
 }
+
+#[tokio::test]
+async fn an_import_into_a_pack_enabled_store_writes_packs_and_stores_the_same_objects() {
+    use asc_store::pack::{MemPackIndex, PackConfig, PackLayer};
+
+    let repo = small_fixture();
+    let plain = run_env(false);
+    import(&repo, &plain, 500).await.unwrap();
+
+    let layer = PackLayer::new(
+        Arc::new(MemPackIndex::new()),
+        PackConfig {
+            enabled: true,
+            min_batch: 4,
+            negative_ttl: std::time::Duration::ZERO,
+            ..PackConfig::default()
+        },
+    );
+    let store = Arc::new(BucketObjects::memory().with_packs(Arc::new(layer)));
+    let packed = Run {
+        objects: Arc::new(CountingObjects {
+            inner: store.clone(),
+            puts: AtomicUsize::new(0),
+            many: AtomicUsize::new(0),
+        }),
+        store: store.clone(),
+        map: CountingMap {
+            inner: MemMap::new(Arc::new(Killer::new(usize::MAX))),
+            calls: AtomicUsize::new(0),
+            rows: AtomicUsize::new(0),
+            refuse: false,
+        },
+    };
+    // Small batches, so several packs are written along the way.
+    let report = import(&repo, &packed, 3).await.unwrap();
+    assert_eq!(report.commits, 10);
+
+    // Every object is there with the same bytes, whether it sits in a pack or loose.
+    assert_eq!(
+        dump_store(&*packed.store).await,
+        dump_store(&*plain.store).await
+    );
+    assert_eq!(packed.map.inner.dump(), plain.map.inner.dump());
+    let status = store.pack_status().await.unwrap();
+    assert!(status.live_packs >= 2, "{status:?}");
+    assert!(status.packed_objects > status.loose_small, "{status:?}");
+    // And a second import of the same history writes nothing new.
+    let again = import(&repo, &packed, 3).await.unwrap();
+    assert_eq!(again.commits, 0);
+    assert_eq!(
+        store.pack_status().await.unwrap().live_packs,
+        status.live_packs
+    );
+    assert!(store.pack_verify().await.unwrap().problems.is_empty());
+}
