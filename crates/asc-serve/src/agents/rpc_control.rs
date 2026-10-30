@@ -724,9 +724,10 @@ impl AgentService {
             })
             .collect();
         for r in runs.iter().take(1000) {
-            let slot = usize::try_from(r.created.div_euclid(86_400) - (today - (ACTIVITY_DAYS - 1)))
-                .ok()
-                .filter(|i| *i < days.len());
+            let slot =
+                usize::try_from(r.created.div_euclid(86_400) - (today - (ACTIVITY_DAYS - 1)))
+                    .ok()
+                    .filter(|i| *i < days.len());
             if let Some(i) = slot {
                 days[i].started += 1;
                 days[i].changes += u32::try_from(r.changes.len()).unwrap_or(u32::MAX);
