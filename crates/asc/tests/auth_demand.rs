@@ -286,7 +286,21 @@ struct World {
 }
 
 impl World {
+    /// The ports are picked free and released before `asc serve` binds them, so another test
+    /// process can take one in between: a start that lost that race is tried again.
     fn start() -> Self {
+        let mut last = String::new();
+        for _ in 0..5 {
+            match Self::launch() {
+                Ok(w) => return w,
+                Err(e) if e.contains("Address already in use") => last = e,
+                Err(e) => panic!("{e}"),
+            }
+        }
+        panic!("{last}");
+    }
+
+    fn launch() -> Result<Self, String> {
         let dir = tempfile::tempdir().unwrap();
         let (hub_port, serve_port, admin_port) = (free_port(), free_port(), free_port());
         let hub = Hub::start(hub_port, serve_port);
@@ -333,9 +347,9 @@ impl World {
             .stdout(Stdio::from(log.try_clone().unwrap()))
             .stderr(Stdio::from(log));
         w.child = Some(cmd.spawn().expect("spawn asc serve"));
-        w.wait_ready();
+        w.wait_ready()?;
         w.seed();
-        w
+        Ok(w)
     }
 
     fn serve(&self, args: &[&str]) -> Output {
@@ -353,23 +367,24 @@ impl World {
         std::fs::read_to_string(self.dir.path().join("serve.log")).unwrap_or_default()
     }
 
-    fn wait_ready(&mut self) {
+    fn wait_ready(&mut self) -> Result<(), String> {
         let addr = SocketAddr::from(([127, 0, 0, 1], self.serve_port));
         let end = Instant::now() + Duration::from_secs(90);
         loop {
             if let Some(c) = self.child.as_mut()
                 && let Ok(Some(status)) = c.try_wait()
             {
-                panic!("asc serve exited early ({status}): {}", self.serve_log());
+                return Err(format!(
+                    "asc serve exited early ({status}): {}",
+                    self.serve_log()
+                ));
             }
             if TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok() {
-                return;
+                return Ok(());
             }
-            assert!(
-                Instant::now() < end,
-                "asc serve never listened: {}",
-                self.serve_log()
-            );
+            if Instant::now() >= end {
+                return Err(format!("asc serve never listened: {}", self.serve_log()));
+            }
             std::thread::sleep(Duration::from_millis(100));
         }
     }
