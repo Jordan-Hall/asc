@@ -143,6 +143,11 @@ pub const CATALOGUE: &[ActionInfo] = &[
         &["ref", "rule", "count"],
     ),
     a(
+        "secret.scan.run",
+        "A repository administrator scanned a revision for secrets.",
+        &["files", "findings", "truncated"],
+    ),
+    a(
         "signing.key.added",
         "A signing key was added.",
         &["fingerprint", "kind"],
@@ -768,6 +773,7 @@ mod tests {
             "workflow.triggered",
             "workflow.approval.decided",
             "secret.push.blocked",
+            "secret.scan.run",
             "agent.budget.exceeded",
             "policy.denied",
         ] {
