@@ -58,6 +58,9 @@ use crate::vault::{Resealer, SecretContext, Vault, VaultError};
 
 /// What `Version.features` adds for this service.
 pub const FEATURE: &str = "ai-keys.v1";
+/// What `Version.features` adds for the `AiKeyShares` service, which is mounted with the keys. The
+/// host gates its sharing pages on this string.
+pub const FEATURE_SHARES: &str = "aikeyshares.v1";
 /// The `kind` of the vault contexts of AI keys.
 pub const SECRET_KIND: &str = "ai-key";
 /// Longest label, in bytes.
