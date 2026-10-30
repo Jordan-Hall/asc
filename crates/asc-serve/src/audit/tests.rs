@@ -1406,3 +1406,160 @@ async fn an_export_made_for_a_person_names_the_person_and_the_relay() {
         .expect("the relay is recorded");
     assert_eq!(relay.kind, "host");
 }
+
+// ------------------------------------------------------------------------------ Append (the host service only)
+
+fn host_append(action: &str, actor: &str) -> wire::AppendAuditRequest {
+    wire::AppendAuditRequest {
+        action: action.into(),
+        actor: actor.into(),
+        target: "service.disable_registration".into(),
+        details: [
+            ("setting", "service.disable_registration"),
+            ("old", "false"),
+            ("new", "true"),
+            ("password", "never-kept"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_owned(), v.to_owned()))
+        .collect(),
+        remote_addr: "203.0.113.77".into(),
+        user_agent: "Mozilla/5.0\nX".into(),
+        request_id: "req-1".into(),
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn only_the_host_service_appends_and_the_event_names_the_person_with_the_host_as_relay() {
+    use tonic::Code::{InvalidArgument, PermissionDenied, Unauthenticated};
+    let (svc, p) = service().await;
+
+    let done = svc
+        .append(req(
+            host_append("host.setting.updated", "carol"),
+            Some(HOST),
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(done.seq, 1);
+    let events = list_all(&p, &Scope::instance()).await;
+    assert_eq!(events.len(), 1);
+    let e = &events[0];
+    assert_eq!(e.action, "host.setting.updated");
+    assert_eq!(
+        (e.actor.kind.as_str(), e.actor.name.as_str()),
+        ("user", "carol")
+    );
+    assert_eq!(
+        e.on_behalf_of.as_ref().map(|a| a.kind.as_str()),
+        Some("host"),
+        "the host is the relay"
+    );
+    assert_eq!(e.outcome, Outcome::Success);
+    assert_eq!(
+        e.remote_addr, "203.0.113.0/24",
+        "the address is kept coarse"
+    );
+    assert_eq!(e.request_id, "req-1");
+    assert!(!e.user_agent.contains('\n'));
+    assert_eq!(e.details.get("new").map(String::as_str), Some("true"));
+    assert!(
+        !e.details.contains_key("password"),
+        "only the keys of the action are kept"
+    );
+    assert!(
+        store::verify_chain(&p, &Scope::instance(), 0, 0)
+            .await
+            .unwrap()
+            .ok,
+        "the event is in the hash chain"
+    );
+
+    // A second event follows the first; a repository one lands in the repository scope as well.
+    let mut again = host_append("host.maintenance.updated", "carol");
+    again.details.clear();
+    again.repo = "acme/app".into();
+    let second = svc
+        .append(req(again, Some(HOST)))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(second.seq, 2);
+    assert_eq!(list_all(&p, &Scope::repo("acme/app")).await.len(), 1);
+
+    // Nobody else: not a repository admin, not a site administrator named in the config, not an anonymous caller.
+    for token in [ALICE_ADMIN, BOB_WRITE, CAROL_SITE] {
+        let e = svc
+            .append(req(
+                host_append("host.setting.updated", "carol"),
+                Some(token),
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), PermissionDenied, "{token}");
+    }
+    assert_eq!(
+        svc.append(req(host_append("host.setting.updated", "carol"), None))
+            .await
+            .unwrap_err()
+            .code(),
+        Unauthenticated
+    );
+    assert_eq!(list_all(&p, &Scope::instance()).await.len(), 2);
+
+    // The host may write its own actions only, with a person, and within bounds.
+    for bad in [
+        host_append("repo.ref.update", "carol"),
+        host_append("push.refused", "carol"),
+        host_append("host.no_such_action", "carol"),
+        host_append("host.setting.updated", ""),
+        host_append("host.setting.updated", "a\nb"),
+        host_append("host.setting.updated", &"x".repeat(256)),
+        {
+            let mut m = host_append("host.setting.updated", "carol");
+            m.repo = "not a repo".into();
+            m
+        },
+        {
+            let mut m = host_append("host.setting.updated", "carol");
+            m.outcome = 99;
+            m
+        },
+    ] {
+        let action = bad.action.clone();
+        let e = svc.append(req(bad, Some(HOST))).await.unwrap_err();
+        assert_eq!(e.code(), InvalidArgument, "{action}: {e:?}");
+    }
+    assert_eq!(
+        list_all(&p, &Scope::instance()).await.len(),
+        2,
+        "a refused request writes nothing"
+    );
+
+    // Denied and failed outcomes are recorded as such; the catalogue publishes the host's actions.
+    let mut denied = host_append("host.setting.updated", "carol");
+    denied.outcome = wire::AuditOutcome::Denied as i32;
+    svc.append(req(denied, Some(HOST))).await.unwrap();
+    assert_eq!(
+        list_all(&p, &Scope::instance()).await[2].outcome,
+        Outcome::Denied
+    );
+    assert!(
+        catalogue::CATALOGUE
+            .iter()
+            .filter(|i| i.action.starts_with("host."))
+            .count()
+            >= 2
+    );
+}
+
+#[test]
+fn a_host_address_is_made_coarse() {
+    use super::rpc::coarse_addr_for_tests as coarse;
+    assert_eq!(coarse("203.0.113.77"), "203.0.113.0/24");
+    assert_eq!(coarse("2001:db8:1:2:3:4:5:6"), "2001:db8:1::/48");
+    assert_eq!(coarse("not an address"), "");
+    assert_eq!(coarse(""), "");
+}
