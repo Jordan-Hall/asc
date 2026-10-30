@@ -21,11 +21,11 @@ use tonic::Status;
 use super::runs::{EventKind, RunRow, RunState};
 use super::runtime::Ended;
 use super::tokens::Budget;
-use crate::ai::model::{ToolCall, ToolSpec};
 use super::tools::Committed;
 use super::workspace::Workspace;
 use super::{AgentsHub, Live};
 use crate::ai::clock;
+use crate::ai::model::{ToolCall, ToolSpec};
 
 pub const KIND_PERMISSION: i64 = 1;
 pub const KIND_PLAN: i64 = 2;
@@ -88,7 +88,10 @@ pub fn valid_month(m: &str) -> bool {
         && b[4] == b'-'
         && b[..4].iter().all(u8::is_ascii_digit)
         && b[5..].iter().all(u8::is_ascii_digit)
-        && matches!(&m[5..], "01" | "02" | "03" | "04" | "05" | "06" | "07" | "08" | "09" | "10" | "11" | "12")
+        && matches!(
+            &m[5..],
+            "01" | "02" | "03" | "04" | "05" | "06" | "07" | "08" | "09" | "10" | "11" | "12"
+        )
 }
 
 /// Control state of a run.
@@ -152,8 +155,7 @@ fn req_of(r: &sqlx::any::AnyRow) -> Result<ReqRow, sqlx::Error> {
     })
 }
 
-const REQ_COLS: &str =
-    "id, run_id, repo, agent, kind, summary, detail, state, requested_at, decided_by, decided_at, reason";
+const REQ_COLS: &str = "id, run_id, repo, agent, kind, summary, detail, state, requested_at, decided_by, decided_at, reason";
 
 fn cp_of(r: &sqlx::any::AnyRow) -> Result<CheckpointRow, sqlx::Error> {
     let changes: Vec<String> =
@@ -180,7 +182,8 @@ fn unhex(s: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-const CP_COLS: &str = "id, run_id, seq, at, label, changes_json, tip, rolled_back_at, rolled_back_by";
+const CP_COLS: &str =
+    "id, run_id, seq, at, label, changes_json, tip, rolled_back_at, rolled_back_by";
 
 /// What the runtime does after looking at the pause and rollback state.
 pub enum Hold {
@@ -194,7 +197,10 @@ pub enum Flow {
     /// Not a control call; run it as usual.
     Proceed,
     /// The text for the model.
-    Result { content: String, error: bool },
+    Result {
+        content: String,
+        error: bool,
+    },
     Stop(Ended),
 }
 
@@ -314,7 +320,13 @@ impl AgentsHub {
             .execute(&self.core.pool)
             .await
             .map_err(|e| db(&e))?;
-        let fresh = self.core.runs.get(run.id).await.map_err(|e| db(&e))?.unwrap_or_else(|| run.clone());
+        let fresh = self
+            .core
+            .runs
+            .get(run.id)
+            .await
+            .map_err(|e| db(&e))?
+            .unwrap_or_else(|| run.clone());
         self.event(
             &fresh,
             EventKind::State,
@@ -329,7 +341,14 @@ impl AgentsHub {
 
     // ------------------------------------------------------------------------ requests
 
-    async fn insert_with_id(&self, table: &'static str, build: impl Fn(i64) -> String + Send + Sync, bind: impl Fn(sqlx::query::Query<'_, sqlx::Any, sqlx::any::AnyArguments>) -> sqlx::query::Query<'_, sqlx::Any, sqlx::any::AnyArguments>) -> Result<i64, Status> {
+    async fn insert_with_id(
+        &self,
+        table: &'static str,
+        build: impl Fn(i64) -> String + Send + Sync,
+        bind: impl Fn(
+            sqlx::query::Query<'_, sqlx::Any, sqlx::any::AnyArguments>,
+        ) -> sqlx::query::Query<'_, sqlx::Any, sqlx::any::AnyArguments>,
+    ) -> Result<i64, Status> {
         for _ in 0..8 {
             let q = format!("SELECT CAST(COALESCE(MAX(id), 0) AS BIGINT) FROM {table}");
             let max: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(q))
@@ -356,8 +375,10 @@ impl AgentsHub {
         summary: &str,
         detail: &str,
     ) -> Result<u64, Status> {
-        let (repo, agent, run_id, now) = (run.repo.clone(), run.agent.clone(), i(run.id), clock::now());
+        let (repo, agent, run_id, now) =
+            (run.repo.clone(), run.agent.clone(), i(run.id), clock::now());
         let (summary, detail) = (summary.to_owned(), detail.to_owned());
+        let detail_text = detail.clone();
         let id = self
             .insert_with_id(
                 "agent_run_requests",
@@ -386,9 +407,35 @@ impl AgentsHub {
             &id.to_string(),
             &[
                 ("run", run.id.to_string()),
-                ("kind", if kind == KIND_PLAN { "plan" } else { "permission" }.to_owned()),
+                (
+                    "kind",
+                    if kind == KIND_PLAN {
+                        "plan"
+                    } else {
+                        "permission"
+                    }
+                    .to_owned(),
+                ),
                 ("summary", summary_cut(&summary)),
             ],
+        )
+        .await;
+        let what = if kind == KIND_PLAN {
+            "wants its plan approved"
+        } else {
+            "asks for permission"
+        };
+        crate::notify::emit(
+            &self.core.pool,
+            &run.repo,
+            crate::notify::Event::new(
+                crate::notify::Kind::AgentQuestion,
+                format!("Agent {} {what}: {}", run.agent, summary_cut(&summary)),
+            )
+            .users(run_people(run))
+            .detail(detail_text.as_str())
+            .path(crate::notify::paths::run(&run.repo, run.id))
+            .dedup(format!("request:{id}")),
         )
         .await;
         Ok(u(id))
@@ -489,16 +536,19 @@ impl AgentsHub {
         if n == 1 && to == APPROVED {
             self.set_ctl_i(cur.run_id, "plan_ok", 1).await?;
         }
-        self.request(id).await?.ok_or_else(|| Status::internal("internal error"))
+        self.request(id)
+            .await?
+            .ok_or_else(|| Status::internal("internal error"))
     }
 
     /// Marks the pending requests of a finished run expired.
     pub async fn expire_requests(&self, run_id: u64) {
-        let _ = sqlx::query("UPDATE agent_run_requests SET state = $2 WHERE run_id = $1 AND state = 1")
-            .bind(i(run_id))
-            .bind(EXPIRED)
-            .execute(&self.core.pool)
-            .await;
+        let _ =
+            sqlx::query("UPDATE agent_run_requests SET state = $2 WHERE run_id = $1 AND state = 1")
+                .bind(i(run_id))
+                .bind(EXPIRED)
+                .execute(&self.core.pool)
+                .await;
     }
 
     /// Waits until the request is decided, the run is cancelled or `live` is stopped.
@@ -522,11 +572,13 @@ impl AgentsHub {
     // ------------------------------------------------------------------------ plan
 
     pub async fn plan_of(&self, run_id: u64) -> Result<Vec<(u32, String, String)>, Status> {
-        let rows = sqlx::query("SELECT idx, text, state FROM agent_run_plan WHERE run_id = $1 ORDER BY idx")
-            .bind(i(run_id))
-            .fetch_all(&self.core.pool)
-            .await
-            .map_err(|e| db(&e))?;
+        let rows = sqlx::query(
+            "SELECT idx, text, state FROM agent_run_plan WHERE run_id = $1 ORDER BY idx",
+        )
+        .bind(i(run_id))
+        .fetch_all(&self.core.pool)
+        .await
+        .map_err(|e| db(&e))?;
         rows.iter()
             .map(|r| {
                 let idx: i64 = r.try_get("idx").map_err(|e| db(&e))?;
@@ -553,27 +605,31 @@ impl AgentsHub {
             .await
             .map_err(|e| db(&e))?;
         for (n, s) in steps.iter().enumerate() {
-            sqlx::query("INSERT INTO agent_run_plan (run_id, idx, text, state) VALUES ($1, $2, $3, 0)")
-                .bind(i(run_id))
-                .bind(i64::try_from(n).unwrap_or(0))
-                .bind(s.clone())
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| db(&e))?;
+            sqlx::query(
+                "INSERT INTO agent_run_plan (run_id, idx, text, state) VALUES ($1, $2, $3, 0)",
+            )
+            .bind(i(run_id))
+            .bind(i64::try_from(n).unwrap_or(0))
+            .bind(s.clone())
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| db(&e))?;
         }
         tx.commit().await.map_err(|e| db(&e))
     }
 
     async fn mark_step(&self, run_id: u64, idx: usize, state: i64) -> Result<bool, Status> {
-        Ok(sqlx::query("UPDATE agent_run_plan SET state = $3 WHERE run_id = $1 AND idx = $2")
-            .bind(i(run_id))
-            .bind(i64::try_from(idx).unwrap_or(0))
-            .bind(state)
-            .execute(&self.core.pool)
-            .await
-            .map_err(|e| db(&e))?
-            .rows_affected()
-            == 1)
+        Ok(
+            sqlx::query("UPDATE agent_run_plan SET state = $3 WHERE run_id = $1 AND idx = $2")
+                .bind(i(run_id))
+                .bind(i64::try_from(idx).unwrap_or(0))
+                .bind(state)
+                .execute(&self.core.pool)
+                .await
+                .map_err(|e| db(&e))?
+                .rows_affected()
+                == 1,
+        )
     }
 
     /// `steps_done / steps_total / current` of a run.
@@ -666,13 +722,17 @@ impl AgentsHub {
     pub async fn request_rollback(&self, run: &RunRow, cp: &CheckpointRow) -> Result<(), Status> {
         let ctl = self.ctl(run.id).await?;
         if !ctl.paused {
-            return Err(Status::failed_precondition("pause the run before rolling it back"));
+            return Err(Status::failed_precondition(
+                "pause the run before rolling it back",
+            ));
         }
         if cp.run_id != run.id {
             return Err(Status::not_found("no such checkpoint"));
         }
         if cp.rolled_back_at > 0 {
-            return Err(Status::failed_precondition("the checkpoint was rolled back already"));
+            return Err(Status::failed_precondition(
+                "the checkpoint was rolled back already",
+            ));
         }
         self.set_ctl_i(run.id, "rollback_to", i(cp.id)).await
     }
@@ -694,7 +754,14 @@ impl AgentsHub {
     // ------------------------------------------------------------------------ spend
 
     /// Adds one model call to the spend of the day.
-    pub async fn record_spend(&self, repo: &str, agent: &str, tokens: u64, cost: u64, requests: u64) {
+    pub async fn record_spend(
+        &self,
+        repo: &str,
+        agent: &str,
+        tokens: u64,
+        cost: u64,
+        requests: u64,
+    ) {
         let day = day_of(clock::now());
         let repo = repo.to_ascii_lowercase();
         for _ in 0..3 {
@@ -733,7 +800,12 @@ impl AgentsHub {
     }
 
     /// `(cost, tokens, requests)` of an agent (or all, with `agent` empty) in a month.
-    pub async fn month_spend(&self, repo: &str, month: &str, agent: &str) -> Result<(u64, u64, u64), Status> {
+    pub async fn month_spend(
+        &self,
+        repo: &str,
+        month: &str,
+        agent: &str,
+    ) -> Result<(u64, u64, u64), Status> {
         let like = format!("{month}-%");
         let mut sql = "SELECT CAST(COALESCE(SUM(cost), 0) AS BIGINT) AS c, CAST(COALESCE(SUM(tokens), 0) AS BIGINT) AS t, \
                        CAST(COALESCE(SUM(requests), 0) AS BIGINT) AS r FROM agent_spend WHERE repo = $1 AND day LIKE $2"
@@ -741,30 +813,38 @@ impl AgentsHub {
         if !agent.is_empty() {
             sql.push_str(" AND agent = $3");
         }
-        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(repo.to_ascii_lowercase()).bind(like);
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(repo.to_ascii_lowercase())
+            .bind(like);
         if !agent.is_empty() {
             q = q.bind(agent.to_owned());
         }
         let r = q.fetch_one(&self.core.pool).await.map_err(|e| db(&e))?;
-        let g = |k: &str| -> Result<u64, Status> {
-            Ok(u(r.try_get::<i64, _>(k).map_err(|e| db(&e))?))
-        };
+        let g =
+            |k: &str| -> Result<u64, Status> { Ok(u(r.try_get::<i64, _>(k).map_err(|e| db(&e))?)) };
         Ok((g("c")?, g("t")?, g("r")?))
     }
 
     /// The monthly cap of the repository (`agent` empty) or of one agent; 0 for none.
     pub async fn monthly_cap(&self, repo: &str, agent: &str) -> Result<u64, Status> {
-        let v: Option<i64> =
-            sqlx::query_scalar("SELECT cap FROM agent_monthly_budget WHERE repo = $1 AND agent = $2")
-                .bind(repo.to_ascii_lowercase())
-                .bind(agent.to_owned())
-                .fetch_optional(&self.core.pool)
-                .await
-                .map_err(|e| db(&e))?;
+        let v: Option<i64> = sqlx::query_scalar(
+            "SELECT cap FROM agent_monthly_budget WHERE repo = $1 AND agent = $2",
+        )
+        .bind(repo.to_ascii_lowercase())
+        .bind(agent.to_owned())
+        .fetch_optional(&self.core.pool)
+        .await
+        .map_err(|e| db(&e))?;
         Ok(v.map_or(0, u))
     }
 
-    pub async fn set_monthly_cap(&self, repo: &str, agent: &str, cap: u64, by: &str) -> Result<(), Status> {
+    pub async fn set_monthly_cap(
+        &self,
+        repo: &str,
+        agent: &str,
+        cap: u64,
+        by: &str,
+    ) -> Result<(), Status> {
         let repo = repo.to_ascii_lowercase();
         sqlx::query("DELETE FROM agent_monthly_budget WHERE repo = $1 AND agent = $2")
             .bind(repo.clone())
@@ -786,18 +866,20 @@ impl AgentsHub {
         Ok(())
     }
 
-    /// Whether the spend of this month reached the cap of the repository or of `agent`.
+    /// Whether the spend of this month reached the cap of the repository or of `agent`. Fail
+    /// closed: when the cap or the spend cannot be read, the answer is "reached".
     pub async fn monthly_exceeded(&self, repo: &str, agent: &str) -> bool {
         let month = this_month();
         for who in ["", agent] {
-            let cap = self.monthly_cap(repo, who).await.unwrap_or(0);
+            let Ok(cap) = self.monthly_cap(repo, who).await else {
+                return true;
+            };
             if cap == 0 {
                 continue;
             }
-            if let Ok((cost, _, _)) = self.month_spend(repo, &month, who).await
-                && cost >= cap
-            {
-                return true;
+            match self.month_spend(repo, &month, who).await {
+                Ok((cost, _, _)) if cost < cap => {}
+                _ => return true,
             }
         }
         false
@@ -807,12 +889,29 @@ impl AgentsHub {
 
     /// Holds the run while it is paused; reports a stop or a rollback to perform.
     pub(crate) async fn hold(&self, run: &RunRow, live: &Arc<Live>) -> Hold {
+        let mut failures = 0u32;
         loop {
             if let Some(e) = Self::stopped_for(live) {
                 return Hold::Stop(e);
             }
-            let Ok(ctl) = self.ctl(run.id).await else {
-                return Hold::Go;
+            // Fail closed: a control state that cannot be read is retried, then the run stops. It is
+            // never taken to mean "not paused".
+            let ctl = match self.ctl(run.id).await {
+                Ok(c) => {
+                    failures = 0;
+                    c
+                }
+                Err(_) => {
+                    failures += 1;
+                    if failures >= 5 {
+                        return Hold::Stop(Ended::Failed {
+                            code: "internal".to_owned(),
+                            message: "the control state of the run could not be read".to_owned(),
+                        });
+                    }
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    continue;
+                }
             };
             if ctl.rollback_to != 0 {
                 let _ = self.set_ctl_i(run.id, "rollback_to", 0).await;
@@ -868,7 +967,9 @@ impl AgentsHub {
                     name: ref_name.to_owned(),
                     expect: Some(wire::ref_update::Expect::Any(true)),
                     new: Some(wire::RefTarget {
-                        t: Some(wire::ref_target::T::Changeset(bytes::Bytes::copy_from_slice(&cp.tip))),
+                        t: Some(wire::ref_target::T::Changeset(
+                            bytes::Bytes::copy_from_slice(&cp.tip),
+                        )),
                     }),
                     delete: false,
                 }
@@ -887,15 +988,30 @@ impl AgentsHub {
                 .await
                 .map_err(|s| format!("the ref could not be moved: {}", s.message()))?;
         }
-        *tip = if cp.tip.is_empty() { run.base.clone() } else { cp.tip.clone() };
+        *tip = if cp.tip.is_empty() {
+            run.base.clone()
+        } else {
+            cp.tip.clone()
+        };
         *ref_exists = *ref_exists && !cp.tip.is_empty();
         committed.truncate(cp.changes.len());
         if let Some(root) = ws.root_of_commit(tip).await {
-            ws.reset_to(root).await.map_err(|e| e.message().to_owned())?;
+            ws.reset_to(root)
+                .await
+                .map_err(|e| e.message().to_owned())?;
         }
-        self.set_changes(run.id, &cp.changes).await.map_err(|e| e.message().to_owned())?;
+        self.set_changes(run.id, &cp.changes)
+            .await
+            .map_err(|e| e.message().to_owned())?;
         self.mark_rolled_back(run.id, cp, &by, "").await;
-        let fresh = self.core.runs.get(run.id).await.ok().flatten().unwrap_or_else(|| run.clone());
+        let fresh = self
+            .core
+            .runs
+            .get(run.id)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| run.clone());
         self.event(
             &fresh,
             EventKind::State,
@@ -911,7 +1027,10 @@ impl AgentsHub {
             None,
             &run.repo,
             &run.id.to_string(),
-            &[("run", run.id.to_string()), ("checkpoint", cp.seq.to_string())],
+            &[
+                ("run", run.id.to_string()),
+                ("checkpoint", cp.seq.to_string()),
+            ],
         )
         .await;
         Ok(())
@@ -938,11 +1057,21 @@ impl AgentsHub {
         live: &Arc<Live>,
         call: &ToolCall,
     ) -> Flow {
+        // Fail closed: without the control state the plan gate and the pause cannot be decided, so the
+        // run stops instead of proceeding.
         let ctl = match self.ctl(run.id).await {
             Ok(c) => c,
-            Err(_) => return Flow::Proceed,
+            Err(_) => {
+                return Flow::Stop(Ended::Failed {
+                    code: "internal".to_owned(),
+                    message: "the control state of the run could not be read".to_owned(),
+                });
+            }
         };
-        let fail = |m: &str| Flow::Result { content: m.to_owned(), error: true };
+        let fail = |m: &str| Flow::Result {
+            content: m.to_owned(),
+            error: true,
+        };
         match call.name.as_str() {
             "propose_plan" if ctl.plan_first => {
                 let steps: Vec<String> = call
@@ -969,7 +1098,12 @@ impl AgentsHub {
                 }
                 let title = steps.first().cloned().unwrap_or_default();
                 let Ok(id) = self
-                    .open_request(run, KIND_PLAN, &format!("Plan: {title}"), &format!("{} steps", steps.len()))
+                    .open_request(
+                        run,
+                        KIND_PLAN,
+                        &format!("Plan: {title}"),
+                        &format!("{} steps", steps.len()),
+                    )
                     .await
                 else {
                     return fail("the plan could not be submitted");
@@ -977,27 +1111,54 @@ impl AgentsHub {
                 self.wait_on(run, live, id, "plan").await
             }
             "complete_step" if ctl.plan_first => {
-                let n = call.input.get("step").and_then(serde_json::Value::as_u64).unwrap_or(0);
-                let ok = n >= 1 && self.mark_step(run.id, usize::try_from(n - 1).unwrap_or(0), 2).await.unwrap_or(false);
+                let n = call
+                    .input
+                    .get("step")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0);
+                let ok = n >= 1
+                    && self
+                        .mark_step(run.id, usize::try_from(n - 1).unwrap_or(0), 2)
+                        .await
+                        .unwrap_or(false);
                 if let (true, Ok(plan)) = (ok, self.plan_of(run.id).await)
                     && let Some(next) = plan.iter().find(|p| p.2 == "todo")
                 {
                     let _ = self.mark_step(run.id, next.0 as usize, 1).await;
                 }
                 if ok {
-                    Flow::Result { content: format!("step {n} is done"), error: false }
+                    Flow::Result {
+                        content: format!("step {n} is done"),
+                        error: false,
+                    }
                 } else {
                     fail("there is no such step")
                 }
             }
             "request_permission" => {
-                let action = call.input.get("action").and_then(|v| v.as_str()).unwrap_or("").trim().to_owned();
+                let action = call
+                    .input
+                    .get("action")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_owned();
                 if action.is_empty() {
                     return fail("say what you want to do");
                 }
-                let why = call.input.get("reason").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+                let why = call
+                    .input
+                    .get("reason")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_owned();
                 let Ok(id) = self
-                    .open_request(run, KIND_PERMISSION, &action.chars().take(200).collect::<String>(), &why.chars().take(1000).collect::<String>())
+                    .open_request(
+                        run,
+                        KIND_PERMISSION,
+                        &action.chars().take(200).collect::<String>(),
+                        &why.chars().take(1000).collect::<String>(),
+                    )
                     .await
                 else {
                     return fail("the request could not be submitted");
@@ -1005,28 +1166,36 @@ impl AgentsHub {
                 self.wait_on(run, live, id, "permission").await
             }
             "ask_user" => Flow::Proceed,
-            _ if ctl.plan_first && !ctl.plan_ok => {
-                fail("propose a plan with propose_plan and wait for it to be approved before using other tools")
-            }
+            _ if ctl.plan_first && !ctl.plan_ok => fail(
+                "propose a plan with propose_plan and wait for it to be approved before using other tools",
+            ),
             "run_command" => {
                 let argv: Vec<String> = call
                     .input
                     .get("argv")
                     .and_then(|v| v.as_array())
-                    .map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_owned)).collect())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|s| s.as_str().map(str::to_owned))
+                            .collect()
+                    })
                     .unwrap_or_default();
-                let asks = self.core.cfg.sandbox.ask_before.iter().any(|p| {
-                    !p.is_empty() && argv.len() >= p.len() && argv[..p.len()] == p[..]
-                });
-                if !asks {
+                if !needs_permission(&argv, &self.core.cfg.sandbox.ask_before) {
                     return Flow::Proceed;
                 }
                 let line = argv.join(" ");
                 let Ok(id) = self
-                    .open_request(run, KIND_PERMISSION, &format!("run {}", line.chars().take(200).collect::<String>()), &line.chars().take(1000).collect::<String>())
+                    .open_request(
+                        run,
+                        KIND_PERMISSION,
+                        &format!("run {}", line.chars().take(200).collect::<String>()),
+                        &line.chars().take(1000).collect::<String>(),
+                    )
                     .await
                 else {
-                    return fail("the command needs permission and the request could not be submitted");
+                    return fail(
+                        "the command needs permission and the request could not be submitted",
+                    );
                 };
                 match self.wait_on(run, live, id, "permission").await {
                     Flow::Result { error: false, .. } => Flow::Proceed,
@@ -1046,9 +1215,23 @@ impl AgentsHub {
             .transition(run.id, &[RunState::Running], RunState::WaitingInput)
             .await
             .unwrap_or(false);
-        let fresh = core.runs.get(run.id).await.ok().flatten().unwrap_or_else(|| run.clone());
+        let fresh = core
+            .runs
+            .get(run.id)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| run.clone());
         if moved {
-            self.event(&fresh, EventKind::State, &format!("waiting_input ({what} request {id})"), "", &[], "").await;
+            self.event(
+                &fresh,
+                EventKind::State,
+                &format!("waiting_input ({what} request {id})"),
+                "",
+                &[],
+                "",
+            )
+            .await;
         }
         let decided = self.wait_decision(id, live).await;
         let _ = core
@@ -1058,14 +1241,36 @@ impl AgentsHub {
         let Some(r) = decided else {
             return Flow::Stop(Ended::Cancelled("cancelled".into()));
         };
-        self.event(&fresh, EventKind::State, "running", "", &[], "").await;
-        let why = if r.reason.is_empty() { String::new() } else { format!(": {}", r.reason) };
+        self.event(&fresh, EventKind::State, "running", "", &[], "")
+            .await;
+        let why = if r.reason.is_empty() {
+            String::new()
+        } else {
+            format!(": {}", r.reason)
+        };
         match r.state {
-            ALLOWED => Flow::Result { content: "permission granted once".to_owned(), error: false },
-            APPROVED => Flow::Result { content: "the plan is approved; carry it out and mark steps done with complete_step".to_owned(), error: false },
-            DENIED => Flow::Result { content: format!("permission denied{why}; do not do this"), error: true },
-            REJECTED => Flow::Result { content: format!("the plan was rejected{why}; change it and propose it again"), error: true },
-            _ => Flow::Result { content: "the request expired".to_owned(), error: true },
+            ALLOWED => Flow::Result {
+                content: "permission granted once".to_owned(),
+                error: false,
+            },
+            APPROVED => Flow::Result {
+                content:
+                    "the plan is approved; carry it out and mark steps done with complete_step"
+                        .to_owned(),
+                error: false,
+            },
+            DENIED => Flow::Result {
+                content: format!("permission denied{why}; do not do this"),
+                error: true,
+            },
+            REJECTED => Flow::Result {
+                content: format!("the plan was rejected{why}; change it and propose it again"),
+                error: true,
+            },
+            _ => Flow::Result {
+                content: "the request expired".to_owned(),
+                error: true,
+            },
         }
     }
 
@@ -1077,7 +1282,12 @@ impl AgentsHub {
     // ------------------------------------------------------------------------ boards
 
     /// Median `(seconds, cost, tokens, samples)` of the finished runs of an agent in a repository.
-    pub async fn estimate(&self, repo: &str, agent: &str, task_bytes: u32) -> Result<(u32, u64, u64, u32), Status> {
+    pub async fn estimate(
+        &self,
+        repo: &str,
+        agent: &str,
+        task_bytes: u32,
+    ) -> Result<(u32, u64, u64, u32), Status> {
         let rows = sqlx::query(
             "SELECT id, started, finished, task, token_id FROM agent_runs \
              WHERE repo = $1 AND state = 4 AND finished > started AND started > 0 AND ($2 = '' OR agent = $2) \
@@ -1127,7 +1337,12 @@ impl AgentsHub {
     }
 
     /// Distinct recent tasks, newest first. `by` empty returns everyone's.
-    pub async fn recent_tasks(&self, repo: &str, by: &str, limit: usize) -> Result<Vec<RunRow>, Status> {
+    pub async fn recent_tasks(
+        &self,
+        repo: &str,
+        by: &str,
+        limit: usize,
+    ) -> Result<Vec<RunRow>, Status> {
         let rows = self
             .core
             .runs
@@ -1152,7 +1367,12 @@ impl AgentsHub {
         let mut lines: Vec<(i64, String)> = Vec::new();
         let mut after = 0u64;
         loop {
-            let ev = self.core.runs.events_after(run.id, after, 500).await.map_err(|e| db(&e))?;
+            let ev = self
+                .core
+                .runs
+                .events_after(run.id, after, 500)
+                .await
+                .map_err(|e| db(&e))?;
             if ev.is_empty() {
                 break;
             }
@@ -1167,7 +1387,10 @@ impl AgentsHub {
                 break;
             }
         }
-        for r in self.list_requests(&run.repo, run.id, &[], None, 200).await? {
+        for r in self
+            .list_requests(&run.repo, run.id, &[], None, 200)
+            .await?
+        {
             lines.push((
                 r.requested_at,
                 serde_json::json!({"type": "request", "id": r.id, "kind": if r.kind == KIND_PLAN { "plan" } else { "permission" },
@@ -1211,6 +1434,164 @@ impl AgentsHub {
         }
         v
     }
+}
+
+/// Programs that run other programs: the command that follows is not the one the allow list saw.
+const WRAPPERS: &[&str] = &[
+    "env",
+    "nice",
+    "nohup",
+    "timeout",
+    "xargs",
+    "time",
+    "sudo",
+    "doas",
+    "command",
+    "exec",
+    "stdbuf",
+    "ionice",
+    "setsid",
+    "chrt",
+    "taskset",
+    "unbuffer",
+    "busybox",
+    "watch",
+    "flock",
+    "strace",
+    "ltrace",
+    "su",
+    "runuser",
+    "chroot",
+    "script",
+    "parallel",
+    "find",
+    "git-shell",
+    "start",
+    "call",
+];
+
+/// Shells and interpreters: whatever they are given runs as code, so a command through one always asks.
+const INTERPRETERS: &[&str] = &[
+    "sh",
+    "bash",
+    "zsh",
+    "dash",
+    "ksh",
+    "csh",
+    "tcsh",
+    "fish",
+    "ash",
+    "cmd",
+    "powershell",
+    "pwsh",
+    "perl",
+    "ruby",
+    "node",
+    "nodejs",
+    "bun",
+    "deno",
+    "php",
+    "lua",
+    "tclsh",
+    "awk",
+    "gawk",
+    "mawk",
+    "make",
+    "gmake",
+    "eval",
+    "source",
+    "osascript",
+    "wscript",
+    "cscript",
+    "java",
+    "dotnet",
+    "npx",
+    "pnpx",
+    "bunx",
+    "uvx",
+    "pipx",
+];
+
+/// The program name of an argument: its last path segment, lower case, without a Windows extension.
+fn program_name(arg: &str) -> String {
+    let last = arg
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(arg)
+        .to_ascii_lowercase();
+    for ext in [".exe", ".cmd", ".bat", ".com", ".ps1"] {
+        if let Some(stem) = last.strip_suffix(ext) {
+            return stem.to_owned();
+        }
+    }
+    last
+}
+
+fn is_interpreter(name: &str) -> bool {
+    INTERPRETERS.contains(&name)
+        || name.starts_with("python")
+        || name.starts_with("pypy")
+        || name.starts_with("ruby")
+}
+
+/// Most arguments and wrapper nesting examined; beyond them the answer is "ask".
+const MAX_ARGS: usize = 64;
+const MAX_NESTING: usize = 4;
+
+/// Whether running `argv` needs a person's yes under `ask_before` (prefixes of argument lists).
+///
+/// The match is on what would run, not on the text: the program is compared by its name (a path or a
+/// `.exe` does not hide it); the words of a prefix after the program may be separated by other words,
+/// so a global option before the subcommand (`git -C dir push`) does not hide it; a wrapper
+/// (`env`, `nice`, `timeout`, `sudo`, `xargs`, ...) is looked through at every position, so an option
+/// or a value of the wrapper does not hide the command; a shell or an interpreter always asks, and so
+/// does a command too long or too deeply wrapped to examine. Over-asking is the safe error.
+/// The people a run's notices are for: the person who started it, else the person it was created
+/// for. A workflow or a system principal has no login and gives nobody.
+pub(crate) fn run_people(run: &RunRow) -> Vec<String> {
+    [&run.starter, &run.created_by]
+        .into_iter()
+        .find(|h| crate::review::valid_handle(h))
+        .cloned()
+        .into_iter()
+        .collect()
+}
+
+pub fn needs_permission(argv: &[String], ask_before: &[Vec<String>]) -> bool {
+    if ask_before.is_empty() {
+        return false;
+    }
+    if argv.len() > MAX_ARGS {
+        return true;
+    }
+    let args: Vec<&str> = argv.iter().map(String::as_str).collect();
+    needs_inner(&args, ask_before, 0)
+}
+
+fn needs_inner(args: &[&str], ask_before: &[Vec<String>], depth: usize) -> bool {
+    let Some(first) = args.first() else {
+        return false;
+    };
+    if depth > MAX_NESTING {
+        return true;
+    }
+    let name = program_name(first);
+    if is_interpreter(&name) {
+        return true;
+    }
+    if WRAPPERS.contains(&name.as_str()) {
+        return (1..args.len()).any(|i| needs_inner(&args[i..], ask_before, depth + 1));
+    }
+    ask_before.iter().any(|p| {
+        let Some(p0) = p.first() else {
+            return false;
+        };
+        if program_name(p0) != name {
+            return false;
+        }
+        let mut rest = args[1..].iter();
+        p[1..].iter().all(|w| rest.any(|a| a == w))
+    })
 }
 
 fn summary_cut(s: &str) -> String {

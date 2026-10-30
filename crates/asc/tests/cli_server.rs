@@ -408,17 +408,18 @@ fn credential_failures_follow_git_and_auth_status_names_the_source() {
     let sb = Sandbox::new();
     let a = first_client(&sb, "a", &url);
 
-    // No credential at all: git's wording for disabled prompts.
+    // No credential at all and no way to ask for one: the message says what to do.
     let out = asc_as(&sb, &a, None, &["fetch", "origin"]);
     assert_eq!(out.status.code(), Some(128));
     let err = text(&out.stderr);
-    assert!(err.contains("terminal prompts disabled"), "{err}");
+    assert!(err.contains("authentication required"), "{err}");
+    assert!(err.contains("cannot ask for one"), "{err}");
 
     // A refused credential.
     let out = asc_as(&sb, &a, Some("not-a-token"), &["fetch", "origin"]);
     assert_eq!(out.status.code(), Some(128));
     assert!(
-        text(&out.stderr).contains("Authentication failed"),
+        text(&out.stderr).contains("was refused by"),
         "{}",
         text(&out.stderr)
     );

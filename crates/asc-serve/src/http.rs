@@ -226,6 +226,8 @@ pub struct HttpState {
     well_known: Arc<WellKnown>,
     probes: Arc<Mutex<Vec<Arc<dyn Probe>>>>,
     stats: Option<Arc<crate::obs::Stats>>,
+    /// Raised while a restore is staged (see `Extensions::read_only`).
+    maintenance: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl HttpState {
@@ -242,7 +244,15 @@ impl HttpState {
             well_known: Arc::new(well_known.bounded()),
             probes: Arc::default(),
             stats: None,
+            maintenance: Arc::default(),
         }
+    }
+
+    /// Shares the maintenance flag the admin readiness reports.
+    #[must_use]
+    pub fn with_maintenance(mut self, flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
+        self.maintenance = flag;
+        self
     }
 
     /// Has `/metrics` also read the queue, run and storage metrics from the database.
@@ -319,7 +329,12 @@ async fn readyz_detailed(State(s): State<HttpState>) -> Response {
     };
     (
         code,
-        axum::Json(serde_json::json!({ "ready": failed.is_empty(), "failed": failed })),
+        axum::Json(serde_json::json!({
+            "ready": failed.is_empty(),
+            "failed": failed,
+            "read_only": s.maintenance.load(std::sync::atomic::Ordering::Relaxed),
+            "restore_staged": s.maintenance.load(std::sync::atomic::Ordering::Relaxed),
+        })),
     )
         .into_response()
 }
@@ -418,6 +433,24 @@ mod tests {
     async fn health_and_ready() {
         let (st, _, _) = state(WellKnown::default()).await;
         assert_eq!(get_path(&st, "/healthz").await, (200, String::new()));
+        assert_eq!(get_path(&st, "/readyz").await, (200, String::new()));
+    }
+
+    #[tokio::test]
+    async fn the_admin_readiness_says_when_a_restore_is_staged() {
+        let (st, _, _) = state(WellKnown::default()).await;
+        let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let st = st.with_maintenance(flag.clone());
+        let (_, body) = admin_get(&st, "/readyz").await;
+        assert!(body.contains("\"read_only\":false"), "{body}");
+        flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        let (code, body) = admin_get(&st, "/readyz").await;
+        assert_eq!(code, 200, "reads still work");
+        assert!(
+            body.contains("\"read_only\":true") && body.contains("\"restore_staged\":true"),
+            "{body}"
+        );
+        // The public probe stays a bare status.
         assert_eq!(get_path(&st, "/readyz").await, (200, String::new()));
     }
 

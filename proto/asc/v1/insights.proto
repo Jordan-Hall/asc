@@ -1,0 +1,90 @@
+syntax = "proto3";
+package asc.v1;
+
+import "asc/v1/repo.proto";
+
+// Repository insights: what landed, who wrote it and who reviewed it (docs/BUILDOUT.md section 24). The numbers are
+// computed from the changes that landed on the default branch (the rewrites a land recorded), the versions of those changes,
+// the verdicts reviewers recorded and the agent runs that made changes. Every call needs repo read, and the answer is about this
+// repository only: nothing from a user ref or from a change that never landed is counted, except "stacks opened" and the
+// reviews given, which count what the repository's readers can see in its review pages. Times are Unix seconds, days are UTC
+// days. `kind` narrows the tiles, the series and the sizes; the author mix is always over everyone.
+service Insights {
+  rpc GetStats(InsightsStatsRequest) returns (InsightsStatsResponse);                  // repo read; expensive
+  rpc ListContributors(ListContributorsRequest) returns (ListContributorsResponse);    // repo read; expensive
+}
+
+// Who made a change: a person, or an agent (an agent run's change, or a change published under an `agent:` principal).
+enum AuthorKind {
+  AUTHOR_KIND_UNSPECIFIED = 0;   // in a request: everyone
+  AUTHOR_KIND_PERSON = 1;
+  AUTHOR_KIND_AGENT = 2;
+}
+
+message InsightsStatsRequest {
+  RepoRef repo = 1;
+  uint32 days = 2;               // the window, 1 to 366; 0 means 30
+  AuthorKind kind = 3;
+  int64 until = 4;               // the end of the window; 0 means now
+}
+
+message InsightsDay {
+  int64 day = 1;                 // start of the UTC day
+  uint32 people = 2;
+  uint32 agents = 3;
+}
+
+message InsightsWeek {
+  int64 week_start = 1;
+  uint32 landed = 2;
+  int64 median_review_seconds = 3;   // 0 when no landed change of the week was reviewed
+}
+
+message InsightsSizeBucket {
+  string label = 1;              // "under_50", "50_to_300", "over_300" (lines added and removed), "unknown" (no stored size)
+  uint32 changes = 2;
+  int64 median_review_seconds = 3;
+}
+
+message InsightsStatsResponse {
+  int64 from = 1;
+  int64 until = 2;
+  uint32 landed = 3;                     // changes landed in the window
+  uint32 landed_previous = 4;            // in the window of the same length before it
+  uint32 stacks_opened = 5;              // changes without a parent change that were first published in the window
+  uint32 stacks_opened_previous = 6;
+  int64 median_review_seconds = 7;       // first verdict after the first version, over the landed changes; 0 when none was reviewed
+  int64 median_review_previous = 8;
+  uint32 landed_by_people = 9;           // the author mix over everyone, whatever `kind` says
+  uint32 landed_by_agents = 10;
+  uint32 agent_changes_reviewed = 11;    // landed agent changes that hold an approval by a person
+  repeated InsightsDay per_day = 12;     // every day of the window, oldest first
+  repeated InsightsWeek weekly = 13;     // the 12 weeks ending at `until`, oldest first
+  repeated InsightsSizeBucket by_size = 14;
+  bool truncated = 15;                   // a bound cut the data: the numbers are lower bounds
+}
+
+message ListContributorsRequest {
+  RepoRef repo = 1;
+  uint32 days = 2;               // 1 to 366; 0 means 30
+  AuthorKind kind = 3;
+  int64 until = 4;
+}
+
+message Contributor {
+  string name = 1;               // the login of a person, the name of an agent
+  AuthorKind kind = 2;
+  string run_by = 3;             // for an agent: the person who started its latest run in the window; empty otherwise
+  uint32 landed = 4;
+  uint32 reviews_given = 5;      // approvals and requests for changes recorded in the window (agents never review)
+  int64 median_review_seconds = 6;   // time from the first version of a change to this person's verdict; 0 when none
+  repeated uint32 weekly_landed = 7; // the 12 weeks ending at `until`, oldest first
+  double share = 8;              // landed / all landed changes of the window by the listed kinds
+  uint64 user_id = 9;            // the hub's id of the person when the repository recorded one; 0 otherwise
+}
+
+message ListContributorsResponse {
+  repeated Contributor contributors = 1;   // landed first, then reviews given; at most 200
+  uint32 landed = 2;
+  bool truncated = 3;
+}

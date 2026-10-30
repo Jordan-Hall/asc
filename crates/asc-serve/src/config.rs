@@ -1063,6 +1063,10 @@ pub struct ServeConfig {
     /// `[ssh]` (SPEC §25.11); honoured only with the feature `git-ssh`.
     pub ssh: SshConfig,
     pub gc: crate::gc::GcSettings,
+    /// `[pack]`: packed objects (docs/design/PACKED-OBJECTS.md).
+    pub pack: crate::pack_service::PackSettings,
+    /// `[import]`: how a git import batches its writes.
+    pub import: crate::pack_service::ImportSettings,
     /// `[cloud]` (SPEC §21.3.7): `max_user_refs` and `max_user_bytes`.
     pub cloud: CloudConfig,
     /// `[web]`: the web UI under `/ui` (docs/WEB-UI.md).
@@ -1077,6 +1081,8 @@ pub struct ServeConfig {
     pub audit: crate::audit::AuditConfig,
     /// `[ci_insights]`: retention and the flaky window (docs/BUILDOUT.md section 8).
     pub ci_insights: crate::ci::insights::InsightsConfig,
+    /// `[notify]`: events for the hub's people and where they link to (docs/BUILDOUT.md section 21).
+    pub notify: crate::notify::NotifyConfig,
     /// `[secrets]`: bounds of the push-time secret scan (docs/BUILDOUT.md section 4).
     pub secrets: crate::secretscan::Config,
     /// `[signing]`: the server's signing key and the keys per user (docs/BUILDOUT.md section 5).
@@ -1089,6 +1095,10 @@ pub struct ServeConfig {
     pub workflows: crate::workflows::WorkflowsConfig,
     /// `[deps]`: dependency scanning and update proposals (docs/DEPENDENCIES.md).
     pub deps: crate::deps::Config,
+    /// `[backups]`: scheduled backups and where they go (docs/runbooks/backup.md).
+    pub backups: crate::backups::config::BackupsConfig,
+    /// `[usage]`: how long usage counters are kept (docs/BUILDOUT.md section 25).
+    pub usage: crate::usage::UsageConfig,
     pub composition_grants: Vec<CompositionGrant>,
 }
 
@@ -1117,6 +1127,8 @@ impl Default for ServeConfig {
             git: GitConfig::default(),
             ssh: SshConfig::default(),
             gc: crate::gc::GcSettings::default(),
+            pack: crate::pack_service::PackSettings::default(),
+            import: crate::pack_service::ImportSettings::default(),
             cloud: CloudConfig::default(),
             web: WebConfig::default(),
             vault: crate::vault::VaultConfig::default(),
@@ -1124,12 +1136,15 @@ impl Default for ServeConfig {
             storage: crate::storage::StorageConfig::default(),
             audit: crate::audit::AuditConfig::default(),
             ci_insights: crate::ci::insights::InsightsConfig::default(),
+            notify: crate::notify::NotifyConfig::default(),
             secrets: crate::secretscan::Config::default(),
             signing: crate::signing::Config::default(),
             aikeys: crate::ai::AiKeysConfig::default(),
             agents: crate::agents::AgentsConfig::default(),
             workflows: crate::workflows::WorkflowsConfig::default(),
             deps: crate::deps::Config::default(),
+            backups: crate::backups::config::BackupsConfig::default(),
+            usage: crate::usage::UsageConfig::default(),
             composition_grants: Vec::new(),
         }
     }
@@ -1163,6 +1178,8 @@ impl ServeConfig {
     /// Checks everything the types do not: URL schemes, role requirements, bounds.
     pub fn validate(&self) -> Result<(), ConfigError> {
         self.gc.to_config()?;
+        self.pack.to_config()?;
+        self.import.to_policy()?;
         if let Some(store) = &self.store {
             let scheme = url_scheme(store);
             if !matches!(scheme, "s3" | "file" | "memory") {
@@ -1277,6 +1294,9 @@ impl ServeConfig {
         self.ci_insights
             .validate()
             .map_err(|e| ConfigError::Invalid(format!("ci_insights: {e}")))?;
+        self.notify
+            .validate()
+            .map_err(|e| ConfigError::Invalid(format!("notify: {e}")))?;
         self.netguard.validate().or_else(invalid)?;
         self.storage.validate().or_else(invalid)?;
         self.aikeys.validate().or_else(invalid)?;

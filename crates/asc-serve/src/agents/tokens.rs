@@ -558,6 +558,38 @@ impl TokenStore {
         Ok(())
     }
 
+    /// Puts the token on its run and gives it the limits the run row holds now, in one transaction.
+    /// The run row is written first, which also takes its lock, so a concurrent edit of the limits
+    /// either lands before the read below or finds the token on the run afterwards.
+    pub async fn attach_to_run(&self, run_id: u64, token_id: &str) -> Result<(), sqlx::Error> {
+        let run = i64::try_from(run_id).unwrap_or(0);
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("UPDATE agent_runs SET token_id = $2 WHERE id = $1")
+            .bind(run)
+            .bind(token_id.to_owned())
+            .execute(&mut *tx)
+            .await?;
+        let json: Option<String> =
+            sqlx::query_scalar("SELECT limits_json FROM agent_runs WHERE id = $1")
+                .bind(run)
+                .fetch_optional(&mut *tx)
+                .await?;
+        if let Some(l) = json.map(|j| super::runs::limits_of(&j)) {
+            sqlx::query(
+                "UPDATE agent_tokens SET lim_changes = $2, lim_tokens = $3, lim_cost = $4, lim_paths = $5, lim_runtime = $6,                  exhausted = CASE WHEN ($3 > 0 AND used_tokens >= $3) OR ($4 > 0 AND used_cost >= $4) THEN 1 ELSE 0 END                  WHERE id = $1",
+            )
+            .bind(token_id.to_owned())
+            .bind(i(l.changes))
+            .bind(i(l.tokens))
+            .bind(i(l.cost))
+            .bind(i(l.paths))
+            .bind(i(l.runtime))
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await
+    }
+
     /// Notes that the token was used (at most every 30 seconds).
     pub async fn touch(&self, id: &str, now: i64) {
         let _ =

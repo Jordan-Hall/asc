@@ -4,9 +4,9 @@
 //! (`seqstate`), messages and hooks (`pre-merge-commit`, `prepare-commit-msg`, `commit-msg`,
 //! `post-merge`).
 //!
-//! Not served, and refused with a message rather than approximated: octopus merges (more than
-//! one commit), merging into an unborn branch, file/directory and case conflicts, the editor
-//! (`-e`), signing and strategies other than `ort`.
+//! Several commits make an octopus merge, as in git. Not served, and refused with a message
+//! rather than approximated: file/directory and case conflicts, the editor (`-e`), signing and
+//! strategies other than `ort`.
 
 use std::ffi::OsString;
 use std::io::Write as _;
@@ -240,6 +240,13 @@ fn unmerged_error() -> CliError {
 /// `Merge branch 'x'` with ` into <branch>` unless the current branch is a suppressed one.
 fn default_message(ctx: &Ctx, ws: &WsCtx, t: &Target) -> Result<String> {
     let mut text = format!("Merge {}", t.described);
+    text.push_str(&into_suffix(ctx, ws)?);
+    Ok(text)
+}
+
+/// ` into <branch>` unless the current branch is a suppressed one (or HEAD is detached).
+fn into_suffix(ctx: &Ctx, ws: &WsCtx) -> Result<String> {
+    let mut text = String::new();
     if let asc_git::projection::Head::Branch(b) = ws.projection.read_head()? {
         let configured = ctx.config.get_all("merge.suppressDest");
         let suppressed = if configured.is_empty() {
@@ -269,29 +276,29 @@ async fn start(ctx: &Ctx, ws: &WsCtx, gitdir: &std::path::Path, a: &Args) -> Res
     if a.commits.is_empty() {
         return Err(CliError::Fatal("No remote for the current branch.".into()));
     }
-    if a.commits.len() > 1 {
-        return Err(fatal(
-            "asc: octopus merges (more than one commit) are not supported yet",
-        ));
-    }
     let favor = conflict::favor_of(&a.strategy_option)?;
     let Some(head) = ws.head_commit().await? else {
-        return Err(fatal(
-            "asc: merging into an unborn branch is not supported yet",
-        ));
+        return merge_into_unborn(ctx, ws, gitdir, a).await;
     };
-    let name = a.commits[0].to_string_lossy().into_owned();
-    let Some(id) = resolve_commit(ctx, &name).await? else {
-        return Err(CliError::Raw(
-            format!("merge: {name} - not something we can merge"),
-            1,
-        ));
-    };
-    let target = Target {
-        id,
-        described: describe(ws, &name).await,
-        name,
-    };
+    let mut targets = resolve_targets(ctx, ws, &a.commits).await?;
+    if targets.len() > 1 {
+        // Like git: a head another one (or HEAD) already contains is no head of the merge. What is
+        // left decides between an octopus and an ordinary merge.
+        targets = reduce_heads(ws, head, targets).await?;
+        if targets.is_empty() {
+            if !a.quiet {
+                println!(
+                    "Already up to date.{}",
+                    if a.squash { " (nothing to squash)" } else { "" }
+                );
+            }
+            return Ok(ExitCode::SUCCESS);
+        }
+    }
+    if targets.len() > 1 {
+        return octopus(ctx, ws, gitdir, a, head, targets, favor).await;
+    }
+    let target = targets.pop().expect("one commit to merge");
     let head_git = conflict::git_id(ws, head).await?;
     conflict::git_id(ws, target.id).await?;
     seqstate::write_orig_head(gitdir, head_git)?;
@@ -351,6 +358,396 @@ async fn start(ctx: &Ctx, ws: &WsCtx, gitdir: &std::path::Path, a: &Args) -> Res
     real_merge(ctx, ws, gitdir, a, head, &bases, &target, favor).await
 }
 
+// ---------------------------------------------------------------- octopus
+
+/// The commits named on the command line, each resolved, the repeated ones once.
+async fn resolve_targets(ctx: &Ctx, ws: &WsCtx, words: &[OsString]) -> Result<Vec<Target>> {
+    let mut targets: Vec<Target> = Vec::new();
+    for word in words {
+        let name = word.to_string_lossy().into_owned();
+        let Some(id) = resolve_commit(ctx, &name).await? else {
+            return Err(CliError::Raw(
+                format!("merge: {name} - not something we can merge"),
+                1,
+            ));
+        };
+        if targets.iter().any(|t| t.id == id) {
+            continue;
+        }
+        targets.push(Target {
+            id,
+            described: describe(ws, &name).await,
+            name,
+        });
+    }
+    Ok(targets)
+}
+
+/// The targets that no other target and not HEAD contains, in the order given.
+async fn reduce_heads(ws: &WsCtx, head: ChangesetId, targets: Vec<Target>) -> Result<Vec<Target>> {
+    let mut kept = Vec::new();
+    for (i, t) in targets.iter().enumerate() {
+        let mut covered = ws.engine.is_ancestor(t.id, head).await.map_err(fatal)?;
+        if !covered {
+            for (j, other) in targets.iter().enumerate() {
+                if i != j && ws.engine.is_ancestor(t.id, other.id).await.map_err(fatal)? {
+                    covered = true;
+                    break;
+                }
+            }
+        }
+        if !covered {
+            kept.push(i);
+        }
+    }
+    Ok(targets
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, t)| kept.contains(&i).then_some(t))
+        .collect())
+}
+
+/// `Merge branches 'a' and 'b'`: the targets grouped by what they are, as git words it.
+fn octopus_message(ctx: &Ctx, ws: &WsCtx, targets: &[Target]) -> Result<String> {
+    let mut groups: Vec<(&str, Vec<&str>)> = Vec::new();
+    for kind in ["branch", "remote-tracking branch", "tag", "commit"] {
+        let names: Vec<&str> = targets
+            .iter()
+            .filter(|t| t.described == format!("{kind} '{}'", t.name))
+            .map(|t| t.name.as_str())
+            .collect();
+        if !names.is_empty() {
+            groups.push((kind, names));
+        }
+    }
+    let parts: Vec<String> = groups
+        .iter()
+        .map(|(kind, names)| {
+            let mut out = if names.len() == 1 {
+                format!("{kind} ")
+            } else {
+                format!("{} ", plural_of(kind))
+            };
+            for (i, n) in names.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(if i == names.len() - 1 { " and " } else { ", " });
+                }
+                out.push_str(&format!("'{n}'"));
+            }
+            out
+        })
+        .collect();
+    Ok(format!(
+        "Merge {}{}",
+        parts.join(", "),
+        into_suffix(ctx, ws)?
+    ))
+}
+
+fn plural_of(kind: &str) -> String {
+    match kind {
+        "branch" => "branches".into(),
+        "remote-tracking branch" => "remote-tracking branches".into(),
+        "tag" => "tags".into(),
+        other => format!("{other}s"),
+    }
+}
+
+/// Whether `git read-tree -m --aggressive` would settle the merge on its own: no path changed on
+/// both sides to different results. Otherwise git falls back to its per-file merge.
+async fn simple_merge_suffices(
+    ws: &WsCtx,
+    base: TreeId,
+    ours: TreeId,
+    theirs: TreeId,
+) -> Result<bool> {
+    let ours_changes: std::collections::BTreeSet<_> = ws
+        .engine
+        .leafdiff(base, ours, None)
+        .await?
+        .into_iter()
+        .map(|(p, _)| p)
+        .collect();
+    for (path, _) in ws.engine.leafdiff(base, theirs, None).await? {
+        if ours_changes.contains(&path)
+            && ws.engine.lookup(ours, &path).await? != ws.engine.lookup(theirs, &path).await?
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// `merge <commit> <commit>…`: git's octopus strategy. The heads are merged one after another
+/// into a running tree; a head that is already merged is skipped, the first one that is a
+/// fast-forward of HEAD moves the running result, and only the last head may leave conflicts.
+async fn octopus(
+    ctx: &Ctx,
+    ws: &WsCtx,
+    gitdir: &std::path::Path,
+    a: &Args,
+    head: ChangesetId,
+    targets: Vec<Target>,
+    favor: asc_engine::merge::Favor,
+) -> Result<ExitCode> {
+    let head_git = conflict::git_id(ws, head).await?;
+    for t in &targets {
+        conflict::git_id(ws, t.id).await?;
+    }
+    seqstate::write_orig_head(gitdir, head_git)?;
+
+    if a.ff_mode() == FfMode::Only {
+        return Err(CliError::Raw(
+            "fatal: Not possible to fast-forward, aborting.".into(),
+            128,
+        ));
+    }
+
+    let head_root = root_of(ws, Some(head)).await?;
+    let staged = stage::overlay(&ws.db, ws.workspace.ws.id, StageSet::Default).await?;
+    if !staged.is_empty() {
+        let mut paths: Vec<String> = staged
+            .iter()
+            .map(|r| String::from_utf8_lossy(&r.path).into_owned())
+            .collect();
+        paths.sort();
+        paths.dedup();
+        println!("Error: Your local changes to the following files would be overwritten by merge");
+        for p in paths {
+            println!("    {p}");
+        }
+        eprintln!("Merge with strategy octopus failed.");
+        return Ok(ExitCode::from(2));
+    }
+
+    let mut lines: Vec<String> = Vec::new();
+    let flush = |lines: &mut Vec<String>| {
+        if !a.quiet {
+            let mut out = std::io::stdout().lock();
+            for l in lines.drain(..) {
+                let _ = writeln!(out, "{l}");
+            }
+        } else {
+            lines.clear();
+        }
+    };
+    let mut running = vec![head];
+    let mut running_root = head_root;
+    let mut non_ff = false;
+    let mut failed = false;
+    let mut last: Option<MergeOutcome> = None;
+    for t in &targets {
+        if failed {
+            lines.push("Automated merge did not work.".into());
+            lines.push("Should not be doing an octopus.".into());
+            flush(&mut lines);
+            eprintln!("Merge with strategy octopus failed.");
+            return Ok(ExitCode::from(2));
+        }
+        let bases = ws
+            .engine
+            .merge_base(t.id, &running, true)
+            .await
+            .map_err(fatal)?;
+        if bases.is_empty() && !a.allow_unrelated {
+            flush(&mut lines);
+            return Err(fatal(format!(
+                "Unable to find common commit with {}",
+                t.name
+            )));
+        }
+        if bases.contains(&t.id) {
+            lines.push(format!("Already up to date with {}", t.name));
+            continue;
+        }
+        if !non_ff && running.len() == 1 && bases == running {
+            lines.push(format!("Fast-forwarding to: {}", t.name));
+            running = vec![t.id];
+            running_root = root_of(ws, Some(t.id)).await?;
+            continue;
+        }
+        non_ff = true;
+        lines.push(format!("Trying simple merge with {}", t.name));
+        let theirs_root = root_of(ws, Some(t.id)).await?;
+        let labels = Labels {
+            base: "merged common ancestors".into(),
+            ours: "HEAD".into(),
+            theirs: t.name.clone(),
+        };
+        let plain = conflict::merge_options(
+            ctx,
+            ws,
+            &Sides {
+                base: running_root,
+                ours: running_root,
+                theirs: running_root,
+            },
+            favor,
+            labels.clone(),
+        )
+        .await?
+        .0;
+        let base_root = base_tree(ws, &bases, &plain).await?;
+        let (opts, differ) = conflict::merge_options(
+            ctx,
+            ws,
+            &Sides {
+                base: base_root,
+                ours: running_root,
+                theirs: theirs_root,
+            },
+            favor,
+            labels,
+        )
+        .await?;
+        let outcome = ws
+            .engine
+            .merge_trees(base_root, running_root, theirs_root, &opts)
+            .await
+            .map_err(fatal)?;
+        conflict::refuse_unsupported(&outcome)?;
+        if !simple_merge_suffices(ws, base_root, running_root, theirs_root).await? {
+            lines.push("Simple merge did not work, trying automatic merge.".into());
+            for p in &differ {
+                lines.push(format!("Auto-merging {p}"));
+            }
+            if !outcome.is_clean() {
+                flush(&mut lines);
+                for c in &outcome.conflicts {
+                    eprintln!("ERROR: content conflict in {}", c.path);
+                }
+                eprintln!("fatal: merge program failed");
+            }
+        }
+        failed = !outcome.is_clean();
+        running.push(t.id);
+        running_root = outcome.root;
+        last = Some(outcome);
+    }
+    flush(&mut lines);
+
+    // The commit's parents: HEAD and every head, less those another one already contains.
+    let mut candidates = vec![head];
+    candidates.extend(targets.iter().map(|t| t.id));
+    let mut parents = Vec::new();
+    for (i, &c) in candidates.iter().enumerate() {
+        let mut covered = false;
+        for (j, &other) in candidates.iter().enumerate() {
+            if i != j && other != c && ws.engine.is_ancestor(c, other).await.map_err(fatal)? {
+                covered = true;
+                break;
+            }
+        }
+        if !covered {
+            parents.push(c);
+        }
+    }
+    let heads: Vec<ChangesetId> = parents.iter().copied().filter(|&p| p != head).collect();
+    let outcome = match last {
+        Some(o) if !o.is_clean() => o,
+        _ => MergeOutcome {
+            root: running_root,
+            conflicts: Vec::new(),
+        },
+    };
+    conflict::precheck(ctx, ws, Op::Merge, head_root, &outcome, false).await?;
+    conflict::materialise(ctx, ws, head_root, head_root, &outcome).await?;
+    seqstate::write_auto_merge(gitdir, conflict::git_tree_id(ws, outcome.root).await?)?;
+    let default_msg = if a.message.is_empty() {
+        octopus_message(ctx, ws, &targets)?
+    } else {
+        a.message.join("\n\n")
+    };
+    let log_names = targets
+        .iter()
+        .map(|t| t.name.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    conclude(
+        ctx,
+        ws,
+        gitdir,
+        a,
+        Concluding {
+            head,
+            head_root,
+            outcome: &outcome,
+            parents,
+            heads,
+            log_names,
+            strategy: "octopus",
+            squash_targets: targets.iter().map(|t| t.id).collect(),
+        },
+        default_msg,
+    )
+    .await
+}
+
+// ---------------------------------------------------------------- unborn branch
+
+/// `merge <commit>` on a branch with no commit yet: the branch takes the commit and the work
+/// tree and index take its tree, as git does. Git refuses `--squash`, `--no-ff` and several
+/// commits here, with these words.
+async fn merge_into_unborn(
+    ctx: &Ctx,
+    ws: &WsCtx,
+    _gitdir: &std::path::Path,
+    a: &Args,
+) -> Result<ExitCode> {
+    if a.squash {
+        return Err(CliError::Fatal(
+            "Squash commit into empty head not supported yet".into(),
+        ));
+    }
+    if a.ff_mode() == FfMode::Never {
+        return Err(CliError::Fatal(
+            "Non-fast-forward commit does not make sense into an empty head".into(),
+        ));
+    }
+    if a.commits.len() != 1 {
+        return Err(CliError::Fatal(
+            "Can merge only exactly one commit into empty head".into(),
+        ));
+    }
+    let name = a.commits[0].to_string_lossy().into_owned();
+    let Some(id) = resolve_commit(ctx, &name).await? else {
+        return Err(CliError::Raw(
+            format!("merge: {name} - not something we can merge"),
+            1,
+        ));
+    };
+    conflict::git_id(ws, id).await?;
+    let empty_root = root_of(ws, None).await?;
+    let target_root = root_of(ws, Some(id)).await?;
+    let outcome = MergeOutcome {
+        root: target_root,
+        conflicts: Vec::new(),
+    };
+    conflict::precheck(ctx, ws, Op::FastForward, empty_root, &outcome, true).await?;
+    let touched: Vec<_> = ws
+        .engine
+        .leafdiff(empty_root, target_root, None)
+        .await?
+        .into_iter()
+        .map(|(p, _)| p)
+        .collect();
+    conflict::index_result(ws, empty_root, target_root).await?;
+    sync_worktree(ctx, target_root, &touched, true).await?;
+    let kept = stage::overlay(&ws.db, ws.workspace.ws.id, StageSet::Default).await?;
+    conflict::move_head(
+        ctx,
+        ws,
+        None,
+        id,
+        &format!("merge {name}: initial pull"),
+        StagingAfterMove::Set(kept),
+        None,
+    )
+    .await?;
+    post_merge(ctx, ws, false).await?;
+    Ok(ExitCode::SUCCESS)
+}
+
 // ---------------------------------------------------------------- output helpers
 
 /// The diffstat and the create/delete/mode lines between two trees.
@@ -384,9 +781,9 @@ fn short(oid: GitOid) -> String {
 }
 
 /// `Squashed commit of the following:` and the commits `head..target`, newest first.
-async fn squash_message(ws: &WsCtx, head: ChangesetId, target: ChangesetId) -> Result<Vec<u8>> {
+async fn squash_message(ws: &WsCtx, head: ChangesetId, targets: &[ChangesetId]) -> Result<Vec<u8>> {
     let q = LogQuery {
-        include: vec![target],
+        include: targets.to_vec(),
         exclude: vec![head],
         limit: Some(10_000),
         ..LogQuery::default()
@@ -450,7 +847,7 @@ async fn fast_forward(
         seqstate::write(
             gitdir,
             "SQUASH_MSG",
-            &squash_message(ws, head, target.id).await?,
+            &squash_message(ws, head, &[target.id]).await?,
         )?;
     }
     let touched: Vec<_> = ws
@@ -610,38 +1007,97 @@ async fn real_merge(
     conflict::materialise(ctx, ws, head_root, head_root, &outcome).await?;
     seqstate::write_auto_merge(gitdir, conflict::git_tree_id(ws, outcome.root).await?)?;
 
-    let comment = message::comment_char(ctx);
-    let mut text = if a.message.is_empty() {
+    let default_msg = if a.message.is_empty() {
         default_message(ctx, ws, target)?
     } else {
         a.message.join("\n\n")
-    }
-    .into_bytes();
+    };
+    conclude(
+        ctx,
+        ws,
+        gitdir,
+        a,
+        Concluding {
+            head,
+            head_root,
+            outcome: &outcome,
+            parents: vec![head, target.id],
+            heads: vec![target.id],
+            log_names: target.name.clone(),
+            strategy: "ort",
+            squash_targets: vec![target.id],
+        },
+        default_msg,
+    )
+    .await
+}
+
+/// What a merge that has its result tree needs to conclude: the message, the state files, the
+/// hooks, the commit and the ref move.
+struct Concluding<'a> {
+    head: ChangesetId,
+    head_root: TreeId,
+    outcome: &'a MergeOutcome,
+    /// The commit's parents.
+    parents: Vec<ChangesetId>,
+    /// The heads being merged in (`MERGE_HEAD`).
+    heads: Vec<ChangesetId>,
+    /// The names as typed, for the reflog line.
+    log_names: String,
+    /// `ort` or `octopus`.
+    strategy: &'static str,
+    /// The commits a `--squash` squashes.
+    squash_targets: Vec<ChangesetId>,
+}
+
+async fn conclude(
+    ctx: &Ctx,
+    ws: &WsCtx,
+    gitdir: &std::path::Path,
+    a: &Args,
+    c: Concluding<'_>,
+    default_msg: String,
+) -> Result<ExitCode> {
+    let comment = message::comment_char(ctx);
+    let mut text = default_msg.into_bytes();
     text.push(b'\n');
-    let target_git = conflict::git_id(ws, target.id).await?;
+    let mut heads_git = Vec::new();
+    for &id in &c.heads {
+        heads_git.push(conflict::git_id(ws, id).await?);
+    }
+    let Concluding {
+        head,
+        head_root,
+        outcome,
+        parents,
+        heads: _,
+        log_names,
+        strategy,
+        squash_targets,
+    } = c;
     let conflicted = !outcome.is_clean();
 
     if a.squash {
         seqstate::write(
             gitdir,
             "SQUASH_MSG",
-            &squash_message(ws, head, target.id).await?,
+            &squash_message(ws, head, &squash_targets).await?,
         )?;
         if conflicted {
             let mut msg = Vec::new();
-            msg.extend_from_slice(&conflict::conflicts_block(&outcome, comment));
+            msg.extend_from_slice(&conflict::conflicts_block(outcome, comment));
             seqstate::write(gitdir, "MERGE_MSG", &msg)?;
         }
         println!("Squash commit -- not updating HEAD");
         return Ok(finish_stopped(conflicted));
     }
     if conflicted {
-        text.extend_from_slice(&conflict::conflicts_block(&outcome, comment));
+        text.extend_from_slice(&conflict::conflicts_block(outcome, comment));
     }
     seqstate::write_merge(
         gitdir,
         &MergeState {
-            heads: &[target_git],
+            heads: &heads_git,
             message: &text,
             mode: a.ff_mode(),
         },
@@ -690,7 +1146,7 @@ async fn real_merge(
     let (id, _) = conflict::write_commit(
         ws,
         NewCommit {
-            parents: vec![head, target.id],
+            parents,
             author: idents.author,
             committer: idents.committer.clone(),
             message: final_msg,
@@ -703,7 +1159,7 @@ async fn real_merge(
         ws,
         Some(head),
         id,
-        &format!("merge {}: Merge made by the 'ort' strategy.", target.name),
+        &format!("merge {log_names}: Merge made by the '{strategy}' strategy."),
         StagingAfterMove::Set(Vec::new()),
         Some(&idents.committer),
     )
@@ -715,7 +1171,7 @@ async fn real_merge(
         .await
         .map_err(fatal)?;
     if !a.quiet {
-        println!("Merge made by the 'ort' strategy.");
+        println!("Merge made by the '{strategy}' strategy.");
         if !a.no_stat {
             print_stat(ws, head_root, outcome.root).await?;
         }

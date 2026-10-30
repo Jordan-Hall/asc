@@ -83,14 +83,10 @@ pub fn register(
 }
 
 impl Registered {
-    /// What `Version.features` adds: the keys always, the agent services when they are switched on.
+    /// What `Version.features` adds: the keys and their sharing always, the agent services when they
+    /// are switched on.
     pub fn features(&self) -> Vec<String> {
-        let mut v = vec![crate::ai::FEATURE.to_owned()];
-        if self.agents.core.cfg.enabled {
-            v.push(super::FEATURE_RUNS.to_owned());
-            v.push(super::FEATURE_TOKENS.to_owned());
-        }
-        v
+        features_for(self.agents.core.cfg.enabled)
     }
 
     /// Starts the AI-key sweeper and, when agents are enabled, the dispatcher and the reaper.
@@ -109,5 +105,32 @@ impl Registered {
         for t in tasks {
             t.abort();
         }
+    }
+}
+
+/// The feature strings for a server whose agent services are `agents_enabled`.
+fn features_for(agents_enabled: bool) -> Vec<String> {
+    let mut v = vec![
+        crate::ai::FEATURE.to_owned(),
+        crate::ai::FEATURE_SHARES.to_owned(),
+    ];
+    if agents_enabled {
+        v.push(super::FEATURE_RUNS.to_owned());
+        v.push(super::FEATURE_TOKENS.to_owned());
+    }
+    v
+}
+
+#[cfg(test)]
+mod feature_tests {
+    use super::features_for;
+
+    #[test]
+    fn key_sharing_is_advertised_with_the_keys_and_agents_only_when_on() {
+        let off = features_for(false);
+        assert_eq!(off, ["ai-keys.v1", "aikeyshares.v1"]);
+        let on = features_for(true);
+        assert!(on.contains(&"agents.v1".to_owned()) && on.contains(&"agent-tokens.v1".to_owned()));
+        assert!(on.contains(&"aikeyshares.v1".to_owned()));
     }
 }

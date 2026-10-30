@@ -121,6 +121,7 @@ message ScanDepsResponse {
   bytes scanned = 7 [(asc.v1.json) = JSON_KIND_HEX];   // the changeset that was read
   bool truncated = 8;
   string source = 9;                    // "osv", "osv-mirror", "file" or "osv+file"
+  map<string, uint32> packages_by_ecosystem = 10;   // distinct packages per OSV ecosystem name; the values add up to `packages`
 }
 
 message ListDepFindingsRequest {
@@ -139,6 +140,8 @@ message ListDepFindingsResponse {
   int64 last_scan = 4;
   bytes last_scanned = 5 [(asc.v1.json) = JSON_KIND_HEX];
   DepLookupStatus last_lookup = 6;
+  uint32 packages_checked = 7;          // distinct packages the last scan of trunk checked; 0 when there is none
+  map<string, uint32> packages_by_ecosystem = 8;   // of those, per OSV ecosystem name; the values add up to `packages_checked`; empty for a scan recorded before this field existed
 }
 
 message DepUpdate {

@@ -108,6 +108,40 @@ pub async fn insert_nodes(
     Ok(())
 }
 
+/// Test helper: writes the graph rows of `ids` (parents before children), as the ingest does.
+#[cfg(test)]
+pub(crate) async fn index_for_tests(
+    entry: &crate::registry::RepoEntry,
+    pool: &AnyPool,
+    ids: &[ChangesetId],
+) {
+    for id in ids {
+        let body = entry.backend.engine().get_changeset(*id).await.unwrap();
+        let mut generation = 1i64;
+        for p in &body.parents {
+            let g: Option<i64> =
+                sqlx::query_scalar("SELECT gen FROM cs_graph WHERE ns = $1 AND cs = $2")
+                    .bind(entry.ns.as_bytes().to_vec())
+                    .bind(p.as_bytes().to_vec())
+                    .fetch_optional(pool)
+                    .await
+                    .unwrap();
+            generation = generation.max(g.unwrap_or(0) + 1);
+        }
+        let parents: Vec<u8> = body.parents.iter().flat_map(|p| *p.as_bytes()).collect();
+        sqlx::query(
+            "INSERT INTO cs_graph (ns, cs, gen, parents) VALUES ($1, $2, $3, $4) ON CONFLICT (ns, cs) DO NOTHING",
+        )
+        .bind(entry.ns.as_bytes().to_vec())
+        .bind(id.as_bytes().to_vec())
+        .bind(generation)
+        .bind(parents)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+}
+
 /// A [`GraphSource`] over `cs_graph`; changeset bodies still come from the engine.
 pub struct SqlGraph<O: Objects, R: Refs> {
     pool: AnyPool,

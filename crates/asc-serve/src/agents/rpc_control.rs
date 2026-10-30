@@ -33,7 +33,14 @@ fn relay(ctx: &CallCtx) -> Option<&'static str> {
 }
 
 impl AgentService {
-    async fn note(&self, ctx: &CallCtx, action: &str, run: &RunRow, target: &str, d: &[(&str, String)]) {
+    async fn note(
+        &self,
+        ctx: &CallCtx,
+        action: &str,
+        run: &RunRow,
+        target: &str,
+        d: &[(&str, String)],
+    ) {
         self.hub
             .audit(action, &ctx.principal.id, relay(ctx), &run.repo, target, d)
             .await;
@@ -118,7 +125,11 @@ impl AgentService {
             seq: u32::try_from(c.seq).unwrap_or(u32::MAX),
             at: c.at,
             label: c.label.clone(),
-            changes: c.changes.iter().map(|x| bytes::Bytes::copy_from_slice(x)).collect(),
+            changes: c
+                .changes
+                .iter()
+                .map(|x| bytes::Bytes::copy_from_slice(x))
+                .collect(),
             tip: bytes::Bytes::copy_from_slice(&c.tip),
             rolled_back_at: c.rolled_back_at,
             rolled_back_by: c.rolled_back_by.clone(),
@@ -133,7 +144,17 @@ impl AgentService {
             .open(&ctx.repo)
             .await
             .map_err(|e| crate::update::internal("registry", &e))?;
-        Ok(match &*self.hub.core.view.policy(&entry).await? {
+        // The cap is the stricter of the policy and the instance defaults: an edit cannot lift a run above
+        // what a new run could be given.
+        let d = self.hub.core.cfg.default_limits;
+        let instance = Budget {
+            changes: u64::from(d.max_changes),
+            tokens: d.max_tokens,
+            cost: d.max_cost_micro_usd,
+            paths: u64::from(d.max_paths),
+            runtime: u64::from(d.max_runtime_seconds),
+        };
+        let policy = match &*self.hub.core.view.policy(&entry).await? {
             PolicyState::Valid(p) => {
                 let b = &p.agents.budgets;
                 Budget {
@@ -144,8 +165,15 @@ impl AgentService {
                     runtime: p.agents.max_runtime_seconds.map_or(0, u64::from),
                 }
             }
-            _ => Budget::default(),
-        })
+            PolicyState::Absent => Budget::default(),
+            // Fail closed: a policy that cannot be used gives no cap to edit against.
+            PolicyState::Invalid(_) => {
+                return Err(Status::failed_precondition(
+                    "the repository policy cannot be used; fix .asc/policy.toml on trunk",
+                ));
+            }
+        };
+        Ok(policy.merge(instance))
     }
 
     // ---------------------------------------------------------------------------- requests
@@ -155,11 +183,17 @@ impl AgentService {
         request: Request<wire::ListAgentRequestsRequest>,
     ) -> Result<Response<wire::ListAgentRequestsResponse>, Status> {
         let (meta, ext, msg) = request.into_parts();
-        let ctx = self.env.context(&meta, &ext, msg.repo.as_ref(), Access::Read, false).await?;
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
+            .await?;
         let limit = match msg.limit {
             0 => DEFAULT_REQUESTS,
             n => usize::try_from(n).unwrap_or(MAX_REQUESTS).min(MAX_REQUESTS),
         };
+        if msg.states.len() > 8 {
+            return Err(Status::invalid_argument("at most 8 states"));
+        }
         let mut states = Vec::new();
         for s in &msg.states {
             let st = wire::AgentRequestState::try_from(*s)
@@ -190,7 +224,10 @@ impl AgentService {
         for r in &rows {
             requests.push(self.request_wire(r).await);
         }
-        Ok(Response::new(wire::ListAgentRequestsResponse { requests, next_page_token: next }))
+        Ok(Response::new(wire::ListAgentRequestsResponse {
+            requests,
+            next_page_token: next,
+        }))
     }
 
     pub(super) async fn decide_request_impl(
@@ -198,7 +235,10 @@ impl AgentService {
         request: Request<wire::DecideAgentRequestRequest>,
     ) -> Result<Response<wire::DecideAgentRequestResponse>, Status> {
         let (meta, ext, msg) = request.into_parts();
-        let ctx = self.env.context(&meta, &ext, msg.repo.as_ref(), Access::Write, true).await?;
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Write, true)
+            .await?;
         if msg.reason.len() > MAX_REASON {
             return Err(Status::invalid_argument("a reason is at most 512 bytes"));
         }
@@ -220,7 +260,10 @@ impl AgentService {
         self.may_manage(&ext, &ctx, &run).await?;
         let decider = handle_of(&ctx.principal.id).unwrap_or_else(|| ctx.principal.id.clone());
         let was_pending = cur.state == control::PENDING;
-        let row = self.hub.decide_request(id, to, &decider, &msg.reason).await?;
+        let row = self
+            .hub
+            .decide_request(id, to, &decider, &msg.reason)
+            .await?;
         if was_pending && row.state != control::PENDING {
             self.note(
                 &ctx,
@@ -235,7 +278,14 @@ impl AgentService {
             )
             .await;
         }
-        let run = self.hub.core.runs.get(run.id).await.map_err(|e| db(&e))?.unwrap_or(run);
+        let run = self
+            .hub
+            .core
+            .runs
+            .get(run.id)
+            .await
+            .map_err(|e| db(&e))?
+            .unwrap_or(run);
         Ok(Response::new(wire::DecideAgentRequestResponse {
             request: Some(self.request_wire(&row).await),
             run: Some(self.wire_run_full(&run).await),
@@ -249,7 +299,10 @@ impl AgentService {
         request: Request<wire::PauseAgentRunRequest>,
     ) -> Result<Response<wire::PauseAgentRunResponse>, Status> {
         let (meta, ext, msg) = request.into_parts();
-        let ctx = self.env.context(&meta, &ext, msg.repo.as_ref(), Access::Write, false).await?;
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Write, false)
+            .await?;
         if msg.reason.len() > MAX_REASON {
             return Err(Status::invalid_argument("a reason is at most 512 bytes"));
         }
@@ -261,15 +314,28 @@ impl AgentService {
         if before.paused != msg.paused {
             self.note(
                 &ctx,
-                if msg.paused { "agent.run.paused" } else { "agent.run.resumed" },
+                if msg.paused {
+                    "agent.run.paused"
+                } else {
+                    "agent.run.resumed"
+                },
                 &run,
                 &run.id.to_string(),
                 &[("run", run.id.to_string()), ("reason", msg.reason.clone())],
             )
             .await;
         }
-        let run = self.hub.core.runs.get(run.id).await.map_err(|e| db(&e))?.unwrap_or(run);
-        Ok(Response::new(wire::PauseAgentRunResponse { run: Some(self.wire_run_full(&run).await) }))
+        let run = self
+            .hub
+            .core
+            .runs
+            .get(run.id)
+            .await
+            .map_err(|e| db(&e))?
+            .unwrap_or(run);
+        Ok(Response::new(wire::PauseAgentRunResponse {
+            run: Some(self.wire_run_full(&run).await),
+        }))
     }
 
     pub(super) async fn list_checkpoints_impl(
@@ -277,7 +343,10 @@ impl AgentService {
         request: Request<wire::ListAgentCheckpointsRequest>,
     ) -> Result<Response<wire::ListAgentCheckpointsResponse>, Status> {
         let (meta, ext, msg) = request.into_parts();
-        let ctx = self.env.context(&meta, &ext, msg.repo.as_ref(), Access::Read, false).await?;
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
+            .await?;
         let run = self.run_in(&ctx, msg.run_id).await?;
         let cps = self.hub.checkpoints(run.id).await?;
         Ok(Response::new(wire::ListAgentCheckpointsResponse {
@@ -290,7 +359,10 @@ impl AgentService {
         request: Request<wire::RollbackAgentRunRequest>,
     ) -> Result<Response<wire::RollbackAgentRunResponse>, Status> {
         let (meta, ext, msg) = request.into_parts();
-        let ctx = self.env.context(&meta, &ext, msg.repo.as_ref(), Access::Write, true).await?;
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Write, true)
+            .await?;
         if msg.reason.len() > MAX_REASON {
             return Err(Status::invalid_argument("a reason is at most 512 bytes"));
         }
@@ -334,7 +406,10 @@ impl AgentService {
         request: Request<wire::SetAgentRunLimitsRequest>,
     ) -> Result<Response<wire::SetAgentRunLimitsResponse>, Status> {
         let (meta, ext, msg) = request.into_parts();
-        let ctx = self.env.context(&meta, &ext, msg.repo.as_ref(), Access::Write, false).await?;
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Write, false)
+            .await?;
         let run = self.run_in(&ctx, msg.id).await?;
         self.may_manage(&ext, &ctx, &run).await?;
         if !run.state.is_active() {
@@ -359,9 +434,30 @@ impl AgentService {
             runtime: pick(asked.runtime, run.limits.runtime, cap.runtime),
         };
         let lowered = super::super::AgentsHub::lowered(asked, new);
-        self.hub.core.runs.set_limits(run.id, new).await.map_err(|e| db(&e))?;
-        if !run.token_id.is_empty() {
-            self.hub.core.tokens.set_limits(&run.token_id, new).await.map_err(|e| db(&e))?;
+        self.hub
+            .core
+            .runs
+            .set_limits(run.id, new)
+            .await
+            .map_err(|e| db(&e))?;
+        // The token is read again after the limits are stored: a run that was still starting when
+        // `run` was read gets its token afterwards, and then takes the limits from the run row (see
+        // `drive`); one of the two sides always sees the other's write.
+        let token_id = self
+            .hub
+            .core
+            .runs
+            .get(run.id)
+            .await
+            .map_err(|e| db(&e))?
+            .map_or_else(|| run.token_id.clone(), |r| r.token_id);
+        if !token_id.is_empty() {
+            self.hub
+                .core
+                .tokens
+                .set_limits(&token_id, new)
+                .await
+                .map_err(|e| db(&e))?;
         }
         self.note(
             &ctx,
@@ -376,7 +472,14 @@ impl AgentService {
             ],
         )
         .await;
-        let run = self.hub.core.runs.get(run.id).await.map_err(|e| db(&e))?.unwrap_or(run);
+        let run = self
+            .hub
+            .core
+            .runs
+            .get(run.id)
+            .await
+            .map_err(|e| db(&e))?
+            .unwrap_or(run);
         Ok(Response::new(wire::SetAgentRunLimitsResponse {
             run: Some(self.wire_run_full(&run).await),
             lowered,
@@ -388,7 +491,10 @@ impl AgentService {
         request: Request<wire::ContinueAgentRunRequest>,
     ) -> Result<Response<wire::ContinueAgentRunResponse>, Status> {
         let (meta, ext, msg) = request.into_parts();
-        let ctx = self.env.context(&meta, &ext, msg.repo.as_ref(), Access::Write, true).await?;
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Write, true)
+            .await?;
         let handle = require_handle(&ctx)?;
         let old = self.run_in(&ctx, msg.id).await?;
         self.may_manage(&ext, &ctx, &old).await?;
@@ -396,15 +502,37 @@ impl AgentService {
             return Err(Status::failed_precondition("the run has not finished"));
         }
         if matches!(old.state, RunState::Succeeded) {
-            return Err(Status::failed_precondition("the run succeeded; start a new run instead"));
+            return Err(Status::failed_precondition(
+                "the run succeeded; start a new run instead",
+            ));
         }
         let asked = Budget::from_wire(msg.limits.as_ref());
         let limits = Budget {
-            changes: if asked.changes > 0 { asked.changes } else { old.limits.changes },
-            tokens: if asked.tokens > 0 { asked.tokens } else { old.limits.tokens },
-            cost: if asked.cost > 0 { asked.cost } else { old.limits.cost },
-            paths: if asked.paths > 0 { asked.paths } else { old.limits.paths },
-            runtime: if asked.runtime > 0 { asked.runtime } else { old.limits.runtime },
+            changes: if asked.changes > 0 {
+                asked.changes
+            } else {
+                old.limits.changes
+            },
+            tokens: if asked.tokens > 0 {
+                asked.tokens
+            } else {
+                old.limits.tokens
+            },
+            cost: if asked.cost > 0 {
+                asked.cost
+            } else {
+                old.limits.cost
+            },
+            paths: if asked.paths > 0 {
+                asked.paths
+            } else {
+                old.limits.paths
+            },
+            runtime: if asked.runtime > 0 {
+                asked.runtime
+            } else {
+                old.limits.runtime
+            },
         };
         let ctl = self.hub.ctl(old.id).await?;
         let task = format!(
@@ -415,7 +543,10 @@ impl AgentService {
             old.changes.len(),
             if old.changes.len() == 1 { "" } else { "s" }
         );
-        let who = Requester { principal: ctx.principal.id.clone(), handle: Some(handle) };
+        let who = Requester {
+            principal: ctx.principal.id.clone(),
+            handle: Some(handle),
+        };
         let req = RunRequest {
             repo: ctx.repo.as_str().to_owned(),
             agent: old.agent.clone(),
@@ -433,7 +564,9 @@ impl AgentService {
             for_change: ctl.for_change.clone(),
             continues: old.id,
         };
-        let op = ctx.op_id.ok_or_else(|| Status::invalid_argument("mutating calls need x-asc-op-id"))?;
+        let op = ctx
+            .op_id
+            .ok_or_else(|| Status::invalid_argument("mutating calls need x-asc-op-id"))?;
         let hub = self.hub.clone();
         let ops = hub.core.ops.clone();
         let this = self.clone();
@@ -474,12 +607,19 @@ impl AgentService {
         request: Request<wire::GetAgentEstimateRequest>,
     ) -> Result<Response<wire::GetAgentEstimateResponse>, Status> {
         let (meta, ext, msg) = request.into_parts();
-        let ctx = self.env.context(&meta, &ext, msg.repo.as_ref(), Access::Read, false).await?;
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
+            .await?;
         if !msg.agent.is_empty() && !tokens::valid_agent_name(&msg.agent) {
-            return Err(Status::invalid_argument("an agent name is 1 to 40 characters of a-z, 0-9 and -"));
+            return Err(Status::invalid_argument(
+                "an agent name is 1 to 40 characters of a-z, 0-9 and -",
+            ));
         }
-        let (seconds, cost, toks, samples) =
-            self.hub.estimate(ctx.repo.as_str(), &msg.agent, msg.task_bytes).await?;
+        let (seconds, cost, toks, samples) = self
+            .hub
+            .estimate(ctx.repo.as_str(), &msg.agent, msg.task_bytes)
+            .await?;
         Ok(Response::new(wire::GetAgentEstimateResponse {
             samples,
             seconds,
@@ -493,7 +633,10 @@ impl AgentService {
         request: Request<wire::RecentAgentTasksRequest>,
     ) -> Result<Response<wire::RecentAgentTasksResponse>, Status> {
         let (meta, ext, msg) = request.into_parts();
-        let ctx = self.env.context(&meta, &ext, msg.repo.as_ref(), Access::Read, false).await?;
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
+            .await?;
         let limit = match msg.limit {
             0 => 10,
             n => usize::try_from(n).unwrap_or(50).min(50),
@@ -524,11 +667,18 @@ impl AgentService {
         request: Request<wire::GetAgentRunLogRequest>,
     ) -> Result<Response<wire::GetAgentRunLogResponse>, Status> {
         let (meta, ext, msg) = request.into_parts();
-        let ctx = self.env.context(&meta, &ext, msg.repo.as_ref(), Access::Read, false).await?;
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
+            .await?;
         let run = self.run_in(&ctx, msg.id).await?;
         let (jsonl, truncated) = self.hub.run_log(&run).await?;
         let days = i64::from(self.hub.core.cfg.event_retention_days);
-        let base = if run.finished > 0 { run.finished } else { crate::ai::clock::now() };
+        let base = if run.finished > 0 {
+            run.finished
+        } else {
+            crate::ai::clock::now()
+        };
         Ok(Response::new(wire::GetAgentRunLogResponse {
             jsonl: bytes::Bytes::from(jsonl),
             truncated,
@@ -541,9 +691,18 @@ impl AgentService {
         request: Request<wire::ListRepoAgentsRequest>,
     ) -> Result<Response<wire::ListRepoAgentsResponse>, Status> {
         let (meta, ext, msg) = request.into_parts();
-        let ctx = self.env.context(&meta, &ext, msg.repo.as_ref(), Access::Read, false).await?;
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
+            .await?;
         let repo = ctx.repo.as_str().to_ascii_lowercase();
-        let runs = self.hub.core.runs.list(&repo, &[], "", "", None, 1000).await.map_err(|e| db(&e))?;
+        let runs = self
+            .hub
+            .core
+            .runs
+            .list(&repo, &[], "", "", None, 1000)
+            .await
+            .map_err(|e| db(&e))?;
         let entry = self
             .hub
             .registry
@@ -556,12 +715,30 @@ impl AgentService {
         let mut by: std::collections::BTreeMap<String, wire::RepoAgentInfo> = Default::default();
         let (mut running, mut landed_all, mut changes_all) = (0u32, 0u32, 0u32);
         let mut checked = 0usize;
-        for r in runs.iter().take(1000) {
-            let e = by.entry(r.agent.clone()).or_insert_with(|| wire::RepoAgentInfo {
-                agent: r.agent.clone(),
-                paths: r.paths.clone(),
+        // One entry for each of the last 14 days (UTC), oldest first.
+        let today = now.div_euclid(86_400);
+        let mut days: Vec<wire::AgentActivityDay> = (0..ACTIVITY_DAYS)
+            .map(|i| wire::AgentActivityDay {
+                day: day_of(today - (ACTIVITY_DAYS - 1 - i)),
                 ..Default::default()
-            });
+            })
+            .collect();
+        for r in runs.iter().take(1000) {
+            let slot =
+                usize::try_from(r.created.div_euclid(86_400) - (today - (ACTIVITY_DAYS - 1)))
+                    .ok()
+                    .filter(|i| *i < days.len());
+            if let Some(i) = slot {
+                days[i].started += 1;
+                days[i].changes += u32::try_from(r.changes.len()).unwrap_or(u32::MAX);
+            }
+            let e = by
+                .entry(r.agent.clone())
+                .or_insert_with(|| wire::RepoAgentInfo {
+                    agent: r.agent.clone(),
+                    paths: r.paths.clone(),
+                    ..Default::default()
+                });
             e.runs += 1;
             e.last_run = e.last_run.max(r.created);
             if r.state.is_active() {
@@ -587,6 +764,9 @@ impl AgentService {
                     if hit.is_some() {
                         e.landed_30d += 1;
                         landed_all += 1;
+                        if let Some(i) = slot {
+                            days[i].landed += 1;
+                        }
                     }
                 }
             }
@@ -594,7 +774,11 @@ impl AgentService {
         for (agent, e) in &mut by {
             e.cost_micro_usd_month = self.hub.month_spend(&repo, &month, agent).await?.0;
         }
-        for r in self.hub.list_requests(&repo, 0, &[control::PENDING], None, 200).await? {
+        for r in self
+            .hub
+            .list_requests(&repo, 0, &[control::PENDING], None, 200)
+            .await?
+        {
             if let Some(e) = by.get_mut(&r.agent) {
                 e.pending_requests += 1;
             }
@@ -605,6 +789,52 @@ impl AgentService {
             max_concurrent: self.hub.core.cfg.max_concurrent_per_repo,
             landed_30d: landed_all,
             changes_30d: changes_all,
+            days,
+        }))
+    }
+
+    /// `Agents.GetPerson`: the profile a person lets agents read, or nothing. The hub is asked on
+    /// every call (with a short memory) and any failure to ask is a refusal.
+    pub(super) async fn get_person_impl(
+        &self,
+        request: Request<wire::GetAgentPersonRequest>,
+    ) -> Result<Response<wire::GetAgentPersonResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
+            .await?;
+        if msg.login.is_empty() || msg.login.len() > 64 {
+            return Err(Status::invalid_argument("a login is 1 to 64 characters"));
+        }
+        let profile = match self.hub.profiles.get() {
+            Some(p) => p.get(&msg.login).await,
+            None => None,
+        };
+        self.hub
+            .audit(
+                "agent.profile.read",
+                &ctx.principal.id,
+                crate::review::acting::relayed(&ctx).then_some("host"),
+                ctx.repo.as_str(),
+                &msg.login,
+                &[
+                    ("login", msg.login.clone()),
+                    ("allowed", profile.is_some().to_string()),
+                ],
+            )
+            .await;
+        Ok(Response::new(match profile {
+            Some(p) => wire::GetAgentPersonResponse {
+                allowed: true,
+                login: p.login,
+                full_name: p.full_name,
+                description: p.description,
+                location: p.location,
+                website: p.website,
+                pronouns: p.pronouns,
+            },
+            None => wire::GetAgentPersonResponse::default(),
         }))
     }
 
@@ -614,8 +844,16 @@ impl AgentService {
     ) -> Result<Response<wire::GetAgentSpendResponse>, Status> {
         use sqlx::Row;
         let (meta, ext, msg) = request.into_parts();
-        let ctx = self.env.context(&meta, &ext, msg.repo.as_ref(), Access::Read, false).await?;
-        let month = if msg.month.is_empty() { control::this_month() } else { msg.month.clone() };
+        // Money: a writer sees it, a reader does not.
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Write, false)
+            .await?;
+        let month = if msg.month.is_empty() {
+            control::this_month()
+        } else {
+            msg.month.clone()
+        };
         if !control::valid_month(&month) {
             return Err(Status::invalid_argument("a month is YYYY-MM"));
         }
@@ -675,9 +913,14 @@ impl AgentService {
         request: Request<wire::SetMonthlyBudgetRequest>,
     ) -> Result<Response<wire::SetMonthlyBudgetResponse>, Status> {
         let (meta, ext, msg) = request.into_parts();
-        let ctx = self.env.context(&meta, &ext, msg.repo.as_ref(), Access::Admin, true).await?;
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Admin, true)
+            .await?;
         if !msg.agent.is_empty() && !tokens::valid_agent_name(&msg.agent) {
-            return Err(Status::invalid_argument("an agent name is 1 to 40 characters of a-z, 0-9 and -"));
+            return Err(Status::invalid_argument(
+                "an agent name is 1 to 40 characters of a-z, 0-9 and -",
+            ));
         }
         let by = handle_of(&ctx.principal.id).unwrap_or_else(|| ctx.principal.id.clone());
         self.hub
@@ -690,7 +933,10 @@ impl AgentService {
                 relay(&ctx),
                 ctx.repo.as_str(),
                 &msg.agent,
-                &[("agent", msg.agent.clone()), ("cap_micro_usd", msg.cap_micro_usd.to_string())],
+                &[
+                    ("agent", msg.agent.clone()),
+                    ("cap_micro_usd", msg.cap_micro_usd.to_string()),
+                ],
             )
             .await;
         Ok(Response::new(wire::SetMonthlyBudgetResponse {
@@ -702,4 +948,37 @@ impl AgentService {
 
 fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// How many days of activity `ListAgents` reports.
+const ACTIVITY_DAYS: i64 = 14;
+
+/// `YYYY-MM-DD` of a day number counted from 1970-01-01 (UTC).
+fn day_of(days_since_epoch: i64) -> String {
+    // Civil-from-days (Howard Hinnant): exact for every day of the proleptic Gregorian calendar.
+    let z = days_since_epoch + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+#[cfg(test)]
+mod activity_day_tests {
+    use super::day_of;
+
+    #[test]
+    fn a_day_number_is_a_calendar_date() {
+        assert_eq!(day_of(0), "1970-01-01");
+        assert_eq!(day_of(19_723), "2024-01-01");
+        assert_eq!(day_of(19_782), "2024-02-29");
+        assert_eq!(day_of(19_783), "2024-03-01");
+        assert_eq!(day_of(-1), "1969-12-31");
+    }
 }

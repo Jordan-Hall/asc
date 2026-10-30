@@ -61,109 +61,192 @@ impl QueueService {
 impl MergeQueue for QueueService {
     type WatchStream = WatchStream;
 
-    async fn enqueue(&self, request: Request<wire::EnqueueRequest>) -> Result<Response<wire::EnqueueResponse>, Status> {
+    async fn enqueue(
+        &self,
+        request: Request<wire::EnqueueRequest>,
+    ) -> Result<Response<wire::EnqueueResponse>, Status> {
         let (meta, ext, msg) = request.into_parts();
-        let ctx = self.env.context(&meta, &ext, msg.repo.as_ref(), Access::Write, true).await?;
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Write, true)
+            .await?;
         let by = require_handle(&ctx)?;
         self.hub.q_enqueue(&ctx, &by, msg).await.map(Response::new)
     }
 
-    async fn dequeue(&self, request: Request<wire::DequeueRequest>) -> Result<Response<wire::DequeueResponse>, Status> {
+    async fn dequeue(
+        &self,
+        request: Request<wire::DequeueRequest>,
+    ) -> Result<Response<wire::DequeueResponse>, Status> {
         let (meta, ext, msg) = request.into_parts();
-        let ctx = self.env.context(&meta, &ext, msg.repo.as_ref(), Access::Write, false).await?;
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Write, false)
+            .await?;
         let by = require_handle(&ctx)?;
         let admin = self.env.has(&ext, &ctx, Access::Admin).await;
-        self.hub.q_dequeue(&ctx, &by, admin, msg).await.map(Response::new)
+        self.hub
+            .q_dequeue(&ctx, &by, admin, msg)
+            .await
+            .map(Response::new)
     }
 
-    async fn list(&self, request: Request<wire::ListQueueRequest>) -> Result<Response<wire::ListQueueResponse>, Status> {
+    async fn list(
+        &self,
+        request: Request<wire::ListQueueRequest>,
+    ) -> Result<Response<wire::ListQueueResponse>, Status> {
         let (meta, ext, msg) = request.into_parts();
-        let ctx = self.env.context(&meta, &ext, msg.repo.as_ref(), Access::Read, false).await?;
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
+            .await?;
         self.hub.q_list(&ctx, msg).await.map(Response::new)
     }
 
-    async fn get(&self, request: Request<wire::GetQueueEntryRequest>) -> Result<Response<wire::GetQueueEntryResponse>, Status> {
+    async fn get(
+        &self,
+        request: Request<wire::GetQueueEntryRequest>,
+    ) -> Result<Response<wire::GetQueueEntryResponse>, Status> {
         let (meta, ext, msg) = request.into_parts();
-        let ctx = self.env.context(&meta, &ext, msg.repo.as_ref(), Access::Read, false).await?;
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
+            .await?;
         self.hub.q_get_entry(&ctx, msg).await.map(Response::new)
     }
 
-    async fn revalidate(&self, request: Request<wire::RevalidateRequest>) -> Result<Response<wire::RevalidateResponse>, Status> {
+    async fn revalidate(
+        &self,
+        request: Request<wire::RevalidateRequest>,
+    ) -> Result<Response<wire::RevalidateResponse>, Status> {
         let (meta, ext, msg) = request.into_parts();
-        let ctx = self.env.context(&meta, &ext, msg.repo.as_ref(), Access::Write, false).await?;
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Write, false)
+            .await?;
         self.hub.q_revalidate(&ctx, msg).await.map(Response::new)
     }
 
-    async fn set_paused(&self, request: Request<wire::SetQueuePausedRequest>) -> Result<Response<wire::SetQueuePausedResponse>, Status> {
+    async fn set_paused(
+        &self,
+        request: Request<wire::SetQueuePausedRequest>,
+    ) -> Result<Response<wire::SetQueuePausedResponse>, Status> {
         let (meta, ext, msg) = request.into_parts();
-        let ctx = self.env.context(&meta, &ext, msg.repo.as_ref(), Access::Admin, false).await?;
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Admin, false)
+            .await?;
         let by = require_handle(&ctx).unwrap_or_else(|_| ctx.principal.id.clone());
-        self.hub.q_set_paused(&ctx, &by, msg).await.map(Response::new)
+        self.hub
+            .q_set_paused(&ctx, &by, msg)
+            .await
+            .map(Response::new)
     }
 
-    async fn preview(&self, request: Request<wire::PreviewEnqueueRequest>) -> Result<Response<wire::PreviewEnqueueResponse>, Status> {
+    async fn preview(
+        &self,
+        request: Request<wire::PreviewEnqueueRequest>,
+    ) -> Result<Response<wire::PreviewEnqueueResponse>, Status> {
         let (meta, ext, msg) = request.into_parts();
-        let ctx = self.env.context(&meta, &ext, msg.repo.as_ref(), Access::Read, false).await?;
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
+            .await?;
         self.hub.q_preview(&ctx, msg).await.map(Response::new)
     }
 
-    async fn report_entry(&self, request: Request<wire::ReportQueueEntryRequest>) -> Result<Response<wire::ReportQueueEntryResponse>, Status> {
+    async fn report_entry(
+        &self,
+        request: Request<wire::ReportQueueEntryRequest>,
+    ) -> Result<Response<wire::ReportQueueEntryResponse>, Status> {
         let (meta, ext, msg) = request.into_parts();
-        let ctx = self.env.context(&meta, &ext, msg.repo.as_ref(), Access::Admin, false).await?;
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Admin, false)
+            .await?;
         self.hub.q_report(&ctx, msg).await.map(Response::new)
     }
 
-    async fn watch(&self, request: Request<wire::WatchQueueRequest>) -> Result<Response<Self::WatchStream>, Status> {
+    async fn watch(
+        &self,
+        request: Request<wire::WatchQueueRequest>,
+    ) -> Result<Response<Self::WatchStream>, Status> {
         let (meta, ext, msg) = request.into_parts();
-        let ctx = self.env.context(&meta, &ext, msg.repo.as_ref(), Access::Read, false).await?;
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
+            .await?;
         let permit = Arc::clone(&self.slots)
             .try_acquire_owned()
             .map_err(|_| Status::resource_exhausted("too many open watches; retry shortly"))?;
         let entry = self.hub.open(&ctx).await?;
         let ns = entry.ns.as_bytes().to_vec();
-        let target = if msg.target.is_empty() { entry.default_branch.clone() } else { msg.target.clone() };
+        let target = if msg.target.is_empty() {
+            entry.default_branch.clone()
+        } else {
+            msg.target.clone()
+        };
         let mut buf = std::collections::VecDeque::new();
         let cursor = if msg.resume.is_empty() {
             // A new watch starts with the live entries as they are, then follows.
             let cursor = self.hub.q_newest_seq(&ns).await?;
             let list = self
                 .hub
-                .q_list(&ctx, wire::ListQueueRequest { repo: msg.repo.clone(), target: target.clone(), limit: 200, ..Default::default() })
+                .q_list(
+                    &ctx,
+                    wire::ListQueueRequest {
+                        repo: msg.repo.clone(),
+                        target: target.clone(),
+                        limit: 200,
+                        ..Default::default()
+                    },
+                )
                 .await?;
             for e in list.entries {
-                buf.push_back(wire::QueueEvent { entry: Some(e), paused: list.paused, resume: bytes::Bytes::copy_from_slice(&cursor.to_be_bytes()) });
+                buf.push_back(wire::QueueEvent {
+                    entry: Some(e),
+                    paused: list.paused,
+                    resume: bytes::Bytes::copy_from_slice(&cursor.to_be_bytes()),
+                });
             }
             cursor
         } else {
-            let raw: [u8; 8] = msg.resume.as_ref().try_into().map_err(|_| Status::invalid_argument("a resume cursor is 8 bytes"))?;
+            let raw: [u8; 8] = msg
+                .resume
+                .as_ref()
+                .try_into()
+                .map_err(|_| Status::invalid_argument("a resume cursor is 8 bytes"))?;
             i64::from_be_bytes(raw).max(0)
         };
         let started = std::time::Instant::now();
         let state = (self.hub.clone(), ns, target, cursor, buf, permit);
-        let stream = futures::stream::unfold(state, move |(hub, ns, target, mut cursor, mut buf, permit)| async move {
-            loop {
-                if let Some(ev) = buf.pop_front() {
-                    return Some((Ok(ev), (hub, ns, target, cursor, buf, permit)));
-                }
-                if started.elapsed() > WATCH_LIFETIME {
-                    return None;
-                }
-                match hub.q_events_after(&ns, &target, cursor, BATCH).await {
-                    Ok((events, last)) if !events.is_empty() => {
-                        cursor = last;
-                        buf.extend(events);
-                        continue;
+        let stream = futures::stream::unfold(
+            state,
+            move |(hub, ns, target, mut cursor, mut buf, permit)| async move {
+                loop {
+                    if let Some(ev) = buf.pop_front() {
+                        return Some((Ok(ev), (hub, ns, target, cursor, buf, permit)));
                     }
-                    Ok(_) => {}
-                    Err(e) => {
-                        let mut empty = std::collections::VecDeque::new();
-                        empty.clear();
-                        return Some((Err(e), (hub, ns, target, i64::MAX, empty, permit)));
+                    if started.elapsed() > WATCH_LIFETIME {
+                        return None;
                     }
+                    match hub.q_events_after(&ns, &target, cursor, BATCH).await {
+                        Ok((events, last)) if !events.is_empty() => {
+                            cursor = last;
+                            buf.extend(events);
+                            continue;
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            let mut empty = std::collections::VecDeque::new();
+                            empty.clear();
+                            return Some((Err(e), (hub, ns, target, i64::MAX, empty, permit)));
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_millis(250)).await;
                 }
-                tokio::time::sleep(Duration::from_millis(250)).await;
-            }
-        });
+            },
+        );
         Ok(Response::new(Box::pin(stream)))
     }
 }

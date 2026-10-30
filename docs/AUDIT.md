@@ -17,8 +17,8 @@ agent; an IPv4 address is cut to /24 and an IPv6 address to /48), the repository
 | Area | Actions |
 |---|---|
 | Refs and pushes | `repo.ref.update` (one per ref, old and new value), `repo.ref.undo`, `push.refused` (a push refused by authorisation, policy, a hook, a quota or a secret) |
-| Repositories | `repo.created`, `repo.renamed`, `repo.deleted` |
-| Policy and security | `policy.proposed`, `policy.denied`, `secret.finding.updated`, `secret.push.blocked`, `signing.*` |
+| Repositories | `repo.created`, `repo.renamed`, `repo.default_branch`, `repo.deleted` |
+| Policy and security | `policy.proposed`, `policy.denied`, `secret.finding.updated`, `secret.push.blocked`, `secret.scan.run`, `signing.*` |
 | Credentials | `auth.token.created`, `auth.token.revoked`, `auth.ssh_key.added`, `auth.ssh_key.removed`, `agent.token.*`, `ai.key.*`, `storage.target.*`, `vault.rotated` |
 | CI | `ci.failure_group.state` |
 | The log itself | `audit.exported`, `audit.retention.pruned` |

@@ -25,7 +25,7 @@ use super::osv::{Clock, Osv, Query};
 use super::parse::{MAX_FILE_BYTES, parse_file};
 use super::plan::effective;
 use super::repo_config::{self, Config as RepoConfig};
-use super::scan::{self, Snapshot, distinct};
+use super::scan::{self, Snapshot, count_by_ecosystem, distinct};
 use super::store::{self, FindingRow, NewFinding, PackageKey, State};
 use crate::agents::repo::RepoView;
 use crate::audit::NewEvent;
@@ -405,6 +405,7 @@ impl DepsHub {
         let now = self.now();
         let (found, unjudged) = findings_of(&snap.deps, &assessed, &loaded.config, &today);
         let (distinct_pkgs, _) = distinct(&snap.deps, usize::MAX);
+        let by_ecosystem = count_by_ecosystem(&distinct_pkgs);
         let (mut known, mut failed, mut uncovered) = (0u32, 0u32, 0u32);
         for (eco, name, version) in &distinct_pkgs {
             match assessed.answers.get(&(*eco, name.clone(), version.clone())) {
@@ -452,6 +453,7 @@ impl DepsHub {
                     lookup: lookup as i64,
                     packages: i64::try_from(distinct_pkgs.len()).unwrap_or(i64::MAX),
                     unknown: i64::from(failed + uncovered),
+                    by_ecosystem: by_ecosystem.clone(),
                 },
             )
             .await
@@ -491,6 +493,7 @@ impl DepsHub {
             scanned: ids.changeset_out(rev).await?,
             truncated: snap.truncated || assessed.capped,
             source: assessed.source.to_owned(),
+            packages_by_ecosystem: by_ecosystem.into_iter().collect(),
         })
     }
 
@@ -556,6 +559,13 @@ impl DepsHub {
                 .map(|l| Bytes::from(l.rev.clone()))
                 .map(|b| b.to_vec())
                 .map(Bytes::from)
+                .unwrap_or_default(),
+            packages_checked: last
+                .as_ref()
+                .map_or(0, |l| u32::try_from(l.packages).unwrap_or(u32::MAX)),
+            packages_by_ecosystem: last
+                .as_ref()
+                .map(|l| l.by_ecosystem.clone().into_iter().collect())
                 .unwrap_or_default(),
             last_lookup: last.map_or(0, |l| i32::try_from(l.lookup).unwrap_or(0)),
         })

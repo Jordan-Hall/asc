@@ -91,6 +91,8 @@ pub(crate) struct Live {
 
 /// The agent services' shared state.
 pub struct AgentsHub {
+    /// The organisation settings (allow, ceiling), set once the settings services are built.
+    pub org: Arc<crate::org::OrgSlot>,
     pub core: Arc<Core>,
     pub ai: Arc<AiHub>,
     pub(crate) registry: Arc<Registry>,
@@ -102,6 +104,15 @@ pub struct AgentsHub {
     pub(crate) work_dir: PathBuf,
     pub(crate) shutdown: CancellationToken,
     pub(crate) audit: Option<Arc<dyn Audit>>,
+    /// Where an agent's request for the profile of a person is answered; without it every request is refused.
+    pub(crate) profiles: OnceLock<Arc<crate::profile::AgentProfiles>>,
+}
+
+impl AgentsHub {
+    /// Sets where profiles come from (once).
+    pub fn set_profiles(&self, p: Arc<crate::profile::AgentProfiles>) -> bool {
+        self.profiles.set(p).is_ok()
+    }
 }
 
 /// The place the server's single [`AgentsHub`] is registered, once.
@@ -161,12 +172,14 @@ impl AgentsHub {
             registry,
             sandbox,
             inproc: OnceLock::new(),
+            profiles: OnceLock::new(),
             live: Mutex::new(HashMap::new()),
             wake: Notify::new(),
             permits,
             work_dir,
             shutdown: CancellationToken::new(),
             audit,
+            org: Arc::default(),
         })
     }
 
@@ -236,6 +249,7 @@ pub fn run_to_wire(r: &RunRow, token: Option<&TokenRow>, now: i64) -> wire::Agen
             .iter()
             .map(|c| bytes::Bytes::copy_from_slice(c))
             .collect(),
+        created_by_id: crate::review::user_id_of(&r.created_by).unwrap_or(0),
         created_by: if r.starter.is_empty() {
             r.created_by.clone()
         } else {

@@ -229,7 +229,7 @@ fn limits_json(l: Budget) -> String {
     )
 }
 
-fn limits_of(s: &str) -> Budget {
+pub(super) fn limits_of(s: &str) -> Budget {
     let v: serde_json::Value = serde_json::from_str(s).unwrap_or_default();
     let n = |k: &str| v.get(k).and_then(serde_json::Value::as_u64).unwrap_or(0);
     Budget {

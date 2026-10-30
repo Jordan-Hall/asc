@@ -760,6 +760,7 @@ async fn call(ctx: &Ctx, o: &Opts, method: MethodDescriptor) -> Result<ExitCode>
                 attempt += 1;
                 server
                     .reauth(&session)
+                    .await
                     .map_err(|e| CliError::Fatal(format!("asc: {e}")))?;
             }
             Err(s) => {

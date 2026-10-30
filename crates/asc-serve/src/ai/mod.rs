@@ -24,10 +24,14 @@ pub mod owner;
 pub mod prices;
 pub mod provider;
 pub mod rpc;
+pub mod share;
+pub mod share_rpc;
 pub mod store;
 
 #[cfg(test)]
 pub(crate) mod fake;
+#[cfg(test)]
+pub(crate) mod share_tests;
 #[cfg(test)]
 pub(crate) mod tests;
 
@@ -54,6 +58,9 @@ use crate::vault::{Resealer, SecretContext, Vault, VaultError};
 
 /// What `Version.features` adds for this service.
 pub const FEATURE: &str = "ai-keys.v1";
+/// What `Version.features` adds for the `AiKeyShares` service, which is mounted with the keys. The
+/// host gates its sharing pages on this string.
+pub const FEATURE_SHARES: &str = "aikeyshares.v1";
 /// The `kind` of the vault contexts of AI keys.
 pub const SECRET_KIND: &str = "ai-key";
 /// Longest label, in bytes.
@@ -545,7 +552,7 @@ impl AiHub {
     ) -> Result<KeyRow, AiError> {
         if let Some(id) = explicit.filter(|s| !s.is_empty()) {
             let k = self.get_key(id).await?;
-            return if chain.contains(&k.owner) {
+            return if chain.contains(&k.owner) || self.shared_into(&k.id, chain).await? {
                 Ok(k)
             } else {
                 Err(AiError::NotFound)
@@ -553,6 +560,14 @@ impl AiHub {
         }
         for owner in chain {
             let mut keys = self.store.list(owner).await?;
+            // Keys other owners share with this one come after its own.
+            keys.extend(
+                self.shared_keys_for(owner)
+                    .await?
+                    .into_iter()
+                    .filter(|(s, _)| s.allow_use)
+                    .map(|(_, k)| k),
+            );
             keys.retain(|k| !k.disabled);
             // A tested key first; an untested one is returned so the caller can say why it cannot run.
             keys.sort_by_key(|k| match k.state {
@@ -638,7 +653,13 @@ impl AiHub {
             KeyState::Untested => return Err(AiError::NotUsable("untested")),
             KeyState::Failed => return Err(AiError::NotUsable("failed")),
         }
-        let capped = key.monthly_cap > 0 || self.cfg.instance_monthly_cap_micro_usd > 0;
+        // A key whose owner turned "stop at the cap" off keeps counting but is not stopped by its own
+        // cap (the instance cap still holds); without a caps row the cap is a hard stop.
+        let key_cap = match self.caps_row(&key.id).await {
+            Ok(Some(c)) if !c.stop_at_cap => 0,
+            _ => key.monthly_cap,
+        };
+        let capped = key_cap > 0 || self.cfg.instance_monthly_cap_micro_usd > 0;
         let priced = self.priced(&req.model);
         if (capped || cost_limited) && !priced {
             return Err(AiError::NoPrice(req.model.clone()));
@@ -653,7 +674,7 @@ impl AiHub {
                 .store
                 .reserve(
                     &key.id,
-                    key.monthly_cap,
+                    key_cap,
                     self.cfg.instance_monthly_cap_micro_usd,
                     worst,
                     now,
@@ -705,6 +726,7 @@ impl AiHub {
                 // The key's month is shown in the report even when no cap is set.
                 self.add_spent(&key.id, actual, at).await;
             }
+            self.check_warn(key, at).await;
         }
         match outcome {
             Ok(response) => Ok(Completion {

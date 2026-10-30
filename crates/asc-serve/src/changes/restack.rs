@@ -481,9 +481,12 @@ impl Restacker {
             })?;
         let windows_safe = self.refs.windows_safe(entry).await?;
 
-        let (steps, conflicts) = self
+        let (steps, conflicts, conflicted) = self
             .replay(engine, parsed, &heads, &pos, onto, committer, windows_safe)
             .await?;
+        if writes {
+            self.tell_conflicts(ctx, entry, &conflicted).await;
+        }
         if req.atomic && !conflicts.is_empty() {
             return Ok(wire::RestackChangesResponse {
                 conflicts,
@@ -626,9 +629,10 @@ impl Restacker {
         onto: ChangesetId,
         committer: &Signature,
         windows_safe: bool,
-    ) -> Result<(Vec<Step>, Vec<wire::Conflict>), Status> {
+    ) -> Result<(Vec<Step>, Vec<wire::Conflict>, Vec<ChangeId>), Status> {
         let mut steps = Vec::new();
         let mut conflicts = Vec::new();
+        let mut conflicted = Vec::new();
         let mut new_head: HashMap<ChangeId, ChangesetId> = HashMap::new();
         let mut blocked: HashSet<ChangeId> = HashSet::new();
         for (i, (item, head)) in parsed.items.iter().zip(heads).enumerate() {
@@ -662,6 +666,7 @@ impl Restacker {
                 Rebased::Done { id, .. } => id,
                 Rebased::Conflicts(found) => {
                     blocked.insert(item.change);
+                    conflicted.push(item.change);
                     let room = MAX_CONFLICTS.saturating_sub(conflicts.len());
                     conflicts.extend(found.iter().take(room).map(|c| conflict_wire(head.cs, c)));
                     continue;
@@ -680,7 +685,33 @@ impl Restacker {
             });
             new_head.insert(item.change, new);
         }
-        Ok((steps, conflicts))
+        Ok((steps, conflicts, conflicted))
+    }
+
+    /// The hub's `restack_conflict`: the people who made a change whose rebase hit a conflict are told
+    /// (the person who asked for the restack has the answer in hand).
+    async fn tell_conflicts(&self, ctx: &CallCtx, entry: &RepoEntry, conflicted: &[ChangeId]) {
+        let repo = entry.name.as_str();
+        let pool = self.registry.pool();
+        for change in conflicted {
+            let people =
+                crate::notify::authors_of(pool, entry.ns.as_bytes(), change.as_bytes()).await;
+            let asker = crate::review::handle_of(&ctx.principal.id).unwrap_or_default();
+            let hex = crate::review::rpc::hex_change(change.as_bytes());
+            crate::notify::emit(
+                pool,
+                repo,
+                crate::notify::Event::new(
+                    crate::notify::Kind::RestackConflict,
+                    "A restack stopped on a conflict",
+                )
+                .users(people)
+                .except(&asker)
+                .detail("Resolve the conflict, then restack the stack again.")
+                .path(crate::notify::paths::change(repo, &hex)),
+            )
+            .await;
+        }
     }
 
     /// `stored` again with the call's committer; the same changeset when it already has it.
@@ -1591,6 +1622,38 @@ mod tests {
             Some(RefTarget::Changeset(f.x))
         );
         assert_eq!(f.latest(1).await.v, 1);
+    }
+
+    #[tokio::test]
+    async fn a_conflict_tells_the_authors_of_the_change_that_conflicted_and_a_dry_run_tells_nobody()
+    {
+        let f = fx().await;
+        // Change 1 was published by alice, a user.
+        sqlx::query("UPDATE change_versions SET actor = '42:alice' WHERE change = $1")
+            .bind(cid(1).as_bytes().to_vec())
+            .execute(f.reg.pool())
+            .await
+            .unwrap();
+        let m = forge(msg(f.x, vec![item(1), item(2), item(3)]));
+        f.run(
+            wire::RestackChangesRequest {
+                dry_run: true,
+                ..m.clone()
+            },
+            FORGE,
+        )
+        .await
+        .unwrap();
+        assert!(crate::notify::tests::notes(f.reg.pool()).await.is_empty());
+        let done = f.run(m, FORGE).await.unwrap();
+        assert_eq!(done.conflicts.len(), 1);
+        let notes = crate::notify::tests::notes(f.reg.pool()).await;
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        let (event, users, title, _detail, path) = &notes[0];
+        assert_eq!(event, "restack_conflict");
+        assert_eq!(users, &["alice".to_owned()]);
+        assert!(title.contains("conflict"), "{title}");
+        assert_eq!(path, &format!("/o/r/changes/{}", hex(cid(1).as_bytes())));
     }
 
     #[tokio::test]

@@ -282,6 +282,16 @@ async fn repositories_the_caller_cannot_read_leave_no_trace() {
         .unwrap();
     assert_eq!(repos(&all), ["o/a", "o/b", "o/c", "p/d"]);
     assert_eq!(all.searched_repos, 4);
+    // Every hit says why it matched: a text match, the word's span on line 1, a score in 0..1.
+    for hit in all.repos.iter().flat_map(|r| &r.files) {
+        let why = hit.reason.as_ref().expect("a reason on every hit");
+        assert_eq!(why.kind, wire::MatchKind::Text as i32);
+        assert_eq!(why.terms, [WORD]);
+        let span = &why.spans[0];
+        assert_eq!((span.line, span.start_col), (1, 1));
+        assert_eq!(span.end_col as usize, WORD.len() + 1);
+        assert!(why.score > 0.6 && why.score < 1.0, "{}", why.score);
+    }
 
     let some = search(&rig, "some", request(named(), WORD, 100, ""))
         .await

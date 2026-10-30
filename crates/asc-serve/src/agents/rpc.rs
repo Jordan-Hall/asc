@@ -294,6 +294,13 @@ impl Agents for AgentService {
         self.get_spend_impl(request).await
     }
 
+    async fn get_person(
+        &self,
+        request: Request<wire::GetAgentPersonRequest>,
+    ) -> Result<Response<wire::GetAgentPersonResponse>, Status> {
+        self.get_person_impl(request).await
+    }
+
     async fn set_monthly_budget(
         &self,
         request: Request<wire::SetMonthlyBudgetRequest>,
@@ -319,8 +326,26 @@ impl Agents for AgentService {
             principal: ctx.principal.id.clone(),
             handle: Some(handle),
         };
-        if !msg.for_change.is_empty() && msg.for_change.len() != 16 {
-            return Err(Status::invalid_argument("a change id is 16 bytes"));
+        if !msg.for_change.is_empty() {
+            if msg.for_change.len() != 16 {
+                return Err(Status::invalid_argument("a change id is 16 bytes"));
+            }
+            // A run babysits a change of this repository, never one it cannot see.
+            let ns = crate::notify::ns_of(&self.hub.core.pool, ctx.repo.as_str())
+                .await
+                .map_err(|e| Status::internal(format!("database: {e}")))?
+                .ok_or_else(|| Status::not_found("unknown repository"))?;
+            let known: i64 = sqlx::query_scalar(
+                "SELECT CAST(COUNT(*) AS BIGINT) FROM change_versions WHERE ns = $1 AND change = $2",
+            )
+            .bind(ns)
+            .bind(msg.for_change.to_vec())
+            .fetch_one(&self.hub.core.pool)
+            .await
+            .map_err(|e| Status::internal(format!("database: {e}")))?;
+            if known == 0 {
+                return Err(Status::not_found("unknown change"));
+            }
         }
         let asked_limits = Budget::from_wire(msg.limits.as_ref());
         let req = RunRequest {

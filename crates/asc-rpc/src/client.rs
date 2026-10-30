@@ -735,6 +735,27 @@ impl Remote for RpcClient {
             .map_err(|e| self.sync_err(e, "list refs", "ListRefs"))
     }
 
+    async fn default_branch(&self) -> sync::Result<Option<String>> {
+        let page = self
+            .primary()
+            .list_refs(self.req(
+                pb::ListRefsRequest {
+                    repo: self.repo_ref(),
+                    limit: 1,
+                    ..pb::ListRefsRequest::default()
+                },
+                None,
+            ))
+            .await
+            .map_err(|e| self.sync_err(CallError::from(e), "list refs", "ListRefs"))?
+            .into_inner();
+        Ok(page
+            .head
+            .strip_prefix("refs/heads/")
+            .filter(|b| !b.is_empty())
+            .map(str::to_owned))
+    }
+
     async fn has_many(&self, keys: &[ObjKey]) -> sync::Result<Vec<bool>> {
         self.has_objects(keys)
             .await
@@ -1719,6 +1740,14 @@ mod tests {
         // The same keys through the sync `Remote` view.
         let via_remote: Vec<_> = Remote::get_many(&rpc, keys).try_collect().await.unwrap();
         assert_eq!(via_remote.len(), 1000);
+    }
+
+    #[tokio::test]
+    async fn a_server_that_reports_no_head_has_no_default_branch() {
+        // The plain local server of the fixture answers `head` empty: the client says it does not know,
+        // and a caller falls back to its own default instead of a guess dressed as the server's.
+        let (_fx, _h, rpc) = setup().await;
+        assert_eq!(Remote::default_branch(&rpc).await.unwrap(), None);
     }
 
     #[tokio::test]

@@ -477,7 +477,13 @@ fn ast_chunks(lang: Lang, src: &[u8], lines: &Lines) -> Option<Vec<Chunk>> {
         src
     };
     let tree = parser.parse_with_options(
-        &mut |i, _| if i < parse_src.len() { &parse_src[i..] } else { &[][..] },
+        &mut |i, _| {
+            if i < parse_src.len() {
+                &parse_src[i..]
+            } else {
+                &[][..]
+            }
+        },
         None,
         Some(ParseOptions::new().progress_callback(&mut cancel)),
     )?;
