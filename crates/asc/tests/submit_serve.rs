@@ -231,7 +231,9 @@ impl Client<'_> {
     }
 
     fn commit_file(&self, name: &str, body: &str) {
-        std::fs::write(self.dir.join(name), body).unwrap();
+        let path = self.dir.join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
         self.ok(&["add", name]);
         self.ok(&["commit", "-q", "-m", &format!("add {name}")]);
     }
@@ -334,6 +336,88 @@ fn a_clone_takes_the_servers_default_branch_as_the_stack_trunk() {
         "submit after a clone failed: {}
 server: {}",
         text(&sub.stderr),
+        server.log()
+    );
+}
+
+/// A `push` to the trunk that the policy refuses leaves the commit on the local trunk branch. The next
+/// `asc submit -s` must still submit the stack: the refused commit is part of what the person made, and it
+/// has to reach the server as a change like any other, not break the metadata of the stack.
+#[test]
+fn a_submit_after_a_push_the_policy_refused_still_submits_the_stack() {
+    let server = Server::start();
+    server.create_repo("acme/web");
+    let sb = Sandbox::new();
+    let admin = Client {
+        sb: &sb,
+        dir: sb.dir("admin"),
+        token: &server.admin,
+    };
+    admin.ok(&["init", "-q"]);
+    admin.ok(&["remote", "add", "origin", &server.url("acme/web")]);
+    admin.commit_file("base.txt", "base\n");
+    admin.commit_file(
+        ".asc/policy.toml",
+        "version = 1\n\n[roles]\nmaintainer = [\"user:root\"]\n\n[trunk]\nrequire_approvals = 1\nallow_force = false\n",
+    );
+    admin.ok(&["push", "origin", "master"]);
+
+    // A token principal is no user the byte ledger can name, so only an administrator may
+    // publish a changeset it did not bring with a submit; the policy still binds Bob.
+    let bob_token = server.token(&["--user", "bob", "--repo", "acme/*", "--admin"]);
+    let bob = Client {
+        sb: &sb,
+        dir: sb.dir("bob"),
+        token: &bob_token,
+    };
+    bob.ok(&["init", "-q"]);
+    bob.ok(&["remote", "add", "origin", &server.url("acme/web")]);
+    bob.ok(&["pull", "origin", "master"]);
+    bob.ok(&["config", "asc.stack.trunk", "master"]);
+    bob.commit_file("direct.txt", "direct\n");
+    let refused = bob.run(&["push", "origin", "master"]);
+    assert!(
+        !refused.status.success(),
+        "a direct push to the trunk was accepted: {}",
+        text(&refused.stdout)
+    );
+
+    bob.commit_file("step1.txt", "step 1\n");
+    let out = bob.run(&["submit", "-s", "--json"]);
+    assert!(
+        out.status.success(),
+        "the submit after the refused push failed: {}\nserver: {}",
+        text(&out.stderr),
+        server.log()
+    );
+}
+
+/// A plain push of a branch the server keeps sends the change metadata too, so a later submit
+/// of the same commits finds their changes on the server.
+#[test]
+fn a_submit_after_a_plain_push_of_the_same_commits_submits_the_stack() {
+    let server = Server::start();
+    server.create_repo("acme/web");
+    let sb = Sandbox::new();
+    let admin = Client {
+        sb: &sb,
+        dir: sb.dir("admin"),
+        token: &server.admin,
+    };
+    admin.ok(&["init", "-q"]);
+    admin.ok(&["remote", "add", "origin", &server.url("acme/web")]);
+    admin.commit_file("base.txt", "base\n");
+    admin.ok(&["push", "origin", "master"]);
+    admin.ok(&["config", "asc.stack.trunk", "master"]);
+
+    admin.commit_file("one.txt", "one\n");
+    admin.commit_file("two.txt", "two\n");
+    admin.ok(&["push", "origin", "HEAD:refs/heads/side"]);
+    let out = admin.run(&["submit", "-s", "--json"]);
+    assert!(
+        out.status.success(),
+        "the submit after a plain push failed: {}\nserver: {}",
+        text(&out.stderr),
         server.log()
     );
 }

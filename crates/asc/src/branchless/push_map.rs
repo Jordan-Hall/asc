@@ -322,6 +322,51 @@ pub fn agit_updates(trunk: &str, items: &[(ChangesetId, ChangeId)]) -> Result<Ve
         .collect()
 }
 
+/// Most changesets a plain push looks at for their change metadata.
+const MAX_WARM: usize = 1024;
+
+/// The features the server advertises; empty when it cannot say.
+pub async fn server_features(server: &ServerRemote) -> Vec<String> {
+    server
+        .client()
+        .server_version()
+        .await
+        .map(|v| v.features)
+        .unwrap_or_default()
+}
+
+/// The changesets a push of `tip` over `old` may send, newest first: the ancestry of `tip`
+/// without `old` and what `old` already holds, bounded by [`MAX_WARM`]. A change row exists
+/// for only some of them; the sender takes the metas of those that have one. A superset is
+/// harmless: only the changesets the push actually sends carry their `m/` object.
+pub async fn pushed_changesets(
+    ws: &WsCtx,
+    tip: ChangesetId,
+    old: Option<ChangesetId>,
+) -> Result<Vec<ChangesetId>> {
+    let mut out: Vec<ChangesetId> = Vec::new();
+    let mut seen: std::collections::HashSet<ChangesetId> = std::collections::HashSet::new();
+    let mut queue: std::collections::VecDeque<ChangesetId> = std::collections::VecDeque::new();
+    queue.push_back(tip);
+    while let Some(cur) = queue.pop_front() {
+        if out.len() >= MAX_WARM || !seen.insert(cur) {
+            continue;
+        }
+        if let Some(old) = old
+            && (cur == old
+                || HistoryApi::is_ancestor(&ws.engine, cur, old)
+                    .await
+                    .map_err(fatal)?)
+        {
+            continue;
+        }
+        let body = ws.engine.get_changeset(cur).await.map_err(fatal)?;
+        out.push(cur);
+        queue.extend(body.parents.iter().copied());
+    }
+    Ok(out)
+}
+
 /// What the mapping decided for one push.
 #[derive(Debug, Default)]
 pub struct Mapping {
