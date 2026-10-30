@@ -84,6 +84,21 @@ pub const CATALOGUE: &[ActionInfo] = &[
         "The maintenance notice of the host application was switched or changed.",
         &["enabled", "old_enabled", "message", "until"],
     ),
+    a(
+        "host.user.suspended",
+        "A site administrator suspended a person on the host application; they cannot sign in.",
+        &["reason"],
+    ),
+    a(
+        "host.user.unsuspended",
+        "A site administrator let a suspended person sign in to the host application again.",
+        &["reason"],
+    ),
+    a(
+        "host.user.2fa_reset",
+        "A site administrator took away the second factors of a person on the host application.",
+        &["reason"],
+    ),
     // Policy.
     a(
         "policy.proposed",
