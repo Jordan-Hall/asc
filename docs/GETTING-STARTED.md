@@ -27,7 +27,9 @@ repository needs one (a private clone, a push), asc asks right then, as git does
 credentials your git credential helpers hold, and in a terminal it starts a sign-in on the spot (it
 prints a code and a link, you approve it in the browser, and the command carries on). Set
 `ASC_NO_BROWSER=1` to paste a token instead. Scripts and CI are never asked: set `ASC_TOKEN` or store a
-token in a credential helper. The commands below set a credential up ahead of time.
+token in a credential helper. Without a credential helper asc keeps the token it just got in your
+system keychain (a private file when there is none), so the next run does not sign in again; `asc auth
+logout <url>` removes it. The commands below set a credential up ahead of time.
 
 `asc auth login --host <url> --token-stdin` stores a token with the system credential helpers (the token
 is read from standard input, never from an argument), `asc auth logout --host <url>` forgets it, and

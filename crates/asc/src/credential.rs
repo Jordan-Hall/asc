@@ -20,6 +20,7 @@
 
 use std::fmt;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use asc_git::credential::netrc::Netrc;
@@ -221,6 +222,8 @@ pub enum Source {
     Helper,
     /// Entered just now: a device sign-in or a pasted token (`remote::demand`).
     Entered,
+    /// Kept by asc itself (`keystore`) because no credential helper is configured.
+    Store,
 }
 
 impl Source {
@@ -233,6 +236,7 @@ impl Source {
             Self::Netrc => "netrc",
             Self::Helper => "credential helper",
             Self::Entered => "sign-in",
+            Self::Store => "asc credential store",
         }
     }
 }
@@ -316,6 +320,9 @@ struct FillRecord {
     session: helper::Session,
 }
 
+/// Called once with whether the server accepted the credential (see [`report_result`]).
+pub type ResultHook = Arc<dyn Fn(bool) + Send + Sync>;
+
 /// The outcome of a resolution: a credential bound to one origin, or nothing.
 pub struct Resolved {
     origin: Origin,
@@ -323,6 +330,7 @@ pub struct Resolved {
     presented: Option<Presented>,
     extra_headers: Vec<(String, Secret)>,
     fill: Option<FillRecord>,
+    hook: Option<ResultHook>,
     reported: AtomicBool,
     attempt: u32,
 }
@@ -338,6 +346,13 @@ impl fmt::Debug for Resolved {
 }
 
 impl Resolved {
+    /// Also calls `hook(accepted)` when the result is reported, once.
+    #[must_use]
+    pub fn with_hook(mut self, hook: ResultHook) -> Self {
+        self.hook = Some(hook);
+        self
+    }
+
     fn new(origin: Origin, extra_headers: Vec<(String, Secret)>) -> Self {
         Self {
             origin,
@@ -345,6 +360,7 @@ impl Resolved {
             presented: None,
             extra_headers,
             fill: None,
+            hook: None,
             reported: AtomicBool::new(false),
             attempt: 0,
         }
@@ -430,18 +446,23 @@ impl Resolved {
 /// Credentials from the first four sources are never reported. Best effort: a helper that
 /// fails to store or erase does not fail the transfer.
 pub fn report_result(resolved: &Resolved, accepted: bool) {
-    let Some(fill) = &resolved.fill else {
+    if resolved.fill.is_none() && resolved.hook.is_none() {
         return;
-    };
+    }
     if resolved.reported.swap(true, Ordering::SeqCst) {
         return;
     }
-    let result = if accepted {
-        helper::approve(&fill.real, &fill.request, &fill.credential, &fill.session)
-    } else {
-        helper::reject(&fill.real, &fill.request, &fill.credential, &fill.session)
-    };
-    drop(result);
+    if let Some(fill) = &resolved.fill {
+        let result = if accepted {
+            helper::approve(&fill.real, &fill.request, &fill.credential, &fill.session)
+        } else {
+            helper::reject(&fill.real, &fill.request, &fill.credential, &fill.session)
+        };
+        drop(result);
+    }
+    if let Some(hook) = &resolved.hook {
+        hook(accepted);
+    }
 }
 
 /// git's wording when no credential is available or the one found was refused; exit 128.
@@ -770,6 +791,18 @@ impl<'a> Resolver<'a> {
     /// [`TOKEN_USER`] with the token as password, the form `asc auth login` stores. It is
     /// reported to the helpers like a filled one: `approve` once the server accepted it.
     pub fn entered(&self, url: &Url, token: String) -> Result<Resolved, ResolveError> {
+        self.with_token(url, token, Source::Entered, true)
+    }
+
+    /// A token as the user name [`TOKEN_USER`] with the token as password, from `source`:
+    /// `report` says whether the helpers hear `approve` or `reject` for it.
+    pub fn with_token(
+        &self,
+        url: &Url,
+        token: String,
+        source: Source,
+        report: bool,
+    ) -> Result<Resolved, ResolveError> {
         let origin = Origin::of(url).ok_or_else(|| ResolveError::NoHost(mask_url(url)))?;
         if !origin.is_secure() {
             return Err(ResolveError::Insecure(origin.to_string()));
@@ -778,11 +811,11 @@ impl<'a> Resolver<'a> {
             return Err(ResolveError::Control("token"));
         }
         let mut resolved = Resolved::new(origin, self.extra_headers(url)?);
-        resolved.source = Some(Source::Entered);
+        resolved.source = Some(source);
         resolved.attempt = 1;
         let credential = Credential::new(TOKEN_USER, token.clone());
         resolved.presented = Some(presented_from_helper(&credential));
-        if let Some(real) = self.real_git() {
+        if report && let Some(real) = self.real_git() {
             let mut request = self.helper_request(url, &[]);
             request.username = Some(TOKEN_USER.to_owned());
             resolved.fill = Some(FillRecord {

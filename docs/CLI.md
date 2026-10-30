@@ -35,7 +35,7 @@ Configuration keys are in [`CONFIG.md`](CONFIG.md). Getting started is in
 | `clone` | Clones lazily: file contents download when first read. `--mode plain` writes real files. | `asc clone https://asc.example.org/acme/payments` |
 | `auth status` | Names the source that would supply a credential for a URL, never the secret. | `asc auth status https://asc.example.org` |
 | `auth login` | Stores a token through the system credential helpers (never required first: clone, fetch, pull, push, submit and ls-remote sign in on demand at a terminal). The token is read from standard input, never from an argument. | `printf '%s' "$TOKEN" \| asc auth login --host https://asc.example.org --token-stdin` |
-| `auth logout` | Forgets the stored token for a host. | `asc auth logout --host https://asc.example.org` |
+| `auth logout` | Forgets the stored token for a host: in the credential helpers and in the token asc keeps itself (keychain or private file). | `asc auth logout --host https://asc.example.org` |
 | `doctor` | Checks the install, git and the store. `--fix` repairs what needs no administrator rights; `--workflows` lists push triggers on non-shared branches. | `asc doctor --json` |
 | `install-shim` | Optional git compatibility: puts a `git` next to `asc` so `git` is asc inside an asc workspace and real git elsewhere. | `asc install-shim` |
 | `upgrade` | Signature-verified upgrade, side by side. The release source is `asc.releasesUrl`, `ASC_DOWNLOAD_BASE_URL` or `--from <dir>`. | `asc upgrade --check` |
