@@ -391,6 +391,35 @@ impl GitViewService {
         .await?
     }
 
+    /// Whether the host's git directory `dir` holds what `plan` would put there: every ref to set points at
+    /// its commit and that commit is in the object database, and every ref to delete is gone. It reads and
+    /// writes nothing.
+    pub async fn bridge_holds(
+        self: &Arc<Self>,
+        dir: PathBuf,
+        plan: &PromotePlan,
+    ) -> Result<bool, GitViewError> {
+        let this = self.clone();
+        let sets: Vec<(String, GitOid)> =
+            plan.sets.iter().map(|s| (s.name.clone(), s.git)).collect();
+        let deletes = plan.deletes.clone();
+        tokio::task::spawn_blocking(move || -> Result<bool, GitViewError> {
+            let refs: HashMap<String, GitOid> = this.server.list_refs(&dir)?.into_iter().collect();
+            if deletes.iter().any(|n| refs.contains_key(n)) {
+                return Ok(false);
+            }
+            if sets.is_empty() {
+                return Ok(true);
+            }
+            let odb = Odb::open(&dir).map_err(ViewError::from)?;
+            Ok(sets
+                .iter()
+                .all(|(name, oid)| refs.get(name) == Some(oid) && odb.contains(*oid)))
+        })
+        .await
+        .map_err(|e| GitViewError::Shared(format!("the bridge check failed: {e}")))?
+    }
+
     /// `asc serve admin git-view prune`: removes the views of repos that no longer exist; returns
     /// the repo ids removed.
     pub async fn prune(&self) -> Result<Vec<i64>, GitViewError> {
@@ -424,7 +453,20 @@ pub fn register(
         Ok(Some(service)) => {
             GitViewSyncEffect::new(service.clone(), registry.clone()).register(outbox);
             if let Some(root) = promote_root {
-                BridgePromoteEffect::new(service.clone(), registry.clone(), root).register(outbox);
+                let effect = BridgePromoteEffect::new(service.clone(), registry.clone(), root);
+                let reconcile = Arc::new(BridgePromoteEffect::new(
+                    effect.service.clone(),
+                    effect.registry.clone(),
+                    effect.root.clone(),
+                ));
+                effect.register(outbox);
+                // Directories that fell behind asc while the server was down are made right once, in the
+                // background, so that the host does not report commits its git directory lacks.
+                if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                    handle.spawn(async move {
+                        reconcile.reconcile_all().await;
+                    });
+                }
             }
             tracing::info!(view_dir = %service.view_dir().display(), "git protocol views are ready");
             Some(service)
@@ -591,6 +633,11 @@ pub const PROMOTE_EFFECT: &str = "bridge_promote";
 /// Ref namespaces the host's git directory holds: shared branches, tags and the pull heads the
 /// host writes. Private refs (`refs/users/*`, drafts, snapshots) never leave asc.
 const BRIDGE_NAMESPACES: [&str; 3] = ["refs/heads/", "refs/tags/", "refs/pull/"];
+/// How long a promotion of refs the host's own git moves waits for that git to finish them.
+const HOST_GIT_GRACE: Duration = Duration::from_secs(3);
+/// A promotion of refs that the host's git never finished makes the directory right after this many failed tries
+/// (about 15 s in all), when no git can still be finishing them.
+const HEAL_AFTER_FAILURES: i64 = 3;
 /// Refs one promotion moves: an `UpdateRefs` request cannot name more.
 const MAX_PROMOTE_REFS: usize = asc_rpc::server::MAX_REF_UPDATES;
 
@@ -671,8 +718,10 @@ fn promoted_names(doc: &serde_json::Value) -> Result<Vec<String>, EffectError> {
 /// list, and silent about everything but names and counts. A missing or unusable directory is an
 /// error: the row is retried with backoff until the host makes the directory right.
 ///
-/// The `ImportGitPush` rows are skipped: the host's git moves its refs itself when its hook
-/// returns ([`crate::import_push::HOST_PUSH_VIA`]).
+/// The `ImportGitPush` rows are not promoted at once: the host's git moves its refs itself when its
+/// hook returns ([`crate::import_push::HOST_PUSH_VIA`]). The row checks that it did, waits for a git
+/// that is still finishing, and promotes by itself when the push never reached the directory (the
+/// host's git was killed after its hook, or the host restarted).
 pub struct BridgePromoteEffect {
     service: Arc<GitViewService>,
     registry: Arc<crate::registry::Registry>,
@@ -707,6 +756,99 @@ impl BridgePromoteEffect {
         match row {
             Some(r) => Ok(r.try_get::<String, _>("via")? == crate::import_push::HOST_PUSH_VIA),
             None => Ok(false),
+        }
+    }
+
+    /// Looks at the bridge of every repo once and makes right the ones that lack a ref of asc or its
+    /// commit. It is what brings back a directory after a push that asc took and the host's git never
+    /// finished, a restore of the host's volume, or rows that were lost: the work is idempotent, and a
+    /// repo whose directory is right costs one look. Returns the number of repos it had to make right.
+    pub async fn reconcile_all(self: Arc<Self>) -> usize {
+        let names: Vec<String> = match sqlx::query("SELECT name FROM repos ORDER BY id")
+            .fetch_all(self.registry.pool())
+            .await
+        {
+            Ok(rows) => rows
+                .iter()
+                .filter_map(|r| r.try_get::<String, _>("name").ok())
+                .collect(),
+            Err(e) => {
+                tracing::warn!(error = %e, "bridge reconcile: cannot list the repos");
+                return 0;
+            }
+        };
+        let mut healed = 0;
+        for name in names {
+            match self.reconcile_repo(&name).await {
+                Ok(true) => healed += 1,
+                Ok(false) => {}
+                Err(e) => tracing::warn!(repo = %name, error = %e, "bridge reconcile failed"),
+            }
+            tokio::task::yield_now().await;
+        }
+        tracing::info!(event = "bridge.reconciled", healed, "bridges checked");
+        healed
+    }
+
+    /// Makes the bridge of one repo right; true when it had to.
+    async fn reconcile_repo(&self, name: &str) -> Result<bool, EffectError> {
+        let fail = |e: &dyn std::fmt::Display| EffectError(e.to_string());
+        let name = asc_rpc::server::RepoName::parse(name).map_err(|e| fail(&e))?;
+        let repo = self.registry.open(&name).await.map_err(|e| fail(&e))?;
+        if repo.mode == RepoMode::Mirror {
+            return Ok(false);
+        }
+        let (root, repo_name) = (self.root.clone(), repo.name.as_str().to_owned());
+        let Ok(Ok(dir)) = tokio::task::spawn_blocking(move || bridge_dir(&root, &repo_name)).await
+        else {
+            return Ok(false); // the host has no directory for it (yet)
+        };
+        let entries = self
+            .registry
+            .refs()
+            .list(repo.key, "refs/")
+            .await
+            .map_err(|e| fail(&e))?;
+        let mut names: Vec<String> = entries
+            .iter()
+            .filter_map(|e| std::str::from_utf8(e.name.as_bytes()).ok())
+            .filter(|n| BRIDGE_NAMESPACES.iter().any(|ns| n.starts_with(ns)))
+            .map(str::to_owned)
+            .collect();
+        names.sort();
+        let mut healed = false;
+        for chunk in names.chunks(MAX_PROMOTE_REFS) {
+            let plan = self.plan(&repo, chunk).await?;
+            if self
+                .service
+                .bridge_holds(dir.clone(), &plan)
+                .await
+                .map_err(|e| fail(&e))?
+            {
+                continue;
+            }
+            self.service
+                .promote(&repo, dir.clone(), plan)
+                .await
+                .map_err(|e| fail(&e))?;
+            healed = true;
+        }
+        if healed {
+            tracing::warn!(event = "bridge.healed", repo = %repo.name, "the directory of the host lacked refs or commits of asc: made right");
+        }
+        Ok(healed)
+    }
+
+    /// How many times this row has failed before (the outbox counts them in `attempts`).
+    async fn failures_of(&self, job: &Job) -> Result<i64, sqlx::Error> {
+        let row =
+            sqlx::query("SELECT CAST(attempts AS BIGINT) AS attempts FROM outbox WHERE id = $1")
+                .bind(job.id)
+                .fetch_optional(self.registry.pool())
+                .await?;
+        match row {
+            Some(r) => r.try_get::<i64, _>("attempts"),
+            None => Ok(0),
         }
     }
 
@@ -765,15 +907,51 @@ impl Effect for BridgePromoteEffect {
         let name = asc_rpc::server::RepoName::parse(&name).map_err(|e| fail(&e))?;
         let repo = self.registry.open(&name).await.map_err(|e| fail(&e))?;
         // A mirror repo is written by its source, never by a host writer.
-        if repo.mode == RepoMode::Mirror || self.host_wrote_it(job).await.map_err(|e| fail(&e))? {
+        if repo.mode == RepoMode::Mirror {
             return Ok(());
         }
+        let host_wrote = self.host_wrote_it(job).await.map_err(|e| fail(&e))?;
         let plan = self.plan(&repo, &names).await?;
         let (root, repo_name) = (self.root.clone(), repo.name.as_str().to_owned());
         let dir = tokio::task::spawn_blocking(move || bridge_dir(&root, &repo_name))
             .await
             .map_err(|e| fail(&e))?
             .map_err(EffectError)?;
+        if host_wrote {
+            // The host's git moves these refs itself when its hook returns, so they are not promoted at once:
+            // that would race with it. But asc has the push whether or not the host's git finished it (it can
+            // be killed between the hook and the ref update, or the hub restarted), and a host that is told
+            // about a commit its git directory does not hold cannot show the repository. So the row looks at
+            // the directory: it passes when the refs and their commits are there, waits a little for a git
+            // that is still finishing, and after that makes the directory right itself.
+            let deadline = tokio::time::Instant::now() + HOST_GIT_GRACE;
+            loop {
+                if self
+                    .service
+                    .bridge_holds(dir.clone(), &plan)
+                    .await
+                    .map_err(|e| fail(&e))?
+                {
+                    return Ok(());
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            let failures = self.failures_of(job).await.map_err(|e| fail(&e))?;
+            if failures < HEAL_AFTER_FAILURES {
+                return Err(EffectError(
+                    "the host's git directory does not hold the pushed refs yet".into(),
+                ));
+            }
+            tracing::warn!(
+                event = "bridge.heal",
+                repo = %repo.name,
+                failures,
+                "the host's git never finished a push that asc holds: the directory is made right from asc"
+            );
+        }
         let report = self
             .service
             .promote(&repo, dir, plan)
