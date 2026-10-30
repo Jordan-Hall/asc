@@ -383,9 +383,19 @@ impl ReAsk {
     /// The message when nothing could be found for `old`.
     fn failure(&self, old: &Resolved) -> String {
         if old.is_anonymous() {
-            super::demand::cannot_ask(&self.url)
+            let why = if self.prompt == Prompt::Never {
+                "this run cannot ask for one (no terminal, or prompts are disabled)"
+            } else {
+                "no sign-in was possible"
+            };
+            super::demand::cannot_ask(&self.url, why)
         } else {
-            super::demand::refused(&self.url, old.source(), &self.hub)
+            format!(
+                "the credential from {} was refused by {}; sign in again with `asc auth login --host {}`",
+                old.source(),
+                super::demand::origin_text(&self.url),
+                super::demand::origin_text(&self.hub)
+            )
         }
     }
 }
