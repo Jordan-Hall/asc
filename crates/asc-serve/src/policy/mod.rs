@@ -344,7 +344,7 @@ pub fn register(
     ));
     let deps_gate = Arc::new(crate::deps::gate::DepsGateSlot::default());
     let org_slot = Arc::new(crate::org::OrgSlot::default());
-    let read_only = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let read_only = ext.read_only.clone();
     let gate = Arc::new(
         gate::ServerGate::new(registry.clone(), policies, scanner, signing_hub.clone())
             .with_deps(deps_gate.clone())

@@ -628,6 +628,8 @@ pub struct Extensions {
     pub settings: crate::settings::SettingsSlot,
     /// The usage hub, which counts the bytes the server serves.
     pub usage: Arc<crate::usage::UsageSlot>,
+    /// Raised while a restore is staged: no ref moves and no object is accepted until the restart.
+    pub read_only: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Extensions {
@@ -653,6 +655,7 @@ impl Extensions {
             security: Default::default(),
             settings: Default::default(),
             usage: Arc::default(),
+            read_only: Arc::default(),
             deps: Default::default(),
         }
     }

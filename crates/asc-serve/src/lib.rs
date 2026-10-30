@@ -699,7 +699,8 @@ pub async fn serve(
     };
     let stats = obs::Stats::register(&metrics);
     let http_state = http::HttpState::new(pool, outbox.clone(), metrics.clone(), well_known)
-        .with_stats(stats.clone());
+        .with_stats(stats.clone())
+        .with_maintenance(ext.read_only.clone());
     http::register(&ext, http_state.clone());
     web::register(&ext, &cfg.web)?;
     let turbo = Arc::new(

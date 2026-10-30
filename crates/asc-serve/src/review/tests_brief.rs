@@ -981,3 +981,60 @@ keep_approvals_on_restack = false
         .unwrap();
     assert!(r.approvals.iter().any(|a| a.version == 2 && a.applies));
 }
+
+#[tokio::test]
+async fn the_organisations_review_floor_beats_a_looser_repository_policy() {
+    use crate::ai::audit::PoolAudit;
+    use crate::org::{OrgHub, policy::MergeDefaults};
+    let f = fx().await;
+    let cs3 = commit(&f.e, &[], &[("f", &[7])]).await;
+    add_version(&f, 1, 3, cs3, "44:carol").await;
+    set_trunk_policy(
+        &f,
+        "version = 1
+[roles]
+maintainer = [\"user:alice\"]
+[review]
+author_may_approve = true
+",
+    )
+    .await;
+    let pool = f.reg.pool().clone();
+    let hub = OrgHub::new(pool.clone(), std::sync::Arc::new(PoolAudit::new(pool)));
+    let owner = f.e.name.as_str().split('/').next().unwrap().to_owned();
+    // The organisation says authors never approve their own changes.
+    hub.set_merge(&owner, MergeDefaults::default(), "9:owner")
+        .await
+        .unwrap();
+    assert_eq!(
+        approve(&f, CAROL, 1, 0, wire::ApprovalState::Approved)
+            .await
+            .unwrap_err()
+            .code(),
+        Code::PermissionDenied
+    );
+    // It lets them: the repository's policy decides again.
+    hub.set_merge(
+        &owner,
+        MergeDefaults {
+            author_may_approve: true,
+            ..MergeDefaults::default()
+        },
+        "9:owner",
+    )
+    .await
+    .unwrap();
+    approve(&f, CAROL, 1, 0, wire::ApprovalState::Approved)
+        .await
+        .unwrap();
+    // The floor itself.
+    let floor = crate::org::review_floor(f.reg.pool(), f.e.name.as_str())
+        .await
+        .unwrap();
+    assert!(floor.human_approval && !floor.author_may_not_approve);
+    assert!(
+        crate::org::review_floor(f.reg.pool(), "nobody/x")
+            .await
+            .is_none()
+    );
+}

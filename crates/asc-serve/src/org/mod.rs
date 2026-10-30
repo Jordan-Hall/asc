@@ -163,6 +163,38 @@ fn list_of(json: &str) -> Vec<String> {
     serde_json::from_str(json).unwrap_or_default()
 }
 
+/// What an organisation's settings add to the review rules of one of its repositories: `None` when
+/// the organisation has configured nothing (the repository's own rules stand).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReviewFloor {
+    /// Only people approve: an agent's approval does not count.
+    pub human_approval: bool,
+    /// The author of a change may not approve it.
+    pub author_may_not_approve: bool,
+}
+
+/// Reads the review floor of `repo`'s organisation straight from the database.
+pub async fn review_floor(pool: &AnyPool, repo: &str) -> Option<ReviewFloor> {
+    let owner = repo.split('/').next()?.to_ascii_lowercase();
+    let r = sqlx::query(
+        "SELECT agent_changesets_need_person, merge_json FROM org_settings WHERE org = $1",
+    )
+    .bind(owner)
+    .fetch_optional(pool)
+    .await
+    .ok()??;
+    let need = r.try_get::<i64, _>("agent_changesets_need_person").ok()? != 0;
+    let merge: Option<MergeDefaults> = r
+        .try_get::<String, _>("merge_json")
+        .ok()
+        .filter(|j| !j.is_empty())
+        .and_then(|j| serde_json::from_str(&j).ok());
+    Some(ReviewFloor {
+        human_approval: need || merge.as_ref().is_some_and(|m| m.human_approval),
+        author_may_not_approve: merge.as_ref().is_some_and(|m| !m.author_may_approve),
+    })
+}
+
 /// A valid agent name: `[a-z0-9-]`, 1 to 40 characters, starting with a letter or digit.
 pub fn agent_name_ok(n: &str) -> bool {
     !n.is_empty()
@@ -349,6 +381,17 @@ impl OrgHub {
                 own
             }
         }
+    }
+
+    /// Whether the organisation of `repo` forbids rewriting or deleting trunk: its merge defaults
+    /// are set and do not allow force.
+    pub async fn forbids_force(&self, repo: &str) -> bool {
+        let owner = repo.split('/').next().unwrap_or("").to_ascii_lowercase();
+        self.row(&owner)
+            .await
+            .ok()
+            .and_then(|r| r.merge)
+            .is_some_and(|m| !m.allow_force)
     }
 
     /// Whether the organisation of `repo` requires signed changes on trunk.
