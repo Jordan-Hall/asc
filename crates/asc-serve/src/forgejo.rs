@@ -1938,7 +1938,7 @@ impl ForgejoHooks {
             tracing::warn!(error = %e, "cannot build pre-receive options");
             HookRejected("the push cannot be checked by the forge".into())
         };
-        let identity = UserIdentity::parse(&req.principal.id);
+        let identity = pusher_identity(&req.principal.id);
         let entry = self
             .registry
             .open(req.repo)
@@ -1960,6 +1960,20 @@ impl ForgejoHooks {
         }
         Ok(opts)
     }
+}
+
+/// The forge identity a push is checked as: the user the principal records, or, for an agent, the
+/// user it acts for. An agent is no forge user, so without this the forge's `pre-receive` would see
+/// no pusher and refuse every write of a run. The forge then applies its own checks (write access to
+/// the code, protected refs, quota) for the owner: no more than the owner may do, and asc's own agent
+/// gate has already narrowed it to the agent's drafts. An owner the forge does not know (a synthetic
+/// id) is refused by the forge, so the push fails closed.
+fn pusher_identity(principal_id: &str) -> Option<UserIdentity> {
+    if let Some(i) = UserIdentity::parse(principal_id) {
+        return Some(i);
+    }
+    let a = crate::agents::tokens::parse_principal(principal_id)?;
+    UserIdentity::new(a.owner_id, &format!("agent-{}", a.name), 0)
 }
 
 #[async_trait]
@@ -2264,6 +2278,17 @@ mod tests {
         assert_eq!(parse_target(&hex(&g.to_bytes())), Some(g));
         assert_eq!(parse_target("zz"), None);
         assert_eq!(parse_target("0102"), None);
+    }
+
+    #[test]
+    fn an_agent_push_is_checked_as_the_user_it_acts_for() {
+        let u = pusher_identity("7:alice").expect("a user");
+        assert_eq!((u.user_id, u.handle.as_str()), (7, "alice"));
+        let a = pusher_identity("agent:coder-1:42:at_abc").expect("an agent");
+        assert_eq!((a.user_id, a.handle.as_str(), a.deploy_key_id), (42, "agent-coder-1", 0));
+        assert!(pusher_identity("agent:coder-1:0:at_abc").is_none());
+        assert!(pusher_identity("agent:coder-1:42:tok").is_none());
+        assert!(pusher_identity("service:host").is_none());
     }
 
     #[test]
