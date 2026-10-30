@@ -55,6 +55,7 @@ use super::url::{RefsMode, RemoteSpec};
 use crate::cli::common::CliError;
 use crate::credential::{self, Prompt, Resolved, Resolver, Scheme, Source};
 use crate::ext::{self, HistorySelector, RemoteObjectsSelector};
+use crate::keystore::KeyStore;
 
 type CliResult<T> = std::result::Result<T, CliError>;
 
@@ -259,6 +260,10 @@ struct ReAsk {
     repo: String,
     /// Whether this run already asked the person once: it never asks twice.
     asked: AtomicBool,
+    /// Where asc keeps a token itself: set when no credential helper is configured.
+    store: Option<Arc<KeyStore>>,
+    /// The key a token is filed under: the server's origin.
+    account: String,
 }
 
 impl ReAsk {
@@ -284,8 +289,31 @@ impl ReAsk {
         } else {
             r
         };
-        r.resolve(&self.url, Prompt::Never)
-            .map_err(|e| CliError::Fatal(format!("asc: {e}")))
+        let first = r
+            .resolve(&self.url, Prompt::Never)
+            .map_err(|e| CliError::Fatal(format!("asc: {e}")))?;
+        // A script has no 401 round to wait for: it uses the token asc itself keeps right away.
+        if first.is_anonymous() && self.prompt == Prompt::Never {
+            return Ok(self.kept().unwrap_or(first));
+        }
+        Ok(first)
+    }
+
+    /// The token asc keeps for this server, when there is one (no helper configured).
+    fn kept(&self) -> Option<Resolved> {
+        let store = self.store.as_ref()?;
+        let (token, _) = store.get(&self.account)?;
+        let resolved = self
+            .resolver()
+            .with_token(&self.url, token, Source::Store, false)
+            .ok()?;
+        let (store, account) = (store.clone(), self.account.clone());
+        // A token the server refuses is forgotten, so the next run asks afresh.
+        Some(resolved.with_hook(Arc::new(move |accepted| {
+            if !accepted {
+                store.delete(&account);
+            }
+        })))
     }
 
     /// After a 401: the next stored credential, without any prompt.
@@ -296,7 +324,11 @@ impl ReAsk {
         } else {
             r.resolve_after(&self.url, Prompt::Never, old, &[])
         };
-        next.map_err(|e| CliError::Fatal(format!("asc: {e}")))
+        let next = next.map_err(|e| CliError::Fatal(format!("asc: {e}")))?;
+        if next.is_anonymous() && old.source_kind() != Some(Source::Store) {
+            return Ok(self.kept().unwrap_or(next));
+        }
+        Ok(next)
     }
 
     /// Whether a refused `old` may be answered by asking the person: an anonymous try, or a
@@ -305,7 +337,10 @@ impl ReAsk {
     /// behind the person's back.
     fn may_ask(&self, old: &Resolved) -> bool {
         self.prompt == Prompt::Allowed
-            && matches!(old.source_kind(), None | Some(Source::Helper))
+            && matches!(
+                old.source_kind(),
+                None | Some(Source::Helper | Source::Store)
+            )
             && !self.asked.swap(true, Ordering::SeqCst)
     }
 
@@ -321,27 +356,36 @@ impl ReAsk {
         )
         .await
         .map_err(|e| CliError::Fatal(format!("asc: {e}")))?;
-        self.resolver()
-            .entered(&self.url, token)
-            .map_err(|e| CliError::Fatal(format!("asc: {e}")))
+        let resolved = self
+            .resolver()
+            .entered(&self.url, token.clone())
+            .map_err(|e| CliError::Fatal(format!("asc: {e}")))?;
+        let Some(store) = self.store.clone() else {
+            return Ok(resolved);
+        };
+        // Once the server accepted the token it is kept, so the next run does not sign in again.
+        let (account, hub) = (self.account.clone(), super::demand::origin_text(&self.hub));
+        Ok(resolved.with_hook(Arc::new(move |accepted| {
+            if !accepted {
+                return;
+            }
+            match store.set(&account, &token) {
+                Ok(place) => eprintln!(
+                    "asc: signed in; the token is kept in {place} (`asc auth logout --host {hub}` forgets it)"
+                ),
+                Err(_) => eprintln!(
+                    "asc: signed in; the token could not be kept, so the next run signs in again (configure a git credential helper)"
+                ),
+            }
+        })))
     }
 
     /// The message when nothing could be found for `old`.
     fn failure(&self, old: &Resolved) -> String {
         if old.is_anonymous() {
-            let why = if self.prompt == Prompt::Never {
-                "this run cannot ask for one (no terminal, or prompts are disabled)"
-            } else {
-                "no sign-in was possible"
-            };
-            super::demand::cannot_ask(&self.url, why)
+            super::demand::cannot_ask(&self.url)
         } else {
-            format!(
-                "the credential from {} was refused by {}; sign in again with `asc auth login --host {}`",
-                old.source(),
-                super::demand::origin_text(&self.url),
-                super::demand::origin_text(&self.hub)
-            )
+            super::demand::refused(&self.url, old.source(), &self.hub)
         }
     }
 }
@@ -543,6 +587,12 @@ pub async fn connect(
         .ok()
         .and_then(|u| Url::parse(&super::demand::origin_text(&u)).ok())
         .unwrap_or_else(|| url.clone());
+    let account = crate::keystore::account_of(&url).unwrap_or_default();
+    let store = (!crate::keystore::helper_configured(file))
+        .then(|| asc_state::AscHome::locate().ok())
+        .flatten()
+        .map(|h| Arc::new(KeyStore::from_env(h.root())))
+        .filter(|s| s.enabled());
     let reask = ReAsk {
         file: file.clone(),
         real,
@@ -552,6 +602,8 @@ pub async fn connect(
         hub,
         repo: target.repo.clone(),
         asked: AtomicBool::new(false),
+        store,
+        account,
     };
     let resolved = reask.first()?;
     let remote_name = name.map_or_else(|| target.repo.clone(), str::to_owned);
