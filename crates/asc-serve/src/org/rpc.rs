@@ -183,6 +183,7 @@ impl OrgSettings for OrgService {
             "OrgSettings/SetAgentPolicy",
             true,
             || async {
+                let old = hub.row(&org).await.map(|r| r.agents).unwrap_or_default();
                 let row = hub
                     .set_agents(
                         &org,
@@ -204,6 +205,9 @@ impl OrgSettings for OrgService {
                         ("allow_agents", w.allow_agents.to_string()),
                         ("need_person", w.agent_changesets_need_person.to_string()),
                         ("ceiling", w.monthly_spend_ceiling_micro_usd.to_string()),
+                        ("old_allow_agents", old.allow_agents.to_string()),
+                        ("old_need_person", old.need_person.to_string()),
+                        ("old_ceiling", old.ceiling.to_string()),
                     ],
                 )
                 .await;
@@ -462,6 +466,7 @@ impl OrgSettings for OrgService {
             "OrgSettings/SetInstanceAgents",
             true,
             || async {
+                let old = hub.instance().await.map_err(fail)?;
                 let i = hub
                     .set_instance(
                         InstanceAgents {
@@ -480,6 +485,8 @@ impl OrgSettings for OrgService {
                     &[
                         ("allow_agents", i.allow_agents.to_string()),
                         ("ceiling", i.default_budget.to_string()),
+                        ("old_allow_agents", old.allow_agents.to_string()),
+                        ("old_ceiling", old.default_budget.to_string()),
                     ],
                 )
                 .await;
