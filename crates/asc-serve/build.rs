@@ -3,7 +3,8 @@
 //! Writes `$OUT_DIR/web_assets.rs`: a table of `(path, identity, gzip, brotli)` byte slices made
 //! with `include_bytes!`. With no `web/dist/index.html` (a build without bun) the table is empty and
 //! the crate still builds; `[web] enabled = true` then needs `[web] dir`. Override the directory
-//! with `ASC_WEB_DIST`.
+//! with `ASC_WEB_DIST`. With `ASC_REQUIRE_WEB=1` (the release and image builds) a missing bundle
+//! fails the build instead, so an executable never ships without the UI by accident.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -28,12 +29,20 @@ fn literal(p: &Path) -> String {
 
 fn main() {
     println!("cargo:rerun-if-env-changed=ASC_WEB_DIST");
+    println!("cargo:rerun-if-env-changed=ASC_REQUIRE_WEB");
     println!("cargo:rerun-if-changed=build.rs");
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     let dist = env::var_os("ASC_WEB_DIST")
         .map(PathBuf::from)
         .unwrap_or_else(|| manifest.join("../../web/dist"));
     println!("cargo:rerun-if-changed={}", dist.display());
+
+    assert!(
+        env::var_os("ASC_REQUIRE_WEB").is_none_or(|v| v.is_empty() || v == "0")
+            || dist.join("index.html").is_file(),
+        "ASC_REQUIRE_WEB is set but {} has no index.html; build the web UI first (docs/WEB-UI.md)",
+        dist.display()
+    );
 
     let mut src = String::from("pub static EMBEDDED: &[Embedded] = &[\n");
     if dist.join("index.html").is_file() {
