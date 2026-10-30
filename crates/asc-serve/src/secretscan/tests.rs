@@ -236,6 +236,38 @@ async fn scanning_again_keeps_one_finding_and_its_first_sighting() {
 }
 
 #[tokio::test]
+async fn a_scan_on_demand_leaves_an_audit_event_with_counts_and_never_the_value() {
+    let (s, _) = with_a_planted_token().await;
+    s.svc
+        .scan(call(scan_rev("master"), Some("admin"), false))
+        .await
+        .unwrap();
+    s.svc
+        .scan(call(scan_rev("master"), Some("admin"), false))
+        .await
+        .unwrap();
+    let details: Vec<String> = sqlx::query_scalar(
+        "SELECT details_json FROM audit_events WHERE action = 'secret.scan.run' AND scope_kind = 'repo' ORDER BY seq",
+    )
+    .fetch_all(s.f.reg.pool())
+    .await
+    .unwrap();
+    assert_eq!(details.len(), 2, "one event for each scan");
+    assert!(details.iter().all(|d| d.contains("findings") && d.contains("files")));
+    assert!(details.iter().all(|d| !d.contains(&token()[4..])));
+    // A check records nothing: it is not a scan of the repository.
+    s.svc
+        .check(call(check_rev("master"), Some("writer"), false))
+        .await
+        .unwrap();
+    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM audit_events WHERE action = 'secret.scan.run' AND scope_kind = 'repo'")
+        .fetch_one(s.f.reg.pool())
+        .await
+        .unwrap();
+    assert_eq!(n, 2);
+}
+
+#[tokio::test]
 async fn paths_narrow_a_scan_and_bad_requests_are_refused() {
     let (s, _) = with_a_planted_token().await;
     let mut req = scan_rev("master");
