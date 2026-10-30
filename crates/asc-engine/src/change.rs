@@ -50,6 +50,14 @@ pub trait ChangeRows: Send + Sync {
     /// Indexes a changeset. The first row for a changeset wins: returns `false`, changing
     /// nothing, when `row.cs` is already indexed. `preds` is stored only with a new row.
     async fn insert(&self, row: &ChangeRow, preds: &[ChangesetId]) -> Result<bool>;
+    /// Indexes many predecessor-less rows (imported commits). Same rule as [`ChangeRows::insert`]
+    /// for each. Stores override it to write the batch in one transaction.
+    async fn insert_many(&self, rows: &[ChangeRow]) -> Result<()> {
+        for row in rows {
+            self.insert(row, &[]).await?;
+        }
+        Ok(())
+    }
     async fn get(&self, cs: ChangesetId) -> Result<Option<ChangeRow>>;
     /// Rows of one change, at most `limit` (clamped to [`MAX_ROWS`]).
     async fn by_change(&self, change: ChangeId, limit: usize) -> Result<Vec<ChangeRow>>;

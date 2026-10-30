@@ -58,4 +58,10 @@ impl<O: Objects, R: Refs> Engine<O, R> {
             projects: projects::State::new(),
         }
     }
+
+    /// An engine for the same refs and repository over other objects, with empty caches. A bulk
+    /// writer uses it to read back through its own write buffer.
+    pub fn rebound<P: Objects>(&self, objects: Arc<P>) -> Engine<P, R> {
+        Engine::new(objects, self.refs.clone(), self.repo)
+    }
 }

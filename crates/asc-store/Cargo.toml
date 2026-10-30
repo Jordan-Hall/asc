@@ -19,6 +19,7 @@ it-s3 = ["testkit"]
 asc-core = { workspace = true }
 async-trait = { workspace = true }
 backon = { workspace = true }
+blake3 = { workspace = true }
 bytes = { workspace = true }
 data-encoding = { workspace = true }
 filetime = { workspace = true }
@@ -29,6 +30,7 @@ serde = { workspace = true }
 sqlx = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tracing = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true }
 zstd = { workspace = true }
@@ -37,5 +39,4 @@ serde_json = { workspace = true }
 reqwest = { workspace = true }
 
 [dev-dependencies]
-blake3 = { workspace = true }
 tempfile = { workspace = true }

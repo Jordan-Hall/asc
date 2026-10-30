@@ -23,11 +23,14 @@ service Review {
   rpc PrepareSuggestion(PrepareSuggestionRequest) returns (PrepareSuggestionResponse);   // repo write; the file with the suggestion applied
   rpc MarkSuggestionApplied(MarkSuggestionAppliedRequest) returns (MarkSuggestionAppliedResponse);   // repo write; records the version that applied it
   rpc SuggestReviewers(SuggestReviewersRequest) returns (SuggestReviewersResponse);      // repo read
-  rpc RecordGateDecision(RecordGateDecisionRequest) returns (RecordGateDecisionResponse);   // repo write; the host reports an evaluation; idempotent
+  rpc RecordGateDecision(RecordGateDecisionRequest) returns (RecordGateDecisionResponse);   // repo admin (the host); idempotent
   rpc GetGateStats(GetGateStatsRequest) returns (GetGateStatsResponse);           // repo read; counts, per day, per rule
   rpc GrantOverride(GrantOverrideRequest) returns (GrantOverrideResponse);        // repo admin; reason required; audited; x-asc-op-id
   rpc RevokeOverride(RevokeOverrideRequest) returns (RevokeOverrideResponse);     // repo admin; idempotent
   rpc ListOverrides(ListOverridesRequest) returns (ListOverridesResponse);        // repo read; paged
+  rpc HunkContext(HunkContextRequest) returns (HunkContextResponse);              // repo read; the definitions around the lines a hunk starts at
+  rpc GetConflicts(GetChangeConflictsRequest) returns (GetChangeConflictsResponse);   // repo read; expensive; the conflict hunks of a change with its target, both sides
+  rpc DraftContext(DraftContextRequest) returns (DraftContextResponse);           // repo read; what a draft of a new change is written from: messages, files, size, risk
 }
 
 enum ThreadStatus {
@@ -61,6 +64,7 @@ message ReviewComment {
   string suggestion = 6;    // replacement text for the lines of the thread; empty when the comment suggests nothing
   uint32 applied_version = 7;   // the version that applied the suggestion, 0 while it is not applied
   string applied_by = 8;
+  uint64 author_id = 9;      // the hub's immutable id of the author; 0 when the caller had none (a token); `author` can be renamed
 }
 
 message ReviewThread {
@@ -211,6 +215,7 @@ message ApprovalInfo {
   bool carried = 6;                      // applies although the version is not the newest
   uint32 unchanged_files = 7;
   repeated bytes changed_files = 8 [(asc.v1.json) = JSON_KIND_PATH];
+  uint64 reviewer_id = 9;                // the hub's immutable id of the reviewer; 0 when the caller had none
 }
 // What the policy gate card of the review page shows, as far as asc knows it. Checks and the rules of the policy are evaluated by
 // Policy.Evaluate and Ci.ListRuns.
@@ -257,6 +262,12 @@ message RecordApprovalRequest {
   bytes change = 2 [(asc.v1.json) = JSON_KIND_CHANGE];
   uint32 version = 3;
   ApprovalState state = 4;
+  // With state DISMISSED only: dismisses the verdicts of another reviewer instead of the caller's own (a maintainer
+  // dismissing a review on the hub). The reviewer is named by login, by the hub's immutable user id or by both; a
+  // caller without write is refused as for any verdict, and a reviewer with no verdict on the change is NOT_FOUND.
+  // Every verdict of that reviewer on the change stops counting, whatever its version; the audit event names both people.
+  string reviewer = 5;
+  uint64 reviewer_id = 6;
 }
 message RecordApprovalResponse {
   repeated ApprovalInfo approvals = 1;
@@ -331,7 +342,7 @@ message SuggestReviewersResponse {
 // ---------------------------------------------------------------------------------------------------- gate statistics and overrides
 //
 // The policy gate itself is evaluated by the host (and by Policy.Evaluate). These calls keep its history so the gate board can show
-// what it did: the host reports each evaluation of a version; asc counts. Reads need repo read; reporting needs repo write; granting
+// what it did: the host reports each evaluation of a version; asc counts. Reads need repo read; reporting needs repo admin; granting
 // and revoking an override need repo admin (a maintainer), need a reason, are audited with the person and the relay, and are chained:
 // each override carries the SHA-256 proof of the one before it, so a removed or edited row is visible.
 
@@ -415,4 +426,85 @@ message ListOverridesRequest {
 message ListOverridesResponse {
   repeated GateOverride overrides = 1;   // newest first
   string next_page_token = 2;
+}
+
+// ---------------------------------------------------------------------------------------------------- hunk context
+
+// For each line a hunk starts at, the chain of definitions around it, outermost first: `["UserList", "@for (const user of users)",
+// "@if (user.bio)"]` in a TSRX file, `["Parser", "parse"]` in Rust. Repo read. `version` 0 means the newest. At most 200 lines. A
+// file with no grammar answers empty chains. (Git's own hunk header rule stays in `asc diff`, so its output matches git's.)
+message HunkContextRequest {
+  RepoRef repo = 1;
+  bytes change = 2 [(asc.v1.json) = JSON_KIND_CHANGE];
+  uint32 version = 3;
+  bytes path = 4 [(asc.v1.json) = JSON_KIND_PATH];
+  repeated uint32 lines = 5;             // 1-based lines of the version
+}
+message HunkContextEntry {
+  string name = 1;
+  string kind = 2;                       // function, method, class, module, component, scope, ...
+}
+message HunkContextLine {
+  uint32 line = 1;
+  repeated HunkContextEntry chain = 2;
+}
+// The conflicts of `change` (its newest version) with `target` (a branch name; empty means the default branch). The change
+// stays open and nothing is written. `main` is the target's side and `change` the change's side; `base` is the common
+// ancestor's text, empty when the merge has none to show. Each hunk lists the lines between the markers with the line numbers
+// they start at in the file of that side; at most 50 files and 20 hunks of 200 lines per file are returned (`truncated`).
+// `held_back` lists the changes stacked on this one, which wait for it; every other change is unaffected.
+enum ConflictCheck {
+  CONFLICT_CHECK_UNSPECIFIED = 0;
+  CONFLICT_CHECK_CLEAN = 1;            // merges with nothing to resolve, or has nothing to merge
+  CONFLICT_CHECK_CONFLICTS = 2;
+  CONFLICT_CHECK_NEEDS_RESTACK = 3;    // sits on an older version of its parent, or shares no history with the target
+}
+message GetChangeConflictsRequest {
+  RepoRef repo = 1;
+  bytes change = 2 [(asc.v1.json) = JSON_KIND_CHANGE];
+  string target = 3;
+}
+message ConflictHunk {
+  uint32 main_start = 1;
+  uint32 change_start = 2;
+  repeated string main = 3;
+  repeated string base = 4;
+  repeated string change = 5;
+}
+message ConflictFile {
+  bytes path = 1 [(asc.v1.json) = JSON_KIND_PATH];
+  ConflictKind kind = 2;
+  repeated ConflictHunk hunks = 3;
+  bool binary = 4;                       // nothing to show line by line: pick a side
+  bool truncated = 5;
+}
+message GetChangeConflictsResponse {
+  ConflictCheck state = 1;
+  repeated ConflictFile files = 2;
+  repeated bytes held_back = 3 [(asc.v1.json) = JSON_KIND_CHANGE];
+  bool truncated = 4;
+}
+
+// What a draft of a new change (title, what, why, how, risk) is written from: the subjects of the changesets in
+// `base..head`, the files they touch with line counts, the size and the risk with its reasons. The patch text is read
+// with `Repo.Diff`. `base` empty means the default branch and `head` empty means HEAD.
+message DraftContextRequest {
+  RepoRef repo = 1;
+  string base = 2;
+  string head = 3;
+}
+message DraftContextResponse {
+  repeated string messages = 1;          // newest first, at most 50, each at most 200 bytes, one line
+  repeated ChangeFileStat files = 2;     // at most 200
+  uint32 added = 3;
+  uint32 removed = 4;
+  uint32 changesets = 5;
+  ChangeRisk risk = 6;
+  bool nothing_to_compare = 7;           // head holds nothing that base does not
+  bool truncated = 8;
+}
+
+message HunkContextResponse {
+  string language = 1;
+  repeated HunkContextLine lines = 2;
 }

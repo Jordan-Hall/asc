@@ -4,13 +4,30 @@
 #   docker build -f deploy/Dockerfile.serve -t asc-serve .
 #
 # `asc serve` is a subcommand of the `asc` binary (crates/asc/src/cli/serve.rs), built with the
-# default features: `serve` and `git-compat` (SPEC 25) are on. `git-ssh` (default on) adds the SSH
+# default features: `serve` and `git-compat` (SPEC 25) are on, and the web UI built in the first
+# stage is embedded (serve it with `[web] enabled = true`). `git-ssh` (default on) adds the SSH
 # git listener; it is off unless `[ssh] enabled = true`, and the port (2222) is published by the
 # deployment, not EXPOSEd here. The vfs features compile on Linux but the daemon is not run here.
 #
-# Both bases are Debian 13 (trixie): its git is 2.47, above the 2.40 floor of asc-git's RealGit
+# The Rust and runtime bases are Debian 13 (trixie): its git is 2.47, above the 2.40 floor of asc-git's RealGit
 # (crates/asc-git/src/realgit.rs); bookworm ships 2.39 and would disable the git routes. Bases are
 # pinned by tag and digest; bump both together.
+
+# The web UI (web/, docs/WEB-UI.md) is built first: crates/asc-serve/build.rs embeds web/dist at
+# compile time, so without this stage `[web] enabled = true` would find no files in the image.
+# The workspace manifests are copied whole because `bun install --frozen-lockfile` checks them all.
+FROM oven/bun:1.4.4-slim@sha256:1846adf22496bd711036aae8be147e57bdebbaea2e5264e3e0b5af1db187d9a4 AS web
+WORKDIR /src
+COPY package.json bun.lock tsconfig.base.json ./
+COPY proto ./proto
+COPY packages ./packages
+COPY web ./web
+COPY plugins/vscode/package.json ./plugins/vscode/package.json
+COPY plugins/jetbrains/package.json ./plugins/jetbrains/package.json
+RUN bun install --frozen-lockfile
+# The TypeScript client is generated from proto/ (src/gen is not committed); the build needs it.
+RUN cd packages/asc-client-ts && bun run codegen
+RUN cd web && bun run build
 
 FROM rust:1.95.0-trixie@sha256:f49565f188ee00bc2a18dd418183f2c5f23ef7d6e691890517ed341a598f67c3 AS build
 WORKDIR /src
@@ -29,13 +46,15 @@ COPY tests/turbo ./tests/turbo
 COPY bench/asc-bench ./bench/asc-bench
 COPY bench/codeintel ./bench/codeintel
 COPY docs/CHEATSHEET.md ./docs/CHEATSHEET.md
+# The built web UI, embedded by crates/asc-serve/build.rs (ASC_WEB_DIST overrides the path).
+COPY --from=web /src/web/dist ./web/dist
 COPY packaging/windows ./packaging/windows
 # Cache mounts persist on the CI docker daemon, so a later (or interrupted-then-retried) build
 # reuses every crate already compiled.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/src/target \
-    CARGO_INCREMENTAL=0 CARGO_NET_RETRY=5 cargo build --release --locked -p asc -j "${CARGO_JOBS}" \
+    ASC_REQUIRE_WEB=1 CARGO_INCREMENTAL=0 CARGO_NET_RETRY=5 cargo build --release --locked -p asc -j "${CARGO_JOBS}" \
  && install -D -m 0755 target/release/asc /out/asc
 
 FROM debian:trixie-20261020-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad

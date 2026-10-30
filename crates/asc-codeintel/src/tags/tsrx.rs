@@ -1,7 +1,9 @@
 //! The tags only the TSRX layer sees (see [`crate::tsrx`]): components, control-flow scopes, the
 //! names a template defines and the names it uses.
 
-use super::{Kind, MAX_NAME, MAX_TAGS, NO_CONTAINER, Range, Role, Tag, assign_containers, sort_source_order};
+use super::{
+    Kind, MAX_NAME, MAX_TAGS, NO_CONTAINER, Range, Role, Tag, assign_containers, sort_source_order,
+};
 use crate::tsrx::{Analysis, ItemKind, Span};
 
 /// Row of every byte offset: `rows[i]` = zero-based line of byte `i` (`len + 1` entries).
@@ -56,7 +58,10 @@ pub(super) fn add(tags: &mut Vec<Tag>, a: &Analysis, src: &[u8]) {
             }
             next += 1;
         }
-        while open.last().is_some_and(|&t| (tags[t].range.end_byte as usize) <= c.start) {
+        while open
+            .last()
+            .is_some_and(|&t| (tags[t].range.end_byte as usize) <= c.start)
+        {
             open.pop();
         }
         if let Some(&t) = open
@@ -131,7 +136,9 @@ pub(super) fn add(tags: &mut Vec<Tag>, a: &Analysis, src: &[u8]) {
         .filter(|t| t.role == Role::Def)
         .map(|t| (t.name_range.start_byte, t.name_range.end_byte))
         .collect();
-    tags.retain(|t| t.role == Role::Def || !defs.contains(&(t.name_range.start_byte, t.name_range.end_byte)));
+    tags.retain(|t| {
+        t.role == Role::Def || !defs.contains(&(t.name_range.start_byte, t.name_range.end_byte))
+    });
     sort_source_order(tags);
     assign_containers(tags);
 }

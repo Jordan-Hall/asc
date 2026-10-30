@@ -63,6 +63,45 @@ impl KeyClass {
     }
 }
 
+impl KeyClass {
+    /// Stable number of this class in pack files and pack indexes. Never reused.
+    pub const fn code(self) -> u8 {
+        match self {
+            Self::File => 1,
+            Self::ChunkList => 2,
+            Self::Chunk => 3,
+            Self::Tree => 4,
+            Self::Changeset => 5,
+            Self::Tag => 6,
+            Self::GitTreeOverride => 7,
+            Self::ChangeMeta => 8,
+            Self::Derived => 9,
+        }
+    }
+
+    /// Inverse of [`code`](Self::code).
+    pub const fn from_code(code: u8) -> Option<Self> {
+        Some(match code {
+            1 => Self::File,
+            2 => Self::ChunkList,
+            3 => Self::Chunk,
+            4 => Self::Tree,
+            5 => Self::Changeset,
+            6 => Self::Tag,
+            7 => Self::GitTreeOverride,
+            8 => Self::ChangeMeta,
+            9 => Self::Derived,
+            _ => return None,
+        })
+    }
+
+    /// True for the classes a pack may hold. Chunks are large and stay loose; derived values are
+    /// recomputable, many and rewritten.
+    pub const fn packable(self) -> bool {
+        !matches!(self, Self::Chunk | Self::Derived)
+    }
+}
+
 /// A directory prefix for listing (GC only).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KeyPrefix(Option<KeyClass>);
@@ -75,6 +114,10 @@ impl KeyPrefix {
     /// Every key of one class.
     pub const fn class(class: KeyClass) -> Self {
         Self(Some(class))
+    }
+    /// The class, or `None` for every class.
+    pub const fn class_of(&self) -> Option<KeyClass> {
+        self.0
     }
     /// Relative directory, or `None` for the whole namespace.
     pub fn dir(&self) -> Option<&'static str> {
@@ -122,6 +165,48 @@ impl ObjKey {
             Self::ChangeMeta(_) => KeyClass::ChangeMeta,
             Self::Derived { .. } => KeyClass::Derived,
         }
+    }
+
+    /// True when a pack may hold this key.
+    pub const fn packable(&self) -> bool {
+        self.class().packable()
+    }
+
+    /// The key's id bytes, zero padded to 32 (a git oid has 20). Pack files and indexes key
+    /// packable objects by (class code, this).
+    pub fn id32(&self) -> [u8; 32] {
+        let mut out = [0u8; 32];
+        match self {
+            Self::File(i) | Self::ChunkList(i) => out = *i.as_bytes(),
+            Self::Chunk(i) => out = *i.as_bytes(),
+            Self::Tree(i) => out = *i.as_bytes(),
+            Self::Changeset(i) => out = *i.as_bytes(),
+            Self::Tag(i) => out = *i.as_bytes(),
+            Self::GitTreeOverride(i) => out[..20].copy_from_slice(i.as_bytes()),
+            Self::ChangeMeta(i) => out = *i.as_bytes(),
+            Self::Derived { id, .. } => out = *id,
+        }
+        out
+    }
+
+    /// Inverse of [`id32`](Self::id32) for the packable classes; `None` for any other, and for a
+    /// git oid whose padding is not zero.
+    pub fn from_pack(class: KeyClass, id: [u8; 32]) -> Option<Self> {
+        Some(match class {
+            KeyClass::File => Self::File(FileId::from_bytes(id)),
+            KeyClass::ChunkList => Self::ChunkList(FileId::from_bytes(id)),
+            KeyClass::Tree => Self::Tree(TreeId::from_bytes(id)),
+            KeyClass::Changeset => Self::Changeset(ChangesetId::from_bytes(id)),
+            KeyClass::Tag => Self::Tag(TagId::from_bytes(id)),
+            KeyClass::GitTreeOverride => {
+                if id[20..].iter().any(|&b| b != 0) {
+                    return None;
+                }
+                Self::GitTreeOverride(GitOid::from_bytes(id[..20].try_into().ok()?))
+            }
+            KeyClass::ChangeMeta => Self::ChangeMeta(MetaId::from_bytes(id)),
+            KeyClass::Chunk | KeyClass::Derived => return None,
+        })
     }
 
     /// Layout key relative to the namespace root, e.g. `f/ab/abcd...`.
@@ -220,6 +305,26 @@ mod tests {
             .path(),
             format!("d/gen.v1/ab/{hex}")
         );
+    }
+
+    #[test]
+    fn pack_codes_and_ids_round_trip() {
+        for k in samples() {
+            let c = k.class();
+            assert_eq!(KeyClass::from_code(c.code()), Some(c));
+            match ObjKey::from_pack(c, k.id32()) {
+                Some(back) => {
+                    assert!(k.packable());
+                    assert_eq!(back, k);
+                }
+                None => assert!(!k.packable(), "{k}"),
+            }
+        }
+        assert_eq!(KeyClass::from_code(0), None);
+        assert_eq!(KeyClass::from_code(10), None);
+        let mut padded = [0u8; 32];
+        padded[25] = 1;
+        assert_eq!(ObjKey::from_pack(KeyClass::GitTreeOverride, padded), None);
     }
 
     #[test]

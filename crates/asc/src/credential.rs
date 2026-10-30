@@ -20,6 +20,7 @@
 
 use std::fmt;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use asc_git::credential::netrc::Netrc;
@@ -32,6 +33,13 @@ use gix_config::File as Config;
 use url::Url;
 
 pub use asc_git::credential::Prompt;
+
+/// The user name a token is stored under; the server reads the password as the token.
+pub const TOKEN_USER: &str = "asc";
+
+/// Forces the interactive sign-in on though stdin or stderr is no terminal (an editor that shows
+/// the device code itself, a test). The token prompt then reads one line from stdin.
+pub const AUTH_INTERACTIVE: &str = "ASC_AUTH_INTERACTIVE";
 
 /// The host `ASC_TOKEN` was given for. Unset (or empty), `ASC_TOKEN` answers for the remote's own
 /// origin only, as before. Set, it answers for that host alone; an unparsable value answers for none.
@@ -212,6 +220,10 @@ pub enum Source {
     AscToken,
     Netrc,
     Helper,
+    /// Entered just now: a device sign-in or a pasted token (`remote::demand`).
+    Entered,
+    /// Kept by asc itself (`keystore`) because no credential helper is configured.
+    Store,
 }
 
 impl Source {
@@ -223,6 +235,8 @@ impl Source {
             Self::AscToken => "ASC_TOKEN",
             Self::Netrc => "netrc",
             Self::Helper => "credential helper",
+            Self::Entered => "sign-in",
+            Self::Store => "asc credential store",
         }
     }
 }
@@ -306,6 +320,9 @@ struct FillRecord {
     session: helper::Session,
 }
 
+/// Called once with whether the server accepted the credential (see [`report_result`]).
+pub type ResultHook = Arc<dyn Fn(bool) + Send + Sync>;
+
 /// The outcome of a resolution: a credential bound to one origin, or nothing.
 pub struct Resolved {
     origin: Origin,
@@ -313,6 +330,7 @@ pub struct Resolved {
     presented: Option<Presented>,
     extra_headers: Vec<(String, Secret)>,
     fill: Option<FillRecord>,
+    hook: Option<ResultHook>,
     reported: AtomicBool,
     attempt: u32,
 }
@@ -328,6 +346,13 @@ impl fmt::Debug for Resolved {
 }
 
 impl Resolved {
+    /// Also calls `hook(accepted)` when the result is reported, once.
+    #[must_use]
+    pub fn with_hook(mut self, hook: ResultHook) -> Self {
+        self.hook = Some(hook);
+        self
+    }
+
     fn new(origin: Origin, extra_headers: Vec<(String, Secret)>) -> Self {
         Self {
             origin,
@@ -335,6 +360,7 @@ impl Resolved {
             presented: None,
             extra_headers,
             fill: None,
+            hook: None,
             reported: AtomicBool::new(false),
             attempt: 0,
         }
@@ -420,18 +446,23 @@ impl Resolved {
 /// Credentials from the first four sources are never reported. Best effort: a helper that
 /// fails to store or erase does not fail the transfer.
 pub fn report_result(resolved: &Resolved, accepted: bool) {
-    let Some(fill) = &resolved.fill else {
+    if resolved.fill.is_none() && resolved.hook.is_none() {
         return;
-    };
+    }
     if resolved.reported.swap(true, Ordering::SeqCst) {
         return;
     }
-    let result = if accepted {
-        helper::approve(&fill.real, &fill.request, &fill.credential, &fill.session)
-    } else {
-        helper::reject(&fill.real, &fill.request, &fill.credential, &fill.session)
-    };
-    drop(result);
+    if let Some(fill) = &resolved.fill {
+        let result = if accepted {
+            helper::approve(&fill.real, &fill.request, &fill.credential, &fill.session)
+        } else {
+            helper::reject(&fill.real, &fill.request, &fill.credential, &fill.session)
+        };
+        drop(result);
+    }
+    if let Some(hook) = &resolved.hook {
+        hook(accepted);
+    }
 }
 
 /// git's wording when no credential is available or the one found was refused; exit 128.
@@ -445,15 +476,45 @@ pub fn failure_message(url: &Url, refused: bool, prompts_disabled: bool) -> Stri
     }
 }
 
-/// `Prompt::Allowed` when standard input is a terminal, else `Prompt::Never`. Only a CLI
-/// command calls this; libraries pass `Prompt::Never`.
-pub fn terminal_prompt() -> Prompt {
+/// Whether `asc` may ask the person now: `GIT_TERMINAL_PROMPT=0` says no; otherwise
+/// [`AUTH_INTERACTIVE`]`=1` says yes, else standard input and standard error must both be
+/// terminals (a pipe or CI never prompts).
+pub fn interactive_with(
+    env: impl Fn(&str) -> Option<String>,
+    stdin_tty: bool,
+    stderr_tty: bool,
+) -> bool {
+    let off = env("GIT_TERMINAL_PROMPT")
+        .is_some_and(|v| matches!(v.trim(), "0") || v.trim().eq_ignore_ascii_case("false"));
+    if off {
+        return false;
+    }
+    if env(AUTH_INTERACTIVE).is_some_and(|v| v.trim() == "1") {
+        return true;
+    }
+    stdin_tty && stderr_tty
+}
+
+/// [`interactive_with`] over the process; asked once.
+pub fn interactive() -> bool {
     use std::io::IsTerminal;
     use std::sync::OnceLock;
     // Asked once, at the first call: on Windows the probe blocks while another thread has a
     // read pending on the same pipe, which is what `asc api --stdio` always has.
     static TTY: OnceLock<bool> = OnceLock::new();
-    if *TTY.get_or_init(|| std::io::stdin().is_terminal()) {
+    *TTY.get_or_init(|| {
+        interactive_with(
+            |k| std::env::var(k).ok(),
+            std::io::stdin().is_terminal(),
+            std::io::stderr().is_terminal(),
+        )
+    })
+}
+
+/// `Prompt::Allowed` when [`interactive`], else `Prompt::Never`. Only a CLI command calls this;
+/// libraries pass `Prompt::Never`.
+pub fn terminal_prompt() -> Prompt {
+    if interactive() {
         Prompt::Allowed
     } else {
         Prompt::Never
@@ -470,6 +531,7 @@ pub struct Resolver<'a> {
     home: Option<PathBuf>,
     real: Option<RealGit>,
     token_origins: Vec<Origin>,
+    skip_helpers: bool,
 }
 
 impl<'a> Resolver<'a> {
@@ -485,7 +547,15 @@ impl<'a> Resolver<'a> {
             home: None,
             real: None,
             token_origins: Vec::new(),
+            skip_helpers: false,
         }
+    }
+
+    /// Leaves the credential helpers out: the first, anonymous try of an interactive command
+    /// (git asks the helpers only after the server answered 401).
+    pub fn without_helpers(mut self) -> Self {
+        self.skip_helpers = true;
+        self
     }
 
     /// Replaces the environment lookup (tests).
@@ -694,6 +764,7 @@ impl<'a> Resolver<'a> {
         let one_reask_used = prompt == Prompt::Never && attempt >= 2;
         if secure
             && !one_reask_used
+            && !self.skip_helpers
             && let Some(real) = self.real_git()
         {
             let request = self.helper_request(url, wwwauth);
@@ -714,6 +785,50 @@ impl<'a> Resolver<'a> {
             }
         }
         Ok(Resolved::new(origin, extras))
+    }
+
+    /// A token entered by the person (device sign-in or paste) for `url`, as the user name
+    /// [`TOKEN_USER`] with the token as password, the form `asc auth login` stores. It is
+    /// reported to the helpers like a filled one: `approve` once the server accepted it.
+    pub fn entered(&self, url: &Url, token: String) -> Result<Resolved, ResolveError> {
+        self.with_token(url, token, Source::Entered, true)
+    }
+
+    /// A token as the user name [`TOKEN_USER`] with the token as password, from `source`:
+    /// `report` says whether the helpers hear `approve` or `reject` for it.
+    pub fn with_token(
+        &self,
+        url: &Url,
+        token: String,
+        source: Source,
+        report: bool,
+    ) -> Result<Resolved, ResolveError> {
+        let origin = Origin::of(url).ok_or_else(|| ResolveError::NoHost(mask_url(url)))?;
+        if !origin.is_secure() {
+            return Err(ResolveError::Insecure(origin.to_string()));
+        }
+        if token.is_empty() || token.contains(['\0', '\r', '\n']) {
+            return Err(ResolveError::Control("token"));
+        }
+        let mut resolved = Resolved::new(origin, self.extra_headers(url)?);
+        resolved.source = Some(source);
+        resolved.attempt = 1;
+        let credential = Credential::new(TOKEN_USER, token.clone());
+        resolved.presented = Some(presented_from_helper(&credential));
+        if report && let Some(real) = self.real_git() {
+            let mut request = self.helper_request(url, &[]);
+            request.username = Some(TOKEN_USER.to_owned());
+            resolved.fill = Some(FillRecord {
+                real,
+                request,
+                credential,
+                session: helper::Session {
+                    prompt: Prompt::Never,
+                    config: Some(self.helpers.clone()),
+                },
+            });
+        }
+        Ok(resolved)
     }
 
     /// The `git credential` request for `url`: protocol, host, port when not the default,

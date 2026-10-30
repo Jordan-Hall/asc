@@ -44,7 +44,7 @@ impl RegistryChanges {
     }
 
     /// The open repository `repo_id`, or `None` when it is gone or still being copied.
-    async fn entry(&self, repo_id: i64) -> Result<Option<Arc<RepoEntry>>, EffectError> {
+    pub(crate) async fn entry(&self, repo_id: i64) -> Result<Option<Arc<RepoEntry>>, EffectError> {
         let row = sqlx::query("SELECT name FROM repos WHERE id = $1")
             .bind(repo_id)
             .fetch_optional(self.registry.pool())

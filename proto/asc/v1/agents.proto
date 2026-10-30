@@ -59,6 +59,7 @@ service Agents {
   rpc ListAgents(ListRepoAgentsRequest) returns (ListRepoAgentsResponse);           // repo read; per agent: runs, landed changes, spend
   rpc GetSpend(GetAgentSpendRequest) returns (GetAgentSpendResponse);               // repo read; month totals, cap, daily series, per agent
   rpc SetMonthlyBudget(SetMonthlyBudgetRequest) returns (SetMonthlyBudgetResponse); // repo admin; whole repository or one agent; mutating, x-asc-op-id
+  rpc GetPerson(GetAgentPersonRequest) returns (GetAgentPersonResponse);            // repo read; the profile a person lets agents read, asked of the hub each time; fails closed
 }
 
 enum AgentRunState {
@@ -101,6 +102,7 @@ message AgentRun {
   uint32 pending_requests = 25;          // permission or plan requests waiting for a decision
   uint64 continues_run = 26;             // the run this one continues, or 0
   bytes for_change = 27 [(asc.v1.json) = JSON_KIND_CHANGE];   // the change the run was started for (checks babysitting), or empty
+  uint64 created_by_id = 28;             // the hub's immutable id of the person who created the run; 0 when the caller had none (a token); names can be renamed
 }
 
 // `steps_total` is the length of the approved plan, 0 without one; `steps_done` counts the finished plan steps, or the model turns
@@ -492,6 +494,14 @@ message ListRepoAgentsResponse {
   uint32 max_concurrent = 3;             // the concurrency cap of the repository
   uint32 landed_30d = 4;
   uint32 changes_30d = 5;                // all changes agents made in the last 30 days (for "31% of changes")
+  repeated AgentActivityDay days = 6;    // the last 14 days, oldest first, one entry for every day (zeros included): the lines of the stat cards
+}
+// What agents did on one day (UTC), by the day a run was created. `landed` counts the changes of those runs that are on trunk now.
+message AgentActivityDay {
+  string day = 1;                        // YYYY-MM-DD
+  uint32 started = 2;                    // runs created that day
+  uint32 changes = 3;                    // changes those runs made
+  uint32 landed = 4;                     // of those, the changes that landed
 }
 message SpendDay {
   string day = 1;                        // YYYY-MM-DD, UTC
@@ -524,6 +534,24 @@ message SetMonthlyBudgetRequest {
   string agent = 2;
   uint64 cap_micro_usd = 3;
 }
+// The profile of a person (name, bio, location, website, pronouns) for an agent that must know who it works with. asc keeps no
+// profiles: it asks the hub, which answers only for a person who allows agents to read their profile, and the answer is
+// `allowed` false with nothing else when the person does not, does not exist, is not public, or the hub cannot be asked.
+// An email address and an avatar are never part of it. Every call is audited with the caller and the answer.
+message GetAgentPersonRequest {
+  RepoRef repo = 1;
+  string login = 2;
+}
+message GetAgentPersonResponse {
+  bool allowed = 1;
+  string login = 2;
+  string full_name = 3;
+  string description = 4;
+  string location = 5;
+  string website = 6;
+  string pronouns = 7;
+}
+
 message SetMonthlyBudgetResponse {
   string agent = 1;
   uint64 cap_micro_usd = 2;

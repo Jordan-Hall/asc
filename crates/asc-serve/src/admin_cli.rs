@@ -81,6 +81,8 @@ pub enum AdminCliError {
     Sql(#[from] sqlx::Error),
     #[error("{0}")]
     Status(String),
+    #[error(transparent)]
+    Pack(#[from] crate::pack_service::PackError),
 }
 
 impl From<RealGitError> for AdminCliError {
@@ -123,6 +125,20 @@ pub struct AdminCli {
     mirror_dir: Option<PathBuf>,
     git: Option<RealGit>,
     service: Arc<AdminService>,
+    packs: Arc<crate::pack_service::PackService>,
+}
+
+/// What `pack` does.
+#[derive(Debug, Clone)]
+pub enum PackCmd {
+    /// One maintenance pass; `force` packs below `min_loose` too.
+    Run { force: bool },
+    /// Loose small objects, packs, bytes and dead bytes.
+    Status,
+    /// Checks every live pack against its index and every value against its key.
+    Verify,
+    /// Rebuilds the index from the pack files.
+    Reindex,
 }
 
 /// Opens the database and the store of `cfg`. The schema must already be migrated.
@@ -135,6 +151,11 @@ pub async fn open(cfg: &ServeConfig) -> Result<AdminCli, AdminCliError> {
     let pool = migrate::connect(db, CLI_DB_CONNECTIONS).await?;
     migrate::ensure_current(&pool).await?;
     let registry = Arc::new(Registry::new(pool, store)?);
+    registry.set_pack_config(
+        cfg.pack
+            .to_config()
+            .map_err(|e| AdminCliError::Invalid(e.to_string()))?,
+    );
     let git = RealGit::resolve(None, None).ok();
     let mirror_cfg = MirrorConfig::from_serve(cfg)?;
     let mirror_dir = mirror_cfg.as_ref().map(|c| c.dir.clone());
@@ -162,13 +183,117 @@ impl AdminCli {
         git: Option<RealGit>,
     ) -> Self {
         let service = AdminService::new(registry.clone(), mirror.clone());
+        let packs = Arc::new(crate::pack_service::PackService::new(
+            registry.clone(),
+            Arc::new(PipelineHooks::default()),
+        ));
         Self {
             registry,
             mirror,
             mirror_dir,
             git,
             service,
+            packs,
         }
+    }
+
+    // --------------------------------------------------------------------------------- pack
+
+    /// `pack run|status|verify|reindex`, for `--repo <r>` (repeatable) or `--all`.
+    pub async fn pack(
+        &self,
+        cmd: &PackCmd,
+        repos: &[String],
+        all: bool,
+    ) -> Result<Report, AdminCliError> {
+        if all != repos.is_empty() {
+            return Err(AdminCliError::Invalid(
+                "name the repositories with --repo, or use --all, not both".into(),
+            ));
+        }
+        let names: Vec<String> = if all {
+            sqlx::query_scalar("SELECT name FROM repos ORDER BY id")
+                .fetch_all(self.registry.pool())
+                .await?
+        } else {
+            repos.to_vec()
+        };
+        let now = std::time::SystemTime::now();
+        let mut text = String::new();
+        let mut ok = true;
+        for n in names {
+            let name = name_of(&n)?;
+            match cmd {
+                PackCmd::Run { force } => {
+                    let r = self.packs.run_repo(&name, now, *force).await?;
+                    let _ = writeln!(
+                        text,
+                        "{n}: found {} loose, packed {} into {} pack(s), deleted {} loose; \
+                         merged {} pack(s), compacted {}, emptied {}; removed {} retired file(s) \
+                         and {} orphan(s); {} damaged{}",
+                        r.loose_found,
+                        r.packed,
+                        r.packs_written,
+                        r.loose_deleted,
+                        r.merged,
+                        r.compacted,
+                        r.emptied,
+                        r.deleted,
+                        r.orphans,
+                        r.damaged,
+                        if r.below_threshold {
+                            " (below [pack] min_loose: left alone)"
+                        } else {
+                            ""
+                        }
+                    );
+                    ok &= r.damaged == 0;
+                }
+                PackCmd::Status => {
+                    let s = self.packs.status(&name).await?;
+                    let _ = writeln!(
+                        text,
+                        "{n}: {} loose small object(s) ({} bytes); {} live pack(s) holding {} object(s) in {} bytes, {} dead; {} retired",
+                        s.loose_small,
+                        s.loose_small_bytes,
+                        s.live_packs,
+                        s.packed_objects,
+                        s.pack_bytes,
+                        s.dead_bytes,
+                        s.retired_packs
+                    );
+                }
+                PackCmd::Verify => {
+                    let v = self.packs.verify(&name).await?;
+                    let _ = writeln!(
+                        text,
+                        "{n}: {} pack(s), {} object(s), {} problem(s)",
+                        v.packs,
+                        v.objects,
+                        v.problems.len()
+                    );
+                    for p in v.problems.iter().take(MAX_NAMED) {
+                        let _ = writeln!(text, "  {p}");
+                    }
+                    ok &= v.problems.is_empty();
+                }
+                PackCmd::Reindex => {
+                    let r = self.packs.reindex(&name).await?;
+                    let _ = writeln!(
+                        text,
+                        "{n}: rebuilt the index from {} pack(s), {} object(s); {} pack file(s) left out",
+                        r.packs,
+                        r.objects,
+                        r.skipped.len()
+                    );
+                    for s in r.skipped.iter().take(MAX_NAMED) {
+                        let _ = writeln!(text, "  {s}");
+                    }
+                    ok &= r.skipped.is_empty();
+                }
+            }
+        }
+        Ok(Report::new(text, ok))
     }
 
     // ------------------------------------------------------------------------------ import

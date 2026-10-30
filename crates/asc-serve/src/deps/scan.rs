@@ -5,7 +5,7 @@
 //! manifest it belongs to) are not entered, and each file is read and parsed under the bounds of
 //! [`Config`]. A file that cannot be read whole is reported with its error; the others are used.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use asc_core::id::{ChangesetId, FileId, TreeId};
@@ -244,9 +244,10 @@ pub async fn read(
             continue;
         };
         let path = c.path.clone();
-        let found = tokio::task::spawn_blocking(move || super::imports::package_imports(&path, &bytes))
-            .await
-            .map_err(|e| internal("deps: imports", &e))?;
+        let found =
+            tokio::task::spawn_blocking(move || super::imports::package_imports(&path, &bytes))
+                .await
+                .map_err(|e| internal("deps: imports", &e))?;
         sources_scanned += 1;
         imported.extend(found);
     }
@@ -280,6 +281,16 @@ pub fn distinct(deps: &[Dep], max: usize) -> (Vec<(Ecosystem, String, String)>, 
     (out, more)
 }
 
+/// How many of `packages` each ecosystem has, keyed by the OSV ecosystem name.
+pub fn count_by_ecosystem(packages: &[(Ecosystem, String, String)]) -> BTreeMap<String, u32> {
+    let mut out: BTreeMap<String, u32> = BTreeMap::new();
+    for (eco, _, _) in packages {
+        let n = out.entry(eco.osv_name().to_owned()).or_default();
+        *n = n.saturating_add(1);
+    }
+    out
+}
+
 /// The name of the format of `path`, for messages.
 pub fn format_name(path: &str) -> &'static str {
     Format::of(base_of(path)).map_or("", Format::name)
@@ -304,6 +315,20 @@ mod tests {
         assert!(skip_dir("vendor", &["composer.json".to_owned()]));
         assert!(skip_dir("target", &["Cargo.toml".to_owned()]));
         assert!(!skip_dir("target", &["package.json".to_owned()]));
+    }
+
+    #[test]
+    fn packages_are_counted_per_ecosystem() {
+        let pkgs = vec![
+            (Ecosystem::Npm, "a".to_owned(), "1.0.0".to_owned()),
+            (Ecosystem::Npm, "a".to_owned(), "2.0.0".to_owned()),
+            (Ecosystem::CratesIo, "b".to_owned(), "1.0.0".to_owned()),
+        ];
+        let counts = count_by_ecosystem(&pkgs);
+        assert_eq!(counts["npm"], 2);
+        assert_eq!(counts["crates.io"], 1);
+        assert_eq!(counts.values().sum::<u32>(), 3);
+        assert!(count_by_ecosystem(&[]).is_empty());
     }
 
     #[test]

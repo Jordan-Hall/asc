@@ -152,17 +152,61 @@ pub fn analyze_within(src: &[u8], deadline: Option<std::time::Instant>) -> Analy
     if s.exhausted {
         s.a.truncated = true;
     }
-    s.a.containers.sort_by_key(|c| (c.start, std::cmp::Reverse(c.end)));
+    s.a.containers
+        .sort_by_key(|c| (c.start, std::cmp::Reverse(c.end)));
     s.a
 }
 
 /// Words that are never a use of a name.
 const KEYWORDS: &[&str] = &[
-    "as", "async", "await", "break", "case", "catch", "class", "const", "continue", "default",
-    "delete", "do", "else", "enum", "export", "extends", "false", "finally", "for", "from",
-    "function", "if", "import", "in", "index", "instanceof", "interface", "key", "let", "new",
-    "null", "of", "return", "satisfies", "static", "super", "switch", "this", "throw", "true",
-    "try", "type", "typeof", "undefined", "var", "void", "while", "yield",
+    "as",
+    "async",
+    "await",
+    "break",
+    "case",
+    "catch",
+    "class",
+    "const",
+    "continue",
+    "default",
+    "delete",
+    "do",
+    "else",
+    "enum",
+    "export",
+    "extends",
+    "false",
+    "finally",
+    "for",
+    "from",
+    "function",
+    "if",
+    "import",
+    "in",
+    "index",
+    "instanceof",
+    "interface",
+    "key",
+    "let",
+    "new",
+    "null",
+    "of",
+    "return",
+    "satisfies",
+    "static",
+    "super",
+    "switch",
+    "this",
+    "throw",
+    "true",
+    "try",
+    "type",
+    "typeof",
+    "undefined",
+    "var",
+    "void",
+    "while",
+    "yield",
 ];
 
 struct Scan<'a> {
@@ -202,7 +246,10 @@ impl Scan<'_> {
             self.exhausted = true;
         } else if self.steps >= self.next_clock {
             self.next_clock = self.steps.saturating_add(CLOCK_EVERY);
-            if self.deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+            if self
+                .deadline
+                .is_some_and(|d| std::time::Instant::now() >= d)
+            {
                 self.exhausted = true;
             }
         }
@@ -382,7 +429,8 @@ impl Scan<'_> {
                 return i + 1;
             }
             let stmt_start = matches!(prev, 0 | b';' | b'{' | b'}')
-                || (newline && (is_ident(prev) || matches!(prev, b')' | b']' | b'\'' | b'"' | b'`')));
+                || (newline
+                    && (is_ident(prev) || matches!(prev, b')' | b']' | b'\'' | b'"' | b'`')));
             match c {
                 b'\'' | b'"' => {
                     i = self.string_end(i);
@@ -393,8 +441,21 @@ impl Scan<'_> {
                     prev = b'`';
                 }
                 b'/' => {
-                    if matches!(prev, 0 | b'(' | b',' | b'=' | b':' | b'[' | b'!' | b'&' | b'|' | b'?' | b'{' | b'}' | b';')
-                        && let Some(e) = self.regex_end(i)
+                    if matches!(
+                        prev,
+                        0 | b'('
+                            | b','
+                            | b'='
+                            | b':'
+                            | b'['
+                            | b'!'
+                            | b'&'
+                            | b'|'
+                            | b'?'
+                            | b'{'
+                            | b'}'
+                            | b';'
+                    ) && let Some(e) = self.regex_end(i)
                     {
                         i = e;
                         prev = b'/';
@@ -419,7 +480,9 @@ impl Scan<'_> {
                     i = end;
                     prev = b';';
                 }
-                b'<' if (in_container && stmt_start || self.style_expr(i, prev)) && self.opens_element(i) => {
+                b'<' if (in_container && stmt_start || self.style_expr(i, prev))
+                    && self.opens_element(i) =>
+                {
                     let end = self.element(i, depth + 1);
                     if in_container && stmt_start {
                         self.blank(i, end);
@@ -496,16 +559,26 @@ impl Scan<'_> {
             self.uses_in(from, j.saturating_sub(1));
         } else {
             let from = j;
-            while j < self.src.len() && (is_ident(self.src[j]) || matches!(self.src[j], b'.' | b'-' | b':')) {
+            while j < self.src.len()
+                && (is_ident(self.src[j]) || matches!(self.src[j], b'.' | b'-' | b':'))
+            {
                 j += 1;
             }
             name = String::from_utf8_lossy(&self.src[from..j]).into_owned();
             let head = name.split(['.', ':']).next().unwrap_or("");
-            if head.bytes().next().is_some_and(|b| b.is_ascii_uppercase() || b == b'_' || b == b'$') && self.room() {
+            if head
+                .bytes()
+                .next()
+                .is_some_and(|b| b.is_ascii_uppercase() || b == b'_' || b == b'$')
+                && self.room()
+            {
                 self.a.uses.push(Item {
                     name: head.to_owned(),
                     kind: ItemKind::ComponentUse,
-                    span: Span { start: from, end: from + head.len() },
+                    span: Span {
+                        start: from,
+                        end: from + head.len(),
+                    },
                 });
             }
         }
@@ -640,7 +713,10 @@ impl Scan<'_> {
                         self.a.defs.push(Item {
                             name: String::from_utf8_lossy(&self.src[from..e]).into_owned(),
                             kind: ItemKind::StyleClass,
-                            span: Span { start: from, end: e },
+                            span: Span {
+                                start: from,
+                                end: e,
+                            },
                         });
                     }
                     j = e;
@@ -710,7 +786,11 @@ impl Scan<'_> {
                 }
                 b'/' if self.at(i + 1) == b'*' => i = self.block_comment_end(i),
                 b'/' if self.at(i + 1) == b'/'
-                    && (i == 0 || matches!(self.src[i - 1], b' ' | b'\t' | b'\n' | b'\r' | b'>' | b'}'))
+                    && (i == 0
+                        || matches!(
+                            self.src[i - 1],
+                            b' ' | b'\t' | b'\n' | b'\r' | b'>' | b'}'
+                        ))
                     && matches!(last_sig, b'>' | b'}') =>
                 {
                     i = self.line_end(i);
@@ -787,9 +867,26 @@ impl Scan<'_> {
                 b'\n' => {
                     let n = self.skip_trivia(i + 1);
                     let next = self.at(n);
-                    let open = matches!(prev, b'=' | b',' | b'+' | b'-' | b'*' | b'/' | b'&' | b'|' | b'?' | b':' | b'(' | b'[' | b'{' | b'.' | b'<')
-                        || matches!(next, b'.' | b'?' | b':' | b'+' | b'*' | b'&' | b'|' | b')' | b']' | b',')
-                        || (next == b'-' || next == b'/') && self.at(n + 1) != b'/';
+                    let open = matches!(
+                        prev,
+                        b'=' | b','
+                            | b'+'
+                            | b'-'
+                            | b'*'
+                            | b'/'
+                            | b'&'
+                            | b'|'
+                            | b'?'
+                            | b':'
+                            | b'('
+                            | b'['
+                            | b'{'
+                            | b'.'
+                            | b'<'
+                    ) || matches!(
+                        next,
+                        b'.' | b'?' | b':' | b'+' | b'*' | b'&' | b'|' | b')' | b']' | b','
+                    ) || (next == b'-' || next == b'/') && self.at(n + 1) != b'/';
                     if !open || prev == 0 {
                         return i;
                     }
@@ -853,7 +950,14 @@ impl Scan<'_> {
                 let k = self.skip_ws(j);
                 let is_key = self.at(k) == b':' && braces > 0;
                 if !KEYWORDS.contains(&word.as_str()) && !is_key && self.room() {
-                    self.a.defs.push(Item { name: word, kind, span: Span { start: from, end: j } });
+                    self.a.defs.push(Item {
+                        name: word,
+                        kind,
+                        span: Span {
+                            start: from,
+                            end: j,
+                        },
+                    });
                 }
                 continue;
             }
@@ -919,11 +1023,21 @@ impl Scan<'_> {
                 let dotted = last == b'.' && dots != 3;
                 let key = {
                     let k = self.skip_ws(j);
-                    self.at(k) == b':' && self.at(k + 1) != b':' && !question && matches!(last, b'{' | b',')
+                    self.at(k) == b':'
+                        && self.at(k + 1) != b':'
+                        && !question
+                        && matches!(last, b'{' | b',')
                 };
                 let text = String::from_utf8_lossy(&self.src[from..j]).into_owned();
                 if !dotted && !key && !KEYWORDS.contains(&text.as_str()) && self.room() {
-                    self.a.uses.push(Item { name: text, kind: ItemKind::ValueUse, span: Span { start: from, end: j } });
+                    self.a.uses.push(Item {
+                        name: text,
+                        kind: ItemKind::ValueUse,
+                        span: Span {
+                            start: from,
+                            end: j,
+                        },
+                    });
                 }
                 last = b'a';
                 dots = 0;
@@ -1072,7 +1186,10 @@ impl Scan<'_> {
                 self.spent(3 * (b - a));
                 let text = &self.src[a..b];
                 let of = find_word(text, b"of").map(|p| a + p);
-                let semi = self.src[a..b].iter().position(|&c| c == b';').map(|p| a + p);
+                let semi = self.src[a..b]
+                    .iter()
+                    .position(|&c| c == b';')
+                    .map(|p| a + p);
                 if let Some(of) = of {
                     self.idents_of_pattern(a, of, ItemKind::LoopVar);
                     let iter_end = semi.unwrap_or(b);
@@ -1168,7 +1285,10 @@ pub fn import_specifiers(a: &Analysis) -> Vec<String> {
     };
     while i < t.len() && out.len() < MAX_ITEMS {
         let word_start = i == 0 || !is_ident(t[i - 1]);
-        if word_start && t[i..].starts_with(b"import") && !t.get(i + 6).is_some_and(|&c| is_ident(c)) {
+        if word_start
+            && t[i..].starts_with(b"import")
+            && !t.get(i + 6).is_some_and(|&c| is_ident(c))
+        {
             let mut j = i + 6;
             while j < t.len() && t[j].is_ascii_whitespace() {
                 j += 1;
@@ -1227,7 +1347,10 @@ fn find_from(t: &[u8], from: usize, w: &[u8]) -> Option<usize> {
         if t[i] == b';' {
             return None;
         }
-        if t[i..].starts_with(w) && !is_ident(t[i - 1]) && !t.get(i + w.len()).is_some_and(|&c| is_ident(c)) {
+        if t[i..].starts_with(w)
+            && !is_ident(t[i - 1])
+            && !t.get(i + w.len()).is_some_and(|&c| is_ident(c))
+        {
             return Some(i);
         }
         i += 1;

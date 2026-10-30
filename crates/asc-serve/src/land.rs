@@ -591,10 +591,11 @@ pub(crate) async fn run(
             old: current,
             new: Some(new),
         }];
+        let acting = crate::update::acting_principal(job.ctx);
         let hook_req = HookRequest {
             repo: &job.ctx.repo,
             op_id: job.op_id,
-            principal: &job.ctx.principal,
+            principal: &acting,
             updates: &hook_updates,
             push_options: &job.req.push_options,
         };
@@ -649,7 +650,7 @@ pub(crate) async fn run(
         };
         let outbox = serde_json::to_vec(&OutboxEffects {
             effects: hooks.outbox_effects(),
-            pusher: &job.ctx.principal.id,
+            pusher: &acting.id,
             refs: hook_updates
                 .iter()
                 .map(|u| EffectRef {

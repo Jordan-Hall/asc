@@ -131,8 +131,15 @@ message UndoRefRequest {
   bool dry_run = 4;
   string reason = 5;              // at most 256 bytes; goes to the audit log
 }
+// A dry run (`dry_run`) also says what the undo would do to the changes: those that leave the ref go back (they are not lost,
+// their versions stay), and an approval of the newest version of such a change is kept. `changes_back` counts every change,
+// `changes` lists at most 100 of them, and `preview_truncated` says the walk stopped at its bound (counts then are lower bounds).
 message UndoRefResponse {
   RefResult result = 1;
   uint64 new_seq = 2;
   bool applied = 3;
+  uint32 changes_back = 4;
+  repeated bytes changes = 5 [(asc.v1.json) = JSON_KIND_CHANGE];
+  uint32 approvals_kept = 6;
+  bool preview_truncated = 7;
 }

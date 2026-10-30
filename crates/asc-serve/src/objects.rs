@@ -12,7 +12,9 @@
 
 use std::sync::Arc;
 
+use asc_core::change::MetaId;
 use asc_rpc::server::{CallCtx, ObjectsHandler, RpcStream, wire};
+use asc_store::key::ObjKey;
 use async_trait::async_trait;
 use tonic::Status;
 
@@ -21,11 +23,31 @@ use crate::registry::{Extensions, Registry, RegistryError, RepoEntry};
 /// The objects handler over a registry.
 pub struct ServerObjects {
     registry: Arc<Registry>,
+    usage: Arc<crate::usage::UsageSlot>,
+    read_only: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl ServerObjects {
     pub fn new(registry: Arc<Registry>) -> Self {
-        Self { registry }
+        Self {
+            registry,
+            usage: Arc::default(),
+            read_only: Arc::default(),
+        }
+    }
+
+    /// Refuses uploads while the flag is raised (a restore is staged).
+    #[must_use]
+    pub fn with_read_only(mut self, flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
+        self.read_only = flag;
+        self
+    }
+
+    /// Counts the bytes of every fetch against the repository's bandwidth.
+    #[must_use]
+    pub fn with_usage(mut self, slot: Arc<crate::usage::UsageSlot>) -> Self {
+        self.usage = slot;
+        self
     }
 
     async fn entry(&self, ctx: &CallCtx) -> Result<Arc<RepoEntry>, Status> {
@@ -54,7 +76,37 @@ impl ObjectsHandler for ServerObjects {
         ctx: &CallCtx,
         req: wire::PutObjectsRequest,
     ) -> Result<wire::PutObjectsResponse, Status> {
-        self.entry(ctx).await?.backend.put_objects(ctx, req).await
+        if self.read_only.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(Status::unavailable(
+                "the server is read-only: a restore is staged and applies when the server restarts",
+            ));
+        }
+        let entry = self.entry(ctx).await?;
+        // The change metas of the upload, so the push that names their changesets finds them.
+        let metas: Vec<MetaId> = req
+            .objects
+            .iter()
+            .filter_map(|o| o.key.as_ref())
+            .filter_map(|k| ObjKey::try_from(k).ok())
+            .filter_map(|k| match k {
+                ObjKey::ChangeMeta(id) => Some(id),
+                _ => None,
+            })
+            .collect();
+        let stored = entry.backend.put_objects(ctx, req).await?;
+        if !metas.is_empty()
+            && let Err(e) = crate::changes::staged::stage(
+                self.registry.pool(),
+                &entry,
+                &ctx.principal.id,
+                &metas,
+            )
+            .await
+        {
+            // The upload stands; the push that needs the meta reports it missing.
+            tracing::warn!(error = %e, "staging the uploaded change metas failed");
+        }
+        Ok(stored)
     }
 
     async fn get_objects(
@@ -62,13 +114,32 @@ impl ObjectsHandler for ServerObjects {
         ctx: &CallCtx,
         req: wire::GetObjectsRequest,
     ) -> Result<RpcStream<wire::GetObjectsResponse>, Status> {
-        self.entry(ctx).await?.backend.get_objects(ctx, req).await
+        use prost::Message as _;
+        let entry = self.entry(ctx).await?;
+        let stream = entry.backend.get_objects(ctx, req).await?;
+        let Some(hub) = self.usage.get().cloned() else {
+            return Ok(stream);
+        };
+        // Bytes are counted as they are polled and flushed when the stream is dropped, so a read
+        // the client cuts off still counts what was sent.
+        Ok(Box::pin(crate::usage::meter::Metered::new(
+            stream,
+            hub,
+            entry.name.as_str().to_owned(),
+            |r: &Result<wire::GetObjectsResponse, Status>| {
+                r.as_ref().map_or(0, |m| m.encoded_len() as u64)
+            },
+        )))
     }
 }
 
 /// Registers the objects group.
 pub fn register(ext: &Extensions, registry: &Arc<Registry>) {
     ext.handlers
-        .set_objects(Arc::new(ServerObjects::new(registry.clone())))
+        .set_objects(Arc::new(
+            ServerObjects::new(registry.clone())
+                .with_usage(ext.usage.clone())
+                .with_read_only(ext.read_only.clone()),
+        ))
         .expect("the objects handler group is registered once");
 }

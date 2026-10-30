@@ -73,6 +73,13 @@ across scans, reopens if it comes back after being fixed, and becomes `FIXED` wh
 finds it. A scan of any other revision is reported and not recorded. `Dismiss` marks a finding dismissed with a
 reason (`not-used`, `tolerable`, `inaccurate`, `fix-started`) and a note; a rescan keeps it dismissed.
 
+Both `Scan` and `ListFindings` say how many packages were checked, so a client can show "0 findings in 214
+packages" instead of an empty list. `Scan` reports `packages` and `packages_by_ecosystem` (field 10); `ListFindings`
+reports the last recorded scan of trunk as `packages_checked` (field 7) and `packages_by_ecosystem` (field 8, a map
+from the OSV ecosystem name, such as `crates.io` or `npm`, to a count). Counts are distinct (ecosystem, name,
+version) triples, so a package named by several files counts once, and the per-ecosystem counts add up to the total.
+A scan recorded before these fields existed has the total and an empty map.
+
 ## Updates
 
 `ListUpdates` asks each registry (crates.io, npm, PyPI, the Go proxy, Maven Central, NuGet, Packagist,

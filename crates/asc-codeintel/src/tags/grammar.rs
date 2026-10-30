@@ -28,7 +28,9 @@ fn language_of(lang: Lang) -> Language {
 pub fn query_source(lang: Lang) -> &'static str {
     match lang {
         Lang::Rust => include_str!("../../queries/rust/tags.scm"),
-        Lang::TypeScript | Lang::Tsx | Lang::Tsrx => include_str!("../../queries/typescript/tags.scm"),
+        Lang::TypeScript | Lang::Tsx | Lang::Tsrx => {
+            include_str!("../../queries/typescript/tags.scm")
+        }
         Lang::JavaScript => include_str!("../../queries/javascript/tags.scm"),
         Lang::Python => include_str!("../../queries/python/tags.scm"),
         Lang::CSharp => include_str!("../../queries/csharp/tags.scm"),

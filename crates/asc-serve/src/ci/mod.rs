@@ -9,8 +9,11 @@
 pub mod insights;
 pub mod rpc;
 
+pub mod stats;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_stats;
 
 use asc_rpc::server::wire;
 

@@ -51,6 +51,7 @@ message AuditFilter {
   string target = 4;
   int64 since_ms = 5;
   int64 until_ms = 6;
+  uint64 seq = 7;                        // one event by its number in this log (the number the hash chain and its check name); 0 = any
 }
 
 message ListAuditRequest {
@@ -63,6 +64,7 @@ message ListAuditRequest {
 message ListAuditResponse {
   repeated AuditEvent events = 1;
   string next_page_token = 2;
+  uint32 retention_days = 3;             // `[audit] retention_days`: events older than this are dropped; 0 keeps everything
 }
 
 enum AuditExportFormat {

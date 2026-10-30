@@ -444,7 +444,6 @@ pub async fn update<O: Objects, R: Refs>(
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
-    use std::process::Command;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -613,7 +612,7 @@ mod tests {
     }
 
     fn git(dir: &Path, args: &[&str]) -> String {
-        let out = Command::new("git") // lint:allow-raw-git
+        let out = crate::realgit::pinned_command()
             .args(args)
             .current_dir(dir)
             .output()

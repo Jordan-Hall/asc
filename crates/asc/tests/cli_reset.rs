@@ -84,7 +84,7 @@ async fn staged(f: &Fixture) -> Vec<StageRow> {
 
 /// Real git in a directory, with hermetic configuration.
 fn git(dir: &Path, home: &Path, args: &[&str]) -> Out {
-    run(Command::new("git") // lint:allow-raw-git
+    run(asc_git::realgit::pinned_command()
         .current_dir(dir)
         .env("HOME", home)
         .env("USERPROFILE", home)

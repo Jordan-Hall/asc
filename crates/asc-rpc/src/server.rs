@@ -246,20 +246,78 @@ fn code_of(e: &RpcError) -> tonic::Code {
     }
 }
 
-/// The gRPC status for `e`, with the `ErrorDetail` as the status details.
-pub fn rpc_status(e: &RpcError) -> Status {
-    let detail = pb::ErrorDetail::from(e);
-    Status::with_details(
-        code_of(e),
-        e.to_string(),
-        Bytes::from(detail.encode_to_vec()),
-    )
+/// `google.protobuf.Any`.
+#[derive(Clone, PartialEq, prost::Message)]
+struct AnyMessage {
+    #[prost(string, tag = "1")]
+    type_url: String,
+    #[prost(bytes = "vec", tag = "2")]
+    value: Vec<u8>,
 }
 
-/// The `ErrorDetail` a status carries, if any.
+/// `google.rpc.Status`, the message `grpc-status-details-bin` carries.
+#[derive(Clone, PartialEq, prost::Message)]
+struct GoogleStatus {
+    #[prost(int32, tag = "1")]
+    code: i32,
+    #[prost(string, tag = "2")]
+    message: String,
+    #[prost(message, repeated, tag = "3")]
+    details: Vec<AnyMessage>,
+}
+
+/// The `Any.type_url` of an `asc.v1.ErrorDetail` in a status.
+pub const ERROR_DETAIL_TYPE_URL: &str = "type.googleapis.com/asc.v1.ErrorDetail";
+
+/// The gRPC status for `e`. The `grpc-status-details-bin` trailer holds a `google.rpc.Status` with the
+/// `ErrorDetail` packed in `details` as an `Any`, which is what gRPC clients in every language expect.
+pub fn rpc_status(e: &RpcError) -> Status {
+    let detail = pb::ErrorDetail::from(e);
+    let code = code_of(e);
+    let message = e.to_string();
+    let status = GoogleStatus {
+        code: code as i32,
+        message: message.clone(),
+        details: vec![AnyMessage {
+            type_url: ERROR_DETAIL_TYPE_URL.to_owned(),
+            value: detail.encode_to_vec(),
+        }],
+    };
+    Status::with_details(code, message, Bytes::from(status.encode_to_vec()))
+}
+
+/// The encoded `asc.v1.ErrorDetail` of a status, or empty: the bytes of the `Any` inside a
+/// `google.rpc.Status`, or the whole trailer when it is a bare `ErrorDetail` of an older server.
+pub fn status_error_detail_bytes(s: &Status) -> Bytes {
+    if s.details().is_empty() {
+        return Bytes::new();
+    }
+    if let Ok(status) = GoogleStatus::decode(s.details())
+        && let Some(any) = status
+            .details
+            .into_iter()
+            .find(|d| d.type_url == ERROR_DETAIL_TYPE_URL)
+    {
+        return Bytes::from(any.value);
+    }
+    Bytes::copy_from_slice(s.details())
+}
+
+/// The `ErrorDetail` a status carries, if any. A trailer that is a `google.rpc.Status` with an
+/// `asc.v1.ErrorDetail` in it is read first; one that is a bare `ErrorDetail`, as older servers sent, is
+/// read as before.
 pub fn status_rpc_error(s: &Status) -> Option<RpcError> {
     if s.details().is_empty() {
         return None;
+    }
+    if let Ok(status) = GoogleStatus::decode(s.details())
+        && let Some(any) = status
+            .details
+            .iter()
+            .find(|d| d.type_url == ERROR_DETAIL_TYPE_URL)
+    {
+        let detail = pb::ErrorDetail::decode(any.value.as_slice()).ok()?;
+        return RpcError::try_from(&detail).ok();
     }
     let detail = pb::ErrorDetail::decode(s.details()).ok()?;
     RpcError::try_from(&detail).ok()
@@ -1842,6 +1900,82 @@ mod tests {
             assert!(RepoName::parse(bad).is_err(), "{bad:?}");
         }
         assert!(RepoName::parse(&format!("a/{}", "b".repeat(MAX_REPO_NAME))).is_err());
+    }
+
+    /// `google/rpc/status.proto` and `google/protobuf/any.proto`, written out here on their own so the
+    /// test reads the trailer the way a Go or Java client does.
+    #[derive(Clone, PartialEq, prost::Message)]
+    struct WireAny {
+        #[prost(string, tag = "1")]
+        type_url: String,
+        #[prost(bytes = "vec", tag = "2")]
+        value: Vec<u8>,
+    }
+
+    #[derive(Clone, PartialEq, prost::Message)]
+    struct WireStatus {
+        #[prost(int32, tag = "1")]
+        code: i32,
+        #[prost(string, tag = "2")]
+        message: String,
+        #[prost(message, repeated, tag = "3")]
+        details: Vec<WireAny>,
+    }
+
+    #[test]
+    fn a_typed_refusal_carries_a_google_rpc_status_with_the_error_detail_in_an_any() {
+        let e = RpcError::SecretDetected(ErrorInfo {
+            paths: vec!["conf/app.toml:2 github-token".into()],
+            ..Default::default()
+        });
+        let status = rpc_status(&e);
+        // What reaches the wire is a google.rpc.Status.
+        let wire = WireStatus::decode(status.details()).unwrap();
+        assert_eq!(wire.code, status.code() as i32);
+        assert_eq!(wire.message, status.message());
+        assert_eq!(wire.details.len(), 1);
+        assert_eq!(
+            wire.details[0].type_url,
+            "type.googleapis.com/asc.v1.ErrorDetail"
+        );
+        let detail = pb::ErrorDetail::decode(wire.details[0].value.as_slice()).unwrap();
+        assert_eq!(detail.code, "SECRET_DETECTED");
+        assert_eq!(detail.paths, ["conf/app.toml:2 github-token"]);
+        // It survives the header form: base64 in `grpc-status-details-bin`.
+        let response: tonic::codegen::http::Response<()> = status.clone().into_http();
+        let back = Status::from_header_map(response.headers()).unwrap();
+        assert_eq!(back.code(), status.code());
+        assert_eq!(status_rpc_error(&back).unwrap().code(), "SECRET_DETECTED");
+    }
+
+    #[test]
+    fn a_bare_error_detail_from_an_older_server_is_still_read() {
+        let detail = pb::ErrorDetail {
+            code: "POLICY_DENIED".into(),
+            paths: vec!["src/x".into()],
+            ..Default::default()
+        };
+        let old = Status::with_details(
+            tonic::Code::PermissionDenied,
+            "denied",
+            Bytes::from(detail.encode_to_vec()),
+        );
+        assert_eq!(status_rpc_error(&old).unwrap().code(), "POLICY_DENIED");
+        // A status of some other service, or noise, is no error of ours.
+        let other = WireStatus {
+            code: 3,
+            message: "x".into(),
+            details: vec![WireAny {
+                type_url: "type.googleapis.com/google.rpc.RetryInfo".into(),
+                value: vec![1, 2, 3],
+            }],
+        };
+        let s = Status::with_details(
+            tonic::Code::InvalidArgument,
+            "x",
+            Bytes::from(other.encode_to_vec()),
+        );
+        assert!(status_rpc_error(&s).is_none());
     }
 
     #[test]

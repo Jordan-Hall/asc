@@ -1305,6 +1305,54 @@ async fn an_agent_never_writes_a_shared_ref() {
     f.land(ALICE, b).await.unwrap();
 }
 
+/// In branch mode the draft of an agent is a plain branch under its own name, `agent/<name>/run-<n>`. It is not a shared ref, so
+/// the policy gate lets it through to the scope and budget checks, and still refuses every other ref.
+#[tokio::test]
+async fn an_agent_may_write_the_branch_of_its_own_run_in_branch_mode() {
+    let f = fx().await;
+    let a = commit(&f.e, &[], &[("x", b"1")]).await;
+    f.set_master(a).await;
+    let b = commit(&f.e, &[a], &[("src/y.rs", b"2")]).await;
+    let c = ctx("agent:bot:7:at_one");
+    let check = |name: &str| {
+        let u = [GateUpdate {
+            name: name.into(),
+            old: None,
+            new: Some(RefTarget::Changeset(b)),
+            user: false,
+        }];
+        let f = &f;
+        let c = &c;
+        let name = name.to_owned();
+        async move {
+            let r = f
+                .gate
+                .check(&gate_req(c, &f.e, &u, GateMode::Push { force: false }))
+                .await;
+            (name, r)
+        }
+    };
+    for name in [
+        "refs/heads/agent/bot/run-3",
+        "refs/heads/agent/bot/at_one/work",
+    ] {
+        let (n, r) = check(name).await;
+        assert!(r.is_ok(), "{n}: {r:?}");
+    }
+    for name in [
+        "refs/heads/master",
+        "refs/heads/feature",
+        "refs/heads/agent/other/run-3",
+        "refs/heads/agent/bot/at_two/work",
+        "refs/heads/agent/bot/run-0",
+        "refs/tags/t",
+    ] {
+        let (n, r) = check(name).await;
+        let err = r.unwrap_err();
+        assert_eq!(code(&err), "AGENT_SCOPE_DENIED", "{n}");
+    }
+}
+
 #[tokio::test]
 async fn agent_drafts_follow_scope_denied_paths_and_budgets() {
     let f = fx().await;
@@ -2698,4 +2746,150 @@ async fn an_unowned_changeset_cannot_be_published_by_a_non_administrator() {
     let e = f.submit(BOB, n6, cs6).await.unwrap_err();
     assert_eq!(code(&e), "CHANGE_NOT_ALLOWED");
     f.submit(ALICE, n6, cs6).await.unwrap();
+}
+
+#[tokio::test]
+async fn an_organisations_defaults_tighten_what_a_repository_requires_to_land() {
+    use crate::ai::audit::PoolAudit;
+    use crate::org::{OrgHub, policy::MergeDefaults};
+    let f = fx().await;
+    let a = commit(
+        &f.e,
+        &[],
+        &[
+            (
+                POLICY_PATH,
+                policy_text("[trunk]\nrequire_approvals = 1\n").as_bytes(),
+            ),
+            ("x", b"1"),
+        ],
+    )
+    .await;
+    f.set_master(a).await;
+    let b = commit(&f.e, &[a], &[("y", b"2")]).await;
+    f.register(b, 1, 1, ALICE).await;
+    f.review(1, 1, 1).await;
+    // The organisation "o" (the repository is o/r) asks for two approvals.
+    let pool = f.reg.pool().clone();
+    let hub = OrgHub::new(pool.clone(), Arc::new(PoolAudit::new(pool)));
+    assert!(f.gate.org_slot().set(hub.clone()));
+    hub.set_merge(
+        "o",
+        MergeDefaults {
+            require_approvals: 2,
+            ..MergeDefaults::default()
+        },
+        "9:owner",
+    )
+    .await
+    .unwrap();
+    let err = f.land(ALICE, b).await.unwrap_err();
+    assert_eq!(code(&err), "POLICY_DENIED");
+    assert!(
+        paths(&err)[1].contains("1 of 2 approvals"),
+        "{:?}",
+        paths(&err)
+    );
+    // Another organisation's defaults do not apply to this repository.
+    hub.set_merge("o", MergeDefaults::default(), "9:owner")
+        .await
+        .unwrap();
+    hub.set_merge(
+        "zed",
+        MergeDefaults {
+            require_approvals: 5,
+            ..MergeDefaults::default()
+        },
+        "9:owner",
+    )
+    .await
+    .unwrap();
+    f.land(ALICE, b).await.unwrap();
+    assert_eq!(f.tip().await, b);
+}
+
+#[tokio::test]
+async fn while_a_restore_is_staged_no_ref_moves() {
+    let f = fx().await;
+    let a = commit(&f.e, &[], &[("x", b"1")]).await;
+    f.set_master(a).await;
+    let b = commit(&f.e, &[a], &[("y", b"2")]).await;
+    f.gate
+        .read_only_flag()
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let err = f.land(ALICE, b).await.unwrap_err();
+    assert_eq!(err.code(), tonic::Code::Unavailable);
+    assert!(err.message().contains("read-only"), "{}", err.message());
+    assert_eq!(f.tip().await, a);
+    f.gate
+        .read_only_flag()
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+    f.land(ALICE, b).await.unwrap();
+    assert_eq!(f.tip().await, b);
+}
+
+#[tokio::test]
+async fn an_organisation_that_forbids_force_overrides_a_repository_that_allows_it() {
+    use crate::ai::audit::PoolAudit;
+    use crate::org::{OrgHub, policy::MergeDefaults};
+    let g = fx().await;
+    let open = policy_text("[trunk]\nallow_force = true\n");
+    let a = commit(&g.e, &[], &[(POLICY_PATH, open.as_bytes()), ("x", b"1")]).await;
+    g.set_master(a).await;
+    let b = commit(&g.e, &[a], &[("y", b"2")]).await;
+    g.land(ALICE, b).await.unwrap();
+    let pool = g.reg.pool().clone();
+    let hub = OrgHub::new(pool.clone(), Arc::new(PoolAudit::new(pool)));
+    assert!(g.gate.org_slot().set(hub.clone()));
+    hub.set_merge("o", MergeDefaults::default(), "9:owner")
+        .await
+        .unwrap();
+    let c = commit(&g.e, &[a], &[("z", b"3")]).await;
+    let expect_b = wire::ref_update::Expect::Value(wire::RefTarget::from(&RefTarget::Changeset(b)));
+    let err = g
+        .push(
+            ALICE,
+            "refs/heads/master",
+            expect_b.clone(),
+            c,
+            wire::UpdateMode::Force,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(code(&err), "POLICY_DENIED");
+    assert!(paths(&err)[0].contains("organisation"), "{:?}", paths(&err));
+    assert_eq!(g.tip().await, b);
+    let mut del = update_req(
+        "refs/heads/master",
+        expect_b.clone(),
+        b,
+        wire::UpdateMode::Force,
+    );
+    del.updates[0].new = None;
+    del.updates[0].delete = true;
+    assert_eq!(
+        code(&g.gated.update_refs(&ctx(ALICE), del).await.unwrap_err()),
+        "POLICY_DENIED"
+    );
+    // The organisation allows force: the repository's own policy decides again.
+    hub.set_merge(
+        "o",
+        MergeDefaults {
+            allow_force: true,
+            ..MergeDefaults::default()
+        },
+        "9:owner",
+    )
+    .await
+    .unwrap();
+    g.push(
+        ALICE,
+        "refs/heads/master",
+        expect_b,
+        c,
+        wire::UpdateMode::Force,
+    )
+    .await
+    .unwrap();
+    assert_eq!(g.tip().await, c);
 }

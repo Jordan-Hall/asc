@@ -495,7 +495,7 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(
             rows[0]["effects"],
-            serde_json::json!(["post_receive", "codeintel.enqueue"])
+            serde_json::json!(["post_receive", "codeintel.enqueue", "notify.policy"])
         );
         let refs = rows[0]["refs"].as_array().unwrap();
         assert_eq!(refs.len(), 2);

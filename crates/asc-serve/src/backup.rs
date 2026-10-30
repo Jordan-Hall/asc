@@ -171,7 +171,7 @@ fn write_file(path: &Path, bytes: &[u8]) -> Result<(), BackupError> {
 
 /// The key a vault key is sealed under: 32 raw bytes or 64 hex digits, in a file only this user
 /// can read.
-fn load_backup_key(path: &Path) -> Result<[u8; 32], BackupError> {
+pub(crate) fn load_backup_key(path: &Path) -> Result<[u8; 32], BackupError> {
     let bad = |m: &str| BackupError(format!("backup key file {}: {m}", path.display()));
     let file = crate::authz::key_file::open_private(path).map_err(|e| bad(&e.to_string()))?;
     let mut raw = Vec::new();

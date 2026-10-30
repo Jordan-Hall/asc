@@ -19,7 +19,8 @@ service Changes {
 }
 
 message ChangeInfo { bytes change = 1 [(asc.v1.json) = JSON_KIND_CHANGE]; bytes head = 2 [(asc.v1.json) = JSON_KIND_HEX]; bytes git = 3 [(asc.v1.json) = JSON_KIND_HEX]; uint32 version = 4; bytes parent_change = 5 [(asc.v1.json) = JSON_KIND_CHANGE];
-  bool parent_current = 6; bytes landed_as = 7 [(asc.v1.json) = JSON_KIND_HEX]; ReviewState review = 8; repeated bytes visible = 9 [(asc.v1.json) = JSON_KIND_CHANGE]; /* >1 = divergent */ }
+  bool parent_current = 6; bytes landed_as = 7 [(asc.v1.json) = JSON_KIND_HEX]; ReviewState review = 8; repeated bytes visible = 9 [(asc.v1.json) = JSON_KIND_CHANGE]; /* >1 = divergent */
+  bool by_agent = 10; /* an agent run made the change, or its first version was published under an agent principal */ uint64 agent_run = 11; /* the newest run that holds it, or 0 */ }
 message ResolveChangesRequest { RepoRef repo = 1; repeated bytes changes = 2 [(asc.v1.json) = JSON_KIND_CHANGE]; repeated string revs = 3; }
 message ResolveChangesResponse { repeated ChangeInfo changes = 1; }
 message StackRequest { RepoRef repo = 1; string target = 2; oneof at { bytes change = 3 [(asc.v1.json) = JSON_KIND_CHANGE]; string rev = 4; uint64 review = 5; } }

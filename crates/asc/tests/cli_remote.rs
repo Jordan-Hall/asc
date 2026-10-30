@@ -372,6 +372,122 @@ fn a_pull_of_divergent_branches_asks_how_to_reconcile() {
 }
 
 #[test]
+fn pull_autostash_puts_local_changes_away_for_the_pull_and_brings_them_back() {
+    let sb = Sandbox::new();
+    let url = bucket_url(&sb.dir("bucket"));
+    let a = sb.dir("a");
+    ok(&sb, &a, &["init", "-q", "--store", &url]);
+    commit_file(
+        &sb, &a, "f.txt", "base
+",
+    );
+    ok(&sb, &a, &["push", "-q", "-u", "origin", "master"]);
+    let cwd = sb.dir("cwd");
+    ok(&sb, &cwd, &["clone", "-q", &url, "b"]);
+    let b = cwd.join("b");
+    commit_file(
+        &sb, &b, "b.txt", "b
+",
+    );
+    ok(&sb, &b, &["push", "-q"]);
+    commit_file(
+        &sb, &a, "a.txt", "a
+",
+    );
+    // A tracked file with an edit that is not committed.
+    std::fs::write(
+        a.join("f.txt"),
+        "base
+local
+",
+    )
+    .unwrap();
+    ok(&sb, &a, &["pull", "-q", "--rebase", "--autostash"]);
+    assert_eq!(
+        std::fs::read_to_string(a.join("b.txt")).unwrap(),
+        "b
+"
+    );
+    assert_eq!(
+        std::fs::read_to_string(a.join("f.txt")).unwrap(),
+        "base
+local
+",
+        "the edit came back"
+    );
+    assert_eq!(
+        text(&ok(&sb, &a, &["stash", "list"]).stdout),
+        "",
+        "nothing is left in the stash"
+    );
+    // With nothing to put away the option changes nothing.
+    ok(&sb, &a, &["checkout", "--", "f.txt"]);
+    commit_file(
+        &sb, &b, "c.txt", "c
+",
+    );
+    ok(&sb, &b, &["push", "-q"]);
+    ok(&sb, &a, &["pull", "-q", "--rebase", "--autostash"]);
+    assert_eq!(
+        std::fs::read_to_string(a.join("c.txt")).unwrap(),
+        "c
+"
+    );
+}
+
+#[test]
+fn merging_into_an_unborn_branch_takes_the_commit_and_its_files() {
+    let sb = Sandbox::new();
+    let url = bucket_url(&sb.dir("bucket"));
+    let a = sb.dir("a");
+    ok(&sb, &a, &["init", "-q", "--store", &url]);
+    commit_file(
+        &sb, &a, "f.txt", "base
+",
+    );
+    commit_file(
+        &sb, &a, "g.txt", "g
+",
+    );
+    ok(&sb, &a, &["push", "-q", "-u", "origin", "master"]);
+    // A fresh repository on the same store has no commit; fetching gives it the remote branch.
+    let b = sb.dir("b");
+    ok(&sb, &b, &["init", "-q"]);
+    ok(&sb, &b, &["remote", "add", "origin", &url]);
+    ok(&sb, &b, &["fetch", "-q", "origin"]);
+    // Git's refusals for what makes no sense into an empty head.
+    let squash = asc(&sb, &b, &["merge", "--squash", "origin/master"]);
+    assert_eq!(squash.status.code(), Some(128));
+    assert!(text(&squash.stderr).contains("Squash commit into empty head not supported yet"));
+    let no_ff = asc(&sb, &b, &["merge", "--no-ff", "origin/master"]);
+    assert!(
+        text(&no_ff.stderr)
+            .contains("Non-fast-forward commit does not make sense into an empty head")
+    );
+    ok(&sb, &b, &["merge", "-q", "origin/master"]);
+    assert_eq!(
+        std::fs::read_to_string(b.join("f.txt")).unwrap(),
+        "base
+"
+    );
+    assert_eq!(
+        std::fs::read_to_string(b.join("g.txt")).unwrap(),
+        "g
+"
+    );
+    assert_eq!(
+        text(&ok(&sb, &b, &["rev-parse", "HEAD"]).stdout),
+        text(&ok(&sb, &b, &["rev-parse", "origin/master"]).stdout)
+    );
+    // The files are tracked and clean: nothing but the repository's own ignore file is untracked.
+    let status = text(&ok(&sb, &b, &["status", "--porcelain"]).stdout);
+    assert!(
+        !status.contains("f.txt") && !status.contains("g.txt"),
+        "{status}"
+    );
+}
+
+#[test]
 fn boundary_store_rows_round_trip_per_repository() {
     let sb = Sandbox::new();
     let rt = tokio::runtime::Builder::new_current_thread()

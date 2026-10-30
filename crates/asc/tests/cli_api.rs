@@ -251,7 +251,8 @@ fn a_server_refusal_is_reported_without_the_credential() {
     );
     assert!(!out.status.success());
     let err = text(&out.stderr);
-    assert!(err.contains("Authentication failed"), "{err}");
+    assert!(err.contains("was refused by"), "{err}");
+    assert!(err.contains("asc auth login"), "{err}");
     assert!(!err.contains("wrong-token"));
     assert!(text(&out.stdout).is_empty());
 }

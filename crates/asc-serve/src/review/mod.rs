@@ -13,7 +13,10 @@
 
 pub mod acting;
 pub mod brief;
+pub mod conflicts;
+pub mod draft;
 pub mod gate;
+pub mod hunk;
 pub mod rpc;
 pub mod store;
 
@@ -22,9 +25,13 @@ pub(crate) mod tests;
 #[cfg(test)]
 pub(crate) mod tests_acting;
 #[cfg(test)]
-mod tests_brief;
+pub(crate) mod tests_brief;
+#[cfg(test)]
+mod tests_gaps;
 #[cfg(test)]
 mod tests_gate;
+#[cfg(test)]
+mod tests_hunk;
 
 use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -103,6 +110,20 @@ pub fn valid_handle(s: &str) -> bool {
         && s.len() <= MAX_HANDLE
         && s.bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'@' | b'+'))
+}
+
+/// The hub's immutable id of the user a principal acts as: the id in `<id>:<login>` of a
+/// provider-verified user (which a forwarded claim carries as well). A token-only caller (`pat:`),
+/// a deploy key, a task and the anonymous caller have none. A name can be renamed or recycled; the id cannot.
+pub fn user_id_of(principal_id: &str) -> Option<u64> {
+    UserIdentity::parse(principal_id)
+        .filter(|u| u.is_user() && u.user_id > 0)
+        .and_then(|u| u64::try_from(u.user_id).ok())
+}
+
+/// [`user_id_of`] as the signed number the tables hold; 0 for none.
+pub fn user_id_col(principal_id: &str) -> i64 {
+    user_id_of(principal_id).map_or(0, |n| i64::try_from(n).unwrap_or(0))
 }
 
 /// The handle of the user a principal acts as: the login of a provider-verified user
