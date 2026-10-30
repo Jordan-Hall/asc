@@ -716,12 +716,13 @@ impl Reviews {
                 ));
             }
         }
-        let latest = vs.last().map_or(0, |v| v.v);
-        let version = if req.version == 0 {
-            latest
-        } else {
-            req.version
-        };
+        // A verdict binds to the exact version the reviewer looked at; there is no "latest".
+        let version = req.version;
+        if version == 0 {
+            return Err(Status::invalid_argument(
+                "a verdict names the version it is for; version 0 is not a version",
+            ));
+        }
         if !vs.iter().any(|v| v.v == version) {
             return Err(Status::invalid_argument("unknown version"));
         }

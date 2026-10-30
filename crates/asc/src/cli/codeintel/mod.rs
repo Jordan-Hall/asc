@@ -265,6 +265,7 @@ where
                 attempt += 1;
                 server
                     .reauth(&session)
+                    .await
                     .map_err(|e| CliError::Fatal(format!("asc: {e}")))?;
             }
             Err(s) => {

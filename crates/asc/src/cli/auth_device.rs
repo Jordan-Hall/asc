@@ -72,7 +72,8 @@ pub enum Poll {
     SlowDown,
 }
 
-fn clean(s: &str) -> String {
+/// `s` without control characters, at most 512 characters: text the hub sent, fit for a terminal.
+pub fn clean(s: &str) -> String {
     s.chars().filter(|c| !c.is_control()).take(512).collect()
 }
 
@@ -236,6 +237,20 @@ where
 {
     let grant = start(client, hub, client_name).await?;
     show(&grant);
+    wait(client, hub, &grant, sleep).await
+}
+
+/// Polls until the person approves `grant`, refuses it or the code expires.
+pub async fn wait<S, Fut>(
+    client: &reqwest::Client,
+    hub: &Url,
+    grant: &Grant,
+    sleep: S,
+) -> Result<String, DeviceError>
+where
+    S: Fn(Duration) -> Fut,
+    Fut: Future<Output = ()>,
+{
     let started = Instant::now();
     let mut interval = grant.interval;
     let mut waited = 0u64;

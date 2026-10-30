@@ -473,7 +473,7 @@ async fn a_comment_and_a_verdict_carry_the_hub_id_of_a_person_and_none_for_a_tok
             wire::RecordApprovalRequest {
                 repo: repo_ref(),
                 change: cbytes(2),
-                version: 0,
+                version: 1,
                 state: wire::ApprovalState::Approved as i32,
                 ..Default::default()
             },
@@ -489,7 +489,7 @@ async fn a_comment_and_a_verdict_carry_the_hub_id_of_a_person_and_none_for_a_tok
             wire::RecordApprovalRequest {
                 repo: repo_ref(),
                 change: cbytes(2),
-                version: 0,
+                version: 1,
                 state: wire::ApprovalState::Approved as i32,
                 ..Default::default()
             },
