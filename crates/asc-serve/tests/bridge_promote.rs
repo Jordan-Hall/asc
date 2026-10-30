@@ -466,7 +466,10 @@ async fn a_repeated_delivery_changes_nothing_and_a_row_of_the_hosts_own_git_wait
     .execute(env.registry.pool())
     .await
     .unwrap();
-    env.deliver().await;
+    // One pass, not `deliver()`: that loops while a row is due, and a row that waited for 3 s is due again after its
+    // 1 s, 2 s and 4 s backoffs, so on a slow machine the loop reaches the third failure inside this call and the
+    // row heals the directory before the assertions look. The healing is the next step's business.
+    assert_eq!(env.outbox.deliver_due(now()).await.unwrap(), 1);
     assert_eq!(env.bridge_ref("refs/heads/master").await, Some(c1.clone()));
     assert_eq!(
         env.undelivered().await,
