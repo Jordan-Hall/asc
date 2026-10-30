@@ -73,6 +73,17 @@ pub const CATALOGUE: &[ActionInfo] = &[
         "A setting of a repository, an owner or the server changed.",
         &["setting", "old", "new"],
     ),
+    // Settings of the host application (the hub), appended by the host service (`Audit.Append`).
+    a(
+        "host.setting.updated",
+        "A setting of the host application changed (who may register, mail confirmation, avatars).",
+        &["setting", "old", "new"],
+    ),
+    a(
+        "host.maintenance.updated",
+        "The maintenance notice of the host application was switched or changed.",
+        &["enabled", "old_enabled", "message", "until"],
+    ),
     // Policy.
     a(
         "policy.proposed",
