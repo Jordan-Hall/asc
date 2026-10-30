@@ -196,6 +196,25 @@ impl AgentsHub {
         if policy.as_ref().is_some_and(|p| !p.agents.enabled) {
             return Err(errors::disabled("repository policy"));
         }
+        // The instance switch and the organisation's agent card: allowed, and under its monthly ceiling.
+        if let Some(org) = self.org.get() {
+            let owner = name.as_str().split('/').next().unwrap_or("").to_owned();
+            let gate = org.agent_gate(&owner).await.map_err(|e| e.status())?;
+            if !gate.allowed {
+                return Err(errors::disabled("organisation"));
+            }
+            if gate.ceiling > 0
+                && org
+                    .month_agent_spend(&owner)
+                    .await
+                    .map_err(|e| e.status())?
+                    >= gate.ceiling
+            {
+                return Err(Status::resource_exhausted(
+                    "the organisation's monthly agent spend ceiling is reached",
+                ));
+            }
+        }
         let agent_who = Who::new(Kind::Agent, req.agent.clone());
 
         // Paths: globs the repository policy admits an agent of this name to write.
@@ -644,6 +663,12 @@ impl AgentsHub {
                         ],
                     )
                     .await;
+                    self.tell_finished(
+                        &fresh,
+                        RunState::Failed,
+                        "the server restarted while the run was running",
+                    )
+                    .await;
                 }
             }
         }
@@ -780,11 +805,43 @@ impl AgentsHub {
             ],
         )
         .await;
+        self.tell_finished(&fresh, state, &message).await;
         self.live
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&id);
         self.wake.notify_one();
+    }
+
+    /// Tells the person who started the run that it ended (the hub's `agent_finished`). A run the
+    /// person cancelled themself needs no notice.
+    async fn tell_finished(&self, run: &RunRow, state: RunState, message: &str) {
+        let how = match state {
+            RunState::Succeeded => "finished",
+            RunState::Cancelled => return,
+            RunState::Failed => "failed",
+            RunState::Expired => "ran out of time",
+            RunState::BudgetExceeded => "used up its budget",
+            _ => return,
+        };
+        let subject = if run.title.is_empty() {
+            &run.task
+        } else {
+            &run.title
+        };
+        crate::notify::emit(
+            &self.core.pool,
+            &run.repo,
+            crate::notify::Event::new(
+                crate::notify::Kind::AgentFinished,
+                format!("Agent {} {how}: {subject}", run.agent),
+            )
+            .users(super::control::run_people(run))
+            .detail(message)
+            .path(crate::notify::paths::run(&run.repo, run.id))
+            .dedup(format!("run:{}:finished", run.id)),
+        )
+        .await;
     }
 
     /// Watches one run: the cancel flag in the database, the deadline, the token, the heartbeat.
@@ -920,11 +977,10 @@ impl AgentsHub {
                 return Ended::failed("internal", "the run's token could not be made");
             }
         };
-        let _ = sqlx::query("UPDATE agent_runs SET token_id = $2 WHERE id = $1")
-            .bind(i64::try_from(run.id).unwrap_or(0))
-            .bind(token.id.clone())
-            .execute(&core.pool)
-            .await;
+        // The token goes onto the run and takes the run's limits of this moment in one step: limits
+        // edited while the run was starting reached only the run row, and `SetRunLimits` reads the
+        // token again after it stores them, so no edit is missed and none is seen half-applied.
+        let _ = core.tokens.attach_to_run(run.id, &token.id).await;
         self.audit(
             "agent.token.created",
             &run.created_by,
@@ -1002,7 +1058,13 @@ impl AgentsHub {
         let ref_name = format!("refs/heads/agent/{}/run-{}", run.agent, run.id);
         let _ = core.runs.set_ref(run.id, &ref_name).await;
         let commands = self.sandbox.allowed_text();
-        let ctl0 = self.ctl(run.id).await.unwrap_or_default();
+        // Fail closed: the plan gate lives in the control state, so a state that cannot be read ends the run.
+        let ctl0 = match self.ctl(run.id).await {
+            Ok(c) => c,
+            Err(_) => {
+                return Ended::failed("internal", "the control state of the run could not be read");
+            }
+        };
         let mut tool_specs = specs(&commands);
         tool_specs.extend(super::control::extra_specs(ctl0.plan_first));
         let system = format!(
@@ -1315,25 +1377,29 @@ impl AgentsHub {
                 let shown = masker.mask(&call.input.to_string());
                 self.event(&fresh, EventKind::ToolCall, &shown, &call.name, &[], "")
                     .await;
-                match self.hold(run, live).await {
-                    super::control::Hold::Go => {}
-                    super::control::Hold::Stop(e) => return e,
-                    super::control::Hold::Rollback(cp) => {
-                        if let Err(why) = self
-                            .do_rollback(
-                                run,
-                                &cp,
-                                ws,
-                                secret,
-                                &ref_name,
-                                &mut tip,
-                                &mut ref_exists,
-                                &mut committed,
-                            )
-                            .await
-                        {
-                            self.event(&fresh, EventKind::Error, &why, "rollback", &[], "")
-                                .await;
+                // A rollback is done at the hold, and the run holds again after it: it was paused
+                // before and stays paused until a person resumes it.
+                loop {
+                    match self.hold(run, live).await {
+                        super::control::Hold::Go => break,
+                        super::control::Hold::Stop(e) => return e,
+                        super::control::Hold::Rollback(cp) => {
+                            if let Err(why) = self
+                                .do_rollback(
+                                    run,
+                                    &cp,
+                                    ws,
+                                    secret,
+                                    &ref_name,
+                                    &mut tip,
+                                    &mut ref_exists,
+                                    &mut committed,
+                                )
+                                .await
+                            {
+                                self.event(&fresh, EventKind::Error, &why, "rollback", &[], "")
+                                    .await;
+                            }
                         }
                     }
                 }
@@ -1389,9 +1455,15 @@ impl AgentsHub {
                     .await;
                 }
                 for k in before..committed.len() {
-                    let all: Vec<Vec<u8>> = committed[..=k].iter().map(|c| c.change.clone()).collect();
+                    let all: Vec<Vec<u8>> =
+                        committed[..=k].iter().map(|c| c.change.clone()).collect();
                     let _ = self
-                        .add_checkpoint(run.id, &committed[k].message, &all, &committed[k].changeset)
+                        .add_checkpoint(
+                            run.id,
+                            &committed[k].message,
+                            &all,
+                            &committed[k].changeset,
+                        )
                         .await;
                 }
                 match outcome {
@@ -1420,6 +1492,22 @@ impl AgentsHub {
                                 .await;
                             self.event(&w, EventKind::State, "waiting_input", "", &[], "")
                                 .await;
+                            crate::notify::emit(
+                                &core.pool,
+                                &w.repo,
+                                crate::notify::Event::new(
+                                    crate::notify::Kind::AgentQuestion,
+                                    format!("Agent {} asks: {question}", w.agent),
+                                )
+                                .users(super::control::run_people(&w))
+                                .path(crate::notify::paths::run(&w.repo, w.id))
+                                .dedup(format!(
+                                    "run:{}:ask:{}",
+                                    w.id,
+                                    clock::now()
+                                )),
+                            )
+                            .await;
                         }
                         let answer = self.wait_input(run.id, live).await;
                         let _ = core.runs.set_question(run.id, "").await;

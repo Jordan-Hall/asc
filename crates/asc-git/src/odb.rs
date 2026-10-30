@@ -200,10 +200,9 @@ impl Odb {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::Command;
 
     fn git(dir: &Path, args: &[&str]) -> String {
-        let out = Command::new("git") // lint:allow-raw-git
+        let out = crate::realgit::pinned_command()
             .args(args)
             .current_dir(dir)
             .output()

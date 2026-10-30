@@ -14,6 +14,7 @@ pub mod audit;
 pub mod authn;
 pub mod authz;
 pub mod backup;
+pub mod backups;
 pub mod cache_role;
 pub mod changes;
 pub mod ci;
@@ -25,6 +26,7 @@ pub mod commit_graph_rpc;
 pub mod config;
 pub mod deps;
 pub mod expire;
+pub mod export;
 #[cfg(feature = "forgejo")]
 pub mod forgejo;
 pub mod gc;
@@ -53,28 +55,40 @@ pub mod migrate;
 pub mod mirror;
 pub mod mutations;
 pub mod netguard;
+pub mod notify;
 pub mod objects;
 pub mod obs;
+pub mod org;
 pub mod outbox;
+pub mod pack_service;
+pub mod pack_sql;
+#[cfg(test)]
+mod pack_tests;
 pub mod pagetoken;
 pub mod policy;
+pub mod profile;
 pub mod projects;
 pub mod projects_warm;
+pub mod queue;
 pub mod read;
 pub mod refauthz;
 pub mod refpolicy;
 pub mod reftl;
 pub mod registry;
-pub mod queue;
+pub mod releases;
 pub mod review;
 pub mod secretscan;
 pub mod seeds;
+pub mod sessions;
+pub mod settings;
 pub mod signing;
 #[cfg(feature = "git-ssh")]
 pub mod ssh;
+pub mod stats;
 pub mod storage;
 pub mod turbo;
 pub mod update;
+pub mod usage;
 pub mod vault;
 pub mod watch_refs;
 pub mod web;
@@ -204,6 +218,23 @@ impl Authorizer for DenyAll {
 
 // ------------------------------------------------------------------------------ startup
 
+/// The hub that notification events go to: `[forgejo]` with its internal token.
+fn notify_sink(
+    cfg: &config::ServeConfig,
+) -> Result<Option<Arc<dyn notify::worker::Sink>>, ConfigError> {
+    #[cfg(feature = "forgejo")]
+    {
+        let client = forgejo::event_client(cfg.forgejo.as_ref())
+            .map_err(|e| ConfigError::Invalid(e.to_string()))?;
+        Ok(client.map(|c| Arc::new(notify::worker::HubSink(c)) as Arc<dyn notify::worker::Sink>))
+    }
+    #[cfg(not(feature = "forgejo"))]
+    {
+        let _ = cfg;
+        Ok(None)
+    }
+}
+
 /// The `CodeIntel` settings when `[codeintel] enabled` and `cache.disk_dir` names the disk the
 /// replica keeps index segments on (`<disk_dir>/ci`).
 fn codeintel_settings(cfg: &config::ServeConfig) -> Option<codeintel::rpc::Settings> {
@@ -317,6 +348,14 @@ pub fn build_grpc(ext: &Extensions, authorizer: Arc<dyn Authorizer>, info: Serve
                     .into_service(),
             )
             .add_service(
+                stats::rpc::InsightsService::new(h.clone(), authorizer.clone(), info.clone())
+                    .into_service(),
+            )
+            .add_service(
+                releases::rpc::ReleasesService::new(h.clone(), authorizer.clone(), info.clone())
+                    .into_service(),
+            )
+            .add_service(
                 ci::rpc::CiService::new(h.clone(), authorizer.clone(), info.clone()).into_service(),
             )
             .add_service(
@@ -390,6 +429,10 @@ pub fn build_grpc(ext: &Extensions, authorizer: Arc<dyn Authorizer>, info: Serve
         grpc = grpc.add_service(
             ai::rpc::AiService::new(h.clone(), authorizer.clone(), info.clone()).into_service(),
         );
+        grpc = grpc.add_service(
+            ai::share_rpc::AiKeySharesService::new(h.clone(), authorizer.clone(), info.clone())
+                .into_service(),
+        );
     }
     if let Some(h) = ext.agents.get() {
         let svc = agents::rpc::AgentService::new(h.clone(), authorizer.clone(), info.clone());
@@ -402,6 +445,37 @@ pub fn build_grpc(ext: &Extensions, authorizer: Arc<dyn Authorizer>, info: Serve
             workflows::rpc::WorkflowService::new(h.clone(), authorizer.clone(), info.clone())
                 .into_service(),
         );
+    }
+    if let Some(s) = ext.settings.get() {
+        grpc = grpc
+            .add_service(
+                backups::rpc::BackupsService::new(
+                    s.backups.clone(),
+                    authorizer.clone(),
+                    info.clone(),
+                )
+                .into_service(),
+            )
+            .add_service(
+                usage::rpc::UsageService::new(s.usage.clone(), authorizer.clone(), info.clone())
+                    .into_service(),
+            )
+            .add_service(
+                org::rpc::OrgService::new(s.org.clone(), authorizer.clone(), info.clone())
+                    .into_service(),
+            )
+            .add_service(
+                sessions::rpc::SessionsService::new(
+                    s.sessions.clone(),
+                    authorizer.clone(),
+                    info.clone(),
+                )
+                .into_service(),
+            )
+            .add_service(
+                export::rpc::ExportService::new(s.export.clone(), authorizer.clone(), info.clone())
+                    .into_service(),
+            );
     }
     if let Some(h) = ext.deps.get() {
         grpc = grpc.add_service(
@@ -479,11 +553,20 @@ pub async fn serve(
     let (Some(db), Some(store)) = (&cfg.db, &cfg.store) else {
         return Err(ConfigError::Invalid("`store` and `db` are required".into()).into());
     };
+    // A restore a person staged is applied before the database opens.
+    if let Some(report) = backups::apply_pending(&cfg)
+        .await
+        .map_err(ConfigError::Invalid)?
+    {
+        tracing::info!("{report}");
+    }
     // Every decision passes through here, so the access log can name the caller.
     let authorizer: Arc<dyn Authorizer> = Arc::new(logging::LoggingAuthorizer::new(authorizer));
     let pool = migrate::connect(db, DB_CONNECTIONS).await?;
     migrate::ensure_current(&pool).await?;
     let registry = Arc::new(Registry::new(pool.clone(), store)?);
+    registry.set_pack_config(cfg.pack.to_config()?);
+    registry.set_import_policy(cfg.import.to_policy()?);
     let metrics = Arc::new(http::Metrics::new());
     let outbox = Arc::new(outbox::Outbox::new(
         pool.clone(),
@@ -560,6 +643,17 @@ pub async fn serve(
         },
     )
     .map_err(ConfigError::Invalid)?;
+    // The profile of a person is given to an agent only when the hub says the person allows it.
+    #[cfg(feature = "forgejo")]
+    {
+        let source = forgejo::event_client(cfg.forgejo.as_ref())
+            .map_err(|e| ConfigError::Invalid(e.to_string()))?
+            .map(|c| Arc::new(profile::HubProfiles(c)) as Arc<dyn profile::ProfileSource>);
+        ai_agents
+            .agents
+            .set_profiles(Arc::new(profile::AgentProfiles::new(source)));
+    }
+    let settings = settings::register(&ext, &registry, &cfg).map_err(ConfigError::Invalid)?;
     let authorizer = ai_agents.agents.authorizer(authorizer);
     // Workflows: definitions in the repository, runs in the database, agents and commands as steps.
     let workflows = workflows::register(
@@ -578,7 +672,7 @@ pub async fn serve(
     ci::insights::register(&ext, &registry, &cfg.ci_insights);
     let warmer = projects::register(&ext, &registry);
     #[cfg(feature = "forgejo")]
-    forgejo::register(&ext, &registry, &outbox, cfg.forgejo.as_ref())
+    let bridge_slot = forgejo::register(&ext, &registry, &outbox, cfg.forgejo.as_ref())
         .map_err(|e| ConfigError::Invalid(e.to_string()))?;
     let mirror =
         mirror::register(&ext, &registry, &cfg).map_err(|e| ConfigError::Invalid(e.to_string()))?;
@@ -589,8 +683,16 @@ pub async fn serve(
     // The git protocol layer (SPEC §25): the views, then the routes that serve them. With the
     // layer off, `build_routes` serves the disabled stub and `Version` omits `git.smart_http`.
     #[cfg(feature = "git-compat")]
-    let git_services = git_view::register(&registry, &outbox, &cfg)
-        .map(|views| git_http::register(&ext, views, registry.clone(), &metrics, &cfg));
+    let views = git_view::register(&registry, &outbox, &cfg);
+    // The forge hooks, built before the views, are given the means to fill the forge's git
+    // directory for a `refs/for` submit.
+    #[cfg(all(feature = "git-compat", feature = "forgejo"))]
+    if let (Some(views), Some(root)) = (&views, cfg.bridge_promote_root()) {
+        bridge_slot.set(Arc::new(git_view::PromoteHold::new(views.clone(), root)));
+    }
+    #[cfg(feature = "git-compat")]
+    let git_services =
+        views.map(|views| git_http::register(&ext, views, registry.clone(), &metrics, &cfg));
     #[cfg(feature = "git-compat")]
     let git_live = git_services.is_some();
     #[cfg(not(feature = "git-compat"))]
@@ -603,7 +705,8 @@ pub async fn serve(
     };
     let stats = obs::Stats::register(&metrics);
     let http_state = http::HttpState::new(pool, outbox.clone(), metrics.clone(), well_known)
-        .with_stats(stats.clone());
+        .with_stats(stats.clone())
+        .with_maintenance(ext.read_only.clone());
     http::register(&ext, http_state.clone());
     web::register(&ext, &cfg.web)?;
     let turbo = Arc::new(
@@ -668,6 +771,7 @@ pub async fn serve(
     features.extend(codeintel::features::features(&ext.codeintel));
     features.extend(storage::features(&ext.byos));
     features.extend(ai_agents.features());
+    features.extend(settings.features());
     features.extend(workflows::features(&workflows));
     features.extend(deps::features(&ext));
     if ext.security.get().is_some() {
@@ -709,6 +813,7 @@ pub async fn serve(
     }
     // The agent runtime calls the server's own services through this router, as the run's agent.
     let agent_tasks = ai_agents.start(build_grpc(&ext, authorizer.clone(), info.clone()));
+    let settings_tasks = settings.start();
     let workflow_tasks = if workflows.cfg.enabled {
         workflows.start_workers()
     } else {
@@ -774,6 +879,21 @@ pub async fn serve(
             .effects()
             .register(codeintel::source::enqueue_effect(&registry));
     }
+    // Notification events for the hub's people (docs/BUILDOUT.md section 21): posted to the hub's
+    // internal endpoint with a retry. Without `[forgejo]` and its internal token nothing is posted.
+    outbox
+        .effects()
+        .register(notify::policy::PolicyChanged::effect(&registry));
+    let notify_sink = notify_sink(&cfg)?;
+    notify::configure(&cfg.notify, notify_sink.is_some());
+    let notifier = tokio::spawn(
+        Arc::new(notify::worker::Dispatcher::new(
+            registry.pool().clone(),
+            notify_sink,
+            notify::worker::DispatchConfig::default(),
+        ))
+        .run(),
+    );
     let worker = tokio::spawn(outbox.run());
     // The indexing workers (SPEC §23.5) run beside `CodeIntel` whenever `[codeintel] enabled`.
     let indexers = match codeintel::runner::config(&cfg) {
@@ -817,6 +937,14 @@ pub async fn serve(
     } else {
         None
     };
+    // Packing writes data in a new form, so it runs only when `[pack] enabled` is set.
+    let packer = cfg.pack.enabled.then(|| {
+        Arc::new(pack_service::PackService::new(
+            registry.clone(),
+            ext.pipeline.clone(),
+        ))
+        .spawn_worker(std::time::Duration::from_secs(cfg.pack.repack_interval.0))
+    });
     let served = server
         .add_routes(routes)
         .serve_with_shutdown(cfg.listen, async move {
@@ -834,6 +962,7 @@ pub async fn serve(
         t.abort();
     }
     ai_agents.stop(&agent_tasks);
+    settings.stop(&settings_tasks);
     // Delivery is at least once, so stopping the worker mid-row is safe.
     worker.abort();
     sweeper.abort();
@@ -846,6 +975,7 @@ pub async fn serve(
     }
     admin_worker.abort();
     audit_retention.abort();
+    notifier.abort();
     insights_retention.abort();
     #[cfg(feature = "git-ssh")]
     if let Some(t) = ssh_task {
@@ -853,6 +983,9 @@ pub async fn serve(
     }
     if let Some(c) = collector {
         c.abort();
+    }
+    if let Some(p) = packer {
+        p.abort();
     }
     admin.abort();
     match &served {

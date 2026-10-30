@@ -22,6 +22,15 @@ Then run `asc doctor`; `asc self-update` (or `asc upgrade`) updates an install m
 
 ## 2. Authenticate
 
+You do not have to sign in first. `asc clone <url>` of a public repository needs no sign-in. When a
+repository needs one (a private clone, a push), asc asks right then, as git does: it tries the
+credentials your git credential helpers hold, and in a terminal it starts a sign-in on the spot (it
+prints a code and a link, you approve it in the browser, and the command carries on). Set
+`ASC_NO_BROWSER=1` to paste a token instead. Scripts and CI are never asked: set `ASC_TOKEN` or store a
+token in a credential helper. Without a credential helper asc keeps the token it just got in your
+system keychain (a private file when there is none), so the next run does not sign in again; `asc auth
+logout <url>` removes it. The commands below set a credential up ahead of time.
+
 `asc auth login --host <url> --token-stdin` stores a token with the system credential helpers (the token
 is read from standard input, never from an argument), `asc auth logout --host <url>` forgets it, and
 `asc auth status [--json] [<url>]` reports which source would supply a credential for a URL and never
@@ -84,6 +93,13 @@ offers a compatibility layer, and an optional `git` shim (`asc install-shim`, se
   The server answers 401, then git asks its credential helper (same token as above, as the
   password; use a helper or `http.extraHeader`, never the URL). Pushes go through the same
   checks as `asc push`. With `[git] enabled = false` the git routes answer 403 with `X-Asc-Git`.
+  - **A token alone in the URL fails.** `git clone https://TOKEN@host/...` gets a 401 on git 2.55
+    with libcurl 8.5: git takes the token as the user name, asks for a password, and an empty
+    askpass answer makes libcurl send no credentials at all. These forms work:
+    `https://TOKEN:@host/...` (an empty password after the colon), a credential helper that
+    answers with the token, or `git -c http.proactiveAuth=basic clone https://TOKEN@host/...`
+    (git 2.46 or later). A token in a URL ends up in shell history and in `.git/config`, so
+    prefer the helper; the colon form is for CI, where the job's log and config are discarded.
 - **SSH:** `git clone ssh://git@<host>:<port>/<owner>/<repo>`. The listener is in the default
   build (feature `git-ssh`, config `[ssh]`, default port 2222, off unless `[ssh] enabled = true`).
   The staging compose file enables it and publishes container port 2222 as host port 22223:

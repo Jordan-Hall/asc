@@ -156,6 +156,7 @@ impl CodeIntelClient for ServerSearch {
                     asked_again = true;
                     remote
                         .reauth(&session)
+                        .await
                         .map_err(|e| ToolError::new("UNAUTHENTICATED", e.to_string()))?;
                 }
                 Err(e) => {

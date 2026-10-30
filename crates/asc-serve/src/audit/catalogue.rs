@@ -64,6 +64,11 @@ pub const CATALOGUE: &[ActionInfo] = &[
     a("repo.deleted", "A repository was deleted.", &["name"]),
     a("repo.renamed", "A repository was renamed.", &["from", "to"]),
     a(
+        "repo.default_branch",
+        "The default branch (trunk) of a repository was changed.",
+        &["from", "to"],
+    ),
+    a(
         "settings.updated",
         "A setting of a repository, an owner or the server changed.",
         &["setting", "old", "new"],
@@ -138,6 +143,11 @@ pub const CATALOGUE: &[ActionInfo] = &[
         &["ref", "rule", "count"],
     ),
     a(
+        "secret.scan.run",
+        "A repository administrator scanned a revision for secrets.",
+        &["files", "findings", "truncated"],
+    ),
+    a(
         "signing.key.added",
         "A signing key was added.",
         &["fingerprint", "kind"],
@@ -209,6 +219,137 @@ pub const CATALOGUE: &[ActionInfo] = &[
         &["provider", "scope"],
     ),
     a(
+        "backup.started",
+        "A backup of the server was started.",
+        &["target", "trigger"],
+    ),
+    a(
+        "backup.finished",
+        "A backup of the server finished.",
+        &["target", "result", "bytes"],
+    ),
+    a(
+        "backup.verify.started",
+        "A check of a backup was started.",
+        &["result"],
+    ),
+    a(
+        "backup.verified",
+        "A check of a backup finished.",
+        &["result"],
+    ),
+    a(
+        "backup.purged",
+        "Retention removed a backup from its target.",
+        &["target"],
+    ),
+    a(
+        "backup.schedule.updated",
+        "The backup schedule or its retention was changed.",
+        &[
+            "enabled",
+            "target",
+            "interval_hours",
+            "keep_days",
+            "keep_weeks",
+        ],
+    ),
+    a(
+        "backup.restore.staged",
+        "A restore of a backup was staged for the next start.",
+        &["target"],
+    ),
+    a(
+        "usage.admin.read",
+        "A site administrator read the usage of an account or organisation.",
+        &["scope"],
+    ),
+    a(
+        "usage.quota.set",
+        "The quota of an owner was set.",
+        &[
+            "storage_bytes",
+            "agent_minutes",
+            "ai_spend_micro_usd",
+            "bandwidth_bytes",
+        ],
+    ),
+    a(
+        "org.agents.updated",
+        "An organisation's agent policy was changed.",
+        &["allow_agents", "need_person", "ceiling"],
+    ),
+    a(
+        "org.merge.updated",
+        "An organisation's default merge policy was changed.",
+        &["approvals", "checks", "strategy"],
+    ),
+    a(
+        "org.agent.created",
+        "An organisation agent identity was created.",
+        &["run_by"],
+    ),
+    a(
+        "org.agent.updated",
+        "An organisation agent identity was changed.",
+        &["paused"],
+    ),
+    a(
+        "org.agent.deleted",
+        "An organisation agent identity was deleted.",
+        &["run_by"],
+    ),
+    a(
+        "instance.agents.updated",
+        "The instance's agent switch or default budget was changed.",
+        &["allow_agents", "ceiling"],
+    ),
+    a(
+        "session.revoked",
+        "A credential of a person was revoked.",
+        &["kind"],
+    ),
+    a(
+        "export.requested",
+        "A person asked to export their data.",
+        &["result"],
+    ),
+    a(
+        "export.finished",
+        "An export of a person's data finished.",
+        &["result"],
+    ),
+    a(
+        "export.downloaded",
+        "A person downloaded their data export.",
+        &["result"],
+    ),
+    a(
+        "export.deleted",
+        "A person deleted their data export.",
+        &["result"],
+    ),
+    a(
+        "ai.key.shared",
+        "An AI key was shared with a user, organisation or repository.",
+        &["grantee", "allow_use", "see_spend"],
+    ),
+    a(
+        "ai.key.unshared",
+        "The sharing of an AI key was withdrawn.",
+        &["grantee"],
+    ),
+    a(
+        "ai.key.caps.updated",
+        "The warning or stop rule of an AI key's cap was changed.",
+        &["warn_percent", "stop_at_cap"],
+    ),
+    a(
+        "ai.key.cap.warning",
+        "An AI key's spend crossed its warning percentage.",
+        &["percent", "scope"],
+    ),
+    a(
         "vault.rotated",
         "The master key of the vault was rotated.",
         &["generation"],
@@ -258,7 +399,14 @@ pub const CATALOGUE: &[ActionInfo] = &[
     a(
         "review.comment.added",
         "A review comment was added to a change.",
-        &["thread", "comment", "version", "path", "suggestion", "external_id"],
+        &[
+            "thread",
+            "comment",
+            "version",
+            "path",
+            "suggestion",
+            "external_id",
+        ],
     ),
     a(
         "review.thread.resolved",
@@ -268,12 +416,12 @@ pub const CATALOGUE: &[ActionInfo] = &[
     a(
         "review.brief.set",
         "The brief of a change (what, why, how, where to look) was written.",
-        &[],
+        &["change"],
     ),
     a(
         "review.approval.recorded",
-        "A verdict on a version of a change was recorded.",
-        &["version", "state"],
+        "A verdict on a version of a change was recorded, or a reviewer's verdicts were dismissed by someone else.",
+        &["version", "state", "verdicts", "reviewer", "reviewer_id"],
     ),
     a(
         "review.suggestion.applied",
@@ -288,27 +436,7 @@ pub const CATALOGUE: &[ActionInfo] = &[
     a(
         "review.override.revoked",
         "An exception to a rule of the policy gate was withdrawn.",
-        &[],
-    ),
-    a(
-        "queue.enqueued",
-        "A change was added to the merge queue.",
-        &["change", "target"],
-    ),
-    a(
-        "queue.dequeued",
-        "An entry was removed from the merge queue.",
-        &["reason"],
-    ),
-    a(
-        "queue.paused",
-        "The merge queue of a branch was paused.",
-        &["reason"],
-    ),
-    a(
-        "queue.resumed",
-        "The merge queue of a branch was resumed.",
-        &["reason"],
+        &["override"],
     ),
     a(
         "queue.entry.reported",
@@ -361,6 +489,21 @@ pub const CATALOGUE: &[ActionInfo] = &[
         &["run", "new_run"],
     ),
     a(
+        "release.created",
+        "A release was recorded, as a draft or published.",
+        &["tag", "draft", "assets"],
+    ),
+    a(
+        "release.published",
+        "A draft release was published.",
+        &["tag"],
+    ),
+    a(
+        "agent.profile.read",
+        "An agent or a person asked for the profile of a person that the person lets agents read.",
+        &["login", "allowed"],
+    ),
+    a(
         "agent.budget.monthly_set",
         "A monthly budget of agents was set or removed.",
         &["agent", "cap_micro_usd"],
@@ -369,6 +512,16 @@ pub const CATALOGUE: &[ActionInfo] = &[
         "agent.run.cancelled",
         "An agent run was cancelled.",
         &["run", "agent", "reason"],
+    ),
+    a(
+        "notify.event.delivered",
+        "The hub took a notification event (agent, checks, queue, policy, review or mention).",
+        &["event", "told", "attempts"],
+    ),
+    a(
+        "notify.event.rejected",
+        "A notification event was refused by the hub or given up after a day of retries.",
+        &["event", "attempts", "reason"],
     ),
     a(
         "agent.run.finished",
@@ -620,6 +773,7 @@ mod tests {
             "workflow.triggered",
             "workflow.approval.decided",
             "secret.push.blocked",
+            "secret.scan.run",
             "agent.budget.exceeded",
             "policy.denied",
         ] {

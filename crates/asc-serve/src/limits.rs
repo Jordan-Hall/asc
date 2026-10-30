@@ -168,40 +168,422 @@ fn git_refusal(status: &Status) -> Response<Body> {
     res
 }
 
-/// The class of a gRPC call, or `None` for a path this server does not rate-limit.
-/// An unlisted method of a known service is `Expensive`, so a new RPC fails safe.
+/// Every method of every service, with the class it is charged to. A method has to be listed here
+/// (a test walks the compiled protos and refuses one that is not), so a new RPC is a decision made in
+/// review, not a default. [`class_of`] still falls back to `Expensive` for a path that is not listed.
+const TABLE: &[(&str, Class, &[&str])] = &[
+    (
+        "Repo",
+        Class::Objects,
+        &["GetObjects", "PutObjects", "ReadFile"],
+    ),
+    ("Repo", Class::UpdateRefs, &["UpdateRefs"]),
+    ("Repo", Class::Background, &["Ingest"]),
+    (
+        "Repo",
+        Class::Cheap,
+        &[
+            "Version",
+            "ListRefs",
+            "Resolve",
+            "GitMap",
+            "HasObjects",
+            "Stat",
+            "MergeBase",
+            "IsAncestor",
+            "ReadChangeset",
+            "FindLanding",
+            "RepoConfig",
+            "CheckAttr",
+            "LastCommits",
+            "ReadTree",
+            "Compare",
+        ],
+    ),
+    (
+        "Repo",
+        Class::Expensive,
+        &[
+            "Apply",
+            "Archive",
+            "Blame",
+            "Classify",
+            "Commit",
+            "CommitGraph",
+            "CopyClosure",
+            "Diff",
+            "GetPolicy",
+            "Grep",
+            "ImportGitPush",
+            "LineHistory",
+            "Log",
+            "Merge",
+            "Rebase",
+            "RepoAdmin",
+            "WatchRefs",
+        ],
+    ),
+    (
+        "Changes",
+        Class::Cheap,
+        &[
+            "ResolveChanges",
+            "Stack",
+            "Versions",
+            "Overlaps",
+            "SetReviewState",
+        ],
+    ),
+    (
+        "Changes",
+        Class::Expensive,
+        &[
+            "InterDiff",
+            "Mergeability",
+            "RequestMerge",
+            "RestackChanges",
+        ],
+    ),
+    ("Cloud", Class::Cheap, &["GetWorkspace", "ListWorkspaces"]),
+    ("Cloud", Class::Background, &["Purge", "UpdateWorkspace"]),
+    (
+        "Insights",
+        Class::Expensive,
+        &["GetStats", "ListContributors"],
+    ),
+    ("Releases", Class::Cheap, &["List", "Get", "Next"]),
+    ("Releases", Class::Expensive, &["DraftNotes"]),
+    ("Releases", Class::Background, &["Create", "Publish"]),
+    ("Inbox", Class::Cheap, &["List", "Count"]),
+    ("Inbox", Class::Background, &["SetState"]),
+    (
+        "Review",
+        Class::Cheap,
+        &[
+            "ListThreads",
+            "ListOverrides",
+            "SetBrief",
+            "RecordApproval",
+            "RecordGateDecision",
+            "MarkSuggestionApplied",
+            "GrantOverride",
+            "RevokeOverride",
+        ],
+    ),
+    (
+        "Review",
+        Class::Background,
+        &["AddComment", "ResolveThread", "RequestReview"],
+    ),
+    // These read trees, diff stats or many rows.
+    (
+        "Review",
+        Class::Expensive,
+        &[
+            "GetBrief",
+            "CompareVersions",
+            "PrepareSuggestion",
+            "SuggestReviewers",
+            "GetGateStats",
+            "HunkContext",
+            "GetConflicts",
+            "DraftContext",
+        ],
+    ),
+    ("Ci", Class::Cheap, &["ListRuns", "JobLog"]),
+    ("Ci", Class::Background, &["ReportRun", "AppendJobLog"]),
+    ("Ci", Class::Expensive, &["Stats", "CompareWithMain"]),
+    (
+        "CiInsights",
+        Class::Cheap,
+        &[
+            "FlakyHistory",
+            "GetFailureGroup",
+            "ListFailureGroups",
+            "ListFlakyTests",
+            "SetFailureGroupState",
+        ],
+    ),
+    ("CiInsights", Class::Background, &["ReportTestCases"]),
+    ("CodeIntel", Class::Codeintel, &["Search", "Symbols"]),
+    ("CodeIntel", Class::Semantic, &["Semantic"]),
+    ("CodeIntel", Class::Cheap, &["IndexStatus"]),
+    ("CodeIntel", Class::Expensive, &["UploadScip"]),
+    (
+        "CrossSearch",
+        Class::Codeintel,
+        &["LookupSymbol", "Search", "SymbolPanel"],
+    ),
+    ("Projects", Class::Cheap, &["ProjectGraph", "ProjectHashes"]),
+    ("Projects", Class::Expensive, &["Affected"]),
+    // Agents start model runs and read events and spend.
+    (
+        "Agents",
+        Class::Cheap,
+        &[
+            "ListRuns",
+            "GetRun",
+            "CancelRun",
+            "SendInput",
+            "WatchRun",
+            "ListRequests",
+            "DecideRequest",
+            "PauseRun",
+            "ListCheckpoints",
+            "RollbackRun",
+            "SetRunLimits",
+            "GetEstimate",
+            "RecentTasks",
+            "SetMonthlyBudget",
+            "GetPerson",
+        ],
+    ),
+    (
+        "Agents",
+        Class::Expensive,
+        &[
+            "CreateRun",
+            "ContinueRun",
+            "GetRunLog",
+            "ListAgents",
+            "GetSpend",
+        ],
+    ),
+    (
+        "AgentTokens",
+        Class::Cheap,
+        &[
+            "CreateToken",
+            "GetToken",
+            "ListTokens",
+            "ReportUsage",
+            "RevokeToken",
+            "SetBudget",
+        ],
+    ),
+    (
+        "MergeQueue",
+        Class::Cheap,
+        &[
+            "Enqueue",
+            "Dequeue",
+            "List",
+            "Get",
+            "SetPaused",
+            "ReportEntry",
+            "Watch",
+        ],
+    ),
+    ("MergeQueue", Class::Expensive, &["Revalidate", "Preview"]),
+    (
+        "AiProviders",
+        Class::Cheap,
+        &[
+            "CreateKey",
+            "DeleteKey",
+            "GetKey",
+            "ListKeys",
+            "ListModels",
+            "UpdateKey",
+            "Usage",
+        ],
+    ),
+    ("AiProviders", Class::Expensive, &["TestKey"]),
+    (
+        "Backups",
+        Class::Cheap,
+        &[
+            "ListBackups",
+            "ListTargets",
+            "PreviewRestore",
+            "SetSchedule",
+            "Restore",
+        ],
+    ),
+    ("Backups", Class::Expensive, &["RunBackup", "VerifyBackup"]),
+    ("Usage", Class::Cheap, &["GetQuota", "SetQuota", "Report"]),
+    ("Usage", Class::Expensive, &["GetUsage", "ListSpend"]),
+    (
+        "OrgSettings",
+        Class::Cheap,
+        &[
+            "GetOrgSettings",
+            "SetAgentPolicy",
+            "SetMergeDefaults",
+            "ResolveMergePolicy",
+            "ListAgents",
+            "CreateAgent",
+            "UpdateAgent",
+            "DeleteAgent",
+            "GetInstanceAgents",
+            "SetInstanceAgents",
+        ],
+    ),
+    (
+        "Sessions",
+        Class::Cheap,
+        &["ListSessions", "RevokeSession", "RevokeOtherSessions"],
+    ),
+    (
+        "DataExport",
+        Class::Cheap,
+        &["ListExports", "GetExport", "DeleteExport"],
+    ),
+    (
+        "DataExport",
+        Class::Expensive,
+        &["RequestExport", "Download"],
+    ),
+    (
+        "AiKeyShares",
+        Class::Cheap,
+        &[
+            "ShareKey",
+            "ListShares",
+            "RevokeShare",
+            "ListSharedWithMe",
+            "GetKeyCaps",
+            "SetKeyCaps",
+        ],
+    ),
+    ("AiKeyShares", Class::Expensive, &["ShareUsage"]),
+    ("Audit", Class::Cheap, &["List", "ListActions"]),
+    ("Audit", Class::Expensive, &["Export", "VerifyChain"]),
+    (
+        "Bridge",
+        Class::Cheap,
+        &["Events", "Hello", "Run", "StoreToken", "Token"],
+    ),
+    (
+        "DepsService",
+        Class::Cheap,
+        &["Dismiss", "GetConfig", "ListFindings", "SetConfig"],
+    ),
+    (
+        "DepsService",
+        Class::Expensive,
+        &["ListUpdates", "ProposeUpdate", "Scan"],
+    ),
+    ("Policy", Class::Cheap, &["GetSource"]),
+    (
+        "Policy",
+        Class::Expensive,
+        &["Evaluate", "Propose", "Validate"],
+    ),
+    (
+        "SecretScan",
+        Class::Cheap,
+        &["ListFindings", "ListRules", "UpdateFinding"],
+    ),
+    ("SecretScan", Class::Expensive, &["Scan", "Check"]),
+    (
+        "Signing",
+        Class::Cheap,
+        &["AddKey", "GetServerKey", "ListKeys", "RevokeKey", "Verify"],
+    ),
+    ("Signing", Class::Expensive, &["SubmitSignature"]),
+    ("Stacks", Class::Cheap, &["ListRefLog"]),
+    (
+        "Stacks",
+        Class::Expensive,
+        &["Restack", "RevertLanded", "UndoRef"],
+    ),
+    (
+        "Storage",
+        Class::Cheap,
+        &[
+            "AssignRepo",
+            "CancelMigration",
+            "CreateTarget",
+            "DeleteTarget",
+            "GetMigration",
+            "GetTarget",
+            "ListMigrations",
+            "ListTargets",
+            "SetEnabled",
+            "UpdateTarget",
+        ],
+    ),
+    (
+        "Storage",
+        Class::Expensive,
+        &["StartMigration", "VerifyTarget"],
+    ),
+    ("Vault", Class::Cheap, &["GetRotation", "Status"]),
+    ("Vault", Class::Expensive, &["Rotate"]),
+    (
+        "Workflows",
+        Class::Cheap,
+        &[
+            "CancelRun",
+            "DecideApproval",
+            "DeleteSecret",
+            "GetDefinition",
+            "GetRun",
+            "ListDefinitions",
+            "ListRuns",
+            "ListSecrets",
+            "SetEnabled",
+            "SetSecret",
+            "WatchRun",
+        ],
+    ),
+    ("Workflows", Class::Expensive, &["Trigger", "Validate"]),
+    // The local daemon service; the server does not carry it, and its methods still declare a class.
+    (
+        "Workspace",
+        Class::Cheap,
+        &[
+            "ClearJournal",
+            "Dehydrate",
+            "IndexStatus",
+            "Journal",
+            "Mount",
+            "Ping",
+            "Prefetch",
+            "Shutdown",
+            "Stage",
+            "Status",
+            "Switch",
+            "Unmount",
+            "Watch",
+            "Worktrees",
+            "Conflicts",
+            "Stacks",
+        ],
+    ),
+    (
+        "Workspace",
+        Class::Expensive,
+        &[
+            "Affected",
+            "Blame",
+            "CommitGraph",
+            "Diff",
+            "Log",
+            "ReadFile",
+            "Search",
+            "Semantic",
+            "Stats",
+            "Symbols",
+        ],
+    ),
+];
+
+/// The class a method is declared to have, or `None` when the table does not list it.
+pub fn declared_class(service: &str, method: &str) -> Option<Class> {
+    TABLE
+        .iter()
+        .find(|(s, _, methods)| *s == service && methods.contains(&method))
+        .map(|(_, class, _)| *class)
+}
+
+/// The class of a gRPC call, or `None` for a path outside `/asc.v1.` (the health and reflection
+/// services), which this limiter does not charge. Fail closed: a method of `asc.v1` that the table
+/// does not list is `Expensive`, so a missing entry costs more, never nothing.
 pub fn class_of(path: &str) -> Option<Class> {
     let (service, method) = path.strip_prefix("/asc.v1.")?.split_once('/')?;
-    Some(match (service, method) {
-        ("Repo", "GetObjects" | "PutObjects" | "ReadFile") => Class::Objects,
-        ("Repo", "UpdateRefs") => Class::UpdateRefs,
-        ("Repo", "Ingest") => Class::Background,
-        (
-            "Repo",
-            "Version" | "ListRefs" | "Resolve" | "GitMap" | "HasObjects" | "Stat" | "MergeBase"
-            | "IsAncestor" | "ReadChangeset" | "FindLanding" | "RepoConfig" | "CheckAttr"
-            | "LastCommits" | "ReadTree" | "Compare",
-        ) => Class::Cheap,
-        ("Repo", _) => Class::Expensive,
-        ("Changes", "ResolveChanges" | "Stack" | "Versions" | "Overlaps" | "SetReviewState") => {
-            Class::Cheap
-        }
-        ("Changes", _) => Class::Expensive,
-        ("Cloud", "GetWorkspace" | "ListWorkspaces") => Class::Cheap,
-        ("Cloud", _) => Class::Background,
-        ("Inbox", "List" | "Count") => Class::Cheap,
-        ("Review", "ListThreads") => Class::Cheap,
-        ("Ci", "ListRuns" | "JobLog") => Class::Cheap,
-        ("Inbox" | "Review" | "Ci", _) => Class::Background,
-        ("CodeIntel", "Search" | "Symbols") => Class::Codeintel,
-        ("CrossSearch", _) => Class::Codeintel,
-        ("CodeIntel", "Semantic") => Class::Semantic,
-        ("CodeIntel", "IndexStatus") => Class::Cheap,
-        ("CodeIntel", _) => Class::Expensive,
-        ("Projects", "ProjectGraph" | "ProjectHashes") => Class::Cheap,
-        ("Projects", _) => Class::Expensive,
-        _ => return None,
-    })
+    Some(declared_class(service, method).unwrap_or(Class::Expensive))
 }
 
 /// How long an authorizer-verified token keeps its own bucket after the authorizer last
@@ -1389,6 +1771,65 @@ mod tests {
     fn is_rate_limited(s: &Status) -> bool {
         s.code() == Code::ResourceExhausted
             && matches!(status_rpc_error(s), Some(RpcError::RateLimited(_)))
+    }
+
+    #[test]
+    fn every_method_of_every_service_declares_its_class_and_an_unlisted_one_is_expensive() {
+        use prost_reflect::DescriptorPool;
+        let pool = DescriptorPool::decode(asc_rpc::DESCRIPTOR_SET).unwrap();
+        let mut seen = 0;
+        for s in pool
+            .services()
+            .filter(|s| s.full_name().starts_with("asc.v1."))
+        {
+            let svc = s.name().to_owned();
+            for m in s.methods() {
+                seen += 1;
+                assert!(
+                    declared_class(&svc, m.name()).is_some(),
+                    "/asc.v1.{svc}/{} has no declared rate class: add it to limits::TABLE",
+                    m.name()
+                );
+            }
+        }
+        assert!(seen > 200, "only {seen} methods walked");
+        // The table lists no method that is not in the protos (a rename leaves no dead entry).
+        for (svc, _, methods) in TABLE {
+            let s = pool
+                .get_service_by_name(&format!("asc.v1.{svc}"))
+                .unwrap_or_else(|| panic!("no service {svc}"));
+            for m in *methods {
+                assert!(
+                    s.methods().any(|x| x.name() == *m),
+                    "{svc}/{m} is listed but not in the protos"
+                );
+            }
+        }
+        for svc in ["Agents", "MergeQueue", "Workflows", "NoSuchService"] {
+            assert_eq!(
+                class_of(&format!("/asc.v1.{svc}/SomethingNew")),
+                Some(Class::Expensive)
+            );
+        }
+        assert_eq!(class_of("/grpc.health.v1.Health/Check"), None);
+        assert_eq!(class_of("/asc.v1.Review/GetBrief"), Some(Class::Expensive));
+        assert_eq!(
+            class_of("/asc.v1.Review/HunkContext"),
+            Some(Class::Expensive)
+        );
+        assert_eq!(class_of("/asc.v1.Ci/Stats"), Some(Class::Expensive));
+        assert_eq!(class_of("/asc.v1.Agents/CreateRun"), Some(Class::Expensive));
+        assert_eq!(class_of("/asc.v1.Agents/PauseRun"), Some(Class::Cheap));
+        assert_eq!(
+            class_of("/asc.v1.MergeQueue/Revalidate"),
+            Some(Class::Expensive)
+        );
+        assert_eq!(class_of("/asc.v1.MergeQueue/Enqueue"), Some(Class::Cheap));
+        assert_eq!(
+            class_of("/asc.v1.Workflows/Trigger"),
+            Some(Class::Expensive)
+        );
+        assert_eq!(class_of("/asc.v1.Audit/Export"), Some(Class::Expensive));
     }
 
     #[test]

@@ -46,6 +46,17 @@ const DEFAULT_RUNS: usize = 30;
 const MAX_RUNS_PAGE: usize = 100;
 const WATCH_BATCH: usize = 100;
 const WATCH_LIFETIME: Duration = Duration::from_secs(10 * 60);
+/// How long a watch of a finished run waits for the event that shows the end.
+const FINAL_EVENT_GRACE: Duration = Duration::from_secs(5);
+
+/// Whether a run state of the wire is one that still moves.
+fn is_active_wire(state: i32) -> bool {
+    use wire::WorkflowRunState as S;
+    matches!(
+        S::try_from(state),
+        Ok(S::Queued | S::Running | S::WaitingApproval)
+    )
+}
 const MAX_WATCHERS: usize = 256;
 /// Largest definition text `Validate` takes.
 const MAX_VALIDATE: usize = asc_core::workflow::MAX_WORKFLOW_BYTES;
@@ -653,14 +664,17 @@ impl Workflows for WorkflowService {
             std::collections::VecDeque::<wire::WorkflowRunEvent>::new(),
             false,
             permit,
+            // Whether the last event sent shows a finished run, and since when the run reads as finished.
+            (false, None::<std::time::Instant>),
         );
         let stream = futures::stream::unfold(
             state,
-            move |(hub, id, mut after, mut buf, mut done, permit)| async move {
+            move |(hub, id, mut after, mut buf, mut done, permit, mut end)| async move {
                 loop {
                     if let Some(ev) = buf.pop_front() {
                         after = ev.seq;
-                        return Some((Ok(ev), (hub, id, after, buf, done, permit)));
+                        end.0 = ev.run.as_ref().is_some_and(|r| !is_active_wire(r.state));
+                        return Some((Ok(ev), (hub, id, after, buf, done, permit, end)));
                     }
                     if done || started.elapsed() > WATCH_LIFETIME {
                         return None;
@@ -678,7 +692,9 @@ impl Workflows for WorkflowService {
                             continue;
                         }
                         Ok(_) => {}
-                        Err(e) => return Some((Err(sql(&e)), (hub, id, after, buf, true, permit))),
+                        Err(e) => {
+                            return Some((Err(sql(&e)), (hub, id, after, buf, true, permit, end)));
+                        }
                     }
                     match hub.store.get_run(id).await {
                         Ok(Some(r)) if !r.state.is_active() => {
@@ -696,7 +712,18 @@ impl Workflows for WorkflowService {
                                     done = true;
                                     continue;
                                 }
-                                _ => return None,
+                                // The run is over and nothing new is stored. The state of a run changes before its
+                                // last event is written, so the stream ends only once an event shows the end, or
+                                // after a short grace in which that event did not come.
+                                _ if end.0 => return None,
+                                _ => {
+                                    let since = *end.1.get_or_insert_with(std::time::Instant::now);
+                                    if since.elapsed() > FINAL_EVENT_GRACE {
+                                        return None;
+                                    }
+                                    tokio::time::sleep(Duration::from_millis(25)).await;
+                                    continue;
+                                }
                             }
                         }
                         Ok(Some(_)) => {}

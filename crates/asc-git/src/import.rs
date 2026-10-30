@@ -23,6 +23,7 @@ use asc_engine::Engine;
 use asc_engine::commit::{self, PathPolicy};
 use asc_engine::derive::{self, Derived, Gen, GitCommit, GitMapRow, GitMapSink};
 use asc_engine::tree::{self, MAX_WALK_PATH_BYTES};
+use asc_store::batch::BatchedObjects;
 use asc_store::codec::encode_stored;
 use asc_store::key::ObjKey;
 use asc_store::objects::{self, Objects};
@@ -32,7 +33,8 @@ use data_encoding::BASE64;
 
 use crate::import_change;
 use crate::odb::{Odb, OdbError};
-use asc_engine::change::ChangeRows;
+use asc_core::change::RewriteOp;
+use asc_engine::change::{ChangeRow, ChangeRows};
 
 /// Entries kept in each of the in-memory blob and commit caches.
 const CACHE_ITEMS: usize = 65_536;
@@ -132,7 +134,17 @@ pub struct ImportPolicy {
     pub batch: usize,
     /// Worker threads for tree planning and blob hashing.
     pub workers: usize,
+    /// Commits per batch. Objects and rows are written once per batch: the batch's objects
+    /// first, then its git-map and change rows in one call. `1` writes after every commit.
+    pub batch_commits: usize,
+    /// Stored bytes buffered before the objects are written, whatever the commit count.
+    pub batch_bytes: u64,
 }
+
+/// Default for [`ImportPolicy::batch_commits`].
+pub const BATCH_COMMITS: usize = 500;
+/// Default for [`ImportPolicy::batch_bytes`].
+pub const BATCH_STORED_BYTES: u64 = 128 << 20;
 
 impl Default for ImportPolicy {
     fn default() -> Self {
@@ -141,6 +153,8 @@ impl Default for ImportPolicy {
             window: 128,
             batch: workers * 4,
             workers,
+            batch_commits: BATCH_COMMITS,
+            batch_bytes: BATCH_STORED_BYTES,
         }
     }
 }
@@ -595,10 +609,33 @@ struct Built {
     overrides: usize,
 }
 
+/// Rows held back until the objects they name are durable.
+#[derive(Default)]
+struct Held {
+    /// Git-map rows, in the order they were produced; a row repeated in a batch is kept once.
+    map: Vec<GitMapRow>,
+    seen: HashSet<(GitOid, u8)>,
+    /// Commits of the batch not yet in the map, for parent lookups.
+    commits: HashMap<GitOid, ChangesetId>,
+    changes: Vec<ChangeRow>,
+    /// Commits built since the last flush.
+    count: usize,
+}
+
+impl Held {
+    fn row(&mut self, row: GitMapRow) {
+        if self.seen.insert((row.git, row.kind as u8)) {
+            self.map.push(row);
+        }
+    }
+}
+
 /// Imports git history into an asc repository.
 pub struct Importer<'a, O: Objects, R: Refs> {
-    engine: &'a Engine<O, R>,
-    objects: Arc<O>,
+    /// An engine over `objects`, so what the batch wrote is what the batch reads.
+    engine: Engine<BatchedObjects<O>, R>,
+    objects: Arc<BatchedObjects<O>>,
+    held: Held,
     odb: &'a Odb,
     forks: Vec<Odb>,
     map: &'a dyn ImportMap,
@@ -614,7 +651,9 @@ pub struct Importer<'a, O: Objects, R: Refs> {
 }
 
 impl<'a, O: Objects, R: Refs> Importer<'a, O, R> {
-    /// `objects` must be the store `engine` was built over.
+    /// `objects` must be the store `engine` was built over. The importer reads and writes
+    /// through a buffer over it ([`ImportPolicy::batch_commits`]); everything is written
+    /// before `import_commits` returns.
     pub fn new(
         engine: &'a Engine<O, R>,
         objects: Arc<O>,
@@ -623,9 +662,11 @@ impl<'a, O: Objects, R: Refs> Importer<'a, O, R> {
         policy: ImportPolicy,
     ) -> Self {
         let workers = policy.workers.max(1);
+        let objects = Arc::new(BatchedObjects::new(objects));
         Self {
-            engine,
+            engine: engine.rebound(objects.clone()),
             objects,
+            held: Held::default(),
             odb,
             forks: (0..workers).map(|_| odb.fork()).collect(),
             map,
@@ -670,9 +711,11 @@ impl<'a, O: Objects, R: Refs> Importer<'a, O, R> {
         for window in order.chunks(self.policy.window.max(1)) {
             self.import_window(window, &mut report).await?;
         }
+        self.flush().await?;
         for (tip, job) in jobs {
             self.import_tag(&tip, job, &mut report).await?;
         }
+        self.flush().await?;
         for tip in tips {
             if report.refs.iter().all(|(n, _)| *n != tip.name)
                 && let Some(id) = self.commit_id(tip.oid).await?
@@ -734,7 +777,39 @@ impl<'a, O: Objects, R: Refs> Importer<'a, O, R> {
         Ok(())
     }
 
+    /// Writes the batch: its objects first, then its rows in one call each. A crash before the
+    /// rows leaves objects no row names, which a rerun writes again identically (I1, I3).
+    async fn flush(&mut self) -> Result<()> {
+        self.objects.flush().await?;
+        let held = std::mem::take(&mut self.held);
+        if !held.map.is_empty() {
+            self.map.put(&held.map).await?;
+        }
+        if let Some(rows) = self.rows
+            && !held.changes.is_empty()
+        {
+            rows.insert_many(&held.changes)
+                .await
+                .map_err(import_change::Error::from)?;
+        }
+        Ok(())
+    }
+
+    /// Flushes once the batch holds [`ImportPolicy::batch_commits`] commits.
+    async fn flush_if_full(&mut self) -> Result<()> {
+        if self.held.count >= self.policy.batch_commits.max(1) {
+            self.flush().await?;
+        } else if self.objects.pending_bytes() >= self.policy.batch_bytes {
+            // The objects alone are safe to write early: no row names them yet.
+            self.objects.flush().await?;
+        }
+        Ok(())
+    }
+
     async fn commit_id(&self, git: GitOid) -> Result<Option<ChangesetId>> {
+        if let Some(&id) = self.held.commits.get(&git) {
+            return Ok(Some(id));
+        }
         if let Some(id) = self.commits.get(&git) {
             return Ok(Some(id));
         }
@@ -799,6 +874,7 @@ impl<'a, O: Objects, R: Refs> Importer<'a, O, R> {
         let hashed = self.hash_blobs(&prepared, report).await?;
         for (p, &(_, scope)) in prepared.into_iter().zip(window) {
             self.build_commit(p, scope, &hashed, report).await?;
+            self.flush_if_full().await?;
         }
         Ok(())
     }
@@ -830,19 +906,20 @@ impl<'a, O: Objects, R: Refs> Importer<'a, O, R> {
             })
             .into_iter()
             .collect::<Result<Vec<_>>>()?;
-            let mut rows = Vec::with_capacity(done.len());
+            let mut n = 0;
             for (oid, got) in done {
                 self.store_content(&got).await?;
-                rows.push(GitMapRow {
+                self.held.row(GitMapRow {
                     git: oid,
                     kind: ObjectKind::Blob,
                     asc: *got.file.as_bytes(),
                 });
                 known.insert(oid, (got.file, got.size));
                 self.blobs.insert(oid, (got.file, got.size));
+                n += 1;
             }
-            self.map.put(&rows).await?;
-            report.blobs += rows.len();
+            report.blobs += n;
+            self.flush_if_full().await?;
         }
         Ok(known)
     }
@@ -1025,7 +1102,7 @@ impl<'a, O: Objects, R: Refs> Importer<'a, O, R> {
 
     /// Builds, validates and stores one changeset; the commit row is written last (I3).
     async fn build_commit(
-        &self,
+        &mut self,
         p: Prepared,
         scope: usize,
         hashed: &HashMap<GitOid, (FileId, u64)>,
@@ -1076,15 +1153,28 @@ impl<'a, O: Objects, R: Refs> Importer<'a, O, R> {
             .await?;
         self.derive_and_check(id, root, &p).await?;
         let scope = self.scopes.get(scope).map_or(&[][..], Vec::as_slice);
-        import_change::write_meta(&*self.objects, self.rows, id, &p.raw, scope).await?;
-        self.map.put(&built.rows).await?;
-        self.map
-            .put(&[GitMapRow {
-                git: p.oid,
-                kind: ObjectKind::Commit,
-                asc: *id.as_bytes(),
-            }])
-            .await?;
+        // The change rows wait for the flush with the map rows; the meta object goes now.
+        if let Some(meta) =
+            import_change::write_meta(&*self.objects, None, id, &p.raw, scope).await?
+            && self.rows.is_some()
+        {
+            self.held.changes.push(ChangeRow {
+                cs: id,
+                change: meta.change,
+                meta: meta.id(),
+                op: RewriteOp::Import,
+            });
+        }
+        for row in built.rows {
+            self.held.row(row);
+        }
+        self.held.row(GitMapRow {
+            git: p.oid,
+            kind: ObjectKind::Commit,
+            asc: *id.as_bytes(),
+        });
+        self.held.commits.insert(p.oid, id);
+        self.held.count += 1;
         self.commits.insert(p.oid, id);
         report.commits += 1;
         report.trees += built.trees;
@@ -1127,7 +1217,12 @@ impl<'a, O: Objects, R: Refs> Importer<'a, O, R> {
     }
 
     /// Stores an annotated tag of a commit as a `TagRecord`.
-    async fn import_tag(&self, tip: &Tip, job: TagJob, report: &mut ImportReport) -> Result<()> {
+    async fn import_tag(
+        &mut self,
+        tip: &Tip,
+        job: TagJob,
+        report: &mut ImportReport,
+    ) -> Result<()> {
         let target = self
             .commit_id(job.target)
             .await?
@@ -1152,13 +1247,11 @@ impl<'a, O: Objects, R: Refs> Importer<'a, O, R> {
                 self.objects
                     .put(&ObjKey::Tag(id), encode_stored(&envelope))
                     .await?;
-                self.map
-                    .put(&[GitMapRow {
-                        git: tip.oid,
-                        kind: ObjectKind::Tag,
-                        asc: *id.as_bytes(),
-                    }])
-                    .await?;
+                self.held.row(GitMapRow {
+                    git: tip.oid,
+                    kind: ObjectKind::Tag,
+                    asc: *id.as_bytes(),
+                });
                 report.tags.push((tip.name.clone(), id));
                 report.refs.push((tip.name.clone(), target));
             }
@@ -1214,7 +1307,7 @@ mod tests {
 
     fn plan_on_small_stack(levels: usize) -> Result<()> {
         let dir = tempfile::tempdir().unwrap();
-        let status = std::process::Command::new("git")
+        let status = crate::realgit::pinned_command()
             .args(["init", "--bare", "-q"])
             .arg(dir.path())
             .status()

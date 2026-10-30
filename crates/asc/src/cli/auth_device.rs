@@ -42,8 +42,12 @@ impl std::fmt::Display for DeviceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Denied => f.write_str("the sign-in was denied in the browser"),
-            Self::Expired => f.write_str("the code expired before it was approved; run the command again"),
-            Self::Invalid => f.write_str("the hub no longer knows this sign-in; run the command again"),
+            Self::Expired => {
+                f.write_str("the code expired before it was approved; run the command again")
+            }
+            Self::Invalid => {
+                f.write_str("the hub no longer knows this sign-in; run the command again")
+            }
             Self::Hub(m) => write!(f, "{m}"),
         }
     }
@@ -68,7 +72,8 @@ pub enum Poll {
     SlowDown,
 }
 
-fn clean(s: &str) -> String {
+/// `s` without control characters, at most 512 characters: text the hub sent, fit for a terminal.
+pub fn clean(s: &str) -> String {
     s.chars().filter(|c| !c.is_control()).take(512).collect()
 }
 
@@ -80,7 +85,11 @@ fn form(pairs: &[(&str, &str)]) -> String {
     s.finish()
 }
 
-async fn post(client: &reqwest::Client, url: Url, body: String) -> Result<(u16, serde_json::Value), DeviceError> {
+async fn post(
+    client: &reqwest::Client,
+    url: Url,
+    body: String,
+) -> Result<(u16, serde_json::Value), DeviceError> {
     let resp = client
         .post(url)
         .header("content-type", "application/x-www-form-urlencoded")
@@ -88,14 +97,25 @@ async fn post(client: &reqwest::Client, url: Url, body: String) -> Result<(u16, 
         .body(body)
         .send()
         .await
-        .map_err(|e| DeviceError::Hub(format!("the hub could not be reached: {}", clean(&e.to_string()))))?;
+        .map_err(|e| {
+            DeviceError::Hub(format!(
+                "the hub could not be reached: {}",
+                clean(&e.to_string())
+            ))
+        })?;
     let status = resp.status().as_u16();
     let mut bytes = Vec::new();
     let mut resp = resp;
-    while let Some(chunk) = resp.chunk().await.map_err(|e| DeviceError::Hub(clean(&e.to_string())))? {
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| DeviceError::Hub(clean(&e.to_string())))?
+    {
         bytes.extend_from_slice(&chunk);
         if bytes.len() > MAX_BODY {
-            return Err(DeviceError::Hub("the hub answered with too much data".into()));
+            return Err(DeviceError::Hub(
+                "the hub answered with too much data".into(),
+            ));
         }
     }
     let v = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
@@ -104,28 +124,54 @@ async fn post(client: &reqwest::Client, url: Url, body: String) -> Result<(u16, 
 
 /// The same origin as `hub`: a verification link the hub names must not lead elsewhere.
 fn on_origin(hub: &Url, link: &str) -> bool {
-    Url::parse(link).is_ok_and(|u| u.origin() == hub.origin() && u.username().is_empty() && u.password().is_none())
+    Url::parse(link).is_ok_and(|u| {
+        u.origin() == hub.origin() && u.username().is_empty() && u.password().is_none()
+    })
 }
 
 /// Starts the flow.
-pub async fn start(client: &reqwest::Client, hub: &Url, client_name: &str) -> Result<Grant, DeviceError> {
-    let url = hub.join("/login/device/code").map_err(|_| DeviceError::Hub("the hub URL is not usable".into()))?;
-    let body = if client_name.is_empty() { String::new() } else { form(&[("client_name", client_name)]) };
+pub async fn start(
+    client: &reqwest::Client,
+    hub: &Url,
+    client_name: &str,
+) -> Result<Grant, DeviceError> {
+    let url = hub
+        .join("/login/device/code")
+        .map_err(|_| DeviceError::Hub("the hub URL is not usable".into()))?;
+    let body = if client_name.is_empty() {
+        String::new()
+    } else {
+        form(&[("client_name", client_name)])
+    };
     let (status, v) = post(client, url, body).await?;
     if status != 200 {
-        return Err(DeviceError::Hub(format!("the hub refused to start a sign-in (HTTP {status})")));
+        return Err(DeviceError::Hub(format!(
+            "the hub refused to start a sign-in (HTTP {status})"
+        )));
     }
     let s = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_owned);
     let n = |k: &str| v.get(k).and_then(serde_json::Value::as_u64);
-    let (Some(device_code), Some(user_code), Some(uri)) = (s("device_code"), s("user_code"), s("verification_uri")) else {
-        return Err(DeviceError::Hub("the hub's answer is missing the device code".into()));
+    let (Some(device_code), Some(user_code), Some(uri)) =
+        (s("device_code"), s("user_code"), s("verification_uri"))
+    else {
+        return Err(DeviceError::Hub(
+            "the hub's answer is missing the device code".into(),
+        ));
     };
     let complete = s("verification_uri_complete").unwrap_or_else(|| uri.clone());
     if !on_origin(hub, &uri) || !on_origin(hub, &complete) {
-        return Err(DeviceError::Hub("the hub named a verification link on another site".into()));
+        return Err(DeviceError::Hub(
+            "the hub named a verification link on another site".into(),
+        ));
     }
-    if device_code.is_empty() || device_code.len() > 1024 || user_code.is_empty() || user_code.len() > 64 {
-        return Err(DeviceError::Hub("the hub's device code is not usable".into()));
+    if device_code.is_empty()
+        || device_code.len() > 1024
+        || user_code.is_empty()
+        || user_code.len() > 64
+    {
+        return Err(DeviceError::Hub(
+            "the hub's device code is not usable".into(),
+        ));
     }
     Ok(Grant {
         device_code,
@@ -138,15 +184,33 @@ pub async fn start(client: &reqwest::Client, hub: &Url, client_name: &str) -> Re
 }
 
 /// Asks once whether the person has approved.
-pub async fn poll_once(client: &reqwest::Client, hub: &Url, device_code: &str) -> Result<Poll, DeviceError> {
-    let url = hub.join("/login/device/token").map_err(|_| DeviceError::Hub("the hub URL is not usable".into()))?;
-    let (status, v) = post(client, url, form(&[("grant_type", GRANT), ("device_code", device_code)])).await?;
+pub async fn poll_once(
+    client: &reqwest::Client,
+    hub: &Url,
+    device_code: &str,
+) -> Result<Poll, DeviceError> {
+    let url = hub
+        .join("/login/device/token")
+        .map_err(|_| DeviceError::Hub("the hub URL is not usable".into()))?;
+    let (status, v) = post(
+        client,
+        url,
+        form(&[("grant_type", GRANT), ("device_code", device_code)]),
+    )
+    .await?;
     if status == 200 {
         return match v.get("access_token").and_then(|t| t.as_str()) {
-            Some(t) if !t.is_empty() && t.len() <= 4096 && !t.chars().any(char::is_control) && !t.contains(char::is_whitespace) => {
+            Some(t)
+                if !t.is_empty()
+                    && t.len() <= 4096
+                    && !t.chars().any(char::is_control)
+                    && !t.contains(char::is_whitespace) =>
+            {
                 Ok(Poll::Token(t.to_owned()))
             }
-            _ => Err(DeviceError::Hub("the hub's answer holds no usable token".into())),
+            _ => Err(DeviceError::Hub(
+                "the hub's answer holds no usable token".into(),
+            )),
         };
     }
     match v.get("error").and_then(|e| e.as_str()) {
@@ -173,13 +237,29 @@ where
 {
     let grant = start(client, hub, client_name).await?;
     show(&grant);
+    wait(client, hub, &grant, sleep).await
+}
+
+/// Polls until the person approves `grant`, refuses it or the code expires.
+pub async fn wait<S, Fut>(
+    client: &reqwest::Client,
+    hub: &Url,
+    grant: &Grant,
+    sleep: S,
+) -> Result<String, DeviceError>
+where
+    S: Fn(Duration) -> Fut,
+    Fut: Future<Output = ()>,
+{
     let started = Instant::now();
     let mut interval = grant.interval;
     let mut waited = 0u64;
     loop {
         sleep(Duration::from_secs(interval)).await;
         waited += interval;
-        if waited > grant.expires_in + interval || started.elapsed() > Duration::from_secs(grant.expires_in + MAX_INTERVAL) {
+        if waited > grant.expires_in + interval
+            || started.elapsed() > Duration::from_secs(grant.expires_in + MAX_INTERVAL)
+        {
             return Err(DeviceError::Expired);
         }
         match poll_once(client, hub, &grant.device_code).await? {
@@ -218,7 +298,10 @@ mod tests {
             err("authorization_pending"),
             err("slow_down"),
             err("authorization_pending"),
-            (200, "{\"access_token\":\"tok_abc\",\"token_type\":\"bearer\"}".to_owned()),
+            (
+                200,
+                "{\"access_token\":\"tok_abc\",\"token_type\":\"bearer\"}".to_owned(),
+            ),
         ];
         let seen = serve(listener, script);
         let slept = Arc::new(Mutex::new(Vec::new()));
@@ -238,15 +321,28 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(token, "tok_abc");
-        assert_eq!(*slept.lock().unwrap(), [5, 5, 10, 10], "5 seconds, then 5 more after slow_down");
+        assert_eq!(
+            *slept.lock().unwrap(),
+            [5, 5, 10, 10],
+            "5 seconds, then 5 more after slow_down"
+        );
         let g = shown.lock().unwrap().clone().unwrap();
-        assert_eq!((g.user_code.as_str(), g.expires_in, g.interval), ("ABCD-EFGH", 600, 5));
+        assert_eq!(
+            (g.user_code.as_str(), g.expires_in, g.interval),
+            ("ABCD-EFGH", 600, 5)
+        );
         assert!(g.verification_uri_complete.ends_with("user_code=ABCD-EFGH"));
         let seen = seen.lock().unwrap();
         assert_eq!(seen[0].0, "/login/device/code");
         assert_eq!(seen[0].1, "client_name=asc+cli");
         assert_eq!(seen[1].0, "/login/device/token");
-        assert!(seen[1].1.contains("grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code"), "{}", seen[1].1);
+        assert!(
+            seen[1]
+                .1
+                .contains("grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code"),
+            "{}",
+            seen[1].1
+        );
         assert!(seen[1].1.contains("device_code=dc123"));
     }
 
@@ -265,7 +361,11 @@ mod tests {
                     if let Some(h) = text.find("\r\n\r\n") {
                         let len = text[..h]
                             .lines()
-                            .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap_or(0)))
+                            .find_map(|l| {
+                                l.to_ascii_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                            })
                             .unwrap_or(0);
                         if n >= h + 4 + len || r == 0 {
                             let path = text.split_whitespace().nth(1).unwrap_or("").to_owned();
@@ -277,7 +377,10 @@ mod tests {
                         break;
                     }
                 }
-                let resp = format!("HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+                let resp = format!(
+                    "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
                 let _ = c.write_all(resp.as_bytes());
             }
         });
@@ -290,17 +393,42 @@ mod tests {
         let mut script = vec![(200, grant_json(&base))];
         script.extend(script_after_grant);
         serve(listener, script);
-        login(&reqwest::Client::new(), &base, "", |_| {}, |_| std::future::ready(())).await
+        login(
+            &reqwest::Client::new(),
+            &base,
+            "",
+            |_| {},
+            |_| std::future::ready(()),
+        )
+        .await
     }
 
     #[tokio::test]
     async fn every_error_the_hub_names_ends_the_flow_with_its_own_message() {
-        assert_eq!(run_with(vec![err("access_denied")]).await, Err(DeviceError::Denied));
-        assert_eq!(run_with(vec![err("expired_token")]).await, Err(DeviceError::Expired));
-        assert_eq!(run_with(vec![err("invalid_grant")]).await, Err(DeviceError::Invalid));
-        assert!(matches!(run_with(vec![(500, "boom".into())]).await, Err(DeviceError::Hub(_))));
-        assert!(matches!(run_with(vec![(200, "{\"access_token\":\"has space\"}".into())]).await, Err(DeviceError::Hub(_))));
-        assert!(matches!(run_with(vec![(200, "{}".into())]).await, Err(DeviceError::Hub(_))));
+        assert_eq!(
+            run_with(vec![err("access_denied")]).await,
+            Err(DeviceError::Denied)
+        );
+        assert_eq!(
+            run_with(vec![err("expired_token")]).await,
+            Err(DeviceError::Expired)
+        );
+        assert_eq!(
+            run_with(vec![err("invalid_grant")]).await,
+            Err(DeviceError::Invalid)
+        );
+        assert!(matches!(
+            run_with(vec![(500, "boom".into())]).await,
+            Err(DeviceError::Hub(_))
+        ));
+        assert!(matches!(
+            run_with(vec![(200, "{\"access_token\":\"has space\"}".into())]).await,
+            Err(DeviceError::Hub(_))
+        ));
+        assert!(matches!(
+            run_with(vec![(200, "{}".into())]).await,
+            Err(DeviceError::Hub(_))
+        ));
     }
 
     #[tokio::test]
@@ -309,11 +437,21 @@ mod tests {
         let base = Url::parse(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
         let mut script = vec![(
             200,
-            grant_json(&base).replace("\"expires_in\":600,\"interval\":5", "\"expires_in\":12,\"interval\":5"),
+            grant_json(&base).replace(
+                "\"expires_in\":600,\"interval\":5",
+                "\"expires_in\":12,\"interval\":5",
+            ),
         )];
         script.extend((0..6).map(|_| err("authorization_pending")));
         serve(listener, script);
-        let r = login(&reqwest::Client::new(), &base, "", |_| {}, |_| std::future::ready(())).await;
+        let r = login(
+            &reqwest::Client::new(),
+            &base,
+            "",
+            |_| {},
+            |_| std::future::ready(()),
+        )
+        .await;
         assert_eq!(r, Err(DeviceError::Expired));
     }
 
@@ -332,6 +470,8 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = Url::parse(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
         serve(listener, vec![(404, "{}".to_owned())]);
-        assert!(matches!(start(&reqwest::Client::new(), &base, "").await, Err(DeviceError::Hub(m)) if m.contains("404")));
+        assert!(
+            matches!(start(&reqwest::Client::new(), &base, "").await, Err(DeviceError::Hub(m)) if m.contains("404"))
+        );
     }
 }

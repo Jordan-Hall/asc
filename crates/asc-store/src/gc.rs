@@ -1416,7 +1416,9 @@ impl BucketGc {
     pub async fn connect(store: Arc<dyn ObjectStore>, root: Path) -> Result<Self> {
         let refs = BucketRefs::connect(store.clone(), root.clone()).await?;
         Ok(Self {
-            objects: BucketObjects::new(store.clone(), root.clone()),
+            // Packed objects are listed and deleted like loose ones.
+            objects: BucketObjects::new(store.clone(), root.clone())
+                .with_bucket_packs(Default::default()),
             store,
             root,
             refs,
@@ -1655,6 +1657,51 @@ mod tests {
         // The lock and the freeze are gone.
         assert!(e.store.head(&Path::from("ns/x/gc/lock")).await.is_err());
         assert!(e.store.head(&Path::from("ns/x/gc/freeze")).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn packed_objects_are_swept_like_loose_ones_and_reachable_ones_stay() {
+        use crate::pack::PackConfig;
+        let mut e = env().await;
+        e.objects =
+            BucketObjects::new(e.store.clone(), e.root.clone()).with_bucket_packs(PackConfig {
+                enabled: true,
+                min_age: Duration::ZERO,
+                min_loose: 1,
+                negative_ttl: Duration::ZERO,
+                ..PackConfig::default()
+            });
+        let (keep, kf, _) = commit(&e, &[], "keep", b"kept body").await;
+        let (lost, lf, lt) = commit(&e, &[], "lost", b"lost body").await;
+        set_ref(&e, "refs/heads/master", Some(keep)).await;
+        let t1 = SystemTime::now() + D15;
+        let packed = e.objects.pack_run(&NoFence, t1, true).await.unwrap();
+        assert!(packed.packed >= 6, "{packed:?}");
+        assert!(
+            e.store
+                .head(&e.objects.key_path(&ObjKey::File(lf)))
+                .await
+                .is_err()
+        );
+
+        e.gc.run(t1, false, &cfg(), &[]).await.unwrap();
+        let second = e.gc.run(t1 + H25, false, &cfg(), &[]).await.unwrap();
+        assert_eq!(second.sweep.deleted, 3, "{second}");
+        // This handle's index cache may predate the sweep's deletes.
+        e.objects
+            .pack_layer()
+            .unwrap()
+            .index()
+            .refresh()
+            .await
+            .unwrap();
+        for k in [ObjKey::Changeset(lost), ObjKey::File(lf), ObjKey::Tree(lt)] {
+            assert!(!has(&e, k).await, "{k} should be swept");
+        }
+        assert!(has(&e, ObjKey::Changeset(keep)).await);
+        assert!(has(&e, ObjKey::File(kf)).await);
+        // What GC left in the pack is still readable and still verifies.
+        assert!(e.objects.pack_verify().await.unwrap().problems.is_empty());
     }
 
     #[tokio::test]

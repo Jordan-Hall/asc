@@ -34,8 +34,8 @@ Configuration keys are in [`CONFIG.md`](CONFIG.md). Getting started is in
 | `config` | Reads and writes git config, with git's flags. asc's own keys are in [`CONFIG.md`](CONFIG.md). | `asc config --global asc.live.update true` |
 | `clone` | Clones lazily: file contents download when first read. `--mode plain` writes real files. | `asc clone https://asc.example.org/acme/payments` |
 | `auth status` | Names the source that would supply a credential for a URL, never the secret. | `asc auth status https://asc.example.org` |
-| `auth login` | Stores a token through the system credential helpers. The token is read from standard input, never from an argument. | `printf '%s' "$TOKEN" \| asc auth login --host https://asc.example.org --token-stdin` |
-| `auth logout` | Forgets the stored token for a host. | `asc auth logout --host https://asc.example.org` |
+| `auth login` | Stores a token through the system credential helpers (never required first: clone, fetch, pull, push, submit and ls-remote sign in on demand at a terminal). The token is read from standard input, never from an argument. | `printf '%s' "$TOKEN" \| asc auth login --host https://asc.example.org --token-stdin` |
+| `auth logout` | Forgets the stored token for a host: in the credential helpers and in the token asc keeps itself (keychain or private file). | `asc auth logout --host https://asc.example.org` |
 | `doctor` | Checks the install, git and the store. `--fix` repairs what needs no administrator rights; `--workflows` lists push triggers on non-shared branches. | `asc doctor --json` |
 | `install-shim` | Optional git compatibility: puts a `git` next to `asc` so `git` is asc inside an asc workspace and real git elsewhere. | `asc install-shim` |
 | `upgrade` | Signature-verified upgrade, side by side. The release source is `asc.releasesUrl`, `ASC_DOWNLOAD_BASE_URL` or `--from <dir>`. | `asc upgrade --check` |
@@ -220,7 +220,7 @@ All take `--json` and `--remote <name\|url>`. The scope is `--rev <rev>`, `--cha
 
 ## 9. Agents and workflows
 
-`agent` and `workflow` talk to a server; give `--remote` when the current repository has none.
+`agent`, `workflow` and `release` talk to a server; give `--remote` when the current repository has none.
 
 | Command | What it does | Example |
 |---|---|---|
@@ -245,6 +245,13 @@ All take `--json` and `--remote <name\|url>`. The scope is `--rev <rev>`, `--cha
 | `workflow cancel` | Stops a run. | `asc workflow cancel 21` |
 | `workflow approve`, `reject` | Decides an approval step. | `asc workflow approve 21 deploy --comment ok` |
 | `workflow secret list`, `set`, `rm` | Manages the secrets steps read; `set` takes the value from `--key-file`, `--key-env` or standard input. | `asc workflow secret set DEPLOY_KEY --key-env DEPLOY_KEY` |
+| `release list` | Lists releases, newest first (`--channel stable|pre-release|draft`). | `asc release list --channel pre-release` |
+| `release show` | Shows a release with its provenance and the SHA-256 of each asset. | `asc release show v2.18.0` |
+| `release next` | Counts the changes since the latest release and proposes the next tag. | `asc release next` |
+| `release notes` | Writes notes (Added, Changed, Fixed) from the changes landed since a release. | `asc release notes --from v2.18.0` |
+| `release create` | Records a release. `--asset FILE[=https://address]` records size and SHA-256 of a file; `--generate-notes`, `--pre-release`, `--draft`, `--build-source S --build-run ID` name the build whose checks become the provenance. | `asc release create v2.19.0 --generate-notes --asset dist/asc-linux.tar.gz=https://dl.example.org/asc-linux.tar.gz` |
+| `release publish` | Publishes a draft. | `asc release publish v2.19.0` |
+| `release download` | Downloads assets and refuses a file whose size or SHA-256 differs from the record. | `asc release download v2.18.0 --asset asc-linux.tar.gz -o dist` |
 
 ## 10. Server and API
 

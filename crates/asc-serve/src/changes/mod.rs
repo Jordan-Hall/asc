@@ -29,6 +29,7 @@ pub mod overlaps;
 pub mod request_merge;
 pub mod restack;
 pub mod rpc;
+pub mod staged;
 pub mod versions;
 pub mod watch;
 

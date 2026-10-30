@@ -774,16 +774,34 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
             if !options.iter().any(|x| x.starts_with("asc.draft=")) {
                 options.extend(mapping.option.map(str::to_owned));
             }
-            // The `m/` objects of the changes travel with the closure (C23).
+        }
+        // The `m/` objects of the changes travel with the closure (C23): for the changes of
+        // the AGit refs, and for every other changeset the push sends, so a server that keeps
+        // a pushed commit (even when a policy refuses the ref) also knows its change.
+        if let Some(s) = &server {
+            let features = if mapped {
+                mapping.features.clone()
+            } else {
+                push_map::server_features(s).await
+            };
+            let mut warm: Vec<ChangesetId> = mapping.changesets_for(&sent_dsts);
+            for p in &to_send {
+                if let Some(RefTarget::Changeset(tip)) = p.new {
+                    let old = match p.old {
+                        Some(RefTarget::Changeset(o)) => Some(o),
+                        _ => None,
+                    };
+                    for cs in push_map::pushed_changesets(ws, tip, old).await? {
+                        if !warm.contains(&cs) {
+                            warm.push(cs);
+                        }
+                    }
+                }
+            }
             let ext = ext_slot.get_or_init(|| {
-                ChangesExt::new(
-                    StateChanges::new(ws.db.clone(), ws.repo.key),
-                    &mapping.features,
-                )
+                ChangesExt::new(StateChanges::new(ws.db.clone(), ws.repo.key), &features)
             });
-            ext.warm(&mapping.changesets_for(&sent_dsts))
-                .await
-                .map_err(fatal)?;
+            ext.warm(&warm).await.map_err(fatal)?;
             sync_opts.ext = ext;
         }
         if let Some(s) = &server {

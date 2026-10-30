@@ -88,7 +88,7 @@ async fn a_pushed_commit_becomes_searchable_without_any_further_step() {
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert_eq!(
         rows[0]["effects"],
-        json!(["post_receive", "codeintel.enqueue"])
+        json!(["post_receive", "codeintel.enqueue", "notify.policy"])
     );
 
     rig::until("the pushed files to be searchable", 90, || async {
@@ -123,7 +123,7 @@ async fn with_codeintel_off_a_push_queues_nothing() {
     rig.push(None, c1).await;
     assert_eq!(
         outbox(&rig).await[0]["effects"],
-        json!(["post_receive", "codeintel.enqueue"]),
+        json!(["post_receive", "codeintel.enqueue", "notify.policy"]),
         "the row is the same; the effect is a no-op"
     );
     rig::until("the outbox row to be delivered", 30, || async {

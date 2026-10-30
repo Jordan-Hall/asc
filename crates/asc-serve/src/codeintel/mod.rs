@@ -10,6 +10,7 @@ pub mod metrics;
 pub mod modelgen;
 pub mod ords;
 pub mod queue;
+pub mod reason;
 pub mod rpc;
 pub mod runner;
 pub mod scip;

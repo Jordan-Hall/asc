@@ -805,13 +805,37 @@ mod credentials {
         )
         .unwrap();
         make_executable(&ask.join("empty.sh"));
-        let token_only = format!("http://{secret}@{host}/acme/web.git");
-        let r = ls(
-            git,
-            &token_only,
-            &[("GIT_ASKPASS", &fwd(&ask.join("empty.sh")))],
-        );
+        //
+        // git 2.55 with libcurl 8.5 (the pinned oracle, so CI too) sends the first request without
+        // credentials, retries it with `TOKEN:`, and then sends the protocol-v2 POST with no
+        // credentials at all when the empty password came from askpass: 401 with no server in
+        // the loop (a stub that answers 401 and then 200 behaves the same, and git prints
+        // "redirecting to .../web.git/" because libcurl's effective URL has no userinfo; the
+        // server sends no redirect). So the token-only form is tested where git sends the
+        // credentials on every request: an explicit empty password (`TOKEN:@`), or
+        // `http.proactiveAuth=basic` (git 2.46 and later).
+        let empty_ask = fwd(&ask.join("empty.sh"));
+        let token_empty_pw = format!("http://{secret}:@{host}/acme/web.git");
+        let r = ls(git, &token_empty_pw, &[("GIT_ASKPASS", &empty_ask)]);
         assert!(r.ok, "token as the user name: {}", mask(&r.stderr));
+        let token_only = format!("http://{secret}@{host}/acme/web.git");
+        let r = git.run_env(
+            &git.work("ls"),
+            &["-c", "http.proactiveAuth=basic", "ls-remote", &token_only],
+            &[("GIT_ASKPASS", &empty_ask)],
+        );
+        assert!(
+            r.ok,
+            "token as the user name, proactive: {}",
+            mask(&r.stderr)
+        );
+        // Protocol v0 has no POST to lose the credentials on.
+        let r = git.run_env(
+            &git.work("ls"),
+            &["-c", "protocol.version=0", "ls-remote", &token_only],
+            &[("GIT_ASKPASS", &empty_ask)],
+        );
+        assert!(r.ok, "token as the user name, v0: {}", mask(&r.stderr));
 
         // GIT_TERMINAL_PROMPT=0 with nothing to answer: a clean failure, no hang.
         let r = ls(git, &url, &[]);

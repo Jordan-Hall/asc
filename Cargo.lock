@@ -162,7 +162,7 @@ checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
 
 [[package]]
 name = "asc"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "asc-ci",
@@ -610,6 +610,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tracing",
  "url",
  "uuid",
  "zstd 0.14.3",

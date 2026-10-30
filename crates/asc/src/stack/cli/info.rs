@@ -305,7 +305,7 @@ struct Trunks {
 
 /// A branch name safe to store as a trunk: git's ref-name rules for the characters that
 /// matter, and nothing a shell, a regex or a config file could misread.
-fn valid_trunk(name: &str) -> bool {
+pub(super) fn valid_trunk(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 255
         && !name.starts_with(['-', '/', '.'])
@@ -316,7 +316,7 @@ fn valid_trunk(name: &str) -> bool {
         && !name.chars().any(|c| c.is_control() || c.is_whitespace() || "~^:?*[\\\"".contains(c))
 }
 
-async fn config_run(ctx: &Ctx, args: &[&str]) -> Result<()> {
+pub(super) async fn config_run(ctx: &Ctx, args: &[&str]) -> Result<()> {
     let mut argv = vec!["config"];
     argv.extend_from_slice(args);
     let parsed = config::Args::try_parse_from(argv)

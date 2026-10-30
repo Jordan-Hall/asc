@@ -93,6 +93,45 @@ impl Forge {
         git(&self.git_dir, &args, b"")
     }
 
+    /// Like [`Self::commit`], with the repository policy file `policy` in the tree.
+    fn commit_with_policy(&self, parent: Option<&str>, content: &str, policy: &str) -> String {
+        let blob = git(
+            &self.git_dir,
+            &["hash-object", "-w", "--stdin"],
+            content.as_bytes(),
+        );
+        let pol = git(
+            &self.git_dir,
+            &["hash-object", "-w", "--stdin"],
+            policy.as_bytes(),
+        );
+        let dir = git(
+            &self.git_dir,
+            &["mktree"],
+            format!(
+                "100644 blob {pol}	policy.toml
+"
+            )
+            .as_bytes(),
+        );
+        let tree = git(
+            &self.git_dir,
+            &["mktree"],
+            format!(
+                "100644 blob {blob}	a.txt
+040000 tree {dir}	.asc
+"
+            )
+            .as_bytes(),
+        );
+        let msg = format!("commit {content}");
+        let mut args = vec!["commit-tree", tree.as_str(), "-m", msg.as_str()];
+        if let Some(p) = parent {
+            args.extend(["-p", p]);
+        }
+        git(&self.git_dir, &args, b"")
+    }
+
     fn whole(&self) -> Quarantine {
         Quarantine {
             object_dir: self.git_dir.join("objects"),
@@ -287,6 +326,15 @@ impl Fx {
 /// A repo with `master` pushed by git as `7:maint`; returns the commit's git id.
 async fn with_master(f: &Fx) -> String {
     let c1 = f.forge.commit(None, "one");
+    f.git_push("7:maint", &[cmd("refs/heads/master", None, Some(&c1))])
+        .await
+        .unwrap();
+    c1
+}
+
+/// Like [`with_master`], with `policy` in the repository's policy file.
+async fn with_policy(f: &Fx, policy: &str) -> String {
+    let c1 = f.forge.commit_with_policy(None, "one", policy);
     f.git_push("7:maint", &[cmd("refs/heads/master", None, Some(&c1))])
         .await
         .unwrap();
@@ -511,4 +559,76 @@ async fn a_marker_whose_ref_is_gone_is_removed() {
     f.set_marker(42, "ghost", 1_000, 0).await;
     f.reaper(7).run_once(1_000 + 30 * DAY).await.unwrap();
     assert!(f.landed_at(42, "ghost").await.is_none());
+}
+
+#[tokio::test]
+async fn a_policys_cleanup_days_replaces_the_servers_for_that_repository() {
+    let f = fx(true).await;
+    let c1 = with_policy(
+        &f,
+        "version = 1
+[roles]
+maintainer = [\"user:a\"]
+[stacks]
+cleanup_days = 3
+",
+    )
+    .await;
+    f.push_user(ALICE, "old", &c1, "o1").await;
+    f.push_user(ALICE, "young", &c1, "y1").await;
+    f.set_marker(42, "old", 1_000, 100).await;
+    f.set_marker(42, "young", 1_000 + 2 * DAY, 100).await;
+    let at = 1_000 + 4 * DAY;
+
+    // The server would keep a landed ref for 30 days; the policy says 3.
+    let r = f.reaper(30).run_once(at).await.unwrap();
+
+    assert_eq!(r.deleted, 1, "{r:?}");
+    assert!(f.stored("refs/users/42/heads/old").await.is_none());
+    assert!(f.stored("refs/users/42/heads/young").await.is_some());
+    assert!(
+        f.landed_at(42, "young").await.is_some(),
+        "not due: marker stays"
+    );
+}
+
+#[tokio::test]
+async fn a_policys_cleanup_days_can_keep_a_ref_longer_or_switch_the_server_off() {
+    let longer = fx(true).await;
+    let c1 = with_policy(
+        &longer,
+        "version = 1
+[roles]
+maintainer = [\"user:a\"]
+[stacks]
+cleanup_days = 30
+",
+    )
+    .await;
+    longer.push_user(ALICE, "feat", &c1, "a1").await;
+    longer.set_marker(42, "feat", 1_000, 100).await;
+    let at = 1_000 + 8 * DAY;
+    assert_eq!(
+        longer.reaper(7).run_once(at).await.unwrap(),
+        ReapReport::default(),
+        "the policy keeps it 30 days although the server says 7"
+    );
+    assert!(longer.stored("refs/users/42/heads/feat").await.is_some());
+
+    // Server setting 0 (off): a repository that sets cleanup_days still cleans up.
+    let own = fx(true).await;
+    let c1 = with_policy(
+        &own,
+        "version = 1
+[roles]
+maintainer = [\"user:a\"]
+[stacks]
+cleanup_days = 3
+",
+    )
+    .await;
+    own.push_user(ALICE, "feat", &c1, "a1").await;
+    own.set_marker(42, "feat", 1_000, 100).await;
+    let r = own.reaper(0).run_once(1_000 + 4 * DAY).await.unwrap();
+    assert_eq!(r.deleted, 1, "{r:?}");
 }

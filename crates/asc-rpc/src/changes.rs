@@ -262,6 +262,8 @@ impl From<&ChangeInfo> for pb::ChangeInfo {
             landed_as: opt_mode_to_wire(c.landed_as.as_ref()),
             review: c.review.as_ref().map(pb::ReviewState::from),
             visible: c.visible.iter().map(ModeId::to_wire).collect(),
+            by_agent: false,
+            agent_run: 0,
         }
     }
 }

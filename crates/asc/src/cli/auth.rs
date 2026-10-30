@@ -29,10 +29,9 @@ use crate::remote::url::{self as remote_url, RefsMode, RemoteSpec};
 
 const USAGE: &str = "usage: asc auth status [--json] [<url>]
        asc auth login --host <url> [--device | --token-stdin | --prompt]
-       asc auth logout --host <url>";
+       asc auth logout [--host] <url>";
 
-/// The user name the token is stored under; the server reads the password as the token.
-const TOKEN_USER: &str = "asc";
+use crate::credential::TOKEN_USER;
 /// Longest token read from stdin.
 const MAX_TOKEN: u64 = 16 * 1024;
 
@@ -89,6 +88,26 @@ fn resolve_for(ctx: &Ctx, url: &Url) -> Result<Status> {
     let resolved = resolver
         .resolve(url, Prompt::Never)
         .map_err(|e| CliError::Fatal(format!("asc: {e}")))?;
+    // Nothing from git: the token asc keeps itself, when no helper is configured.
+    let kept = (resolved.is_anonymous() && !crate::keystore::helper_configured(ctx.config.file()))
+        .then(|| key_store(url.as_str()))
+        .flatten()
+        .and_then(|(store, account)| store.get(&account));
+    if let Some((_, place)) = kept {
+        return Ok(Status {
+            url: credential::mask_url(url),
+            mode: "asc server",
+            origin: Some(format!(
+                "{}://{}{}",
+                url.scheme(),
+                url.host_str().unwrap_or(""),
+                url.port().map(|p| format!(":{p}")).unwrap_or_default()
+            )),
+            source: format!("asc credential store ({place})"),
+            scheme: Some("basic".to_owned()),
+            user: Some(TOKEN_USER.to_owned()),
+        });
+    }
     Ok(Status {
         url: credential::mask_url(url),
         mode: "asc server",
@@ -202,7 +221,8 @@ fn token_request(host: &str) -> Result<CredentialRequest> {
 
 /// Signs in through the hub's device flow and returns the token it hands back.
 async fn device_token(host: &str) -> Result<String> {
-    let hub = Url::parse(host).map_err(|_| CliError::Fatal("asc: --host is not a valid URL".into()))?;
+    let hub =
+        Url::parse(host).map_err(|_| CliError::Fatal("asc: --host is not a valid URL".into()))?;
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .redirect(reqwest::redirect::Policy::none())
@@ -213,15 +233,29 @@ async fn device_token(host: &str) -> Result<String> {
         &hub,
         "asc cli",
         |g| {
-            eprintln!("To sign in, open:
+            eprintln!(
+                "To sign in, open:
   {}
-and check that the code is {}", g.verification_uri_complete, g.user_code);
-            eprintln!("Waiting for you to approve it (the code lasts {} minutes)...", g.expires_in / 60);
+and check that the code is {}",
+                g.verification_uri_complete, g.user_code
+            );
+            eprintln!(
+                "Waiting for you to approve it (the code lasts {} minutes)...",
+                g.expires_in / 60
+            );
         },
         |d| async move { tokio::time::sleep(d).await },
     )
     .await
     .map_err(|e| CliError::Fatal(format!("asc: {e}")))
+}
+
+/// The store asc keeps a token in for `host` itself, and the key it is filed under.
+fn key_store(host: &str) -> Option<(crate::keystore::KeyStore, String)> {
+    let account = crate::keystore::account_of(&Url::parse(host).ok()?)?;
+    let home = AscHome::locate().ok()?;
+    let store = crate::keystore::KeyStore::from_env(home.root());
+    store.enabled().then_some((store, account))
 }
 
 fn read_token() -> Result<String> {
@@ -266,6 +300,12 @@ async fn sign(ctx: &Ctx, login: bool, args: &[String]) -> Result<ExitCode> {
                     return Err(usage());
                 }
             }
+            // `asc auth logout <host>`
+            w if !login && !w.starts_with('-') => {
+                if host.replace(w.to_owned()).is_some() {
+                    return Err(usage());
+                }
+            }
             _ => return Err(usage()),
         }
     }
@@ -286,11 +326,19 @@ async fn sign(ctx: &Ctx, login: bool, args: &[String]) -> Result<ExitCode> {
         config: Some(helpers.clone()),
     };
     let origin = format!("{}://{}", request.protocol, request.host_attribute());
+    let keys = key_store(&host);
     if !login {
         let cred = Credential::new(TOKEN_USER, "");
         helper::reject(&real, &request, &cred, &session(HelperPrompt::Never))
             .map_err(|e| CliError::Fatal(format!("asc: {e}")))?;
+        // The token asc keeps itself (no helper configured), wherever it is.
+        let kept = keys
+            .as_ref()
+            .is_some_and(|(store, account)| store.delete(account));
         println!("signed out of {origin}");
+        if kept {
+            println!("the token kept by asc for {origin} was removed");
+        }
         return Ok(ExitCode::SUCCESS);
     }
     let cred = if device {
@@ -312,6 +360,17 @@ async fn sign(ctx: &Ctx, login: bool, args: &[String]) -> Result<ExitCode> {
     helper::approve(&real, &request, &cred, &session(HelperPrompt::Never))
         .map_err(|e| CliError::Fatal(format!("asc: {e}")))?;
     println!("signed in to {origin}");
+    // Without a credential helper nothing above kept the token: asc keeps it itself.
+    if !crate::keystore::helper_configured(ctx.config.file())
+        && let Some((store, account)) = &keys
+    {
+        match store.set(account, &cred.password) {
+            Ok(place) => println!("the token is kept in {place}"),
+            Err(why) => eprintln!(
+                "asc: the token could not be kept ({why}); configure a git credential helper or set ASC_TOKEN"
+            ),
+        }
+    }
     Ok(ExitCode::SUCCESS)
 }
 

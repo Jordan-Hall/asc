@@ -22,18 +22,21 @@ pub mod safe_dir;
 pub mod seed_opts;
 pub mod seqstate;
 
+pub mod acct;
 pub mod add;
 mod add_patch;
 mod add_patch_diff;
 mod add_patch_ui;
 pub mod affected;
 pub mod agent;
+pub mod ai;
 pub mod am;
 pub mod api;
 pub mod apply;
 pub mod archive;
 pub mod auth;
 pub mod auth_device;
+pub mod backup;
 pub mod bisect;
 pub mod blame;
 pub mod branch;
@@ -50,6 +53,7 @@ pub mod commit;
 pub mod commit_tree;
 pub mod count_objects;
 pub mod daemon;
+pub mod data_export;
 pub mod debug;
 pub mod deps;
 pub mod describe;
@@ -96,6 +100,7 @@ pub mod rebase_todo;
 pub mod ref_filter;
 pub mod reflog;
 pub mod refs_plumbing;
+pub mod release;
 pub mod remote;
 pub mod reset;
 pub mod restore;
@@ -107,6 +112,7 @@ pub mod self_update;
 pub mod serve;
 #[cfg(all(feature = "serve", feature = "git-compat"))]
 pub mod serve_git_hook;
+pub mod sessions;
 pub mod shortlog;
 pub mod show;
 pub mod sparse;
@@ -117,6 +123,7 @@ pub mod switch;
 pub mod tag;
 pub mod upgrade;
 pub mod url_display;
+pub mod usage;
 pub mod watch;
 pub mod whatchanged;
 pub mod workflow;
@@ -251,7 +258,13 @@ pub static COMMANDS: &[Command] = &[
     entry!("debug", debug),
     entry!("ci", ci),
     entry!("agent", agent),
+    entry!("backup", backup),
+    entry!("usage", usage),
+    entry!("sessions", sessions),
+    entry!("data-export", data_export),
+    entry!("ai", ai),
     entry!("workflow", workflow),
+    entry!("release", release),
     entry!("deps", deps),
     entry!("codeintel", codeintel_cmd),
     entry!("search", search),

@@ -5,7 +5,7 @@
 use std::collections::HashSet;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -231,7 +231,7 @@ impl RefSource for Forbidden {
 
 /// Runs raw git in `dir`; the fixtures below the crate may, with the lint marker.
 fn git(dir: &Path, args: &[&str]) -> String {
-    let out = Command::new("git") // lint:allow-raw-git
+    let out = asc_git::realgit::pinned_command()
         .args(args)
         .current_dir(dir)
         .env("GIT_AUTHOR_NAME", "A")

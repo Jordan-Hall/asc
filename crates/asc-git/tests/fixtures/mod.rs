@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -44,7 +44,7 @@ impl Repo {
 
     /// Runs git in the repository and returns stdout.
     pub fn git(&self, args: &[&str], stdin: &[u8]) -> Vec<u8> {
-        let mut child = Command::new("git") // lint:allow-raw-git
+        let mut child = asc_git::realgit::pinned_command()
             .args(args)
             .current_dir(self.path())
             .env("GIT_CONFIG_NOSYSTEM", "1")

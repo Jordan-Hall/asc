@@ -594,14 +594,22 @@ impl Workspace {
             .view
             .read_many(&self.entry, &want, self.limits.max_file_bytes)
             .await?;
-        let have = self.files().await.map_err(|_| Status::internal("internal error"))?;
+        let have = self
+            .files()
+            .await
+            .map_err(|_| Status::internal("internal error"))?;
         for (p, _) in have {
             if !self.base.contains_key(&p) {
                 let _ = self.delete(&p).await;
             }
         }
         for (p, c) in contents {
-            let same = self.read(&p, self.limits.max_file_bytes).await.ok().as_deref() == Some(&c[..]);
+            let same = self
+                .read(&p, self.limits.max_file_bytes)
+                .await
+                .ok()
+                .as_deref()
+                == Some(&c[..]);
             if !same {
                 let _ = self.write(&p, &c).await;
             }

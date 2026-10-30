@@ -67,7 +67,7 @@ message PutObjectsRequest { RepoRef repo = 1; repeated Object objects = 2; }
 message PutObjectsResponse { uint64 stored = 1; uint64 already_present = 2; }
 
 message ListRefsRequest { RepoRef repo = 1; string prefix = 2; bytes contains = 3 [(asc.v1.json) = JSON_KIND_HEX]; string after = 4; uint32 limit = 5; }
-message ListRefsResponse { repeated Ref refs = 1; string next = 2; string head = 3; }   // after/next = opaque page token; head = symbolic HEAD
+message ListRefsResponse { repeated Ref refs = 1; string next = 2; string head = 3; }   // after/next = opaque page token; head = the full name of the default branch (the trunk the policy protects), e.g. refs/heads/master
 message RefUpdate { string name = 1;
   oneof expect { bool any = 2; bool absent = 3; RefTarget value = 4; }
   RefTarget new = 5;  bool delete = 6; }
@@ -167,7 +167,8 @@ message CopyClosureRequest { RepoRef from = 1; RepoRef to = 2; repeated bytes ch
 message CopyClosureResponse { uint64 copied = 1; }
 
 message RepoAdminRequest { RepoRef repo = 1;
-  oneof op { InitOp init = 2; ForkOp fork = 3; bool delete = 4; string rename_to = 5; bool size = 6; bool verify = 7; } }
+  oneof op { InitOp init = 2; ForkOp fork = 3; bool delete = 4; string rename_to = 5; bool size = 6; bool verify = 7;
+    string set_default_branch = 8; /* trunk: the branch the gate protects (secret scan, path rules, review) */ } }
 message InitOp { string default_branch = 1; bool windows_safe = 2; string mode = 3; /* "primary"|"mirror" */
   string mirror_url = 4; repeated string land_branches = 5; }
 message ForkOp { RepoRef from = 1; }
@@ -243,9 +244,18 @@ message RefEvent { string name = 1; RefTarget old = 2; RefTarget new = 3; bytes 
 message GetPolicyRequest { RepoRef repo = 1; repeated bytes paths = 2 [(asc.v1.json) = JSON_KIND_PATH]; }
 message PolicyRole { string name = 1; repeated string members = 2; }
 message PolicyPathRule { string glob = 1; repeated string write = 2; }
-message PolicyTrunk { string branch = 1; uint32 require_approvals = 2; repeated string require_checks = 3; bool allow_force = 4; }
+message PolicyTrunk { string branch = 1; uint32 require_approvals = 2; repeated string require_checks = 3; bool allow_force = 4;
+  bool require_signed = 5; }   // changes must carry a valid signature ([signing] require_signed)
 message PolicyAgents { repeated string default_scope = 1; repeated string denied_paths = 2;
-  uint32 max_changes_per_run = 3; uint32 max_paths_per_run = 4; }   // 0 = no limit
+  uint32 max_changes_per_run = 3; uint32 max_paths_per_run = 4;   // 0 = no limit
+  bool enabled = 5; uint32 max_runtime_seconds = 6; uint64 max_tokens = 7; uint64 max_cost_micro_usd = 8; }   // 0 = no limit
+// `[review]`: who may approve, when an approval stands, and who may dismiss another person's verdict
+// (`dismiss`: "admin" (default), "maintainer" or "write"; never an author or agent of the change).
+message PolicyReview { bool author_may_approve = 1; bool human_approval = 2; bool keep_approvals_on_restack = 3; string dismiss = 4; }
+// `[merge]` besides the strategy.
+message PolicyMerge { bool queue = 1; bool revalidate = 2; uint32 batch = 3; bool post_merge_checks = 4; }
+// `[stacks]`; 0 in `max_depth` and `cleanup_days` means no limit and the server's setting.
+message PolicyStacks { uint32 max_depth = 1; uint32 cleanup_days = 2; bool restack_on_main_move = 3; bool collaborators_may_push = 4; }
 message PolicyDecision { bytes path = 1 [(asc.v1.json) = JSON_KIND_PATH]; bool allowed = 2; string reason = 3; }
 message GetPolicyResponse {
   bool present = 1;          // trunk carries a policy file
@@ -260,4 +270,7 @@ message GetPolicyResponse {
   PolicyAgents agents = 10;
   string merge_strategy = 11;                 // rebase, rebase-disjoint or fast-forward
   repeated PolicyDecision decisions = 12;     // one per requested path, in order
+  PolicyReview review = 13;
+  PolicyMerge merge = 14;
+  PolicyStacks stacks = 15;
 }

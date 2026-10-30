@@ -16,6 +16,7 @@
 
 use std::collections::HashSet;
 use std::ops::Range;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -54,6 +55,7 @@ use super::url::{RefsMode, RemoteSpec};
 use crate::cli::common::CliError;
 use crate::credential::{self, Prompt, Resolved, Resolver, Scheme, Source};
 use crate::ext::{self, HistorySelector, RemoteObjectsSelector};
+use crate::keystore::KeyStore;
 
 type CliResult<T> = std::result::Result<T, CliError>;
 
@@ -249,7 +251,19 @@ struct ReAsk {
     real: Option<RealGit>,
     url: Url,
     tiers: Vec<Url>,
+    /// [`Prompt::Allowed`] when a person is at a terminal: then, and only then, a missing
+    /// credential is asked for (`demand`).
     prompt: Prompt,
+    /// Where the person signs in: the origin of the URL as typed (the hub that fronts the server).
+    hub: Url,
+    /// `owner/name`, for messages.
+    repo: String,
+    /// Whether this run already asked the person once: it never asks twice.
+    asked: AtomicBool,
+    /// Where asc keeps a token itself: set when no credential helper is configured.
+    store: Option<Arc<KeyStore>>,
+    /// The key a token is filed under: the server's origin.
+    account: String,
 }
 
 impl ReAsk {
@@ -265,26 +279,114 @@ impl ReAsk {
         r
     }
 
-    /// The first try: no prompt, as git sends its first request without asking anyone.
+    /// The first try: no prompt, as git sends its first request without asking anyone. On a
+    /// terminal the stored credentials wait for the server's 401, as with git; the explicit ones
+    /// (`ASC_TOKEN`, `http.extraHeader`, URL userinfo, `.netrc`) go out at once.
     fn first(&self) -> CliResult<Resolved> {
-        self.resolver()
+        let r = self.resolver();
+        let r = if self.prompt == Prompt::Allowed {
+            r.without_helpers()
+        } else {
+            r
+        };
+        let first = r
             .resolve(&self.url, Prompt::Never)
-            .map_err(|e| CliError::Fatal(format!("asc: {e}")))
+            .map_err(|e| CliError::Fatal(format!("asc: {e}")))?;
+        // A script has no 401 round to wait for: it uses the token asc itself keeps right away.
+        if first.is_anonymous() && self.prompt == Prompt::Never {
+            return Ok(self.kept().unwrap_or(first));
+        }
+        Ok(first)
     }
 
-    /// After a 401: ask again under the command's own prompt policy.
-    fn again(&self, old: &Resolved) -> CliResult<Resolved> {
+    /// The token asc keeps for this server, when there is one (no helper configured).
+    fn kept(&self) -> Option<Resolved> {
+        let store = self.store.as_ref()?;
+        let (token, _) = store.get(&self.account)?;
+        let resolved = self
+            .resolver()
+            .with_token(&self.url, token, Source::Store, false)
+            .ok()?;
+        let (store, account) = (store.clone(), self.account.clone());
+        // A token the server refuses is forgotten, so the next run asks afresh.
+        Some(resolved.with_hook(Arc::new(move |accepted| {
+            if !accepted {
+                store.delete(&account);
+            }
+        })))
+    }
+
+    /// After a 401: the next stored credential, without any prompt.
+    fn stored(&self, old: &Resolved) -> CliResult<Resolved> {
         let r = self.resolver();
         let next = if old.is_anonymous() {
-            r.resolve_with_challenge(&self.url, self.prompt, &[])
+            r.resolve_with_challenge(&self.url, Prompt::Never, &[])
         } else {
-            r.resolve_after(&self.url, self.prompt, old, &[])
+            r.resolve_after(&self.url, Prompt::Never, old, &[])
         };
-        next.map_err(|e| CliError::Fatal(format!("asc: {e}")))
+        let next = next.map_err(|e| CliError::Fatal(format!("asc: {e}")))?;
+        if next.is_anonymous() && old.source_kind() != Some(Source::Store) {
+            return Ok(self.kept().unwrap_or(next));
+        }
+        Ok(next)
     }
 
-    fn failure(&self, refused: bool) -> String {
-        credential::failure_message(&self.url, refused, self.prompt == Prompt::Never)
+    /// Whether a refused `old` may be answered by asking the person: an anonymous try, or a
+    /// stored credential that went stale. A credential that was configured by hand
+    /// (`ASC_TOKEN`, a header, the URL, `.netrc`) or entered a moment ago is never replaced
+    /// behind the person's back.
+    fn may_ask(&self, old: &Resolved) -> bool {
+        self.prompt == Prompt::Allowed
+            && matches!(
+                old.source_kind(),
+                None | Some(Source::Helper | Source::Store)
+            )
+            && !self.asked.swap(true, Ordering::SeqCst)
+    }
+
+    /// The token a person gives, as a credential for the server.
+    async fn ask(&self) -> CliResult<Resolved> {
+        let helpers = asc_git::credential::HelperConfig::from_file(&self.file);
+        let token = super::demand::acquire(
+            &self.hub,
+            &self.url,
+            &self.repo,
+            self.real.as_ref(),
+            &helpers,
+        )
+        .await
+        .map_err(|e| CliError::Fatal(format!("asc: {e}")))?;
+        let resolved = self
+            .resolver()
+            .entered(&self.url, token.clone())
+            .map_err(|e| CliError::Fatal(format!("asc: {e}")))?;
+        let Some(store) = self.store.clone() else {
+            return Ok(resolved);
+        };
+        // Once the server accepted the token it is kept, so the next run does not sign in again.
+        let (account, hub) = (self.account.clone(), super::demand::origin_text(&self.hub));
+        Ok(resolved.with_hook(Arc::new(move |accepted| {
+            if !accepted {
+                return;
+            }
+            match store.set(&account, &token) {
+                Ok(place) => eprintln!(
+                    "asc: signed in; the token is kept in {place} (`asc auth logout --host {hub}` forgets it)"
+                ),
+                Err(_) => eprintln!(
+                    "asc: signed in; the token could not be kept, so the next run signs in again (configure a git credential helper)"
+                ),
+            }
+        })))
+    }
+
+    /// The message when nothing could be found for `old`.
+    fn failure(&self, old: &Resolved) -> String {
+        if old.is_anonymous() {
+            super::demand::cannot_ask(&self.url)
+        } else {
+            super::demand::refused(&self.url, old.source(), &self.hub)
+        }
     }
 }
 
@@ -479,12 +581,29 @@ pub async fn connect(
         .iter()
         .filter_map(|o| Url::parse(o).ok())
         .collect();
+    // Where a person signs in: the origin of the URL as typed, which is the hub in front of the
+    // server (no userinfo, no path).
+    let hub = Url::parse(stored.strip_prefix("asc+").unwrap_or(stored))
+        .ok()
+        .and_then(|u| Url::parse(&super::demand::origin_text(&u)).ok())
+        .unwrap_or_else(|| url.clone());
+    let account = crate::keystore::account_of(&url).unwrap_or_default();
+    let store = (!crate::keystore::helper_configured(file))
+        .then(|| asc_state::AscHome::locate().ok())
+        .flatten()
+        .map(|h| Arc::new(KeyStore::from_env(h.root())))
+        .filter(|s| s.enabled());
     let reask = ReAsk {
         file: file.clone(),
         real,
         url,
         tiers,
         prompt,
+        hub,
+        repo: target.repo.clone(),
+        asked: AtomicBool::new(false),
+        store,
+        account,
     };
     let resolved = reask.first()?;
     let remote_name = name.map_or_else(|| target.repo.clone(), str::to_owned);
@@ -530,6 +649,20 @@ pub struct ServerRemote {
     reask: ReAsk,
     intent: Mutex<PushIntent>,
     outcome: Mutex<Option<UpdateOutcome>>,
+    /// Held while the credential is being asked for again, so concurrent calls ask once.
+    gate: tokio::sync::Mutex<()>,
+}
+
+/// New credentials one call may ask for after a 401: a stored one, then the person's.
+pub const MAX_REAUTH: usize = 2;
+
+fn permission_denied(e: &sync::Error) -> bool {
+    match e {
+        sync::Error::Graph(graph::Error::Remote(m)) | sync::Error::Remote(m) => {
+            m.contains("PermissionDenied")
+        }
+        _ => false,
+    }
 }
 
 fn unauthenticated(e: &sync::Error) -> bool {
@@ -574,6 +707,7 @@ impl ServerRemote {
             reask: connected.reask,
             intent: Mutex::new(PushIntent::default()),
             outcome: Mutex::new(None),
+            gate: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -614,18 +748,27 @@ impl ServerRemote {
         }
     }
 
-    /// Asks for a credential again after a 401 and swaps in a client that uses it.
-    pub fn reauth(&self, old: &Session) -> sync::Result<()> {
+    /// Asks for a credential again after a 401 and swaps in a client that uses it: the stored
+    /// credentials first, then, when a person is at a terminal, the sign-in (`demand`). Callers
+    /// that raced here find the session already replaced and just retry.
+    pub async fn reauth(&self, old: &Session) -> sync::Result<()> {
         credential::report_result(&old.resolved, false);
+        let _gate = self.gate.lock().await;
+        if !std::ptr::eq(&*self.session(), old) {
+            return Ok(());
+        }
         let fail = |text: String| {
             sync::Error::Remote(text.strip_prefix("fatal: ").unwrap_or(&text).to_owned())
         };
-        let next = self
+        let mut next = self
             .reask
-            .again(&old.resolved)
-            .map_err(|e| sync::Error::Remote(e.to_string()))?;
+            .stored(&old.resolved)
+            .map_err(|e| fail(e.to_string()))?;
         if next.is_anonymous() {
-            return Err(fail(self.reask.failure(!old.resolved.is_anonymous())));
+            if !self.reask.may_ask(&old.resolved) {
+                return Err(fail(self.reask.failure(&old.resolved)));
+            }
+            next = self.reask.ask().await.map_err(|e| fail(e.to_string()))?;
         }
         let session = build_session(&self.target, &self.reask, next, &self.name)
             .map_err(|e| sync::Error::Remote(e.to_string()))?;
@@ -633,6 +776,46 @@ impl ServerRemote {
             *g = Arc::new(session);
         }
         Ok(())
+    }
+
+    /// Runs `op` against the current session and, when the server answers 401, asks for a
+    /// credential again ([`ServerRemote::reauth`]) and runs it once more. A refusal of a
+    /// signed-in caller (`PermissionDenied`) is never retried or prompted for.
+    async fn with_auth<T, F, Fut>(&self, op: F) -> sync::Result<T>
+    where
+        F: Fn(Arc<Session>) -> Fut,
+        Fut: std::future::Future<Output = sync::Result<T>>,
+    {
+        let mut s = self.session();
+        let mut result = op(s.clone()).await;
+        self.report(&s, &result);
+        // Anonymous, then a stored credential, then the person: at most two new credentials.
+        for _ in 0..MAX_REAUTH {
+            if !matches!(&result, Err(e) if unauthenticated(e)) {
+                break;
+            }
+            self.reauth(&s).await?;
+            s = self.session();
+            result = op(s.clone()).await;
+            self.report(&s, &result);
+        }
+        result.map_err(|e| self.denied(e, &s))
+    }
+
+    /// A `PermissionDenied` of the server as a plain sentence: the repository does not exist or
+    /// the caller has no access (the server does not say which, nor does this), and asking
+    /// again will not change it.
+    fn denied(&self, e: sync::Error, s: &Session) -> sync::Error {
+        if !permission_denied(&e) {
+            return e;
+        }
+        sync::Error::Remote(format!(
+            "'{}' was not found or you have no access to it (signed in with: {}); \
+             sign in as another user with `asc auth login --host {}`",
+            self.target.repo,
+            s.resolved.source(),
+            super::demand::origin_text(&self.reask.hub)
+        ))
     }
 
     fn map_update(&self, e: CallError, session: &Session) -> sync::Error {
@@ -797,90 +980,111 @@ impl Remote for ServerRemote {
     }
 
     async fn list_refs(&self) -> sync::Result<Vec<RefEntry>> {
+        self.with_auth(|s| async move { s.client.list_refs().await.map_err(too_old_error) })
+            .await
+    }
+
+    async fn default_branch(&self) -> sync::Result<Option<String>> {
         let s = self.session();
-        let first = s.client.list_refs().await.map_err(too_old_error);
-        self.report(&s, &first);
-        match first {
-            Err(e) if unauthenticated(&e) => {
-                self.reauth(&s)?;
-                let s = self.session();
-                let again = s.client.list_refs().await.map_err(too_old_error);
-                self.report(&s, &again);
-                again
-            }
-            other => other,
-        }
+        s.client.default_branch().await.map_err(too_old_error)
     }
 
     async fn has_many(&self, keys: &[ObjKey]) -> sync::Result<Vec<bool>> {
-        let s = self.session();
-        let r = s.client.has_many(keys).await.map_err(too_old_error);
-        self.report(&s, &r);
-        r
+        self.with_auth(|s| async move { s.client.has_many(keys).await.map_err(too_old_error) })
+            .await
     }
 
     fn get_many(&self, keys: Vec<ObjKey>) -> BoxStream<'_, sync::Result<(ObjKey, Bytes)>> {
-        let s = self.session();
         let name = self.name.clone();
-        s.client
-            .fetch(keys)
-            .map(move |item| match item {
-                Ok(found) => {
-                    credential::report_result(&s.resolved, true);
-                    Ok(found)
+        futures::stream::once(async move {
+            let mut s = self.session();
+            let mut stream = fetch_stream(s.clone(), &name, keys.clone());
+            let mut first = stream.next().await;
+            for _ in 0..MAX_REAUTH {
+                if !matches!(&first, Some(Err(e)) if unauthenticated(e)) {
+                    break;
                 }
-                Err(e) => {
-                    let e = fetch_error(&name, e);
-                    if unauthenticated(&e) {
-                        credential::report_result(&s.resolved, false);
-                    }
-                    Err(e)
+                if let Err(e) = self.reauth(&s).await {
+                    return futures::stream::once(std::future::ready(Err(e))).boxed();
                 }
-            })
-            .boxed()
+                s = self.session();
+                stream = fetch_stream(s.clone(), &name, keys.clone());
+                first = stream.next().await;
+            }
+            futures::stream::iter(first).chain(stream).boxed()
+        })
+        .flatten()
+        .boxed()
     }
 
     async fn put_many(&self, objects: Vec<(ObjKey, Bytes)>) -> sync::Result<()> {
-        let s = self.session();
-        let r = s.client.put_many(objects).await.map_err(too_old_error);
-        self.report(&s, &r);
-        r
+        self.with_auth(|s| {
+            let objects = objects.clone();
+            async move { s.client.put_many(objects).await.map_err(too_old_error) }
+        })
+        .await
     }
 
     async fn update_refs(&self, updates: &[RefUpdate]) -> sync::Result<()> {
-        let s = self.session();
         let intent = self.intent.lock().map(|g| g.clone()).unwrap_or_default();
-        let result = if intent.land || !intent.options.is_empty() {
-            self.update_armed(&s, updates, &intent).await.map(|o| {
-                if let Ok(mut slot) = self.outcome.lock() {
-                    *slot = Some(o);
+        self.with_auth(|s| {
+            let intent = intent.clone();
+            async move {
+                if intent.land || !intent.options.is_empty() {
+                    self.update_armed(&s, updates, &intent).await.map(|o| {
+                        if let Ok(mut slot) = self.outcome.lock() {
+                            *slot = Some(o);
+                        }
+                    })
+                } else {
+                    let mode = if intent.force {
+                        WireMode::Force
+                    } else {
+                        WireMode::FastForward
+                    };
+                    s.client
+                        .update_refs_with(updates, mode, Uuid::now_v7())
+                        .await
+                        .map_err(|e| self.map_update(e, &s))
                 }
-            })
-        } else {
-            let mode = if intent.force {
-                WireMode::Force
-            } else {
-                WireMode::FastForward
-            };
-            s.client
-                .update_refs_with(updates, mode, Uuid::now_v7())
-                .await
-                .map_err(|e| self.map_update(e, &s))
-        };
-        self.report(&s, &result);
-        result
+            }
+        })
+        .await
     }
 
     async fn ingest(&self, tips: &[ChangesetId]) -> sync::Result<()> {
-        let s = self.session();
-        let r = s.client.ingest(tips).await.map_err(too_old_error);
-        self.report(&s, &r);
-        r
+        self.with_auth(|s| async move { s.client.ingest(tips).await.map_err(too_old_error) })
+            .await
     }
 
     fn history(&self) -> Option<Arc<dyn HistoryApi>> {
         Some(Arc::new(self.client()))
     }
+}
+
+/// `GetObjects` for `keys`, the result of each item told to the credential helpers.
+fn fetch_stream(
+    s: Arc<Session>,
+    name: &str,
+    keys: Vec<ObjKey>,
+) -> BoxStream<'static, sync::Result<(ObjKey, Bytes)>> {
+    let name = name.to_owned();
+    s.client
+        .fetch(keys)
+        .map(move |item| match item {
+            Ok(found) => {
+                credential::report_result(&s.resolved, true);
+                Ok(found)
+            }
+            Err(e) => {
+                let e = fetch_error(&name, e);
+                if unauthenticated(&e) {
+                    credential::report_result(&s.resolved, false);
+                }
+                Err(e)
+            }
+        })
+        .boxed()
 }
 
 /// A shared [`ServerRemote`] as the engine's `Box<dyn Remote>`.
@@ -893,6 +1097,9 @@ impl Remote for Shared {
     }
     async fn list_refs(&self) -> sync::Result<Vec<RefEntry>> {
         self.0.list_refs().await
+    }
+    async fn default_branch(&self) -> sync::Result<Option<String>> {
+        self.0.default_branch().await
     }
     async fn has_many(&self, keys: &[ObjKey]) -> sync::Result<Vec<bool>> {
         self.0.has_many(keys).await
