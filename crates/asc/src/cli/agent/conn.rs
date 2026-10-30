@@ -84,6 +84,7 @@ impl Conn {
                     attempt += 1;
                     self.server
                         .reauth(&session)
+                        .await
                         .map_err(|e| CliError::Fatal(format!("asc: {e}")))?;
                 }
                 Err(s) => {

@@ -22,6 +22,13 @@ Then run `asc doctor`; `asc self-update` (or `asc upgrade`) updates an install m
 
 ## 2. Authenticate
 
+You do not have to sign in first. `asc clone <url>` of a public repository needs no sign-in. When a
+repository needs one (a private clone, a push), asc asks right then, as git does: it tries the
+credentials your git credential helpers hold, and in a terminal it starts a sign-in on the spot (it
+prints a code and a link, you approve it in the browser, and the command carries on). Set
+`ASC_NO_BROWSER=1` to paste a token instead. Scripts and CI are never asked: set `ASC_TOKEN` or store a
+token in a credential helper. The commands below set a credential up ahead of time.
+
 `asc auth login --host <url> --token-stdin` stores a token with the system credential helpers (the token
 is read from standard input, never from an argument), `asc auth logout --host <url>` forgets it, and
 `asc auth status [--json] [<url>]` reports which source would supply a credential for a URL and never

@@ -273,6 +273,21 @@ impl Reviews {
         Ok((files, truncated))
     }
 
+    /// The agents that ran in this repository, by handle.
+    async fn agent_handles(&self, entry: &RepoEntry) -> Result<HashSet<String>, Status> {
+        Ok(
+            sqlx::query_scalar::<_, String>(
+                "SELECT DISTINCT agent FROM agent_runs WHERE repo = $1",
+            )
+            .bind(entry.name.as_str().to_ascii_lowercase())
+            .fetch_all(self.registry.pool())
+            .await
+            .map_err(sql)?
+            .into_iter()
+            .collect(),
+        )
+    }
+
     /// Who may approve this change: not its authors and not an agent, unless the policy of the
     /// repository says otherwise. A policy that cannot be read is the strict default.
     async fn eligibility(
@@ -297,13 +312,7 @@ impl Reviews {
             .filter_map(|v| handle_of(&v.actor))
             .collect();
         let agents: HashSet<String> = if policy.human_approval {
-            sqlx::query_scalar::<_, String>("SELECT DISTINCT agent FROM agent_runs WHERE repo = $1")
-                .bind(entry.name.as_str().to_ascii_lowercase())
-                .fetch_all(self.registry.pool())
-                .await
-                .map_err(sql)?
-                .into_iter()
-                .collect()
+            self.agent_handles(entry).await?
         } else {
             HashSet::new()
         };
@@ -657,6 +666,7 @@ impl Reviews {
         &self,
         ctx: &CallCtx,
         reviewer: &str,
+        can_admin: bool,
         req: wire::RecordApprovalRequest,
     ) -> Result<wire::RecordApprovalResponse, Status> {
         let change = change_of(&req.change)?;
@@ -672,6 +682,11 @@ impl Reviews {
                 ));
             }
         };
+        if state == wire::ApprovalState::Dismissed && req.version == 0 {
+            return Err(Status::invalid_argument(
+                "a dismissal names the version whose verdict it dismisses",
+            ));
+        }
         let entry = self.open(ctx).await?;
         self.known(&entry, change).await?;
         let vs = self.all_versions(&entry, change).await?;
@@ -685,7 +700,7 @@ impl Reviews {
         let names_self = req.reviewer == reviewer && req.reviewer_id == 0;
         if names_someone && !names_self {
             return self
-                .dismiss_verdicts(&entry, ctx, change, &vs, reviewer, &req)
+                .dismiss_verdicts(&entry, ctx, change, &vs, reviewer, can_admin, &req)
                 .await;
         }
         if state == wire::ApprovalState::Approved {
@@ -701,12 +716,13 @@ impl Reviews {
                 ));
             }
         }
-        let latest = vs.last().map_or(0, |v| v.v);
-        let version = if req.version == 0 {
-            latest
-        } else {
-            req.version
-        };
+        // A verdict binds to the exact version the reviewer looked at; there is no "latest".
+        let version = req.version;
+        if version == 0 {
+            return Err(Status::invalid_argument(
+                "a verdict names the version it is for; version 0 is not a version",
+            ));
+        }
         if !vs.iter().any(|v| v.v == version) {
             return Err(Status::invalid_argument("unknown version"));
         }
@@ -753,9 +769,13 @@ impl Reviews {
         })
     }
 
-    /// A reviewer's verdicts stop counting because someone with write access dismissed them: every
-    /// approval and request for changes of that reviewer on the change, on every version, becomes a
-    /// dismissal. The reviewer is named by login, by the hub's user id, or both.
+    /// A reviewer's verdict on one version stops counting because someone allowed to dismissed it: the
+    /// approval or request for changes of that reviewer on `req.version` that counts or blocks now
+    /// becomes a dismissal (a verdict on another version, or one that does neither, is left as it
+    /// is). Who may is `[review] dismiss` (an admin by default); whatever the level, not the author
+    /// of the change nor an agent: those could clear the way to their own merge.
+    /// The reviewer is named by login, by the hub's user id, or both.
+    #[allow(clippy::too_many_arguments)]
     async fn dismiss_verdicts(
         &self,
         entry: &RepoEntry,
@@ -763,65 +783,112 @@ impl Reviews {
         change: ChangeId,
         vs: &[versions::Version],
         by: &str,
+        can_admin: bool,
         req: &wire::RecordApprovalRequest,
     ) -> Result<wire::RecordApprovalResponse, Status> {
         if !req.reviewer.is_empty() && !super::valid_handle(&req.reviewer) {
             return Err(Status::invalid_argument("a reviewer is a login"));
         }
+        // Who may dismiss is the repository's choice (`[review] dismiss`): admin by default. The
+        // call itself already needs write access.
+        let (level, maintainer) = match &*RepoView::new(self.registry.clone()).policy(entry).await?
+        {
+            crate::agents::repo::PolicyState::Valid(p) => (
+                p.review.dismiss,
+                p.is_maintainer(&asc_core::policy::Who::new(
+                    asc_core::policy::Kind::User,
+                    by.to_owned(),
+                )),
+            ),
+            _ => (asc_core::policy::DismissBy::Admin, false),
+        };
+        let allowed = match level {
+            asc_core::policy::DismissBy::Admin => can_admin,
+            asc_core::policy::DismissBy::Maintainer => can_admin || maintainer,
+            asc_core::policy::DismissBy::Write => true,
+        };
+        if !allowed {
+            return Err(Status::permission_denied(format!(
+                "this repository lets only {} dismiss another person's verdict",
+                match level {
+                    asc_core::policy::DismissBy::Admin => "an admin",
+                    asc_core::policy::DismissBy::Maintainer => "an admin or a maintainer",
+                    asc_core::policy::DismissBy::Write => "a writer",
+                }
+            )));
+        }
+        let e = self.eligibility(entry, change, vs).await?;
+        if e.authors.contains(by) || self.agent_handles(entry).await?.contains(by) {
+            return Err(Status::permission_denied(
+                "the author of a change or an agent cannot dismiss a verdict on it",
+            ));
+        }
         let id = i64::try_from(req.reviewer_id)
             .map_err(|_| Status::invalid_argument("reviewer_id is out of range"))?;
+        // The verdicts of that person that count or block now, by login or by the user id the
+        // verdict was recorded with.
+        let live: Vec<wire::ApprovalInfo> = self
+            .approvals_of(entry, change, vs)
+            .await?
+            .into_iter()
+            .filter(|a| {
+                a.applies
+                    && a.version == req.version
+                    && (a.state == wire::ApprovalState::Approved as i32
+                        || a.state == wire::ApprovalState::ChangesRequested as i32)
+                    && ((!req.reviewer.is_empty() && a.reviewer == req.reviewer)
+                        || (id != 0 && i64::try_from(a.reviewer_id).ok() == Some(id)))
+            })
+            .collect();
+        if live.is_empty() {
+            return Err(Status::not_found(
+                "that reviewer has no verdict on that version of this change that counts or blocks",
+            ));
+        }
         let ns = entry.ns.as_bytes().to_vec();
         let at = now();
         let mut tx = self.registry.pool().begin().await.map_err(sql)?;
         self.registry.guard(&mut tx, entry).await?;
-        // The rows of that person: by login, or by the user id the verdict was recorded with.
-        let rows: Vec<(String, i64)> = sqlx::query_as(
-            "SELECT DISTINCT reviewer, reviewer_id FROM review_approvals              WHERE ns = $1 AND change = $2 AND state IN ($3, $4)                AND (reviewer = $5 OR ($6 <> 0 AND reviewer_id = $6))",
-        )
-        .bind(ns.clone())
-        .bind(change.as_bytes().to_vec())
-        .bind(wire::ApprovalState::Approved as i64)
-        .bind(wire::ApprovalState::ChangesRequested as i64)
-        .bind(req.reviewer.clone())
-        .bind(id)
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(sql)?;
-        if rows.is_empty() {
-            return Err(Status::not_found(
-                "that reviewer has no verdict on this change",
-            ));
+        let mut affected = 0u64;
+        for a in &live {
+            let done = sqlx::query(
+                "UPDATE review_approvals SET state = $3, at = $4 \
+                 WHERE ns = $1 AND change = $2 AND reviewer = $5 AND version = $6 AND state IN ($7, $8)",
+            )
+            .bind(ns.clone())
+            .bind(change.as_bytes().to_vec())
+            .bind(wire::ApprovalState::Dismissed as i64)
+            .bind(at)
+            .bind(a.reviewer.clone())
+            .bind(i64::from(a.version))
+            .bind(wire::ApprovalState::Approved as i64)
+            .bind(wire::ApprovalState::ChangesRequested as i64)
+            .execute(&mut *tx)
+            .await
+            .map_err(sql)?;
+            affected += done.rows_affected();
         }
-        let done = sqlx::query(
-            "UPDATE review_approvals SET state = $3, at = $4              WHERE ns = $1 AND change = $2 AND state IN ($5, $6)                AND (reviewer = $7 OR ($8 <> 0 AND reviewer_id = $8))",
-        )
-        .bind(ns)
-        .bind(change.as_bytes().to_vec())
-        .bind(wire::ApprovalState::Dismissed as i64)
-        .bind(at)
-        .bind(wire::ApprovalState::Approved as i64)
-        .bind(wire::ApprovalState::ChangesRequested as i64)
-        .bind(req.reviewer.clone())
-        .bind(id)
-        .execute(&mut *tx)
-        .await
-        .map_err(sql)?;
         tx.commit().await.map_err(sql)?;
-        let (name, user_id) = rows
-            .first()
-            .cloned()
-            .unwrap_or_else(|| (req.reviewer.clone(), id));
+        let (name, user_id) = live.first().map_or_else(
+            || (req.reviewer.clone(), id),
+            |a| {
+                (
+                    a.reviewer.clone(),
+                    i64::try_from(a.reviewer_id).unwrap_or(0),
+                )
+            },
+        );
         super::acting::record(
             self.registry.pool(),
             super::acting::event(ctx, "review.approval.recorded", &hex(change.as_bytes()))
                 .detail("state", (wire::ApprovalState::Dismissed as i32).to_string())
                 .detail("version", "all")
-                .detail("verdicts", done.rows_affected().to_string())
+                .detail("verdicts", affected.to_string())
+                .detail("dismissed_by", by.to_owned())
                 .detail("reviewer", name)
                 .detail("reviewer_id", user_id.to_string()),
         )
         .await;
-        let _ = by;
         Ok(wire::RecordApprovalResponse {
             approvals: self.approvals_of(entry, change, vs).await?,
         })
