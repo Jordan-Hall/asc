@@ -660,7 +660,7 @@ data (metadata only, no secret), kept 7 days, streamed with `Download`. One at a
 
 ## 31. AI key sharing and cap rules
 
-`aikeyshares.proto`, `crates/asc-serve/src/ai/share.rs`, migration 0595. Feature `aikeyshares.v1` is not advertised separately; the service rides on `ai-keys.v1`. A user's or an
+`aikeyshares.proto`, `crates/asc-serve/src/ai/share.rs`, migration 0595. Feature `aikeyshares.v1` is advertised with `ai-keys.v1` (the service is mounted with the keys); the host gates its sharing pages on it. A user's or an
 organisation's key is shared with a user, organisation or repository; the grantee's runs use it after their own keys (`AiHub::resolve`), never see it, and the
 owner sees the use per sharer. `SetKeyCaps` adds the warning percentage (one audit event per month, `ai.key.cap.warning`) and the stop rule (`stop_at_cap`).
 
