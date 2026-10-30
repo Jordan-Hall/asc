@@ -280,6 +280,20 @@ async fn an_approval_carries_over_while_the_patch_is_the_same_and_names_the_file
             .code(),
         Code::NotFound
     );
+    // Version 0 is not "the latest": a verdict always names the version it was given on.
+    for state in [
+        wire::ApprovalState::Approved,
+        wire::ApprovalState::ChangesRequested,
+        wire::ApprovalState::Dismissed,
+    ] {
+        let e = approve(&f, CAROL, 1, 0, state).await.unwrap_err();
+        assert_eq!(e.code(), Code::InvalidArgument, "{state:?}");
+        assert!(e.message().contains("version"), "{}", e.message());
+    }
+    assert!(
+        brief(&f, DAVE, 1).await.unwrap().approvals.is_empty(),
+        "a refused verdict records nothing"
+    );
     // Versions 1 and 2 of change 1 are the same changeset: the approval of version 1 still applies.
     let r = approve(&f, CAROL, 1, 1, wire::ApprovalState::Approved)
         .await
@@ -675,14 +689,14 @@ async fn an_author_and_an_agent_cannot_approve_and_an_old_verdict_of_either_does
     // Carol publishes version 3 of change 1, so she is one of its authors.
     let cs3 = commit(&f.e, &[], &[("f", &[7])]).await;
     add_version(&f, 1, 3, cs3, "44:carol").await;
-    let e = approve(&f, CAROL, 1, 0, wire::ApprovalState::Approved)
+    let e = approve(&f, CAROL, 1, 3, wire::ApprovalState::Approved)
         .await
         .unwrap_err();
     assert_eq!(e.code(), Code::PermissionDenied);
     assert!(e.message().contains("author"), "{e:?}");
     // She may still ask for changes.
     assert!(
-        approve(&f, CAROL, 1, 0, wire::ApprovalState::ChangesRequested)
+        approve(&f, CAROL, 1, 3, wire::ApprovalState::ChangesRequested)
             .await
             .is_ok()
     );
@@ -695,7 +709,7 @@ async fn an_author_and_an_agent_cannot_approve_and_an_old_verdict_of_either_does
         .unwrap();
     // A person who is no author approves, and that counts.
     assert!(
-        approve(&f, super::tests::ADMIN, 1, 0, wire::ApprovalState::Approved)
+        approve(&f, super::tests::ADMIN, 1, 3, wire::ApprovalState::Approved)
             .await
             .is_ok()
     );
@@ -724,7 +738,7 @@ async fn an_author_and_an_agent_cannot_approve_and_an_old_verdict_of_either_does
     let m = || wire::RecordApprovalRequest {
         repo: repo_ref(),
         change: cbytes(2),
-        version: 0,
+        version: 1,
         state: wire::ApprovalState::Approved as i32,
         ..Default::default()
     };
@@ -780,7 +794,7 @@ async fn the_policy_can_let_an_author_approve_and_then_the_verdict_counts() {
     add_version(&f, 1, 3, cs3, "44:carol").await;
     // Without a policy the strict default holds.
     assert_eq!(
-        approve(&f, CAROL, 1, 0, wire::ApprovalState::Approved)
+        approve(&f, CAROL, 1, 3, wire::ApprovalState::Approved)
             .await
             .unwrap_err()
             .code(),
@@ -796,7 +810,7 @@ author_may_approve = true
 ",
     )
     .await;
-    approve(&f, CAROL, 1, 0, wire::ApprovalState::Approved)
+    approve(&f, CAROL, 1, 3, wire::ApprovalState::Approved)
         .await
         .unwrap();
     let b = brief(&f, DAVE, 1).await.unwrap();
@@ -1007,7 +1021,7 @@ author_may_approve = true
         .await
         .unwrap();
     assert_eq!(
-        approve(&f, CAROL, 1, 0, wire::ApprovalState::Approved)
+        approve(&f, CAROL, 1, 1, wire::ApprovalState::Approved)
             .await
             .unwrap_err()
             .code(),
@@ -1024,7 +1038,7 @@ author_may_approve = true
     )
     .await
     .unwrap();
-    approve(&f, CAROL, 1, 0, wire::ApprovalState::Approved)
+    approve(&f, CAROL, 1, 1, wire::ApprovalState::Approved)
         .await
         .unwrap();
     // The floor itself.
