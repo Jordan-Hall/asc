@@ -81,7 +81,12 @@ impl GitMapSink for Map {
 #[async_trait]
 impl ImportMap for Map {
     async fn get(&self, git: GitOid, kind: ObjectKind) -> derive::Result<Option<[u8; 32]>> {
-        Ok(self.rows.lock().unwrap().get(&(git, kind_byte(kind))).copied())
+        Ok(self
+            .rows
+            .lock()
+            .unwrap()
+            .get(&(git, kind_byte(kind)))
+            .copied())
     }
 }
 
