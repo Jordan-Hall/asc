@@ -57,7 +57,11 @@ impl Releases for ReleasesService {
             .env
             .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
             .await?;
-        self.hub.release_next(&ctx, msg).await.map(Response::new)
+        let drafts = self.env.has(&ext, &ctx, Access::Write).await;
+        self.hub
+            .release_next(&ctx, msg, drafts)
+            .await
+            .map(Response::new)
     }
 
     async fn create(

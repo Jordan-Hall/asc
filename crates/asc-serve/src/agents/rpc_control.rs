@@ -440,11 +440,22 @@ impl AgentService {
             .set_limits(run.id, new)
             .await
             .map_err(|e| db(&e))?;
-        if !run.token_id.is_empty() {
+        // The token is read again after the limits are stored: a run that was still starting when
+        // `run` was read gets its token afterwards, and then takes the limits from the run row (see
+        // `drive`); one of the two sides always sees the other's write.
+        let token_id = self
+            .hub
+            .core
+            .runs
+            .get(run.id)
+            .await
+            .map_err(|e| db(&e))?
+            .map_or_else(|| run.token_id.clone(), |r| r.token_id);
+        if !token_id.is_empty() {
             self.hub
                 .core
                 .tokens
-                .set_limits(&run.token_id, new)
+                .set_limits(&token_id, new)
                 .await
                 .map_err(|e| db(&e))?;
         }
