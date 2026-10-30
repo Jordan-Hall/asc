@@ -298,6 +298,16 @@ async fn filters_narrow_the_list() {
         }
     };
     assert_eq!(count(all()).await.len(), 12);
+    // One event by its number: the way a broken chain names the event it broke at.
+    let first = count(all()).await[0].seq;
+    let one = count(Filter {
+        seq: first,
+        ..all()
+    })
+    .await;
+    assert_eq!(one.len(), 1);
+    assert_eq!(one[0].seq, first);
+    assert!(count(Filter { seq: u64::MAX, ..all() }).await.is_empty());
     let by_name = count(Filter {
         actors: vec!["alice".into()],
         ..all()
