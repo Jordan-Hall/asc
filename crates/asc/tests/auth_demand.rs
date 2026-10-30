@@ -860,3 +860,151 @@ fn text_that_is_not_a_token_is_refused_at_the_prompt() {
         text(&out.stderr)
     );
 }
+
+// ------------------------------------------------------------------------------ the token store
+
+/// With no credential helper asc keeps the token itself (the file store here, so the test never
+/// touches a real keychain), and `asc auth logout` forgets it.
+const FILE_STORE: [(&str, &str); 1] = [("ASC_CREDENTIAL_STORE", "file")];
+
+#[test]
+fn without_a_credential_helper_the_token_is_kept_and_reused_until_logout() {
+    let w = World::start();
+    let m = Machine::new(&w, false);
+    let cwd = m.sb.dir("work");
+    let file = m.sb.asc_home.join("credentials.json");
+    let out = m.run(
+        &cwd,
+        &["clone", &w.hub.url("acme/priv"), "one"],
+        true,
+        &FILE_STORE,
+        "",
+    );
+    succeeded(&out, "the first private clone");
+    assert!(
+        text(&out.stderr).contains("kept in"),
+        "{}",
+        text(&out.stderr)
+    );
+    let kept = std::fs::read_to_string(&file).unwrap();
+    assert!(kept.contains(ALICE), "the token is in the private file");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+    let requests = w.hub.device_requests();
+    assert!(requests >= 2);
+
+    // The next runs, at a terminal or in a script, ask nothing.
+    for (interactive, dest) in [(true, "two"), (false, "three")] {
+        let out = m.run(
+            &cwd,
+            &["clone", &w.hub.url("acme/priv"), dest],
+            interactive,
+            &FILE_STORE,
+            "",
+        );
+        succeeded(&out, "a clone on the kept token");
+        assert!(cwd.join(dest).join("hello.txt").exists());
+    }
+    assert_eq!(w.hub.device_requests(), requests, "no second sign-in");
+
+    // `asc auth status` names the source, never the token.
+    let status = m.run(
+        &cwd,
+        &["auth", "status", &w.hub.url("acme/priv")],
+        false,
+        &FILE_STORE,
+        "",
+    );
+    succeeded(&status, "auth status");
+    assert!(
+        text(&status.stdout).contains("credential source: asc credential store"),
+        "{}",
+        text(&status.stdout)
+    );
+
+    // Logout forgets it: a script is refused again.
+    let out = m.run(
+        &cwd,
+        &[
+            "auth",
+            "logout",
+            &format!("http://127.0.0.1:{}", w.hub.port),
+        ],
+        false,
+        &FILE_STORE,
+        "",
+    );
+    succeeded(&out, "logout");
+    assert!(
+        !std::fs::read_to_string(&file)
+            .unwrap_or_default()
+            .contains(ALICE)
+    );
+    let out = m.run(
+        &cwd,
+        &["clone", &w.hub.url("acme/priv"), "four"],
+        false,
+        &FILE_STORE,
+        "",
+    );
+    assert!(!out.status.success());
+    assert!(
+        text(&out.stderr).contains("ASC_TOKEN"),
+        "{}",
+        text(&out.stderr)
+    );
+}
+
+#[test]
+fn a_kept_token_the_server_refuses_is_forgotten_and_the_sign_in_runs_again() {
+    let w = World::start();
+    let m = Machine::new(&w, false);
+    let cwd = m.sb.dir("work");
+    let file = m.sb.asc_home.join("credentials.json");
+    std::fs::create_dir_all(&m.sb.asc_home).unwrap();
+    std::fs::write(
+        &file,
+        format!(
+            "{{\"version\":1,\"tokens\":{{\"http://127.0.0.1:{}\":\"{STALE}\"}}}}",
+            w.hub.port
+        ),
+    )
+    .unwrap();
+    let out = m.run(
+        &cwd,
+        &["clone", &w.hub.url("acme/priv"), "priv"],
+        true,
+        &FILE_STORE,
+        "",
+    );
+    succeeded(&out, "the clone after a stale kept token");
+    let kept = std::fs::read_to_string(&file).unwrap();
+    assert!(!kept.contains(STALE) && kept.contains(ALICE), "{kept}");
+    assert!(w.hub.device_requests() >= 2);
+}
+
+#[test]
+fn a_configured_helper_is_left_alone_by_the_token_store() {
+    let w = World::start();
+    let m = Machine::new(&w, true);
+    let cwd = m.sb.dir("work");
+    let out = m.run(
+        &cwd,
+        &["clone", &w.hub.url("acme/priv"), "priv"],
+        true,
+        &FILE_STORE,
+        "",
+    );
+    succeeded(&out, "the clone with a helper");
+    assert!(m.stored().contains(ALICE), "git's helper keeps it");
+    assert!(
+        !m.sb.asc_home.join("credentials.json").exists(),
+        "asc keeps nothing of its own"
+    );
+}
