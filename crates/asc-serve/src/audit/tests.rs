@@ -307,7 +307,14 @@ async fn filters_narrow_the_list() {
     .await;
     assert_eq!(one.len(), 1);
     assert_eq!(one[0].seq, first);
-    assert!(count(Filter { seq: u64::MAX, ..all() }).await.is_empty());
+    assert!(
+        count(Filter {
+            seq: u64::MAX,
+            ..all()
+        })
+        .await
+        .is_empty()
+    );
     let by_name = count(Filter {
         actors: vec!["alice".into()],
         ..all()
