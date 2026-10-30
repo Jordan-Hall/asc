@@ -348,6 +348,19 @@ pub mod harness {
         /// `git_section` is the text of `[git]` (without the header), `limits` the lines of
         /// `[limits.git]`, `extra` further tables.
         pub fn start_with(git_section: &str, limits: &str, extra: &str) -> Self {
+            // A port that was free when it was chosen can be taken by another test's server before this one binds it.
+            let mut last = String::new();
+            for _ in 0..5 {
+                match Self::try_start_with(git_section, limits, extra) {
+                    Ok(stack) => return stack,
+                    Err(e) if e.contains("Address already in use") => last = e,
+                    Err(e) => panic!("{e}"),
+                }
+            }
+            panic!("asc serve could not get its ports in 5 tries: {last}");
+        }
+
+        fn try_start_with(git_section: &str, limits: &str, extra: &str) -> Result<Self, String> {
             let dir = tempfile::tempdir().unwrap();
             let port = free_port();
             let admin_port = free_port();
@@ -399,8 +412,8 @@ pub mod harness {
                 .stdout(Stdio::from(log.try_clone().unwrap()))
                 .stderr(Stdio::from(log));
             stack.child = Some(cmd.spawn().expect("spawn asc serve"));
-            stack.wait_ready();
-            stack
+            stack.wait_ready()?;
+            Ok(stack)
         }
 
         pub fn start() -> Self {
@@ -415,24 +428,22 @@ pub mod harness {
             std::fs::read_to_string(self.dir.path().join("serve.log")).unwrap_or_default()
         }
 
-        fn wait_ready(&mut self) {
+        fn wait_ready(&mut self) -> Result<(), String> {
             let end = Instant::now() + Duration::from_secs(60);
             loop {
                 if let Some(c) = self.child.as_mut()
                     && let Ok(Some(status)) = c.try_wait()
                 {
-                    panic!("asc serve exited early ({status}): {}", self.log());
+                    return Err(format!("asc serve exited early ({status}): {}", self.log()));
                 }
                 if TcpStream::connect_timeout(&self.addr(), Duration::from_millis(200)).is_ok()
                     && http(self.addr(), "GET", "/healthz", &[], b"").status == 200
                 {
-                    return;
+                    return Ok(());
                 }
-                assert!(
-                    Instant::now() < end,
-                    "asc serve never listened: {}",
-                    self.log()
-                );
+                if Instant::now() >= end {
+                    return Err(format!("asc serve never listened: {}", self.log()));
+                }
                 std::thread::sleep(Duration::from_millis(100));
             }
         }

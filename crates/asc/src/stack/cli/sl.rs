@@ -237,6 +237,22 @@ impl<'a> Env<'a> {
         out
     }
 
+    /// Whether branch `name` exists here, as a local branch or on any remote.
+    pub fn has_branch(&self, name: &str) -> bool {
+        self.refs.contains_key(&format!("refs/heads/{name}"))
+            || self
+                .remotes()
+                .iter()
+                .any(|r| self.refs.contains_key(&format!("refs/remotes/{r}/{name}")))
+    }
+
+    /// Counts `name` as a trunk for this run (after the configuration was repaired on disk).
+    pub fn add_trunk(&mut self, name: &str) {
+        if !self.trunks.iter().any(|t| t == name) {
+            self.trunks.push(name.to_owned());
+        }
+    }
+
     /// The configured trunk names (existing or not).
     pub fn trunk_names(&self) -> &[String] {
         &self.trunks

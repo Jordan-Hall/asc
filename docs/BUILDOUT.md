@@ -235,7 +235,7 @@ and evaluated through the API and the hub shows it; every key below is parsed st
 - **Data:** `secret_findings(id, repo, rule_id, severity, state, path, line, col, changeset, change, fingerprint, preview, first_seen,
   last_seen, resolved_by, resolved_at, note)`, unique on `(repo, fingerprint, path)`.
 - **Config:** `[secrets] max_file_bytes` (1 MiB), `max_scan_bytes` (16 MiB), `max_files` (10,000). Policy keys on section 1.
-- **Errors:** `SECRET_DETECTED`. **Audit:** `secret.finding.updated`, `secret.push.blocked`.
+- **Errors:** `SECRET_DETECTED`. **Audit:** `secret.finding.updated`, `secret.push.blocked`, `secret.scan.run`.
 - **Hub:** repository security page listing findings; the push refusal text names rule and location only.
 - **Tests:** each built-in detector with positive and negative samples, fingerprints stable and not reversible, previews never show more
   than 2 characters, a planted secret never appears in logs or errors, bounded work on adversarial input, `block_on_push` off and on,
@@ -609,6 +609,7 @@ They need no more than repo read and count one repository only. A forwarded clai
 | `[review] author_may_approve` | false | the author of a change may approve it |
 | `[review] human_approval` | true | an approval from an agent does not count |
 | `[review] keep_approvals_on_restack` | true | an approval carries to a newer version when no file's patch changed; false makes every approval stand for its own version only (enforced when verdicts are listed and by the gate) |
+| `[review] dismiss` | admin | who may dismiss another person's verdict on a change: `admin`, `maintainer` (an admin or a member of the `maintainer` role) or `write` (anyone with write access); never an author or agent of the change; a dismissal names the version |
 | `[merge] queue`, `revalidate` | false, true | as before |
 | `[merge] batch` | 1 | entries the queue tests and lands together, 1 to 20 (read by the queue worker of the host; recorded and returned here) |
 | `[merge] post_merge_checks` | false | the checks of the policy run again on the landed tip (recorded and returned; the host runs them) |

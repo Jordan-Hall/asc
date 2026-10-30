@@ -26,6 +26,7 @@ use asc_rpc::services::releases_client::ReleasesClient;
 use sha2::{Digest, Sha256};
 use tonic::transport::Channel;
 
+use super::acct::Clean;
 use super::agent::conn::{Conn, MAX_MESSAGE};
 use super::codeintel::{clean_str, emit_json, lines, with_stdout};
 use super::common::{CliError, Ctx, Result};
@@ -336,9 +337,9 @@ fn release_detail(out: &mut dyn std::io::Write, r: &wire::Release) -> std::io::R
         clean_str(&p.built_from),
         r.changes,
         if r.previous_tag.is_empty() {
-            "the start"
+            "the start".to_owned()
         } else {
-            &r.previous_tag
+            clean_str(&r.previous_tag)
         }
     )?;
     if !p.build_run.is_empty() {
@@ -373,7 +374,7 @@ fn release_detail(out: &mut dyn std::io::Write, r: &wire::Release) -> std::io::R
             "asset: {}\t{} bytes\tsha256:{}\t{}",
             clean_str(&a.name),
             a.size,
-            a.sha256,
+            clean_str(&a.sha256),
             clean_str(&a.url)
         )?;
     }
@@ -410,6 +411,7 @@ async fn list(ctx: &Ctx, a: ListArgs) -> Result<ExitCode> {
         if a.json {
             emit_json(&mut lines(out), "asc.v1.ListReleasesResponse", &r)?;
         } else {
+            let out = &mut Clean(out);
             if r.releases.is_empty() {
                 writeln!(
                     out,
@@ -420,7 +422,7 @@ async fn list(ctx: &Ctx, a: ListArgs) -> Result<ExitCode> {
                 release_lines(out, x)?;
             }
             if !r.next_page_token.is_empty() {
-                writeln!(out, "# more: --page {}", r.next_page_token)?;
+                writeln!(out, "# more: --page {}", clean_str(&r.next_page_token))?;
             }
         }
         Ok(ExitCode::SUCCESS)
@@ -444,7 +446,7 @@ async fn show(ctx: &Ctx, a: TagArgs) -> Result<ExitCode> {
         if a.json {
             emit_json(&mut lines(out), "asc.v1.GetReleaseResponse", &r)?;
         } else if let Some(x) = &r.release {
-            release_detail(out, x)?;
+            release_detail(&mut Clean(out), x)?;
         }
         Ok(ExitCode::SUCCESS)
     })
@@ -465,14 +467,15 @@ async fn next(ctx: &Ctx, a: PlainArgs) -> Result<ExitCode> {
         if a.json {
             emit_json(&mut lines(out), "asc.v1.NextReleaseResponse", &r)?;
         } else {
+            let out = &mut Clean(out);
             writeln!(
                 out,
                 "{} changes since {}",
                 r.changes_since,
                 if r.latest_tag.is_empty() {
-                    "the start"
+                    "the start".to_owned()
                 } else {
-                    &r.latest_tag
+                    clean_str(&r.latest_tag)
                 }
             )?;
             if !r.proposed_tag.is_empty() {
@@ -515,6 +518,7 @@ async fn notes(ctx: &Ctx, a: NotesArgs) -> Result<ExitCode> {
         if a.json {
             emit_json(&mut lines(out), "asc.v1.DraftReleaseNotesResponse", &r)?;
         } else {
+            let out = &mut Clean(out);
             write!(out, "{}", clean_str(&r.markdown))?;
             if r.truncated {
                 writeln!(out, "# more than 500 changes: the oldest are left out")?;
@@ -575,7 +579,7 @@ async fn create(ctx: &Ctx, a: CreateArgs) -> Result<ExitCode> {
         if a.json {
             emit_json(&mut lines(out), "asc.v1.CreateReleaseResponse", &r)?;
         } else if let Some(x) = &r.release {
-            release_lines(out, x)?;
+            release_lines(&mut Clean(out), x)?;
         }
         Ok(ExitCode::SUCCESS)
     })
@@ -603,7 +607,7 @@ async fn publish(ctx: &Ctx, a: TagArgs) -> Result<ExitCode> {
         if a.json {
             emit_json(&mut lines(out), "asc.v1.PublishReleaseResponse", &r)?;
         } else if let Some(x) = &r.release {
-            release_lines(out, x)?;
+            release_lines(&mut Clean(out), x)?;
         }
         Ok(ExitCode::SUCCESS)
     })
@@ -620,13 +624,19 @@ pub(crate) async fn fetch_verified(
     sha256: &str,
     dest: &Path,
 ) -> Result<()> {
-    let mut resp = http
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| fatal(format!("cannot fetch {url}: {e}")))?;
+    let mut resp = http.get(url).send().await.map_err(|e| {
+        fatal(format!(
+            "cannot fetch {}: {}",
+            clean_str(url),
+            clean_str(&e.to_string())
+        ))
+    })?;
     if !resp.status().is_success() {
-        return Err(fatal(format!("{url} answered {}", resp.status())));
+        return Err(fatal(format!(
+            "{} answered {}",
+            clean_str(url),
+            resp.status()
+        )));
     }
     let part = dest.with_extension("part");
     let mut file = std::fs::File::create(&part)
@@ -634,15 +644,18 @@ pub(crate) async fn fetch_verified(
     let mut hash = Sha256::new();
     let mut got = 0u64;
     let result = async {
-        while let Some(chunk) = resp
-            .chunk()
-            .await
-            .map_err(|e| fatal(format!("cannot read {url}: {e}")))?
-        {
+        while let Some(chunk) = resp.chunk().await.map_err(|e| {
+            fatal(format!(
+                "cannot read {}: {}",
+                clean_str(url),
+                clean_str(&e.to_string())
+            ))
+        })? {
             got += chunk.len() as u64;
             if got > size {
                 return Err(fatal(format!(
-                    "{url} is larger than the {size} bytes recorded"
+                    "{} is larger than the {size} bytes recorded",
+                    clean_str(url)
                 )));
             }
             hash.update(&chunk);
@@ -651,7 +664,8 @@ pub(crate) async fn fetch_verified(
         }
         if got != size {
             return Err(fatal(format!(
-                "{url} gave {got} bytes, the record says {size}"
+                "{} gave {got} bytes, the record says {size}",
+                clean_str(url)
             )));
         }
         let hex = hash
@@ -664,7 +678,9 @@ pub(crate) async fn fetch_verified(
             });
         if hex != sha256 {
             return Err(fatal(format!(
-                "{url} has SHA-256 {hex}, the record says {sha256}"
+                "{} has SHA-256 {hex}, the record says {}",
+                clean_str(url),
+                clean_str(sha256)
             )));
         }
         Ok(())
@@ -717,7 +733,7 @@ async fn download(ctx: &Ctx, a: DownloadArgs) -> Result<ExitCode> {
         .collect();
     if chosen.is_empty() {
         return Err(bad(match &a.asset {
-            Some(n) => format!("release {} has no asset {n:?}", a.tag),
+            Some(n) => format!("release {} has no asset {:?}", a.tag, clean_str(n)),
             None => format!("release {} has no assets", a.tag),
         }));
     }
@@ -729,7 +745,7 @@ async fn download(ctx: &Ctx, a: DownloadArgs) -> Result<ExitCode> {
         if !safe_name(&x.name) {
             return Err(fatal(format!(
                 "the asset name {:?} is not a file name",
-                x.name
+                clean_str(&x.name)
             )));
         }
         if !x.url.starts_with("https://") {
@@ -740,7 +756,13 @@ async fn download(ctx: &Ctx, a: DownloadArgs) -> Result<ExitCode> {
         }
         let dest = dir.join(&x.name);
         fetch_verified(&http, &x.url, x.size, &x.sha256, &dest).await?;
-        println!("{}\t{} bytes\tsha256:{}", dest.display(), x.size, x.sha256);
+        let _ = writeln!(
+            Clean(std::io::stdout().lock()),
+            "{}\t{} bytes\tsha256:{}",
+            clean_str(&dest.display().to_string()),
+            x.size,
+            clean_str(&x.sha256)
+        );
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -748,6 +770,37 @@ async fn download(ctx: &Ctx, a: DownloadArgs) -> Result<ExitCode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nothing_a_server_says_about_a_release_reaches_the_terminal_raw() {
+        let evil = "\x1b[2Jx\u{202e}y\r";
+        let r = wire::Release {
+            tag: evil.into(),
+            title: evil.into(),
+            created_by: evil.into(),
+            previous_tag: evil.into(),
+            notes: evil.into(),
+            provenance: Some(wire::ReleaseProvenance {
+                built_from: evil.into(),
+                ..Default::default()
+            }),
+            assets: vec![wire::ReleaseAsset {
+                name: evil.into(),
+                url: evil.into(),
+                sha256: evil.into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut out = Vec::new();
+        release_detail(&mut Clean(&mut out), &r).unwrap();
+        release_lines(&mut Clean(&mut out), &r).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        for bad in ['\x1b', '\r', '\u{202e}'] {
+            assert!(!text.contains(bad), "{text:?}");
+        }
+        assert!(text.contains("\\x1b[2J"), "{text:?}");
+    }
 
     #[test]
     fn channels_tags_and_assets_are_checked_before_a_round_trip() {

@@ -192,9 +192,16 @@ impl SecretScanHub {
         ctx: &CallCtx,
         req: wire::ScanSecretsRequest,
     ) -> Result<wire::ScanSecretsResponse, Status> {
-        self.scan_inner(ctx, req, true)
-            .await
-            .map(|(answer, _, _)| answer)
+        let (answer, _, _) = self.scan_inner(ctx, req, true).await?;
+        // The page shows when the repository was last scanned and how often: a scan on demand leaves one event.
+        let event = NewEvent::new("secret.scan.run", actor_of(&ctx.principal.id))
+            .repo(ctx.repo.as_str())
+            .target(ctx.repo.as_str())
+            .detail("files", answer.files_scanned.to_string())
+            .detail("findings", answer.findings.len().to_string())
+            .detail("truncated", answer.truncated.to_string());
+        crate::audit::store::record_best_effort(self.registry.pool(), &event).await;
+        Ok(answer)
     }
 
     /// `SecretScan.Check`: the scan of `Scan`, recording nothing, with what the push gate would do.

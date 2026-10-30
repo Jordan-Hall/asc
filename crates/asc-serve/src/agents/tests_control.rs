@@ -497,7 +497,13 @@ async fn a_paused_run_holds_at_its_next_tool_call_and_a_checkpoint_can_be_rolled
             .unwrap()
             .iter()
             .any(|c| c.rolled_back_at > 0);
-        r.changes.len() == 1 && marked
+        // The event that tells of the rollback is written after the mark: wait for it too.
+        let told = w
+            .events(run.id)
+            .await
+            .iter()
+            .any(|e| e.tool == "rollback" && e.text.contains("rolled back to checkpoint 1"));
+        r.changes.len() == 1 && marked && told
     })
     .await;
     let after = w
@@ -782,6 +788,20 @@ async fn the_boards_report_estimates_recent_tasks_logs_agents_and_spend() {
     assert_eq!(
         (agents.agents[0].agent.as_str(), agents.agents[0].runs),
         ("fixer", 1)
+    );
+    // The last 14 days, oldest first, a line for every day: today holds the run that was just made.
+    assert_eq!(agents.days.len(), 14);
+    assert!(
+        agents.days.windows(2).all(|p| p[0].day < p[1].day),
+        "oldest first"
+    );
+    let today = agents.days.last().unwrap();
+    assert_eq!(today.started, 1, "{:?}", agents.days);
+    assert!(
+        agents.days[..13]
+            .iter()
+            .all(|d| d.started == 0 && d.landed == 0),
+        "the other days are zeros, not missing"
     );
     // Spend: the model call is on the board and a monthly cap stops the next run.
     let spend = |who: &str, month: &str| {
@@ -1210,4 +1230,84 @@ async fn an_agent_gets_the_profile_of_a_person_only_when_the_hub_says_the_person
         "{all}"
     );
     let _ = rows[0].get::<String, _>("target");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_token_made_after_a_limits_edit_takes_the_edited_limits_with_it_onto_the_run() {
+    use super::tokens::{Budget, NewToken};
+    let w = World::new().await;
+    let key = w.key(alice(), "mine").await;
+    let id = w
+        .hub
+        .core
+        .runs
+        .create(&super::runs::NewRun {
+            repo: "acme/app".into(),
+            agent: "fixer".into(),
+            title: String::new(),
+            target: "master".into(),
+            base: w.base.clone(),
+            task: "t".into(),
+            paths: vec![],
+            ai_key_id: key.id.clone(),
+            model: "model-x".into(),
+            limits: Budget {
+                tokens: 1_000_000,
+                ..Budget::default()
+            },
+            created_by: "7:alice".into(),
+            starter: "alice".into(),
+            owner_id: 7,
+            token_id: String::new(),
+            workflow_run_id: 0,
+            workflow_step: String::new(),
+        })
+        .await
+        .unwrap();
+    // The run is still starting (no token yet) when its limits are edited: only the row changes.
+    w.hub
+        .core
+        .runs
+        .set_limits(
+            id,
+            Budget {
+                tokens: 100_000,
+                ..Budget::default()
+            },
+        )
+        .await
+        .unwrap();
+    // The token is made from the limits the run had when it began to start.
+    let t = w
+        .hub
+        .core
+        .tokens
+        .create(
+            &NewToken {
+                repo: "acme/app".into(),
+                name: "run".into(),
+                agent: "fixer".into(),
+                paths: vec![],
+                max_changes_per_run: 0,
+                created_by: "7:alice".into(),
+                owner_id: 7,
+                created: 0,
+                expires_at: crate::ai::clock::now() + 600,
+                limits: Budget {
+                    tokens: 1_000_000,
+                    ..Budget::default()
+                },
+                run_id: id,
+            },
+            &super::tokens::new_secret(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(t.limits.tokens, 1_000_000);
+    w.hub.core.tokens.attach_to_run(id, &t.id).await.unwrap();
+    let row = w.hub.core.runs.get(id).await.unwrap().unwrap();
+    assert_eq!(row.token_id, t.id);
+    let t = w.hub.core.tokens.get(&t.id).await.unwrap().unwrap();
+    assert_eq!(t.limits.tokens, 100_000, "the edit was not lost");
 }

@@ -166,6 +166,7 @@ fn describe(
                 author_may_approve: p.review.author_may_approve,
                 human_approval: p.review.human_approval,
                 keep_approvals_on_restack: p.review.keep_approvals_on_restack,
+                dismiss: p.review.dismiss.as_str().to_owned(),
             });
             out.merge = Some(wire::PolicyMerge {
                 queue: p.merge.queue,
