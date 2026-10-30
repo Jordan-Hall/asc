@@ -288,7 +288,14 @@ pub const CATALOGUE: &[ActionInfo] = &[
     a(
         "org.agents.updated",
         "An organisation's agent policy was changed.",
-        &["allow_agents", "need_person", "ceiling"],
+        &[
+            "allow_agents",
+            "need_person",
+            "ceiling",
+            "old_allow_agents",
+            "old_need_person",
+            "old_ceiling",
+        ],
     ),
     a(
         "org.merge.updated",
@@ -313,7 +320,7 @@ pub const CATALOGUE: &[ActionInfo] = &[
     a(
         "instance.agents.updated",
         "The instance's agent switch or default budget was changed.",
-        &["allow_agents", "ceiling"],
+        &["allow_agents", "ceiling", "old_allow_agents", "old_ceiling"],
     ),
     a(
         "session.revoked",
