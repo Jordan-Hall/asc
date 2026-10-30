@@ -1305,6 +1305,51 @@ async fn an_agent_never_writes_a_shared_ref() {
     f.land(ALICE, b).await.unwrap();
 }
 
+/// In branch mode the draft of an agent is a plain branch under its own name, `agent/<name>/run-<n>`. It is not a shared ref, so
+/// the policy gate lets it through to the scope and budget checks, and still refuses every other ref.
+#[tokio::test]
+async fn an_agent_may_write_the_branch_of_its_own_run_in_branch_mode() {
+    let f = fx().await;
+    let a = commit(&f.e, &[], &[("x", b"1")]).await;
+    f.set_master(a).await;
+    let b = commit(&f.e, &[a], &[("src/y.rs", b"2")]).await;
+    let c = ctx("agent:bot:7:at_one");
+    let check = |name: &str| {
+        let u = [GateUpdate {
+            name: name.into(),
+            old: None,
+            new: Some(RefTarget::Changeset(b)),
+            user: false,
+        }];
+        let f = &f;
+        let c = &c;
+        let name = name.to_owned();
+        async move {
+            let r = f
+                .gate
+                .check(&gate_req(c, &f.e, &u, GateMode::Push { force: false }))
+                .await;
+            (name, r)
+        }
+    };
+    for name in ["refs/heads/agent/bot/run-3", "refs/heads/agent/bot/at_one/work"] {
+        let (n, r) = check(name).await;
+        assert!(r.is_ok(), "{n}: {r:?}");
+    }
+    for name in [
+        "refs/heads/master",
+        "refs/heads/feature",
+        "refs/heads/agent/other/run-3",
+        "refs/heads/agent/bot/at_two/work",
+        "refs/heads/agent/bot/run-0",
+        "refs/tags/t",
+    ] {
+        let (n, r) = check(name).await;
+        let err = r.unwrap_err();
+        assert_eq!(code(&err), "AGENT_SCOPE_DENIED", "{n}");
+    }
+}
+
 #[tokio::test]
 async fn agent_drafts_follow_scope_denied_paths_and_budgets() {
     let f = fx().await;
