@@ -1,5 +1,6 @@
 //! asc-store.
 
+pub mod batch;
 pub mod bucket;
 pub mod bucketrefs;
 pub mod cachedir;
