@@ -2094,8 +2094,7 @@ async fn index_plumbing_follows_git_index_file() {
 #[tokio::test]
 async fn update_ref_no_deref_head_on_a_branch_detaches_head_and_keeps_the_staged_state() {
     let b = standard().await;
-    b.put("a.txt", "staged edit
-");
+    b.put("a.txt", "staged edit\n");
     b.same(&["update-index", "a.txt"]);
     b.same(&["update-ref", "--no-deref", "HEAD", "master~1"]);
     b.same(&["rev-parse", "HEAD"]);
