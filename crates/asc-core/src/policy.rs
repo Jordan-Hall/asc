@@ -728,6 +728,38 @@ pub struct StacksPolicy {
     pub collaborators_may_push: bool,
 }
 
+/// `[review] dismiss`: who may dismiss another person's verdict on a change. Nobody who wrote or
+/// ran part of the change may, whatever the level.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DismissBy {
+    /// A repository admin. The default.
+    #[default]
+    Admin,
+    /// A repository admin or a member of the `maintainer` role.
+    Maintainer,
+    /// Anyone with write access.
+    Write,
+}
+
+impl DismissBy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Admin => "admin",
+            Self::Maintainer => "maintainer",
+            Self::Write => "write",
+        }
+    }
+
+    fn parse(s: &str) -> Option<Self> {
+        match s {
+            "admin" => Some(Self::Admin),
+            "maintainer" => Some(Self::Maintainer),
+            "write" => Some(Self::Write),
+            _ => None,
+        }
+    }
+}
+
 /// `[review]`: who may approve.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReviewPolicy {
@@ -738,6 +770,8 @@ pub struct ReviewPolicy {
     /// An approval of a version still counts on a newer version when no file's patch changed (a
     /// restack moved the base only). On by default.
     pub keep_approvals_on_restack: bool,
+    /// Who may dismiss another person's verdict. Admin by default.
+    pub dismiss: DismissBy,
 }
 
 impl Default for ReviewPolicy {
@@ -746,6 +780,7 @@ impl Default for ReviewPolicy {
             author_may_approve: false,
             human_approval: true,
             keep_approvals_on_restack: true,
+            dismiss: DismissBy::Admin,
         }
     }
 }
@@ -814,6 +849,12 @@ struct RawReview {
     human_approval: bool,
     #[serde(default = "yes")]
     keep_approvals_on_restack: bool,
+    #[serde(default = "admin_word")]
+    dismiss: String,
+}
+
+fn admin_word() -> String {
+    "admin".into()
 }
 
 impl Default for RawReview {
@@ -822,6 +863,7 @@ impl Default for RawReview {
             author_may_approve: false,
             human_approval: true,
             keep_approvals_on_restack: true,
+            dismiss: admin_word(),
         }
     }
 }
@@ -1174,6 +1216,12 @@ impl Policy {
                 author_may_approve: raw.review.author_may_approve,
                 human_approval: raw.review.human_approval,
                 keep_approvals_on_restack: raw.review.keep_approvals_on_restack,
+                dismiss: match DismissBy::parse(&raw.review.dismiss) {
+                    Some(d) => d,
+                    None => bad::<DismissBy>(
+                        "[review] dismiss is \"admin\", \"maintainer\" or \"write\"".to_owned(),
+                    )?,
+                },
             },
             stacks: StacksPolicy {
                 max_depth: match raw.stacks.max_depth {
@@ -1538,7 +1586,8 @@ maintainer = [\"user:a\"]
             ReviewPolicy {
                 author_may_approve: false,
                 human_approval: true,
-                keep_approvals_on_restack: true
+                keep_approvals_on_restack: true,
+                dismiss: DismissBy::Admin,
             }
         );
         let loose = format!(
@@ -1553,9 +1602,40 @@ human_approval = false
             ReviewPolicy {
                 author_may_approve: true,
                 human_approval: false,
-                keep_approvals_on_restack: true
+                keep_approvals_on_restack: true,
+                dismiss: DismissBy::Admin,
             }
         );
+        for (word, want) in [
+            ("admin", DismissBy::Admin),
+            ("maintainer", DismissBy::Maintainer),
+            ("write", DismissBy::Write),
+        ] {
+            let p = Policy::parse(
+                format!(
+                    "{head}[review]
+dismiss = \"{word}\"
+"
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+            assert_eq!(p.review.dismiss, want);
+        }
+        for bad_word in ["root", "", "Admin"] {
+            assert!(
+                Policy::parse(
+                    format!(
+                        "{head}[review]
+dismiss = \"{bad_word}\"
+"
+                    )
+                    .as_bytes()
+                )
+                .is_err(),
+                "{bad_word:?}"
+            );
+        }
         let typo = format!(
             "{head}[review]
 author_can_approve = true
