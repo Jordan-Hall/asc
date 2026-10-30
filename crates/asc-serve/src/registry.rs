@@ -164,6 +164,8 @@ pub struct RepoEntry {
     pub objects: Arc<BucketObjects>,
     /// Receives git-map rows into `git_map` for this namespace.
     pub git_map: Arc<SqlGitMap>,
+    /// How imports into this repository batch their writes (`[import]`).
+    pub import: asc_git::import::ImportPolicy,
     /// The stamp of the storage route the entry was built over; 0 for the instance bucket.
     pub route_stamp: u64,
 }
@@ -186,6 +188,11 @@ pub struct Registry {
     open: quick_cache::sync::Cache<String, Cached>,
     ttl: Duration,
     router: std::sync::OnceLock<Arc<dyn NsRouter>>,
+    /// `[pack]`: whether and how packs are written. Unset, packs are only read.
+    pack: std::sync::OnceLock<asc_store::pack::PackConfig>,
+    /// `[import]`: how imports batch their writes.
+    import: std::sync::OnceLock<asc_git::import::ImportPolicy>,
+    layers: Mutex<std::collections::HashMap<Ns, Arc<asc_store::pack::PackLayer>>>,
 }
 
 impl Registry {
@@ -207,7 +214,55 @@ impl Registry {
             open: quick_cache::sync::Cache::new(MAX_OPEN_REPOS),
             ttl: ENTRY_TTL,
             router: std::sync::OnceLock::new(),
+            pack: std::sync::OnceLock::new(),
+            import: std::sync::OnceLock::new(),
+            layers: Mutex::default(),
         })
+    }
+
+    /// Sets the pack policy, once, before repositories are opened. False when already set.
+    pub fn set_pack_config(&self, cfg: asc_store::pack::PackConfig) -> bool {
+        self.pack.set(cfg).is_ok()
+    }
+
+    /// Sets how imports batch, once. False when already set.
+    pub fn set_import_policy(&self, policy: asc_git::import::ImportPolicy) -> bool {
+        self.import.set(policy).is_ok()
+    }
+
+    /// The objects of a namespace with the pack layer over its SQL index: the form every reader
+    /// and writer of the namespace needs, whatever it does with them.
+    pub(crate) fn objects_for(
+        &self,
+        ns: Ns,
+        store: Arc<dyn ObjectStore>,
+        root: Path,
+    ) -> BucketObjects {
+        BucketObjects::new(store, root).with_packs(self.pack_layer(ns))
+    }
+
+    /// The one pack layer of a namespace, shared by every handle on it, so what it has learned
+    /// (that the namespace has no packs) is not asked again by each.
+    pub(crate) fn pack_layer(&self, ns: Ns) -> Arc<asc_store::pack::PackLayer> {
+        let mut layers = self
+            .layers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        layers
+            .entry(ns)
+            .or_insert_with(|| {
+                let index = Arc::new(crate::pack_sql::SqlPackIndex::new(self.pool.clone(), ns));
+                let gate = Arc::new(crate::pack_sql::SqlPackGate::new(self.pool.clone(), ns));
+                let cfg = self.pack.get().cloned().unwrap_or_default();
+                Arc::new(asc_store::pack::PackLayer::new(index, cfg).with_gate(gate))
+            })
+            .clone()
+    }
+
+    /// The objects of namespace `ns` for code that holds a namespace and not an entry.
+    pub(crate) fn namespace_objects(&self, ns: Ns) -> BucketObjects {
+        let (store, root) = self.namespace(ns);
+        self.objects_for(ns, store, root)
     }
 
     /// Installs the storage router, once. False when one is already installed.
@@ -327,7 +382,21 @@ impl Registry {
             {
                 c.entry
             }
-            _ => Arc::new(self.build(name, RepoKey(id), ns, mode, default_branch, routed)),
+            _ => {
+                // A namespace that holds data this build cannot read is not opened for writing
+                // by guesswork.
+                let (unknown, packed) = crate::pack_sql::store_features(&self.pool, ns).await?;
+                // Told now, outside any transaction, whether the namespace has packs, so the
+                // first read does not have to ask.
+                self.pack_layer(ns).prime(packed);
+                if !unknown.is_empty() {
+                    return Err(RegistryError::Invalid(format!(
+                        "{name}: the repository uses storage features this server does not know: {}",
+                        unknown.join(", ")
+                    )));
+                }
+                Arc::new(self.build(name, RepoKey(id), ns, mode, default_branch, routed))
+            }
         };
         self.open.insert(
             name.to_string(),
@@ -391,7 +460,7 @@ impl Registry {
                 self.root.clone().join("ns").join(ns.hex()),
             ),
         };
-        let objects = Arc::new(BucketObjects::new(store, root));
+        let objects = Arc::new(self.objects_for(ns, store, root));
         RepoEntry {
             name: name.clone(),
             key,
@@ -406,6 +475,7 @@ impl Registry {
             )),
             objects,
             git_map: Arc::new(SqlGitMap::new(self.pool.clone(), ns)),
+            import: self.import.get().copied().unwrap_or_default(),
             route_stamp,
         }
     }

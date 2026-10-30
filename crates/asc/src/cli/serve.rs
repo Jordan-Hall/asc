@@ -142,6 +142,19 @@ mod real {
             #[command(subcommand)]
             cmd: OutboxCmd,
         },
+        /// Packed objects: `run` packs old loose objects and merges and compacts packs, `status`
+        /// counts, `verify` checks packs against the index, `reindex` rebuilds the index from the
+        /// packs.
+        Pack {
+            #[command(subcommand)]
+            cmd: PackSub,
+            /// A repository; repeatable.
+            #[arg(long = "repo", global = true)]
+            repos: Vec<String>,
+            /// Every repository.
+            #[arg(long, global = true)]
+            all: bool,
+        },
         /// Sets `repos.mode`, `git_reads` and `bridge`.
         SetMode {
             #[arg(long)]
@@ -159,6 +172,19 @@ mod real {
             #[arg(long)]
             force: bool,
         },
+    }
+
+    #[derive(clap::Subcommand, Debug)]
+    pub enum PackSub {
+        /// One maintenance pass.
+        Run {
+            /// Packs even when fewer than `[pack] min_loose` objects are waiting.
+            #[arg(long)]
+            force: bool,
+        },
+        Status,
+        Verify,
+        Reindex,
     }
 
     #[derive(clap::Subcommand, Debug)]
@@ -387,6 +413,15 @@ mod real {
                     ac::DEFAULT_DRAIN_POLL,
                 )
                 .await
+            }
+            AdminCmd::Pack { cmd, repos, all } => {
+                let cmd = match cmd {
+                    PackSub::Run { force } => ac::PackCmd::Run { force },
+                    PackSub::Status => ac::PackCmd::Status,
+                    PackSub::Verify => ac::PackCmd::Verify,
+                    PackSub::Reindex => ac::PackCmd::Reindex,
+                };
+                cli.pack(&cmd, &repos, all).await
             }
             AdminCmd::SetMode {
                 repo,

@@ -25,7 +25,7 @@ use asc_core::git::ObjectKind;
 use asc_core::id::{ChangesetId, GitOid, RefTarget};
 use asc_core::path::RefName;
 use asc_engine::derive::{self, GitMapRow, GitMapSink};
-use asc_git::import::{ImportError, ImportMap, ImportPolicy, Importer, Tip};
+use asc_git::import::{ImportError, ImportMap, Importer, Tip};
 use asc_git::odb::{Odb, OdbError};
 use asc_git::realgit::{RealGit, RealGitError};
 use asc_rpc::server::RepoName;
@@ -947,7 +947,7 @@ async fn import_tips(
                 entry.objects.clone(),
                 &odb,
                 &map,
-                ImportPolicy::default(),
+                entry.import,
             );
             Ok::<_, MirrorError>(importer.import_commits(&tips).await?)
         })
@@ -1547,7 +1547,7 @@ mod tests {
             client.objects.clone(),
             &odb,
             &map,
-            ImportPolicy::default(),
+            client.import,
         )
         .import_commits(&tips)
         .await
