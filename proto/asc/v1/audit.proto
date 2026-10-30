@@ -51,6 +51,7 @@ message AuditFilter {
   string target = 4;
   int64 since_ms = 5;
   int64 until_ms = 6;
+  uint64 seq = 7;                        // one event by its number in this log (the number the hash chain and its check name); 0 = any
 }
 
 message ListAuditRequest {
