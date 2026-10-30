@@ -893,6 +893,7 @@ fn wire_file(f: render::FileOut) -> wire::FileHit {
             })
             .collect(),
         redacted: f.redacted,
+        reason: None,
     }
 }
 
@@ -922,6 +923,7 @@ fn wire_chunk(c: render::ChunkOut) -> wire::Chunk {
         sources: c.sources,
         text: Bytes::from(c.text),
         redacted: c.redacted,
+        reason: None,
     }
 }
 
