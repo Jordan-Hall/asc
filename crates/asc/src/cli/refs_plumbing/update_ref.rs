@@ -134,10 +134,11 @@ pub async fn run(ctx: &Ctx, args: Vec<OsString>) -> Result<ExitCode> {
         _ => return Err(CliError::Usage(USAGE.to_owned())),
     };
     let mut ref_word = name_word.clone();
-    if ref_word == "HEAD" && !o.no_deref {
-        if let Head::Branch(b) = ws.projection.read_head()? {
-            ref_word = format!("refs/heads/{b}");
-        }
+    if ref_word == "HEAD"
+        && !o.no_deref
+        && let Head::Branch(b) = ws.projection.read_head()?
+    {
+        ref_word = format!("refs/heads/{b}");
     }
     if ref_word != "HEAD" && !(ref_word.starts_with("refs/") && valid(&ref_word, Rules::default()))
     {
