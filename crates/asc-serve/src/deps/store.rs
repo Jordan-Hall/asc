@@ -538,13 +538,16 @@ pub struct ScanRow {
     pub lookup: i64,
     pub packages: i64,
     pub unknown: i64,
+    /// Distinct packages per OSV ecosystem name; empty for a scan recorded before the column existed.
+    pub by_ecosystem: BTreeMap<String, u32>,
 }
 
 pub async fn put_scan(pool: &AnyPool, repo_id: i64, s: &ScanRow) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO deps_scans (repo_id, at, rev, lookup, packages, unknown) \
-         VALUES ($1, $2, $3, $4, $5, $6) \
-         ON CONFLICT (repo_id) DO UPDATE SET at = $2, rev = $3, lookup = $4, packages = $5, unknown = $6",
+        "INSERT INTO deps_scans (repo_id, at, rev, lookup, packages, unknown, by_ecosystem) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7) \
+         ON CONFLICT (repo_id) DO UPDATE SET at = $2, rev = $3, lookup = $4, packages = $5, unknown = $6, \
+         by_ecosystem = $7",
     )
     .bind(repo_id)
     .bind(s.at)
@@ -552,17 +555,19 @@ pub async fn put_scan(pool: &AnyPool, repo_id: i64, s: &ScanRow) -> Result<(), s
     .bind(s.lookup)
     .bind(s.packages)
     .bind(s.unknown)
+    .bind(serde_json::to_string(&s.by_ecosystem).unwrap_or_default())
     .execute(pool)
     .await?;
     Ok(())
 }
 
 pub async fn last_scan(pool: &AnyPool, repo_id: i64) -> Result<Option<ScanRow>, sqlx::Error> {
-    let r =
-        sqlx::query("SELECT at, rev, lookup, packages, unknown FROM deps_scans WHERE repo_id = $1")
-            .bind(repo_id)
-            .fetch_optional(pool)
-            .await?;
+    let r = sqlx::query(
+        "SELECT at, rev, lookup, packages, unknown, by_ecosystem FROM deps_scans WHERE repo_id = $1",
+    )
+    .bind(repo_id)
+    .fetch_optional(pool)
+    .await?;
     r.map(|r| {
         Ok(ScanRow {
             at: r.try_get("at")?,
@@ -570,6 +575,8 @@ pub async fn last_scan(pool: &AnyPool, repo_id: i64) -> Result<Option<ScanRow>, 
             lookup: r.try_get("lookup")?,
             packages: r.try_get("packages")?,
             unknown: r.try_get("unknown")?,
+            by_ecosystem: serde_json::from_str(&r.try_get::<String, _>("by_ecosystem")?)
+                .unwrap_or_default(),
         })
     })
     .transpose()

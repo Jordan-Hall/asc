@@ -1,5 +1,6 @@
 //! The service end to end: a repository, a mock OSV and registry, the hub, the gate and the RPC layer.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
@@ -237,6 +238,10 @@ async fn a_scan_reports_what_it_read_and_what_it_found_and_records_it() {
         r.packages, 2,
         "the manifest's requirement is the lockfile's package"
     );
+    assert_eq!(
+        r.packages_by_ecosystem,
+        HashMap::from([("crates.io".to_owned(), 2)])
+    );
     assert_eq!(r.findings.len(), 1);
     let f = &r.findings[0];
     assert!(f.id > 0 && f.direct);
@@ -266,6 +271,11 @@ async fn a_scan_reports_what_it_read_and_what_it_found_and_records_it() {
     assert_eq!(listed.findings.len(), 1);
     assert_eq!(listed.counts_by_state["open"], 1);
     assert_eq!(&listed.last_scanned[..], a.as_bytes());
+    assert_eq!(listed.packages_checked, 2);
+    assert_eq!(
+        listed.packages_by_ecosystem,
+        HashMap::from([("crates.io".to_owned(), 2)])
+    );
     assert_eq!(listed.last_lookup, wire::DepLookupStatus::Complete as i32);
 }
 
