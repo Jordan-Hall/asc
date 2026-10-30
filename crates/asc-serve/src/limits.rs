@@ -238,6 +238,7 @@ const TABLE: &[(&str, Class, &[&str])] = &[
         "Changes",
         Class::Expensive,
         &[
+            "AmendChange",
             "InterDiff",
             "Mergeability",
             "RequestMerge",
