@@ -2779,3 +2779,69 @@ async fn while_a_restore_is_staged_no_ref_moves() {
     f.land(ALICE, b).await.unwrap();
     assert_eq!(f.tip().await, b);
 }
+
+#[tokio::test]
+async fn an_organisation_that_forbids_force_overrides_a_repository_that_allows_it() {
+    use crate::ai::audit::PoolAudit;
+    use crate::org::{OrgHub, policy::MergeDefaults};
+    let g = fx().await;
+    let open = policy_text("[trunk]\nallow_force = true\n");
+    let a = commit(&g.e, &[], &[(POLICY_PATH, open.as_bytes()), ("x", b"1")]).await;
+    g.set_master(a).await;
+    let b = commit(&g.e, &[a], &[("y", b"2")]).await;
+    g.land(ALICE, b).await.unwrap();
+    let pool = g.reg.pool().clone();
+    let hub = OrgHub::new(pool.clone(), Arc::new(PoolAudit::new(pool)));
+    assert!(g.gate.org_slot().set(hub.clone()));
+    hub.set_merge("o", MergeDefaults::default(), "9:owner")
+        .await
+        .unwrap();
+    let c = commit(&g.e, &[a], &[("z", b"3")]).await;
+    let expect_b = wire::ref_update::Expect::Value(wire::RefTarget::from(&RefTarget::Changeset(b)));
+    let err = g
+        .push(
+            ALICE,
+            "refs/heads/master",
+            expect_b.clone(),
+            c,
+            wire::UpdateMode::Force,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(code(&err), "POLICY_DENIED");
+    assert!(paths(&err)[0].contains("organisation"), "{:?}", paths(&err));
+    assert_eq!(g.tip().await, b);
+    let mut del = update_req(
+        "refs/heads/master",
+        expect_b.clone(),
+        b,
+        wire::UpdateMode::Force,
+    );
+    del.updates[0].new = None;
+    del.updates[0].delete = true;
+    assert_eq!(
+        code(&g.gated.update_refs(&ctx(ALICE), del).await.unwrap_err()),
+        "POLICY_DENIED"
+    );
+    // The organisation allows force: the repository's own policy decides again.
+    hub.set_merge(
+        "o",
+        MergeDefaults {
+            allow_force: true,
+            ..MergeDefaults::default()
+        },
+        "9:owner",
+    )
+    .await
+    .unwrap();
+    g.push(
+        ALICE,
+        "refs/heads/master",
+        expect_b,
+        c,
+        wire::UpdateMode::Force,
+    )
+    .await
+    .unwrap();
+    assert_eq!(g.tip().await, c);
+}

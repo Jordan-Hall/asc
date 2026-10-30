@@ -24,6 +24,7 @@ use crate::registry::{Extensions, Registry, RegistryError, RepoEntry};
 pub struct ServerObjects {
     registry: Arc<Registry>,
     usage: Arc<crate::usage::UsageSlot>,
+    read_only: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl ServerObjects {
@@ -31,7 +32,15 @@ impl ServerObjects {
         Self {
             registry,
             usage: Arc::default(),
+            read_only: Arc::default(),
         }
+    }
+
+    /// Refuses uploads while the flag is raised (a restore is staged).
+    #[must_use]
+    pub fn with_read_only(mut self, flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
+        self.read_only = flag;
+        self
     }
 
     /// Counts the bytes of every fetch against the repository's bandwidth.
@@ -67,6 +76,11 @@ impl ObjectsHandler for ServerObjects {
         ctx: &CallCtx,
         req: wire::PutObjectsRequest,
     ) -> Result<wire::PutObjectsResponse, Status> {
+        if self.read_only.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(Status::unavailable(
+                "the server is read-only: a restore is staged and applies when the server restarts",
+            ));
+        }
         let entry = self.entry(ctx).await?;
         // The change metas of the upload, so the push that names their changesets finds them.
         let metas: Vec<MetaId> = req
@@ -123,7 +137,9 @@ impl ObjectsHandler for ServerObjects {
 pub fn register(ext: &Extensions, registry: &Arc<Registry>) {
     ext.handlers
         .set_objects(Arc::new(
-            ServerObjects::new(registry.clone()).with_usage(ext.usage.clone()),
+            ServerObjects::new(registry.clone())
+                .with_usage(ext.usage.clone())
+                .with_read_only(ext.read_only.clone()),
         ))
         .expect("the objects handler group is registered once");
 }

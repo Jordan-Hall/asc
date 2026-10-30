@@ -109,6 +109,17 @@ pub struct ServerGate {
     read_only: Arc<std::sync::atomic::AtomicBool>,
 }
 
+/// The refusal of a rewrite of trunk that the organisation's merge policy forbids.
+fn org_force_refused() -> Status {
+    from_denial(
+        &Denial {
+            path: String::new(),
+            reason: "trunk cannot be rewritten or deleted (the organisation's merge policy does not allow force)".into(),
+        },
+        &[],
+    )
+}
+
 /// The first 12 hex characters of a changeset id.
 fn short(cs: &ChangesetId) -> String {
     cs.to_string().chars().take(12).collect()
@@ -231,6 +242,14 @@ impl ServerGate {
     /// The maintenance flag.
     pub fn read_only_flag(&self) -> &Arc<std::sync::atomic::AtomicBool> {
         &self.read_only
+    }
+
+    /// Whether the repository's organisation has set merge defaults that forbid rewriting trunk.
+    async fn org_forbids_force(&self, entry: &RepoEntry) -> bool {
+        match self.org.get() {
+            Some(h) => h.forbids_force(entry.name.as_str()).await,
+            None => false,
+        }
     }
 
     /// Where the organisation settings plug in (tests install a hub here).
@@ -542,6 +561,9 @@ impl ServerGate {
             if is_trunk && let Some(p) = in_force.policy() {
                 p.check_force().map_err(|d| from_denial(&d, &[]))?;
             }
+            if is_trunk && self.org_forbids_force(entry).await {
+                return Err(org_force_refused());
+            }
             if is_trunk && let Some(d) = in_force.error() {
                 return Err(unusable(d));
             }
@@ -591,6 +613,9 @@ impl ServerGate {
                 .await
                 .map_err(|e| internal("gate: ancestry", &e))?;
             if !fast {
+                if self.org_forbids_force(entry).await {
+                    return Err(org_force_refused());
+                }
                 if let Some(p) = &effective {
                     p.check_force().map_err(|d| from_denial(&d, &[]))?;
                 } else if let Some(d) = broken {

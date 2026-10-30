@@ -281,10 +281,17 @@ impl Reviews {
         _change: ChangeId,
         versions: &[versions::Version],
     ) -> Result<Eligibility, Status> {
-        let policy = match &*RepoView::new(self.registry.clone()).policy(entry).await? {
+        let mut policy = match &*RepoView::new(self.registry.clone()).policy(entry).await? {
             crate::agents::repo::PolicyState::Valid(p) => p.review,
             _ => asc_core::policy::ReviewPolicy::default(),
         };
+        // The organisation's floor: a person approves, and the author may not, when it says so.
+        if let Some(f) = crate::org::review_floor(self.registry.pool(), entry.name.as_str()).await {
+            policy.human_approval |= f.human_approval;
+            if f.author_may_not_approve {
+                policy.author_may_approve = false;
+            }
+        }
         let authors: HashSet<String> = versions
             .iter()
             .filter_map(|v| handle_of(&v.actor))
