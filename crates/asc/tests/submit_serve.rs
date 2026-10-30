@@ -421,3 +421,42 @@ fn a_submit_after_a_plain_push_of_the_same_commits_submits_the_stack() {
         server.log()
     );
 }
+
+/// A repository whose `asc.stack.trunk` is gone (a clone from before the server's default was
+/// recorded, or a hand edit) takes the server's default branch when it submits.
+#[test]
+fn submit_repairs_a_missing_trunk_from_the_servers_default_branch() {
+    let server = Server::start();
+    server.create_repo_on("acme/fixme", "main");
+    let sb = Sandbox::new();
+    let c = Client {
+        sb: &sb,
+        dir: sb.dir("work"),
+        token: &server.admin,
+    };
+    c.ok(&["clone", &server.url("acme/fixme"), "r"]);
+    let work = Client {
+        sb: &sb,
+        dir: c.dir.join("r"),
+        token: &server.admin,
+    };
+    work.commit_file("base.txt", "base\n");
+    work.ok(&["push", "origin", "main"]);
+    work.ok(&["config", "--unset", "asc.stack.trunk"]);
+    work.commit_file("one.txt", "one\n");
+
+    let sub = work.run(&["submit", "-s", "--json"]);
+    assert!(
+        sub.status.success(),
+        "submit without a trunk failed: {}\nserver: {}",
+        text(&sub.stderr),
+        server.log()
+    );
+    assert!(
+        text(&sub.stderr).contains("server's default branch 'main'"),
+        "{}",
+        text(&sub.stderr)
+    );
+    let trunk = text(&work.ok(&["config", "asc.stack.trunk"]).stdout);
+    assert_eq!(trunk.trim(), "main", "the repair is kept");
+}
