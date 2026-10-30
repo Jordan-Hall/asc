@@ -104,7 +104,8 @@ fn the_environment_names_the_commit() {
 fn check_from_a_directory_reports_up_to_date_and_newer() {
     let sb = Sandbox::new();
     let cwd = sb.dir("cwd");
-    let same = releases(&sb, "same", "0.1.0\n");
+    let version = env!("CARGO_PKG_VERSION");
+    let same = releases(&sb, "same", &format!("{version}\n"));
     let out = run(
         &sb,
         &cwd,
@@ -114,7 +115,7 @@ fn check_from_a_directory_reports_up_to_date_and_newer() {
     );
     assert_eq!(
         (out.code, out.stdout.as_str()),
-        (0, "asc 0.1.0 is up to date\n"),
+        (0, format!("asc {version} is up to date\n").as_str()),
         "{}",
         out.stderr
     );
