@@ -789,6 +789,15 @@ async fn the_boards_report_estimates_recent_tasks_logs_agents_and_spend() {
         (agents.agents[0].agent.as_str(), agents.agents[0].runs),
         ("fixer", 1)
     );
+    // The last 14 days, oldest first, a line for every day: today holds the run that was just made.
+    assert_eq!(agents.days.len(), 14);
+    assert!(agents.days.windows(2).all(|p| p[0].day < p[1].day), "oldest first");
+    let today = agents.days.last().unwrap();
+    assert_eq!(today.started, 1, "{:?}", agents.days);
+    assert!(
+        agents.days[..13].iter().all(|d| d.started == 0 && d.landed == 0),
+        "the other days are zeros, not missing"
+    );
     // Spend: the model call is on the board and a monthly cap stops the next run.
     let spend = |who: &str, month: &str| {
         let r = w.request(

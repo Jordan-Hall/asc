@@ -494,6 +494,14 @@ message ListRepoAgentsResponse {
   uint32 max_concurrent = 3;             // the concurrency cap of the repository
   uint32 landed_30d = 4;
   uint32 changes_30d = 5;                // all changes agents made in the last 30 days (for "31% of changes")
+  repeated AgentActivityDay days = 6;    // the last 14 days, oldest first, one entry for every day (zeros included): the lines of the stat cards
+}
+// What agents did on one day (UTC), by the day a run was created. `landed` counts the changes of those runs that are on trunk now.
+message AgentActivityDay {
+  string day = 1;                        // YYYY-MM-DD
+  uint32 started = 2;                    // runs created that day
+  uint32 changes = 3;                    // changes those runs made
+  uint32 landed = 4;                     // of those, the changes that landed
 }
 message SpendDay {
   string day = 1;                        // YYYY-MM-DD, UTC
