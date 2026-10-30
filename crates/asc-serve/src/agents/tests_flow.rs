@@ -778,6 +778,16 @@ async fn denied_paths_win_over_the_default_scope_and_a_narrowed_run_cannot_widen
         texts(&ev, EventKind::Error)
     );
 
+    // A run that made no change queues nothing for the forge: there is nothing to open for review.
+    let queued: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM outbox WHERE repo_id = $1 AND CAST(effects AS TEXT) LIKE '%agent_run_finished%'",
+    )
+    .bind(w.entry.key.0)
+        .fetch_one(&w.pool)
+        .await
+        .unwrap();
+    assert_eq!(queued, 0);
+
     // A run narrowed to src/** cannot commit under tests/**.
     let w = World::new().await;
     w.key(alice(), "mine").await;
@@ -1899,3 +1909,40 @@ async fn the_code_index_and_edit_tools_report_plainly_when_they_cannot_help() {
 
 #[allow(dead_code)]
 fn _json(_: Value) {}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_run_that_ends_with_changes_queues_one_finished_effect_for_the_forge() {
+    let w = World::new().await;
+    w.key(alice(), "mine").await;
+    w.script(vec![
+        tools(vec![
+            (
+                "write_file",
+                json!({"path": "src/a.rs", "content": "fn a() {}\n"}),
+            ),
+            ("commit", json!({"message": "add a"})),
+        ]),
+        done("done"),
+    ]);
+    let run = w.start_run("alice-token", "add a").await.unwrap();
+    let row = w.wait(run.id).await;
+    assert_eq!(row.state, RunState::Succeeded, "{row:?}");
+    assert_eq!(row.changes.len(), 1);
+    let rows = sqlx::query("SELECT effects FROM outbox WHERE repo_id = $1 ORDER BY id")
+        .bind(w.entry.key.0)
+        .fetch_all(&w.pool)
+        .await
+        .unwrap();
+    let docs: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|r| {
+            let raw: Vec<u8> = sqlx::Row::try_get(r, "effects").unwrap();
+            serde_json::from_slice(&raw).unwrap()
+        })
+        .filter(|d: &serde_json::Value| d["effects"] == json!(["agent_run_finished"]))
+        .collect();
+    assert_eq!(docs.len(), 1, "{docs:?}");
+    assert_eq!(docs[0]["run"], json!(run.id));
+    assert_eq!(docs[0]["state"], json!("succeeded"));
+    assert_eq!(docs[0]["changes"], json!(1));
+}

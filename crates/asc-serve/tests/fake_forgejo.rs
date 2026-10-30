@@ -18,7 +18,7 @@ mod forgejo {
     use asc_serve::config::CompositionGrant;
     use asc_serve::forgejo::{
         AuthzCacheConfig, ForgejoClient, ForgejoHooks, HookClient, HookOptions, InternalAuthz,
-        InternalToken, PostReceiveEffect, PublicApiAuthz, RepoIdBinding,
+        InternalToken, PostReceiveEffect, PublicApiAuthz, RepoIdBinding, RunFinishedEffect,
     };
     use asc_serve::outbox::{Effect, Job};
     use asc_serve::registry::{NewRepo, Registry, SqlGitMap};
@@ -253,6 +253,15 @@ mod forgejo {
                         json!({"permissions": {"admin": admin, "push": push, "pull": pull}}),
                     ),
                     None => reply(404, json!({})),
+                };
+            }
+            if path == "/api/internal/asc/agent-run-finished" {
+                // `decodeAscStrict`: the four fields the hub knows and no other.
+                let known: [KnownField<'_>; 4] =
+                    [("repo", is_str), ("run", is_int), ("state", is_str), ("changes", is_int)];
+                return match strict_fields(&json, &known) {
+                    Some(f) if f.len() == 4 => reply(200, json!({"opened": 0})),
+                    _ => reply(400, json!({"user_msg": "invalid request body"})),
                 };
             }
             if path == "/api/internal/asc/ssh-key" {
@@ -1810,6 +1819,44 @@ mod forgejo {
             .await
             .unwrap_err();
         assert_eq!(e.0, "no such branch");
+    }
+
+    #[tokio::test]
+    async fn a_finished_run_is_told_to_the_forge_with_the_strict_body() {
+        let (fake, url) = start().await;
+        let (registry, _dir) = registry().await;
+        let entry = registry
+            .open(&RepoName::parse("o/r").unwrap())
+            .await
+            .unwrap();
+        let effect =
+            RunFinishedEffect::new(HookClient::new(client(&url, true)), registry.pool().clone());
+        assert_eq!(effect.kind(), "agent_run_finished");
+        let op = Uuid::new_v4();
+        let job = Job {
+            id: 1,
+            repo_id: entry.key.0,
+            op_id: op.as_bytes().to_vec(),
+            doc: json!({"effects": ["agent_run_finished"], "run": 7, "state": "succeeded", "changes": 2}),
+        };
+        effect.run(&job).await.unwrap();
+        let calls = fake.calls("/api/internal/asc/agent-run-finished");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].auth.as_deref(), Some(INTERNAL));
+        assert_eq!(calls[0].op_id.as_deref(), Some(op.to_string().as_str()));
+        assert_eq!(
+            calls[0].body,
+            json!({"repo": "o/r", "run": 7, "state": "succeeded", "changes": 2})
+        );
+
+        // A row that lacks the run, or names no repository, fails and is retried by the outbox.
+        let mut no_run = job.clone();
+        no_run.doc = json!({"effects": ["agent_run_finished"], "state": "succeeded"});
+        effect.run(&no_run).await.unwrap_err();
+        let mut gone = job.clone();
+        gone.repo_id = entry.key.0 + 1000;
+        effect.run(&gone).await.unwrap_err();
+        assert_eq!(fake.calls("/api/internal/asc/agent-run-finished").len(), 1);
     }
 
     #[tokio::test]

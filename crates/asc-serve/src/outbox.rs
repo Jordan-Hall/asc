@@ -161,6 +161,7 @@ impl Outbox {
         for kind in [
             "post_receive",
             "bridge_promote",
+            crate::agents::runs::FINISHED_EFFECT,
             crate::codeintel::queue::EFFECT,
         ] {
             outbox.effects.register(Arc::new(NoopEffect(kind)));

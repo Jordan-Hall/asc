@@ -1514,6 +1514,33 @@ impl HookClient {
         }
     }
 
+    /// Tells the forge that an agent run ended, so it can open the run's changes for review. `op_id` lets the
+    /// receiver recognise a redelivery. Any failure is retried by the outbox.
+    pub async fn agent_run_finished(
+        &self,
+        repo: &RepoName,
+        run: u64,
+        state: &str,
+        changes: u64,
+        op_id: Uuid,
+    ) -> Result<(), ForgejoError> {
+        let body = serde_json::json!({ "repo": repo.as_str(), "run": run, "state": state, "changes": changes });
+        let req = self
+            .client
+            .internal_request(&["api", "internal", "asc", "agent-run-finished"])?
+            .header(OP_ID_HEADER, op_id.to_string())
+            .json_body(&body)?;
+        let (status, body) = ForgejoClient::send(req).await?;
+        if status == StatusCode::OK {
+            Ok(())
+        } else {
+            Err(ForgejoError::Status {
+                status: status.as_u16(),
+                message: failure_message("agent-run-finished", status, &body),
+            })
+        }
+    }
+
     /// Proc-receive (AGit `refs/for/*`): the PR refs Forgejo created or updated.
     pub async fn proc_receive(
         &self,
@@ -1820,6 +1847,62 @@ impl Effect for PostReceiveEffect {
     }
 }
 
+/// The `agent_run_finished` outbox effect: tells the forge an agent run ended with changes. The forge opens them for
+/// review and finds the pull request of a change that has one, so a redelivery changes nothing.
+pub struct RunFinishedEffect {
+    client: HookClient,
+    pool: AnyPool,
+}
+
+impl RunFinishedEffect {
+    pub fn new(client: HookClient, pool: AnyPool) -> Self {
+        Self { client, pool }
+    }
+
+    async fn deliver(&self, job: &Job) -> Result<(), ForgejoError> {
+        let bad = |m: &str| ForgejoError::Invalid(m.to_owned());
+        let op_id = Uuid::from_slice(&job.op_id).map_err(|_| bad("outbox op id"))?;
+        let run = job
+            .doc
+            .get("run")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| bad("outbox row has no run"))?;
+        let state = job
+            .doc
+            .get("state")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| bad("outbox row has no state"))?;
+        let changes = job
+            .doc
+            .get("changes")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let row = sqlx::query("SELECT name FROM repos WHERE id = $1")
+            .bind(job.repo_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| bad("outbox row names an unknown repository"))?;
+        let name: String = row.try_get("name")?;
+        let repo = RepoName::parse(&name).map_err(|_| bad("repository name"))?;
+        self.client
+            .agent_run_finished(&repo, run, state, changes, op_id)
+            .await
+    }
+}
+
+#[async_trait]
+impl Effect for RunFinishedEffect {
+    fn kind(&self) -> &'static str {
+        crate::agents::runs::FINISHED_EFFECT
+    }
+
+    async fn run(&self, job: &Job) -> Result<(), EffectError> {
+        self.deliver(job)
+            .await
+            .map_err(|e| EffectError(e.to_string()))
+    }
+}
+
 // ------------------------------------------------------------------------------ startup
 
 fn client_of(cfg: &ForgejoConfig) -> Result<(Arc<ForgejoClient>, bool), ForgejoError> {
@@ -1892,6 +1975,10 @@ pub fn register(
                 .with_bridge_promote(cfg.bridge_promote),
         ))
         .map_err(|_| ForgejoError::Config("push hooks are already set".into()))?;
+    outbox.effects().register(Arc::new(RunFinishedEffect::new(
+        hooks.clone(),
+        registry.pool().clone(),
+    )));
     outbox.effects().register(Arc::new(PostReceiveEffect::new(
         hooks,
         registry.pool().clone(),
