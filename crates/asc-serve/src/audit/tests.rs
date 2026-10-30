@@ -1555,6 +1555,34 @@ async fn only_the_host_service_appends_and_the_event_names_the_person_with_the_h
     );
 }
 
+#[tokio::test]
+async fn the_host_appends_the_actions_on_a_person_with_the_reason() {
+    let (svc, p) = service().await;
+    for action in [
+        "host.user.suspended",
+        "host.user.unsuspended",
+        "host.user.2fa_reset",
+    ] {
+        let mut m = host_append(action, "carol");
+        m.target = "dana".into();
+        m.details = [("reason", "Lost the phone"), ("password", "never-kept")]
+            .into_iter()
+            .map(|(k, v)| (k.to_owned(), v.to_owned()))
+            .collect();
+        svc.append(req(m, Some(HOST))).await.unwrap();
+    }
+    let events = list_all(&p, &Scope::instance()).await;
+    assert_eq!(events.len(), 3);
+    for e in &events {
+        assert_eq!(e.target, "dana");
+        assert_eq!(
+            e.details.get("reason").map(String::as_str),
+            Some("Lost the phone")
+        );
+        assert!(!e.details.contains_key("password"));
+    }
+}
+
 #[test]
 fn a_host_address_is_made_coarse() {
     use super::rpc::coarse_addr_for_tests as coarse;
