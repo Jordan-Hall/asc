@@ -260,6 +260,7 @@ fn filter_of(f: Option<&wire::AuditFilter>) -> Result<Filter, Status> {
         target: f.target.clone(),
         since_ms: f.since_ms,
         until_ms: f.until_ms,
+        seq: f.seq,
     })
 }
 
@@ -318,6 +319,9 @@ fn filter_summary(f: &Filter) -> String {
     }
     if f.until_ms > 0 {
         parts.push(format!("until={}", f.until_ms));
+    }
+    if f.seq > 0 {
+        parts.push(format!("seq={}", f.seq));
     }
     parts.join(" ")
 }
