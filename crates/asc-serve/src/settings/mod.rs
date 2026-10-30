@@ -65,12 +65,19 @@ pub fn register(
         crate::backups::state_dir(cfg),
         audit.clone(),
     );
+    let usage = UsageHub::new(pool.clone(), cfg.usage.clone(), audit.clone());
+    let export = ExportHub::new(
+        pool.clone(),
+        crate::workdir::default_dir(cfg, "exports"),
+        audit.clone(),
+    );
+    export.set_usage(usage.clone());
     let hubs = Arc::new(SettingsHubs {
         backups,
-        usage: UsageHub::new(pool.clone(), cfg.usage.clone(), audit.clone()),
+        usage,
         org: OrgHub::new(pool.clone(), audit.clone()),
         sessions: SessionsHub::new(pool.clone(), audit.clone()),
-        export: ExportHub::new(pool, crate::workdir::default_dir(cfg, "exports"), audit),
+        export,
     });
     // The land gate, the agent runtime and the object server find the hubs through these slots.
     if let Some(s) = ext.security.get() {
