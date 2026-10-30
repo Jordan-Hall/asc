@@ -2285,7 +2285,10 @@ mod tests {
         let u = pusher_identity("7:alice").expect("a user");
         assert_eq!((u.user_id, u.handle.as_str()), (7, "alice"));
         let a = pusher_identity("agent:coder-1:42:at_abc").expect("an agent");
-        assert_eq!((a.user_id, a.handle.as_str(), a.deploy_key_id), (42, "agent-coder-1", 0));
+        assert_eq!(
+            (a.user_id, a.handle.as_str(), a.deploy_key_id),
+            (42, "agent-coder-1", 0)
+        );
         assert!(pusher_identity("agent:coder-1:0:at_abc").is_none());
         assert!(pusher_identity("agent:coder-1:42:tok").is_none());
         assert!(pusher_identity("service:host").is_none());

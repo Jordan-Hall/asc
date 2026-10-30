@@ -1332,7 +1332,10 @@ async fn an_agent_may_write_the_branch_of_its_own_run_in_branch_mode() {
             (name, r)
         }
     };
-    for name in ["refs/heads/agent/bot/run-3", "refs/heads/agent/bot/at_one/work"] {
+    for name in [
+        "refs/heads/agent/bot/run-3",
+        "refs/heads/agent/bot/at_one/work",
+    ] {
         let (n, r) = check(name).await;
         assert!(r.is_ok(), "{n}: {r:?}");
     }
