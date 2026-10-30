@@ -383,6 +383,7 @@ impl WsCtx {
         head_updates: &[RefUpdate],
         old_head: Option<ChangesetId>,
         keep: bool,
+        detach_branch: bool,
     ) -> Result<MovePlan> {
         let row = workspaces::get(&self.db, self.workspace.ws.id)
             .await?
@@ -393,8 +394,14 @@ impl WsCtx {
             Some(RefTarget::Changeset(c)) => Some(c),
             _ => None,
         };
-        let (new_head, detached) = match self.projection.read_head()? {
-            Head::Branch(b) => {
+        let head_now = self.projection.read_head()?;
+        // `update-ref --no-deref HEAD <commit>` on a branch detaches HEAD at the commit; nothing
+        // else may name HEAD while it is a branch.
+        let from_branch = detach_branch
+            && !head_updates.is_empty()
+            && matches!(head_now, Head::Branch(_));
+        let (new_head, detached) = match head_now {
+            Head::Branch(b) if !from_branch => {
                 if !head_updates.is_empty() {
                     return Err(CliError::Fatal(
                         "asc: HEAD is a branch; update the branch instead".into(),
@@ -405,7 +412,7 @@ impl WsCtx {
                 let moved = updates.iter().rev().find(|u| u.name == name);
                 (moved.map_or(old_head, |u| commit_of(u.new)), None)
             }
-            Head::Detached(_) => match head_updates {
+            Head::Branch(_) | Head::Detached(_) => match head_updates {
                 [] => (old_head, None),
                 [u] => {
                     let conflict = || CliError::Fatal("asc: HEAD changed concurrently".into());
@@ -459,6 +466,7 @@ impl WsCtx {
             head,
             deltas,
             detached,
+            leaves_branch: from_branch,
         })
     }
 }
@@ -475,6 +483,9 @@ struct MovePlan {
     deltas: Vec<LeafDelta>,
     /// The git commit to write into a detached `HEAD` file after the state commits.
     detached: Option<GitOid>,
+    /// HEAD was a branch and is now detached: the recorded head name changes even when the commit
+    /// does not.
+    leaves_branch: bool,
 }
 
 /// The context of one invocation.
@@ -780,9 +791,22 @@ impl Ctx {
     /// file (a projection of `base_cs`) is written last.
     pub async fn update_local_refs(
         &self,
+        txn: RefTxn,
+        reflog_msg: &str,
+        staging: StagingAfterMove,
+    ) -> Result<()> {
+        self.update_local_refs_as(txn, reflog_msg, staging, false)
+            .await
+    }
+
+    /// [`Self::update_local_refs`]; with `detach_branch` an update of `HEAD` while HEAD is a
+    /// branch detaches HEAD at the new commit instead of being refused.
+    pub async fn update_local_refs_as(
+        &self,
         mut txn: RefTxn,
         reflog_msg: &str,
         staging: StagingAfterMove,
+        detach_branch: bool,
     ) -> Result<()> {
         let ws = self.ws()?;
         let repo = ws.repo.key;
@@ -796,7 +820,7 @@ impl Ctx {
             .partition(|u| u.name == head_name);
         let keep = matches!(staging, StagingAfterMove::Keep);
         let plan = ws
-            .plan_move(&updates, &head_updates, old_head, keep)
+            .plan_move(&updates, &head_updates, old_head, keep, detach_branch)
             .await?;
         let mut changes = Vec::new();
         for u in &updates {
@@ -844,7 +868,7 @@ impl Ctx {
                 }
                 StagingAfterMove::Keep => stage::rebase_tx(&mut tx, ws_id, &plan.deltas).await?,
             }
-            if plan.base != plan.new_head {
+            if plan.base != plan.new_head || plan.leaves_branch {
                 workspaces::update_head_base_tx(&mut tx, ws_id, &plan.head, plan.new_head).await?;
             }
             tx.commit().await.map_err(asc_state::Error::from)?;

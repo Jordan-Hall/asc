@@ -2092,6 +2092,30 @@ async fn index_plumbing_follows_git_index_file() {
 // ------------------------------------------------------------------------- update-ref, symbolic-ref
 
 #[tokio::test]
+async fn update_ref_no_deref_head_on_a_branch_detaches_head_and_keeps_the_staged_state() {
+    let b = standard().await;
+    b.put("a.txt", "staged edit
+");
+    b.same(&["update-index", "a.txt"]);
+    b.same(&["update-ref", "--no-deref", "HEAD", "master~1"]);
+    b.same(&["rev-parse", "HEAD"]);
+    b.same(&["symbolic-ref", "-q", "HEAD"]);
+    b.same(&["rev-parse", "master"]);
+    b.same(&["status", "--porcelain"]);
+    b.same(&["status", "--porcelain=v2", "--branch"]);
+    b.same_index();
+    // The same commit: HEAD is detached all the same.
+    b.same(&["checkout", "-q", "master"]);
+    b.same(&["update-ref", "--no-deref", "HEAD", "master"]);
+    b.same(&["symbolic-ref", "-q", "HEAD"]);
+    b.same(&["rev-parse", "--abbrev-ref", "HEAD"]);
+    // A detached HEAD moves on as before.
+    b.same(&["update-ref", "--no-deref", "HEAD", "master~2"]);
+    b.same(&["rev-parse", "HEAD"]);
+    b.same(&["update-ref", "--no-deref", "HEAD", "nonexistent"]);
+}
+
+#[tokio::test]
 async fn update_ref_keeps_the_staged_state() {
     let b = standard().await;
     b.put("a.txt", "staged edit\n");
