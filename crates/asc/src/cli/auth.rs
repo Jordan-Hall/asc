@@ -31,8 +31,7 @@ const USAGE: &str = "usage: asc auth status [--json] [<url>]
        asc auth login --host <url> [--device | --token-stdin | --prompt]
        asc auth logout --host <url>";
 
-/// The user name the token is stored under; the server reads the password as the token.
-const TOKEN_USER: &str = "asc";
+use crate::credential::TOKEN_USER;
 /// Longest token read from stdin.
 const MAX_TOKEN: u64 = 16 * 1024;
 
