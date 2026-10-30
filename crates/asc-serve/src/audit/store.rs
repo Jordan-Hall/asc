@@ -261,6 +261,8 @@ pub struct Filter {
     pub target: String,
     pub since_ms: i64,
     pub until_ms: i64,
+    /// One event by its number in the log; 0 matches any.
+    pub seq: u64,
 }
 
 enum Bind {
@@ -353,6 +355,10 @@ fn filtered(scope: &Scope, f: &Filter) -> Where {
     if f.until_ms > 0 {
         let p = w.bind(Bind::Int(f.until_ms));
         w.and(&format!("time_ms < {p}"));
+    }
+    if f.seq > 0 {
+        let p = w.bind(Bind::Int(i64::try_from(f.seq).unwrap_or(i64::MAX)));
+        w.and(&format!("seq = {p}"));
     }
     w
 }

@@ -89,7 +89,10 @@ const INDEX_PAGE: i64 = 5000;
 const CHUNK_THRESHOLD: u64 = 4 * 1024 * 1024;
 /// Tables keyed by a namespace; the drop of a deleted repository clears each. A test checks that
 /// every table with an `ns` column is named here.
-const NS_TABLES: [&str; 39] = [
+const NS_TABLES: [&str; 54] = [
+    "packs",
+    "pack_objects",
+    "store_features",
     "cs_graph",
     "git_map",
     "file_meta",
@@ -129,6 +132,18 @@ const NS_TABLES: [&str; 39] = [
     "flaky_daily",
     "flaky_tests",
     "repo_leases",
+    "staged_metas",
+    "review_briefs",
+    "review_approvals",
+    "gate_decisions",
+    "gate_overrides",
+    "queue_entries",
+    "queue_pause",
+    "queue_events",
+    "queue_members",
+    "notify_events",
+    "releases",
+    "release_assets",
 ];
 
 // ------------------------------------------------------------------------------ statuses
@@ -1301,6 +1316,55 @@ impl AdminService {
 
     // -------------------------------------------------------------------------- rename
 
+    /// `set_default_branch`: makes `branch` the trunk of the repository, the ref the gate protects (path rules,
+    /// secret scanning, review). A host that creates a repository before it knows the branch the history it fills
+    /// it with calls this once the history is in: until then the real trunk is an ordinary branch.
+    async fn set_default_branch(
+        &self,
+        ctx: &CallCtx,
+        branch: &str,
+    ) -> Result<wire::RepoAdminResponse, Status> {
+        let valid = !branch.is_empty()
+            && branch != "HEAD"
+            && !branch.starts_with('-')
+            && RefName::new(format!("refs/heads/{branch}").into_bytes()).is_ok();
+        if !valid {
+            return Err(invalid("default branch name"));
+        }
+        let (entry, _) = self
+            .registry
+            .open_unready(&ctx.repo)
+            .await
+            .map_err(registry_status)?;
+        let mut tx = self
+            .registry
+            .refs()
+            .begin()
+            .await
+            .map_err(|e| internal("refs", &e))?;
+        let done = sqlx::query("UPDATE repos SET default_branch = $1 WHERE id = $2 AND name = $3")
+            .bind(branch)
+            .bind(entry.key.0)
+            .bind(ctx.repo.as_str())
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| sql("repos", e))?;
+        if done.rows_affected() != 1 {
+            return Err(Status::not_found("no such repository"));
+        }
+        audit_in_tx(
+            &mut tx,
+            repo_event("repo.default_branch", &ctx.principal.id, &ctx.repo)
+                .detail("from", entry.default_branch.as_str())
+                .detail("to", branch),
+        )
+        .await?;
+        tx.commit().await.map_err(|e| sql("repos", e))?;
+        // The registry caches the entry, and the entry holds the branch.
+        self.registry.forget(&ctx.repo);
+        Ok(wire::RepoAdminResponse::default())
+    }
+
     async fn rename(&self, ctx: &CallCtx, to: &str) -> Result<wire::RepoAdminResponse, Status> {
         let to = RepoName::parse(to)?;
         if to == ctx.repo {
@@ -1688,6 +1752,7 @@ impl AdminHandler for AdminService {
             // A bare `false` is an unset flag, never a request.
             Some(Op::Delete(true)) => self.delete(ctx).await,
             Some(Op::RenameTo(to)) => self.rename(ctx, &to).await,
+            Some(Op::SetDefaultBranch(branch)) => self.set_default_branch(ctx, &branch).await,
             Some(Op::Size(true)) => self.size(ctx).await,
             Some(Op::Verify(true)) => self.verify(ctx).await,
             Some(Op::Delete(false) | Op::Size(false) | Op::Verify(false)) | None => {
@@ -2553,6 +2618,56 @@ mod tests {
             .unwrap();
         assert_eq!(land, r#"["trunk","refs/heads/release"]"#);
         assert_eq!(ws, 0);
+    }
+
+    #[tokio::test]
+    async fn set_default_branch_moves_the_trunk_and_refuses_bad_names() {
+        let f = fx().await;
+        f.call(
+            "o/new",
+            Op::Init(wire::InitOp {
+                default_branch: "main".into(),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+        let before = f.registry.open(&name("o/new")).await.unwrap();
+        assert_eq!(before.default_branch, "main");
+
+        f.call("o/new", Op::SetDefaultBranch("master".into()))
+            .await
+            .unwrap();
+        // The cached entry is dropped, so the next open reads the new trunk.
+        assert_eq!(
+            f.registry
+                .open(&name("o/new"))
+                .await
+                .unwrap()
+                .default_branch,
+            "master"
+        );
+
+        for bad in ["", "HEAD", "-x", "a..b", "bad name"] {
+            let e = f
+                .call("o/new", Op::SetDefaultBranch(bad.into()))
+                .await
+                .unwrap_err();
+            assert_eq!(e.code(), tonic::Code::InvalidArgument, "{bad}");
+        }
+        let e = f
+            .call("o/none", Op::SetDefaultBranch("master".into()))
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), tonic::Code::NotFound);
+        assert_eq!(
+            f.registry
+                .open(&name("o/new"))
+                .await
+                .unwrap()
+                .default_branch,
+            "master"
+        );
     }
 
     #[tokio::test]

@@ -1505,7 +1505,7 @@ async fn a_blob_that_inflates_past_the_child_memory_cap_fails_the_push_and_no_mo
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_push_that_dies_mid_pack_leaves_nothing_after_the_janitor_run() {
+async fn a_push_that_dies_mid_pack_leaves_no_quarantine() {
     let env = Env::start("", "").await;
     let git = Git::new();
     let a = git.repo("a", &env.url(WEB, WRITE)).await;
@@ -1567,22 +1567,35 @@ async fn a_push_that_dies_mid_pack_leaves_nothing_after_the_janitor_run() {
             })
             .unwrap_or_default()
     };
+    // Git ends on the short pack and removes its quarantine itself (or the server stopped it with
+    // SIGTERM, which does the same). A quarantine that survives is a bug: the janitor is the
+    // 24 h backstop for a SIGKILLed child and is not called here.
     let started = Instant::now();
-    loop {
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        if started.elapsed() > Duration::from_secs(8) && quarantines().is_empty() {
-            break;
-        }
-        assert!(
-            started.elapsed() < Duration::from_secs(60),
-            "left: {:?}",
-            quarantines()
-        );
+    while (started.elapsed() < Duration::from_secs(3) || !quarantines().is_empty())
+        && started.elapsed() < Duration::from_secs(30)
+    {
+        tokio::time::sleep(Duration::from_millis(200)).await;
     }
+    assert!(quarantines().is_empty(), "left: {:?}", quarantines());
     env.assert_empty(&env.web).await;
     assert!(!env.mapped(&env.web, &head).await);
 
-    // The janitor removes a quarantine a killed child left, and only one that is old enough.
+    // The slot of the dead push was released.
+    let b = git.repo("b", &env.url(WEB, WRITE)).await;
+    git.commit(&b, "small", "ok\n", "small").await;
+    assert!(git.run(&b, &["push", "origin", "master"]).await.ok);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_janitor_removes_only_old_quarantines() {
+    let env = Env::start("", "").await;
+    let git = Git::new();
+    let a = git.repo("a", &env.url(WEB, WRITE)).await;
+    git.commit(&a, "f", "x\n", "first").await;
+    assert!(git.run(&a, &["push", "origin", "master"]).await.ok);
+    let objects = env.view_path(&env.web).join("objects");
+
+    // A quarantine a killed child left goes, and only one that is old enough.
     let stale = objects.join("tmp_objdir-incoming-STALE");
     std::fs::create_dir_all(stale.join("pack")).unwrap();
     std::fs::create_dir_all(objects.join("keepme")).unwrap();
@@ -1597,11 +1610,6 @@ async fn a_push_that_dies_mid_pack_leaves_nothing_after_the_janitor_run() {
         objects.join("keepme").exists(),
         "only quarantines are removed"
     );
-
-    // The slot of the dead push was released.
-    let b = git.repo("b", &env.url(WEB, WRITE)).await;
-    git.commit(&b, "small", "ok\n", "small").await;
-    assert!(git.run(&b, &["push", "origin", "master"]).await.ok);
 }
 
 // ------------------------------------------------------------------------------ tests: the hook socket

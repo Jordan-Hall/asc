@@ -163,6 +163,7 @@ impl Outbox {
             "bridge_promote",
             crate::agents::runs::FINISHED_EFFECT,
             crate::codeintel::queue::EFFECT,
+            crate::notify::policy::EFFECT,
         ] {
             outbox.effects.register(Arc::new(NoopEffect(kind)));
         }

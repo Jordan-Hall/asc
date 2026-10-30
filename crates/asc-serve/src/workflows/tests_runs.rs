@@ -1173,6 +1173,9 @@ async fn another_server_takes_over_a_run_whose_server_stopped() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_command_that_was_running_when_its_server_died_is_failed_not_run_twice() {
     let w = world(&[(".asc/workflows/approved.toml", APPROVED)]).await;
+    // The world's own dispatcher would take the queued run below before this test claims it for the
+    // "dead" server; this test drives the second hub by hand.
+    w.wf.as_ref().unwrap().shutdown();
     let b = WorkflowsHub::new(
         w.registry.clone(),
         w.hub.clone(),

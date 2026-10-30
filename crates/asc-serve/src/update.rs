@@ -100,6 +100,15 @@ pub trait PushHooks: Send + Sync {
         Ok(())
     }
 
+    /// AGit `refs/for/*` (a submit): Forgejo's proc-receive creates or updates the pull request
+    /// of each update and answers per ref (SPEC section 13.5). The default has no forge to ask.
+    async fn proc_receive(
+        &self,
+        _req: &HookRequest<'_>,
+    ) -> Result<Vec<crate::forgejo::ProcRefResult>, HookRejected> {
+        Ok(Vec::new())
+    }
+
     /// The push did not commit after step 6; remove the quarantine.
     async fn abort(&self, _req: &HookRequest<'_>) {}
 
@@ -111,9 +120,14 @@ pub trait PushHooks: Send + Sync {
 
     /// Effects the step-8 transaction queues in the outbox, in order: the forge's `post_receive`,
     /// then `codeintel.enqueue`, which queues the update's new files for the indexing workers
-    /// (a no-op unless `[codeintel]` is enabled, see `outbox::Outbox`).
+    /// (a no-op unless `[codeintel]` is enabled, see `outbox::Outbox`), then `notify.policy`,
+    /// which tells the contributors when the update of trunk changed the policy.
     fn outbox_effects(&self) -> &'static [&'static str] {
-        &["post_receive", crate::codeintel::queue::EFFECT]
+        &[
+            "post_receive",
+            crate::codeintel::queue::EFFECT,
+            crate::notify::policy::EFFECT,
+        ]
     }
 }
 
@@ -322,6 +336,26 @@ pub(crate) fn conflict(c: asc_store::refs::RefConflict) -> Status {
             .map_or_else(Bytes::new, |t| Bytes::copy_from_slice(&t.to_bytes())),
         conflicts: Vec::new(),
     }))
+}
+
+/// The principal the forge's hooks are told about. A call the host service made on a person's verified
+/// claim (their id and login, and a role that covers a write) is that person's write: the forge attributes
+/// it to them. Without such a claim it is the caller's own principal, which for the host service is no
+/// registered person, so the forge refuses the write as unattributed. Nothing but a claim the server has
+/// verified for this repository and call ever names the person.
+pub(crate) fn acting_principal(ctx: &CallCtx) -> Principal {
+    if crate::authz::is_host_service(&ctx.principal.id)
+        && let Some(claim) = ctx.admin.forwarded_claim()
+        && claim.allows(asc_rpc::forwarded::Role::Write)
+        && let Some(who) = crate::authz::UserIdentity::parse(&claim.user)
+        && who.user_id > 0
+        && who.deploy_key_id == 0
+    {
+        return Principal {
+            id: who.principal_id(),
+        };
+    }
+    ctx.principal.clone()
 }
 
 pub(crate) fn now() -> i64 {
@@ -669,7 +703,8 @@ impl ServerRefs {
             &entry,
             windows_safe,
         )
-        .by(user_owner);
+        .by(user_owner)
+        .staged_for(&ctx.principal.id);
         if let Some(left) = budget {
             ingestor = ingestor.with_budget(left);
         }
@@ -783,10 +818,11 @@ impl ServerRefs {
         }
 
         // Steps 6 and 7: hook points.
+        let acting = acting_principal(ctx);
         let hook_req = HookRequest {
             repo: &ctx.repo,
             op_id,
-            principal: &ctx.principal,
+            principal: &acting,
             updates: &hook_updates,
             push_options: &req.push_options,
         };
@@ -838,7 +874,7 @@ impl ServerRefs {
             } else {
                 &[]
             },
-            pusher: &ctx.principal.id,
+            pusher: &acting.id,
             refs: hook_updates
                 .iter()
                 .map(|u| EffectRef {
@@ -1084,6 +1120,10 @@ impl RefsHandler for ServerRefs {
             listed
                 .refs
                 .retain(|r| !r.name.starts_with(refpolicy::USER_NS));
+            // The engine does not know the repository's default branch; the policy does (the registry's trunk).
+            if listed.head.is_empty() {
+                listed.head = policy.head();
+            }
             return Ok(listed);
         }
         if ctx.id_mode != IdMode::Asc {
@@ -1485,6 +1525,99 @@ mod tests {
         r.forget(&RepoName::parse("o/r").unwrap());
         let err = run(&s, create("refs/heads/master", a)).await.unwrap_err();
         assert_eq!(code(&err), "MIRROR_MODE");
+    }
+
+    fn on_claim(principal: &str, user: &str, role: asc_rpc::forwarded::Role) -> CallCtx {
+        CallCtx {
+            principal: Principal {
+                id: principal.into(),
+            },
+            admin: asc_rpc::auth::AdminProof::default().with_forwarded(Some(
+                asc_rpc::forwarded::Claim {
+                    user: user.into(),
+                    role,
+                },
+            )),
+            ..ctx(Uuid::new_v4())
+        }
+    }
+
+    #[test]
+    fn the_forge_is_told_the_person_of_a_verified_write_claim_and_nobody_else() {
+        use asc_rpc::forwarded::Role;
+        let host = crate::authz::HOST_SERVICE_PRINCIPAL;
+        // The host service acting for a person who may write: the forge sees the person.
+        assert_eq!(
+            acting_principal(&on_claim(host, "44:carol", Role::Write)).id,
+            "44:carol"
+        );
+        assert_eq!(
+            acting_principal(&on_claim(host, "44:carol", Role::Admin)).id,
+            "44:carol"
+        );
+        // A claim that only reads, a claim for no registered user, a deploy key and a malformed
+        // claim leave the host service, whom the forge refuses as unattributed.
+        for (user, role) in [
+            ("44:carol", Role::Read),
+            ("0:anonymous", Role::Write),
+            ("44:carol:7", Role::Write),
+            ("carol", Role::Write),
+            ("x:carol", Role::Write),
+            ("-2:task", Role::Write),
+        ] {
+            assert_eq!(
+                acting_principal(&on_claim(host, user, role)).id,
+                host,
+                "{user} {role:?}"
+            );
+        }
+        // No claim at all.
+        let mut bare = ctx(Uuid::new_v4());
+        bare.principal = Principal { id: host.into() };
+        assert_eq!(acting_principal(&bare).id, host);
+        // A claim does not rename any other caller: only the host service may act on one.
+        assert_eq!(
+            acting_principal(&on_claim("45:mallory", "44:carol", Role::Write)).id,
+            "45:mallory"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_write_made_on_a_claim_reaches_the_hook_as_the_person_and_one_without_as_the_host() {
+        use std::sync::Mutex;
+        struct Seen(Mutex<Vec<String>>);
+        #[async_trait]
+        impl PushHooks for Seen {
+            async fn pre_receive(&self, req: &HookRequest<'_>) -> Result<(), HookRejected> {
+                self.0.lock().unwrap().push(req.principal.id.clone());
+                Ok(())
+            }
+        }
+        let (_r, e, s) = setup().await;
+        let seen = Arc::new(Seen(Mutex::new(Vec::new())));
+        s.hooks.set_push_hooks(seen.clone()).ok().unwrap();
+        let a = commit(&e, &[], &[("a", b"1")]).await;
+        let b = commit(&e, &[a], &[("b", b"2")]).await;
+        let host = crate::authz::HOST_SERVICE_PRINCIPAL;
+        let mut with_claim = on_claim(host, "44:carol", asc_rpc::forwarded::Role::Write);
+        with_claim.op_id = Some(Uuid::new_v4());
+        s.update_refs(&with_claim, create("refs/heads/master", a))
+            .await
+            .unwrap();
+        let mut without = ctx(Uuid::new_v4());
+        without.principal = Principal { id: host.into() };
+        s.update_refs(
+            &without,
+            request(
+                "refs/heads/master",
+                wire::ref_update::Expect::Value(wire::RefTarget::from(&RefTarget::Changeset(a))),
+                Some(b),
+                wire::UpdateMode::FastForward,
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(*seen.0.lock().unwrap(), ["44:carol", host]);
     }
 
     #[tokio::test]

@@ -103,6 +103,21 @@ pub struct ServerGate {
     scanner: Arc<Scanner>,
     signing: Arc<Signing>,
     deps: Arc<crate::deps::gate::DepsGateSlot>,
+    /// The organisation settings, whose merge defaults a repository can only tighten.
+    org: Arc<crate::org::OrgSlot>,
+    /// Set while a restore waits for the next start: no ref moves in the meantime.
+    read_only: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// The refusal of a rewrite of trunk that the organisation's merge policy forbids.
+fn org_force_refused() -> Status {
+    from_denial(
+        &Denial {
+            path: String::new(),
+            reason: "trunk cannot be rewritten or deleted (the organisation's merge policy does not allow force)".into(),
+        },
+        &[],
+    )
 }
 
 /// The first 12 hex characters of a changeset id.
@@ -212,7 +227,41 @@ impl ServerGate {
             scanner,
             signing,
             deps: Arc::default(),
+            org: Arc::default(),
+            read_only: Arc::default(),
         }
+    }
+
+    /// Shares the maintenance flag: while it is set every update is refused.
+    #[must_use]
+    pub fn with_read_only(mut self, flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
+        self.read_only = flag;
+        self
+    }
+
+    /// The maintenance flag.
+    pub fn read_only_flag(&self) -> &Arc<std::sync::atomic::AtomicBool> {
+        &self.read_only
+    }
+
+    /// Whether the repository's organisation has set merge defaults that forbid rewriting trunk.
+    async fn org_forbids_force(&self, entry: &RepoEntry) -> bool {
+        match self.org.get() {
+            Some(h) => h.forbids_force(entry.name.as_str()).await,
+            None => false,
+        }
+    }
+
+    /// Where the organisation settings plug in (tests install a hub here).
+    pub fn org_slot(&self) -> &Arc<crate::org::OrgSlot> {
+        &self.org
+    }
+
+    /// Lets the gate apply the organisation's default merge requirements.
+    #[must_use]
+    pub fn with_org(mut self, slot: Arc<crate::org::OrgSlot>) -> Self {
+        self.org = slot;
+        self
     }
 
     /// Lets the gate ask the dependency scanner (`[deps] block_severity` of the policy).
@@ -512,6 +561,9 @@ impl ServerGate {
             if is_trunk && let Some(p) = in_force.policy() {
                 p.check_force().map_err(|d| from_denial(&d, &[]))?;
             }
+            if is_trunk && self.org_forbids_force(entry).await {
+                return Err(org_force_refused());
+            }
             if is_trunk && let Some(d) = in_force.error() {
                 return Err(unusable(d));
             }
@@ -561,6 +613,9 @@ impl ServerGate {
                 .await
                 .map_err(|e| internal("gate: ancestry", &e))?;
             if !fast {
+                if self.org_forbids_force(entry).await {
+                    return Err(org_force_refused());
+                }
                 if let Some(p) = &effective {
                     p.check_force().map_err(|d| from_denial(&d, &[]))?;
                 } else if let Some(d) = broken {
@@ -625,7 +680,11 @@ impl ServerGate {
             }
             if is_trunk {
                 self.check_review(entry, p, &added, &rewrites).await?;
-                if p.signing.require_signed {
+                let org_signed = match self.org.get() {
+                    Some(h) => h.requires_signed(entry.name.as_str()).await,
+                    None => false,
+                };
+                if p.signing.require_signed || org_signed {
                     self.check_signed(entry, &added, &rewrites).await?;
                 }
             }
@@ -817,7 +876,12 @@ impl ServerGate {
         added: &Added,
         rewrites: &HashMap<ChangesetId, ChangesetId>,
     ) -> Result<(), Status> {
-        let need = policy.land_requirements();
+        // The organisation's defaults sit under the repository's policy: more approvals, more checks.
+        let own = policy.land_requirements();
+        let need = match self.org.get() {
+            Some(h) => h.apply_requirements(entry.name.as_str(), own).await,
+            None => own,
+        };
         self.check_approvals(
             entry,
             need.approvals,
@@ -961,6 +1025,11 @@ fn status_word(s: wire::VerificationStatus) -> &'static str {
 #[async_trait]
 impl RefGate for ServerGate {
     async fn check(&self, req: &GateRequest<'_>) -> Result<(), Status> {
+        if self.read_only.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(Status::unavailable(
+                "the server is read-only: a restore is staged and applies when the server restarts",
+            ));
+        }
         let who = who_of(&req.ctx.principal.id);
         if matches!(req.mode, GateMode::Submit) {
             return self.check_submitted(req, &who).await;
@@ -969,7 +1038,12 @@ impl RefGate for ServerGate {
         let mut protected: Vec<&GateUpdate> = Vec::new();
         let mut drafts: Vec<&GateUpdate> = Vec::new();
         for u in req.updates {
-            if u.user {
+            // An agent's own drafts: a ref of a branchless repository's user namespace, or, in branch mode, the ref of its own
+            // run or token (`agent/<name>/run-<n>`, `agent/<name>/<token id>/..`). The agent gate has already refused any
+            // other ref of an agent before this runs; here the paths and the run budget of the draft are checked.
+            let own_draft = who.is_agent()
+                && crate::refpolicy::draft_owner_of(&req.ctx.principal, &u.name).is_some();
+            if u.user || own_draft {
                 if who.is_agent() {
                     drafts.push(u);
                 }

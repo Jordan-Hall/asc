@@ -362,7 +362,34 @@ impl Reviews {
         super::insights::store::mark_stale(&mut conn, entry.ns, std::slice::from_mut(&mut run))
             .await
             .map_err(sql)?;
+        drop(conn);
+        if run.status == wire::CiStatus::Failure as i32 && !run.change.is_empty() {
+            self.tell_checks_failed(&entry, &run).await;
+        }
         Ok(wire::ReportRunResponse { run: Some(run) })
+    }
+
+    /// The hub's `checks_failed`: the people who made the change are told once per failed run.
+    async fn tell_checks_failed(&self, entry: &RepoEntry, run: &wire::CiRun) {
+        let repo = entry.name.as_str();
+        let authors =
+            crate::notify::authors_of(self.registry.pool(), entry.ns.as_bytes(), &run.change).await;
+        crate::notify::emit(
+            self.registry.pool(),
+            repo,
+            crate::notify::Event::new(
+                crate::notify::Kind::ChecksFailed,
+                format!("Check {} failed", run.name),
+            )
+            .users(authors)
+            .detail(run.url.as_str())
+            .path(crate::notify::paths::change(
+                repo,
+                &crate::review::rpc::hex_change(&run.change),
+            ))
+            .dedup(format!("check:{}:failed", run.id)),
+        )
+        .await;
     }
 
     async fn try_report(&self, entry: &RepoEntry, r: &Report) -> Result<i64, WriteError> {
@@ -761,5 +788,31 @@ impl Ci for CiService {
             .context(&meta, &ext, msg.repo.as_ref(), Access::Admin, true)
             .await?;
         self.hub.ci_append_log(&ctx, msg).await.map(Response::new)
+    }
+    async fn stats(
+        &self,
+        request: Request<wire::CiStatsRequest>,
+    ) -> Result<Response<wire::CiStatsResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
+            .await?;
+        self.hub.ci_stats(&ctx, msg).await.map(Response::new)
+    }
+
+    async fn compare_with_main(
+        &self,
+        request: Request<wire::CompareWithMainRequest>,
+    ) -> Result<Response<wire::CompareWithMainResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
+            .await?;
+        self.hub
+            .ci_compare_with_main(&ctx, msg)
+            .await
+            .map(Response::new)
     }
 }

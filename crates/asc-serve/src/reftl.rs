@@ -27,8 +27,12 @@ use crate::registry::{Ns, Registry};
 
 /// `[cloud] landed_ref_days` default; `0` disables the expiry.
 pub const DEFAULT_LANDED_REF_DAYS: u32 = 7;
-/// Marker rows one reaper run handles at most (SPEC §21.2.4: batches of 1,000).
+/// Marker rows one reaper page reads (SPEC §21.2.4: batches of 1,000).
 pub const REAP_BATCH: i64 = 1_000;
+/// Pages one reaper run reads at most.
+pub const MAX_REAP_PAGES: usize = 10;
+/// The fewest days a policy's `[stacks] cleanup_days` may be.
+const MIN_CLEANUP_DAYS: i64 = 1;
 /// Database lookups one land spends on markers; the rest of the refs wait for the next land.
 pub const MAX_LOOKUPS_PER_LAND: usize = 50_000;
 /// Parents one changeset may have for the marker walk; a changeset over it is unknown, not landed.
@@ -536,68 +540,95 @@ pub struct LandedReaper {
     registry: Arc<Registry>,
     expirer: Arc<Expirer>,
     days: u32,
+    view: crate::agents::repo::RepoView,
 }
 
 impl LandedReaper {
-    /// `days == 0` disables the expiry.
+    /// `days` is the server's setting; `0` disables the expiry for a repository whose policy does
+    /// not set `[stacks] cleanup_days`, which replaces it for that repository.
     pub fn new(registry: Arc<Registry>, expirer: Arc<Expirer>, days: u32) -> Self {
         Self {
+            view: crate::agents::repo::RepoView::new(registry.clone()),
             registry,
             expirer,
             days,
         }
     }
 
-    /// Deletes the refs whose marker is at least `landed_ref_days` old at `at`. Reads at most
-    /// [`REAP_BATCH`] markers through `user_ref_meta (ns, landed_at)`; the rest wait for the next
-    /// run.
+    /// The days a landed ref of `entry` is kept: the repository policy's `[stacks] cleanup_days`,
+    /// else the server's setting. `0` keeps it for ever. An unreadable or invalid policy file
+    /// leaves the server's setting in force.
+    async fn days_for(&self, entry: &crate::registry::RepoEntry) -> u32 {
+        match self.view.policy(entry).await {
+            Ok(state) => match &*state {
+                crate::agents::repo::PolicyState::Valid(p) => {
+                    p.stacks.cleanup_days.unwrap_or(self.days)
+                }
+                _ => self.days,
+            },
+            Err(_) => self.days,
+        }
+    }
+
+    /// Deletes the refs whose marker is at least as old as their repository keeps a landed ref
+    /// (see [`Self::days_for`]) at `at`. Reads markers through `user_ref_meta (ns, landed_at)` in
+    /// pages of [`REAP_BATCH`], at most [`MAX_REAP_PAGES`] pages; the rest wait for the next run.
+    /// A policy may keep a ref for as little as [`MIN_CLEANUP_DAYS`], so that is the oldest a
+    /// marker must be to be looked at.
     pub async fn run_once(&self, at: i64) -> Result<ReapReport, sqlx::Error> {
         let mut report = ReapReport::default();
-        if self.days == 0 {
-            return Ok(report);
-        }
-        let cutoff = at.saturating_sub(i64::from(self.days).saturating_mul(DAY));
-        let rows = sqlx::query(
-            "SELECT ns, owner, name, landed_at FROM user_ref_meta \
-             WHERE landed_at IS NOT NULL AND landed_at <= $1 \
-             ORDER BY landed_at, ns, owner, name LIMIT $2",
-        )
-        .bind(cutoff)
-        .bind(REAP_BATCH)
-        .fetch_all(self.registry.pool())
-        .await?;
+        let cutoff = at.saturating_sub(MIN_CLEANUP_DAYS.saturating_mul(DAY));
         let mut repos: HashMap<Vec<u8>, Vec<(i64, String)>> = HashMap::new();
-        for row in &rows {
-            let ns: Vec<u8> = row.try_get("ns")?;
-            let owner: i64 = row.try_get("owner")?;
-            let branch: String = row.try_get("name")?;
-            let landed_at: i64 = row.try_get("landed_at")?;
-            if !repos.contains_key(&ns) {
-                let found = sqlx::query("SELECT id, name FROM repos WHERE ns = $1")
-                    .bind(ns.clone())
-                    .fetch_all(self.registry.pool())
-                    .await?;
-                let list = found
-                    .iter()
-                    .filter_map(|r| Some((r.try_get("id").ok()?, r.try_get("name").ok()?)))
-                    .collect();
-                repos.insert(ns.clone(), list);
+        let mut after: (i64, Vec<u8>, i64, String) =
+            (i64::MIN, Vec::new(), i64::MIN, String::new());
+        for _ in 0..MAX_REAP_PAGES {
+            let rows = sqlx::query(
+                "SELECT ns, owner, name, landed_at FROM user_ref_meta                  WHERE landed_at IS NOT NULL AND landed_at <= $1                  AND (landed_at, ns, owner, name) > ($2, $3, $4, $5)                  ORDER BY landed_at, ns, owner, name LIMIT $6",
+            )
+            .bind(cutoff)
+            .bind(after.0)
+            .bind(after.1.clone())
+            .bind(after.2)
+            .bind(after.3.clone())
+            .bind(REAP_BATCH)
+            .fetch_all(self.registry.pool())
+            .await?;
+            for row in &rows {
+                let ns: Vec<u8> = row.try_get("ns")?;
+                let owner: i64 = row.try_get("owner")?;
+                let branch: String = row.try_get("name")?;
+                let landed_at: i64 = row.try_get("landed_at")?;
+                after = (landed_at, ns.clone(), owner, branch.clone());
+                if !repos.contains_key(&ns) {
+                    let found = sqlx::query("SELECT id, name FROM repos WHERE ns = $1")
+                        .bind(ns.clone())
+                        .fetch_all(self.registry.pool())
+                        .await?;
+                    let list = found
+                        .iter()
+                        .filter_map(|r| Some((r.try_get("id").ok()?, r.try_get("name").ok()?)))
+                        .collect();
+                    repos.insert(ns.clone(), list);
+                }
+                let stored = format!("{USER_NS}{owner}/heads/{branch}");
+                let mut any_repo = false;
+                for (repo_id, repo) in &repos[&ns] {
+                    any_repo = true;
+                    self.reap_one(*repo_id, repo, &stored, landed_at, at, &mut report)
+                        .await;
+                }
+                if !any_repo {
+                    self.drop_marker(&ns, owner, &branch).await;
+                    report.orphaned += 1;
+                }
+                // The marker goes when the ref is gone or was kept for a newer update; a failure
+                // or a lost race leaves it for the next run.
+                if self.ref_gone_everywhere(&repos[&ns], &stored).await {
+                    self.drop_marker(&ns, owner, &branch).await;
+                }
             }
-            let stored = format!("{USER_NS}{owner}/heads/{branch}");
-            let mut any_repo = false;
-            for (repo_id, repo) in &repos[&ns] {
-                any_repo = true;
-                self.reap_one(*repo_id, repo, &stored, landed_at, at, &mut report)
-                    .await;
-            }
-            if !any_repo {
-                self.drop_marker(&ns, owner, &branch).await;
-                report.orphaned += 1;
-            }
-            // The marker goes when the ref is gone or was kept for a newer update; a failure or
-            // a lost race leaves it for the next run.
-            if self.ref_gone_everywhere(&repos[&ns], &stored).await {
-                self.drop_marker(&ns, owner, &branch).await;
+            if i64::try_from(rows.len()).map_or(true, |n| n < REAP_BATCH) {
+                break;
             }
         }
         Ok(report)
@@ -672,6 +703,13 @@ impl LandedReaper {
         };
         if entry.mode == crate::registry::RepoMode::Mirror {
             report.kept += 1;
+            return;
+        }
+        // This repository keeps a landed ref for its own number of days (0: for ever); a marker
+        // that is not that old yet stays as it is.
+        let keep_days = self.days_for(&entry).await;
+        if keep_days == 0 || landed_at.saturating_add(i64::from(keep_days).saturating_mul(DAY)) > at
+        {
             return;
         }
         use asc_store::refs::Refs as _;

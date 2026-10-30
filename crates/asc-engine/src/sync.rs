@@ -98,6 +98,11 @@ pub trait Remote: Send + Sync {
     /// Name used in error messages and remote-tracking refs.
     fn name(&self) -> &str;
     async fn list_refs(&self) -> Result<Vec<RefEntry>>;
+    /// The branch the remote calls its default (its HEAD, the trunk its policy protects), by short
+    /// name, when it says so. A bucket has none, and neither has a server too old to report it.
+    async fn default_branch(&self) -> Result<Option<String>> {
+        Ok(None)
+    }
     async fn has_many(&self, keys: &[ObjKey]) -> Result<Vec<bool>>;
     /// Stored bytes (`codec ‖ data`) of the keys that exist, in any order.
     fn get_many(&self, keys: Vec<ObjKey>) -> BoxStream<'_, Result<(ObjKey, Bytes)>>;
@@ -300,6 +305,12 @@ pub const DEFAULT_ANCESTRY_BUDGET: usize = 100_000;
 pub trait SyncExt: Send + Sync {
     /// Extra objects to upload with a push whose closure holds the `new` changesets.
     fn extra_closure(&self, _new: &[ChangesetId]) -> Vec<ObjKey> {
+        Vec::new()
+    }
+    /// The stored bytes of extra objects the local store may not hold yet (a change meta is
+    /// recorded as a row, and its object is made when a push needs it). A push writes these to
+    /// the local store before it uploads [`extra_closure`](Self::extra_closure).
+    fn extra_objects(&self, _new: &[ChangesetId]) -> Vec<(ObjKey, Bytes)> {
         Vec::new()
     }
     /// Called with the verified `Log` entries a fetch receives.
@@ -1406,6 +1417,11 @@ impl<O: Objects, R: Refs> Engine<O, R> {
         let tag_keys: Vec<ObjKey> = tags.iter().map(|&t| ObjKey::Tag(t)).collect();
         let tag_keys = self.missing_on_remote(remote, tag_keys).await?;
         sent.extend(self.upload(remote, tag_keys, &mut report).await?);
+        for (key, stored) in opts.ext.extra_objects(&new_cs) {
+            if self.objects.get_stored(&key).await?.is_none() {
+                self.objects.put(&key, stored).await?;
+            }
+        }
         let mut extra = opts.ext.extra_closure(&new_cs);
         dedup_keys(&mut extra);
         let extra = self.missing_on_remote(remote, extra).await?;

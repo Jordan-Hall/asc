@@ -1,0 +1,160 @@
+syntax = "proto3";
+package asc.v1;
+
+// Organisation settings the asc server owns (docs/BUILDOUT.md section 28): the Agents card of Organization settings (are agents
+// allowed, must an agent's changes be approved by a person, a monthly spend ceiling), the organisation's default merge policy that
+// repositories inherit, the organisation's agent identities, and the instance's agent switch and default budget.
+//
+// Resolution order, most general to most specific; a later source may only tighten an earlier one:
+//   agents allowed        instance allow_agents  AND  organisation allow_agents  AND  repository policy [agents] enabled
+//   agent spend ceiling   the smallest non-zero of: instance default budget, organisation ceiling, the repository's monthly budget
+//   a person approves     organisation agent_changesets_need_person  OR  repository [review] human_approval (on by default)
+//   merge requirements    the organisation's defaults, then the repository's `.asc/policy.toml` on top: approvals take the larger
+//                         number, checks the union, allow_force the AND, signed/queue/revalidate/human_approval the OR,
+//                         author_may_approve the AND, and an organisation `strategy` that is set wins. A repository can never
+//                         loosen what its organisation requires; `ResolveMergePolicy` shows the effective values and which
+//                         repository values were tightened.
+//
+// Reading is for members (the hub's claim `org:<name>`, role read); changing is for owners (role admin). The instance calls are the
+// site administrator's. A caller without the role gets PERMISSION_DENIED. Mutating calls need `x-asc-op-id` and are written to the
+// audit log with the person and the host as the relay. Advertised as Version.features "orgsettings.v1".
+service OrgSettings {
+  rpc GetOrgSettings(GetOrgSettingsRequest) returns (GetOrgSettingsResponse);                 // org read
+  rpc SetAgentPolicy(SetOrgAgentPolicyRequest) returns (SetOrgAgentPolicyResponse);           // org admin; mutating
+  rpc SetMergeDefaults(SetOrgMergeDefaultsRequest) returns (SetOrgMergeDefaultsResponse);     // org admin; mutating
+  rpc ResolveMergePolicy(ResolveMergePolicyRequest) returns (ResolveMergePolicyResponse);     // org read
+  rpc ListAgents(ListOrgAgentsRequest) returns (ListOrgAgentsResponse);                       // org read
+  rpc CreateAgent(CreateOrgAgentRequest) returns (CreateOrgAgentResponse);                    // org admin; mutating
+  rpc UpdateAgent(UpdateOrgAgentRequest) returns (UpdateOrgAgentResponse);                    // org admin; mutating
+  rpc DeleteAgent(DeleteOrgAgentRequest) returns (DeleteOrgAgentResponse);                    // org admin; mutating
+  rpc GetInstanceAgents(GetInstanceAgentsRequest) returns (GetInstanceAgentsResponse);        // site admin
+  rpc SetInstanceAgents(SetInstanceAgentsRequest) returns (SetInstanceAgentsResponse);        // site admin; mutating
+}
+
+message OrgAgentPolicy {
+  bool allow_agents = 1;                       // default true
+  bool agent_changesets_need_person = 2;       // default true: a person approves what an agent proposes
+  uint64 monthly_spend_ceiling_micro_usd = 3;  // 0 = no organisation ceiling
+}
+
+// The organisation's default merge requirements. A repository inherits them and can only tighten.
+message MergeDefaults {
+  uint32 require_approvals = 1;
+  repeated string require_checks = 2;          // at most 32 names of 1 to 100 bytes
+  bool allow_force = 3;                        // default false
+  bool require_signed = 4;
+  bool human_approval = 5;                     // only people approve
+  bool author_may_approve = 6;
+  bool queue = 7;                              // land through the merge queue
+  bool revalidate = 8;
+  string strategy = 9;                         // "", "rebase", "rebase-disjoint" or "fast-forward"; "" leaves it to the repository
+  bool set = 10;                               // output only: the organisation has set defaults
+}
+
+message GetOrgSettingsRequest {
+  string org = 1;
+}
+message GetOrgSettingsResponse {
+  OrgAgentPolicy agents = 1;
+  MergeDefaults merge = 2;
+  uint32 agent_count = 3;
+  int64 updated = 4;
+  string updated_by = 5;
+  bool instance_allows_agents = 6;             // the instance switch, so a board can say why agents are off
+  uint64 instance_default_budget_micro_usd = 7;
+  uint64 effective_spend_ceiling_micro_usd = 8;   // the smallest non-zero of the instance default and the organisation ceiling
+}
+
+message SetOrgAgentPolicyRequest {
+  string org = 1;
+  OrgAgentPolicy agents = 2;
+}
+message SetOrgAgentPolicyResponse {
+  GetOrgSettingsResponse settings = 1;
+}
+
+message SetOrgMergeDefaultsRequest {
+  string org = 1;
+  MergeDefaults merge = 2;                     // replaces the defaults; empty values mean no requirement
+}
+message SetOrgMergeDefaultsResponse {
+  GetOrgSettingsResponse settings = 1;
+}
+
+// `repo` is "<org>/<name>"; `repo_values` are the repository's own values (from its policy).
+message ResolveMergePolicyRequest {
+  string org = 1;
+  string repo = 2;
+  MergeDefaults repo_values = 3;
+}
+message ResolveMergePolicyResponse {
+  MergeDefaults effective = 1;
+  repeated string tightened = 2;               // fields where the organisation's value overrode the repository's
+  MergeDefaults org = 3;
+}
+
+enum OrgAgentState {
+  ORG_AGENT_STATE_ACTIVE = 0;
+  ORG_AGENT_STATE_PAUSED = 1;
+}
+
+message OrgAgent {
+  string name = 1;                             // [a-z0-9-], 1 to 40 characters; the principal is "agent:<name>"
+  string display_name = 2;
+  string run_by = 3;                           // the person responsible for it
+  repeated string paths = 4;                   // path patterns it may write; at most 64
+  repeated string repos = 5;                   // "owner/name" it may act in; empty = every repository of the organisation
+  OrgAgentState state = 6;
+  int64 created = 7;
+  string created_by = 8;
+  int64 updated = 9;
+}
+
+message ListOrgAgentsRequest {
+  string org = 1;
+}
+message ListOrgAgentsResponse {
+  repeated OrgAgent agents = 1;
+}
+
+message CreateOrgAgentRequest {
+  string org = 1;
+  OrgAgent agent = 2;                          // name, display_name, run_by, paths, repos; at most 100 agents per organisation
+}
+message CreateOrgAgentResponse {
+  OrgAgent agent = 1;
+}
+
+message UpdateOrgAgentRequest {
+  string org = 1;
+  string name = 2;
+  optional string display_name = 3;
+  optional string run_by = 4;
+  optional OrgAgentState state = 5;
+  bool replace_paths = 6;
+  repeated string paths = 7;
+  bool replace_repos = 8;
+  repeated string repos = 9;
+}
+message UpdateOrgAgentResponse {
+  OrgAgent agent = 1;
+}
+
+message DeleteOrgAgentRequest {
+  string org = 1;
+  string name = 2;
+}
+message DeleteOrgAgentResponse {}
+
+message GetInstanceAgentsRequest {}
+message GetInstanceAgentsResponse {
+  bool allow_agents = 1;
+  uint64 default_budget_micro_usd = 2;         // 0 = none
+}
+message SetInstanceAgentsRequest {
+  bool allow_agents = 1;
+  uint64 default_budget_micro_usd = 2;
+}
+message SetInstanceAgentsResponse {
+  GetInstanceAgentsResponse settings = 1;
+}

@@ -2,6 +2,7 @@
 //! an engine [`Remote`], and the `state.db` boundary store behind the history window.
 
 pub mod bucket;
+pub mod demand;
 pub mod discover;
 pub mod git;
 pub mod projects;

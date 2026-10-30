@@ -235,7 +235,7 @@ and evaluated through the API and the hub shows it; every key below is parsed st
 - **Data:** `secret_findings(id, repo, rule_id, severity, state, path, line, col, changeset, change, fingerprint, preview, first_seen,
   last_seen, resolved_by, resolved_at, note)`, unique on `(repo, fingerprint, path)`.
 - **Config:** `[secrets] max_file_bytes` (1 MiB), `max_scan_bytes` (16 MiB), `max_files` (10,000). Policy keys on section 1.
-- **Errors:** `SECRET_DETECTED`. **Audit:** `secret.finding.updated`, `secret.push.blocked`.
+- **Errors:** `SECRET_DETECTED`. **Audit:** `secret.finding.updated`, `secret.push.blocked`, `secret.scan.run`.
 - **Hub:** repository security page listing findings; the push refusal text names rule and location only.
 - **Tests:** each built-in detector with positive and negative samples, fingerprints stable and not reversible, previews never show more
   than 2 characters, a planted secret never appears in logs or errors, bounded work on adversarial input, `block_on_push` off and on,
@@ -537,6 +537,230 @@ A client calls it with the user's own credential.
 - **Estimates and stream.** `QueueEntry.timing` has `eta_seconds`, `starts_in_seconds`, the stage, the progress and the detail the host reported;
   the median comes from the last 20 landings. `Watch` starts with the live entries, then streams every change from a cursor.
 
+## 21. Notification events for the hub
+
+- `asc-serve/src/notify/` (migration `0576`, table `notify_events`, in `NS_TABLES`). asc serve tells the hub when something happens that a person has
+  to know about; the hub decides who may be told and how (inbox, email, quiet hours). The call is `POST /api/internal/asc/event` on the `[forgejo]`
+  url with the internal token, body `{event, repo, users, title, detail, path}`, answer `{notified}`.
+- **Events.** `agent_question` (a permission, a plan or an `ask_user` question), `agent_finished` (not for a run the person cancelled), `checks_failed`
+  (a failed check run of a change, to its authors), `restack_conflict` (to the authors of the change that conflicted), `merge_queue` (landed, blocked or
+  dropped, to the person who queued it), `policy_changed` (an update of trunk changed `.asc/policy.toml`, an outbox effect `notify.policy`, to the
+  recent contributors), `review_requested` (to the people newly asked) and `mentioned` (an `@login` in a comment, once per comment).
+  The hub accepts all eight and tells each `x-asc-event-id` once (the id is `<namespace hex>-<row id>`, which matches `[A-Za-z0-9_.:-]{1,64}`).
+- **Limits, enforced here before the hub enforces them.** At most 50 logins per call (a longer list becomes several rows), title 200 bytes, detail
+  500 bytes, one line (control characters become spaces), path local to the hub (`/...`, not `//`, no spaces), a repository name `owner/name`.
+- **Outbox and retry.** `emit` writes a row and returns; it never fails the operation that caused the event. The dispatcher leases due rows, posts
+  them and records the outcome: delivered; refused (a `4xx` except 401, 403, 408, 425 and 429, or an answer it cannot read) is final (401 and 403 are retried: the internal token may be rotating); anything else backs off
+  from 1 s to 5 min. A row older than a day is given up; finished rows are deleted after a week. Each post carries `x-asc-event-id`, so a hub can drop a
+  redelivery. A key (`dedup`) makes a cause tell once per repository; a repository holds at most 2000 undelivered rows.
+- Without `[forgejo]` and its internal token nothing is queued. Every posted delivery and every refusal or give-up is audited (`notify.event.delivered`,
+  `notify.event.rejected`).
+- **Links.** `[notify]` sets `path_prefix` and the templates `change_path`, `run_path`, `queue_path` and `policy_path` (`{repo}`, `{change}`, `{run}`);
+  the defaults are `/{repo}/changes/{change}`, `/{repo}/agents/runs/{run}`, `/{repo}/merge-queue` and `/{repo}/settings/policy`, which the hub rewrites to its own pages.
+
+## 22. Review gaps: conflicts, drafts, secret check, undo preview, babysit
+
+- **Row 81, `Review.GetConflicts`** (repo read, expensive). The conflicts of a change's newest version with a target branch (default branch when empty),
+  hunk by hunk: `main` lines, `change` lines, `base` lines when the merge kept them, and the line each side starts at. Read from the marked file the
+  mergeability merge stores; a conflict that is not text (binary, modify/delete, file/dir, case) lists only the path and kind. The change stays open and
+  nothing is written; `held_back` lists the changes stacked on it. Bounds: 50 files, 20 hunks, 200 lines per side, a 1 MiB marked file.
+- **Row 111, `Review.DraftContext`** (repo read, expensive). What "Draft from the diff" is written from, for `base..head` (default branch and HEAD):
+  the subjects of the changesets, the files with summed line counts, the size and the risk with its reasons (the brief's classification), and
+  `nothing_to_compare`. The patch is read with `Repo.Diff`; the hub writes the text with the person's own key.
+- **Row 114, babysit.** `Agents.CreateRun` takes `for_change`: it must be 16 bytes and name a change that has a version in this repository (otherwise
+  `NOT_FOUND`), and `AgentRun.for_change` echoes it. The task text is the hub's.
+- **Row 119, `SecretScan.Check`** (repo write, expensive, records nothing). The scan of `Scan` for a `rev`, `change` or `range`, for a person about to
+  open a change. `blocks` says what the push gate would do under the policy in force: `[secrets] enabled` and `block_on_push`, with a secret found or a scan
+  that stopped before it read every file. A finding never carries the value.
+- **Row 294, `Stacks.UndoRef` dry run.** The answer lists the changes that leave the ref (`changes_back`, at most 100 in `changes`) and how many of them hold an
+  approval of their newest version, which stays (`approvals_kept`). The walk is bounded at 2000 changesets (`preview_truncated`).
+
+## 23. Agent profile privacy
+
+- `Agents.GetPerson` (repo read; cheap) returns the profile a person lets agents read: name, bio, location, website, pronouns. asc keeps no profiles; each call asks
+  the hub (`POST /api/internal/asc/agent-profile {login}` with the internal token) and returns `allowed: false` with nothing else when the person does not allow it, does
+  not exist, is not public, or the hub cannot be asked (no hub, no token, transport error, any status but 200, an unreadable answer). Errors are not cached; a refusal
+  and an answer are kept for 30 and 60 seconds. There is no email and no avatar in the answer, and none is added. Every call is audited (`agent.profile.read`:
+  login and whether it was allowed, never the values).
+
+## 24. Insights
+
+`Insights.GetStats` and `Insights.ListContributors` (repo read, expensive) are the data behind the Pulse tiles, the Contributors page and "Who writes the code".
+They need no more than repo read and count one repository only. A forwarded claim of the hub is checked as for every repo call.
+
+- **Landed change.** A changeset a land rewrote onto the default branch (`land_map_ref` joined with the `ref_log` entry of that update), counted once per change at
+  its first landing in the window. A land that rewrote nothing is not counted.
+- **Author.** An *agent* when an agent run's change list holds the change or the first version was published under an `agent:` principal; a *person* otherwise
+  (`run_by` is the person who started the run). A person's id is the one recorded with their first version, 0 for a token.
+- **Review time.** From the first version of a change to its first verdict (approved or changes requested). `median_review_seconds` is 0 when nothing landed was reviewed.
+  `agent_changes_reviewed` counts landed agent changes that hold an approval (only people can approve).
+- **Windows.** `days` (1 to 366, default 30) ending at `until` (default now); `landed_previous`, `stacks_opened_previous` and `median_review_previous` cover the window of
+  the same length before it. `kind` narrows the tiles, the series, the sizes and the weeks; `landed_by_people` and `landed_by_agents` are always over everyone.
+  `per_day` has an entry for every UTC day; `weekly` has the 12 weeks ending at `until`.
+- **Sizes.** From stored diff stats only; a landed changeset without one is `unknown`.
+- **Stacks opened.** Changes without a parent change that were first published in the window.
+- **Bounds.** 50,000 landed rows, 100,000 verdicts, 200 contributors; a cut sets `truncated` and the numbers are lower bounds.
+
+## 25. Policy keys of the Policy board
+
+`Repo.GetPolicy` (and `Policy.Validate`'s `parsed`) now answer every key the form edits, so a form needs no second parse of the file:
+`trunk.require_signed`; `agents.enabled`, `max_runtime_seconds`, `max_tokens`, `max_cost_micro_usd` (0 is no limit); `review`; `merge`; `stacks`.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `[review] author_may_approve` | false | the author of a change may approve it |
+| `[review] human_approval` | true | an approval from an agent does not count |
+| `[review] keep_approvals_on_restack` | true | an approval carries to a newer version when no file's patch changed; false makes every approval stand for its own version only (enforced when verdicts are listed and by the gate) |
+| `[review] dismiss` | admin | who may dismiss another person's verdict on a change: `admin`, `maintainer` (an admin or a member of the `maintainer` role) or `write` (anyone with write access); never an author or agent of the change; a dismissal names the version |
+| `[merge] queue`, `revalidate` | false, true | as before |
+| `[merge] batch` | 1 | entries the queue tests and lands together, 1 to 20 (read by the queue worker of the host; recorded and returned here) |
+| `[merge] post_merge_checks` | false | the checks of the policy run again on the landed tip (recorded and returned; the host runs them) |
+| `[stacks] max_depth` | none | the longest stack that may be queued, 1 to 100; a longer one is refused with `QUEUE_STACK_TOO_LONG` |
+| `[stacks] cleanup_days` | server setting | days after the last change of a stack lands before its refs are removed, 1 to 3650; the landed-ref reaper (`reftl.rs`) uses it in place of `[cloud] landed_ref_days` for this repository, and a repository that sets it is cleaned even when the server setting is 0 |
+| `[stacks] restack_on_main_move` | false | the host restacks open stacks when the default branch moves (recorded and returned; the host acts, the server does not restack by itself because a restack rewrites a person's refs and needs `Stacks.Restack` with that person's right) |
+| `[stacks] collaborators_may_push` | false | people with write access who did not start a stack may push onto it (recorded and returned; the host enforces) |
+
+A value out of range, or an unknown key in these sections, makes the file invalid with the key named. `strategy = "squash"` is not part of this change.
+
+## 26. Scheduled backups
+
+`backups.proto`, `crates/asc-serve/src/backups/`, migration 0590. Feature `backups.v1`, configuration `[backups]` (targets by name, a local directory or an S3 bucket;
+credentials only as environment variable names; endpoints https). The Admin Backups board: schedule (interval, anchor minute, retention in days then weeks),
+history with the result of each run, Back up now, Verify, and a restore that needs the word RESTORE. A run is `asc serve backup`; an S3 target is encrypted in
+4 MiB chunks (XChaCha20-Poly1305 under `[backups] key_file`) before upload and keeps a plain sidecar of stored sizes. Restore is staged: the backup must be
+verified, the marker `restore.pending.json` is written in `<data dir>/backups`, and the server applies it before opening its database at the next start. Site
+administrator only (the host's `instance` claim with role admin, or the host's own credential). Audit: `backup.started`, `backup.finished`, `backup.verified`,
+`backup.purged`, `backup.schedule.updated`, `backup.restore.staged`. Runbook: docs/runbooks/backup.md.
+
+## 27. Usage and quotas
+
+`usage.proto`, `crates/asc-serve/src/usage/`, migration 0591. Feature `usage.v1`, configuration `[usage] retention_days`. Four measures for a calendar month: storage
+and bandwidth from `usage_counters` (the host reports storage with `Report`; the server adds bandwidth), agent minutes from `agent_runs`, AI spend from
+`agent_spend` (organisation, instance) or the runs a person started (person). Spend on the owner's own keys and bring-your-own storage do not count against a quota.
+A person reads their own usage, an organisation's owners the organisation's, the site administrator the server's and sets quotas (`usage_quotas`; an owner
+without a limit inherits the instance default).
+
+## 28. Organisation settings
+
+`orgsettings.proto`, `crates/asc-serve/src/org/`, migration 0592. Feature `orgsettings.v1`. The Agents card, the default merge policy, organisation agent
+identities, and the instance's agent switch and default budget. Resolution order (a later source only tightens): agents allowed = instance AND organisation AND
+repository policy; spend ceiling = smallest non-zero of instance default, organisation ceiling and repository budget; a person approves = organisation OR
+repository `[review] human_approval`; merge requirements = organisation defaults under the repository's `.asc/policy.toml` (approvals the larger, checks the union,
+`allow_force` and `author_may_approve` AND, `require_signed`, `queue`, `revalidate`, `human_approval` OR, an organisation `strategy` wins). `org::policy::apply` is
+the function the land gate calls on `LandRequirements`; `OrgHub::agent_gate` is what the agent runtime asks before a run.
+
+## 29. Sessions
+
+`sessions.proto`, `crates/asc-serve/src/sessions/`. Feature `sessions.v1`. Lists and revokes the personal access tokens, SSH keys and agent tokens of a person
+(`tok:`, `ssh:`, `agt:` ids); the site administrator may do the same for any account. Another person's id is NOT_FOUND.
+
+## 30. Data export
+
+`dataexport.proto`, `crates/asc-serve/src/export/`, migration 0594. Feature `dataexport.v1`. An asynchronous job producing a JSON Lines archive of the caller's own
+data (metadata only, no secret), kept 7 days, streamed with `Download`. One at a time, one per 24 hours. Audit: `export.requested`, `export.finished`,
+`export.downloaded`, `export.deleted`.
+
+## 31. AI key sharing and cap rules
+
+`aikeyshares.proto`, `crates/asc-serve/src/ai/share.rs`, migration 0595. Feature `aikeyshares.v1` is advertised with `ai-keys.v1` (the service is mounted with the keys); the host gates its sharing pages on it. A user's or an
+organisation's key is shared with a user, organisation or repository; the grantee's runs use it after their own keys (`AiHub::resolve`), never see it, and the
+owner sees the use per sharer. `SetKeyCaps` adds the warning percentage (one audit event per month, `ai.key.cap.warning`) and the stop rule (`stop_at_cap`).
+
+## 32. Releases
+
+`Releases` keeps the record of a tagged release; the hub's pages and `asc release` read and write it. asc stores no asset bytes: an asset is a name, a size, a
+SHA-256 and the https address the bytes are served from.
+
+- **Notes.** `DraftNotes` lists the changesets in `from..to` (default: the newest published release to the default branch), newest first, at most 500. A change
+  is grouped by a `Release-Note: added|changed|fixed|skip` trailer, else by the leading word of its subject (`feat`/`add` is added, `fix`/`bug` is fixed), else
+  "changed"; `skip` leaves it out. Each note names its change (when the change index knows the changeset), its author and whether an agent made it. `markdown`
+  is the same text as "### Added", "### Changed", "### Fixed".
+- **Next.** The newest published release, the number of changesets since it, a proposed tag (`v1.2.3` becomes `v1.2.4`; any other tag gets none) and an existing draft.
+- **Create.** Tag 1 to 128 characters of letters, digits and `._+-/`; notes up to 64 KiB; at most 100 assets whose SHA-256 is 64 lowercase hex characters and whose
+  address, when given, is https; a tag is taken once (`ALREADY_EXISTS`). The server computes the provenance and keeps it: the jobs of the run that built the release
+  (`build_source` and `build_run` name a run reported with `Ci.ReportRun`; passed and total jobs, skipped jobs not counted) and the signature on the release commit
+  (the key's owner and fingerprint, and whether it was valid when submitted). `previous_tag` and `changes` say how many changesets are new since the previous release.
+- **Drafts.** `draft = true` keeps a release unpublished; only writers list, read or publish it.
+- Audit actions: `release.created`, `release.published`.
+
+## 33. Hub integration guide for sections 26 to 31
+
+How the hub calls these services. Every call is made with the hub's service credential (principal `host-service`) and, for a person, the
+forwarded claim (`asc-rpc::forwarded`): the person `<id>:<login>`, a role `read`, `write` or `admin`, and the subject the hub's own check
+produced. The claim is the whole of the caller's authority; a claim for another subject, a too-small role, a stale or unsigned claim is
+`PERMISSION_DENIED` (or `NOT_FOUND` for an id owned by someone else: key ids, session ids, export ids, share ids). Mutating calls carry
+`x-asc-op-id` (a UUID); a retry with the same id and the same person gets the first answer. No call returns a secret.
+
+| Subject | Hub check | Claim subject | Role |
+| --- | --- | --- | --- |
+| a person's own account | the signed-in user | `user:<login>` | read to look, write to change |
+| an organisation | owner of the organisation (members read) | `org:<name>` | admin to change, read to look |
+| the server | site administrator | `instance` | admin |
+
+Error codes you will meet: `PERMISSION_DENIED` (no right on the subject), `NOT_FOUND` (no such id, or not yours), `INVALID_ARGUMENT`
+(a bound or spelling; the message names the field), `FAILED_PRECONDITION` (a run is going, no such backup target, verify before restore,
+the export is not ready), `RESOURCE_EXHAUSTED` (one export per 24 hours, 50 shares per key, 100 agents per organisation, a quota),
+`ALREADY_EXISTS` (an agent name), `UNAVAILABLE` with "read-only" (a restore is staged: no ref moves until the restart).
+
+### Backups (`asc.v1.Backups`, subject `instance`, role admin)
+
+* Board load: `ListBackups{limit}` gives `backups[]` (state, size, verify, note, progress `done_bytes/total_bytes`, `restorable`), the `schedule`
+  (`next_run`, retention) and `status` (`overdue`, `last_success`, `running`, `restore_staged`, `configured`). Poll it every few seconds
+  while `status.running`. `ListTargets` fills the target select.
+* Back up now / Retry: `RunBackup{target}` (empty target = the schedule's) returns the running row.
+* Edit: `SetSchedule{schedule}`; Verify: `VerifyBackup{id}`, then poll `ListBackups` for `verify`.
+* Restore dialog: `PreviewRestore{id}` gives `confirmation` ("RESTORE"), `loses_changes_since`, `warnings`; the button sends
+  `Restore{id, confirm}` with the typed word. The answer says `restart_required`: the restore is applied when `asc serve` restarts, and
+  until then `status.restore_staged` is true and the server refuses ref updates (read-only).
+* Restore only works on a backup the server verified and that still matches the record it made of it; any other state is
+  `FAILED_PRECONDITION` and the restore row in `ListBackups.status` is not staged.
+
+### Usage (`asc.v1.Usage`)
+
+* Usage and quota page of a person: `GetUsage{owner: USER login}` (claim `user:<login>` read) gives the four meters (`used`, `limit`, `over`),
+  `byo_ai_spend_micro_usd` and `byo_storage` for the "BYO does not count" note, `empty`, `over_quota`, `resets_at` and `repos[]` for the table.
+  `period` ("YYYY-MM") picks an earlier month. Organisation page: the same with owner ORG and claim `org:<name>` admin.
+* Spend and Budget panels: `ListSpend{owner, group_by KEY|USER|REPO|DAY|MONTH, since, until}`; `GetQuota{owner}` for the "of N" text.
+* The site administrator reads any account with the `instance` admin claim (written to the audit log as `usage.admin.read`) and sets limits
+  with `SetQuota{owner, quota}` (owner INSTANCE sets the default).
+* The hub feeds storage: `Report{repo, storage_bytes, byo_storage}` after a push or on a timer, with `x-asc-op-id`. Bandwidth out is counted
+  by the server itself (object fetches and git smart-HTTP).
+
+### Organisation settings (`asc.v1.OrgSettings`, subject `org:<name>`)
+
+* Options page: `GetOrgSettings{org}` (read) gives `agents` (allow, a person approves, monthly ceiling), `merge` (the default merge policy,
+  `set` says whether any is set), `agent_count`, `instance_allows_agents` and `effective_spend_ceiling_micro_usd`. Save with
+  `SetAgentPolicy` / `SetMergeDefaults` (admin). New organisation form: call `SetAgentPolicy` with the "Allow agents" switch.
+* Repository policy editor: `ResolveMergePolicy{org, repo, repo_values}` returns `effective` and `tightened[]`, the fields the organisation
+  overrides, so the editor can say "your organisation requires 2 approvals". The server enforces the same rule at landing (approvals, checks,
+  signature) and at agent run creation (organisation switch, instance switch, monthly ceiling).
+* People and Teams pages: `ListAgents{org}`, `CreateAgent`, `UpdateAgent{state: PAUSED}`, `DeleteAgent`. Server settings: `GetInstanceAgents`,
+  `SetInstanceAgents` (site administrator).
+
+### Sessions (`asc.v1.Sessions`, subject `user:<login>`)
+
+* Security page: `ListSessions{}` for the signed-in person (claim `user:<login>` read) gives tokens (`tok:`), SSH keys (`ssh:`) and agent tokens
+  (`agt:`) with created, last used and expiry. "Sign out" = `RevokeSession{id}` (write); "Sign out everywhere else" =
+  `RevokeOtherSessions{keep_id}`. Admin user page: the same calls with `login` set and the `instance` admin claim. The hub's own browser
+  sessions stay the hub's.
+
+### Data export (`asc.v1.DataExport`, subject `user:<login>`)
+
+* "Export your data": `RequestExport` (write) returns a job; poll `GetExport{id}` until `state` is READY (or FAILED with `error`). Mail the
+  person a link to a hub route that calls `Download{id}` (server stream of `ExportChunk{offset,data,last}`) and relays the bytes. The archive is
+  deleted after `expires` (7 days); `DeleteExport` removes it earlier. A second request within 24 hours is `RESOURCE_EXHAUSTED`.
+
+### AI keys (`asc.v1.AiKeyShares` beside `AiProviders`)
+
+* Key page of a person or organisation (claim `user:<login>` write, or `org:<name>` admin): `ShareKey{key_id, grantee USER|ORG|REPO,
+  allow_use, see_spend}`, `ListShares{key_id}`, `RevokeShare`, `ShareUsage{key_id}` (use per sharer, the owner's own use last),
+  `GetKeyCaps` / `SetKeyCaps{warn_percent, stop_at_cap}` (the monthly cap itself is `AiProviders.UpdateKey`). `stop_at_cap` off means the
+  key's own cap only warns; the instance cap always stops. Without a caps row the cap is a hard stop (`AI_CAP_REACHED`).
+* Grantee side: `ListSharedWithMe{grantee}` (organisation admin, repository admin or the person) shows label, provider, `usable` and, when the
+  owner allows `see_spend`, the grantee's own spend this month. Never the key.
+* Resolution order of a run: repository keys and keys shared with it, the organisation's and those shared with it, the starter's and those shared with
+  them, then the instance's.
+
 ## Error codes
 
 All are `ErrorDetail.code` values, registered in `crates/asc-rpc/src/errors.rs` and mapped in `server.rs`; the test
@@ -588,7 +812,7 @@ string is present.
 <a id="rpc-index"></a>
 ## RPC index
 
-Every method of the build-out services (90). A test keeps this list equal to the protos.
+Every method of the build-out services (98). A test keeps this list equal to the protos.
 
 <!-- rpc-index:begin -->
 **Policy** (`policy.proto`)
@@ -602,6 +826,7 @@ Every method of the build-out services (90). A test keeps this list equal to the
 
 - `asc.v1.SecretScan/ListRules` — repo read
 - `asc.v1.SecretScan/Scan` — repo admin; expensive; records findings
+- `asc.v1.SecretScan/Check` — repo write; expensive; records nothing; says whether the push gate would refuse
 - `asc.v1.SecretScan/ListFindings` — repo admin; paged
 - `asc.v1.SecretScan/UpdateFinding` — repo admin; mutating
 
@@ -702,6 +927,7 @@ Every method of the build-out services (90). A test keeps this list equal to the
 - `asc.v1.Agents/ListAgents` — repo read
 - `asc.v1.Agents/GetSpend` — repo read
 - `asc.v1.Agents/SetMonthlyBudget` — repo admin; mutating
+- `asc.v1.Agents/GetPerson` — repo read; the profile a person lets agents read, asked of the hub each time; fails closed
 
 **AgentTokens** (`agents.proto`)
 
@@ -740,7 +966,52 @@ Every method of the build-out services (90). A test keeps this list equal to the
 - `asc.v1.DepsService/ListFindings` — repo read; paged
 - `asc.v1.DepsService/ListUpdates` — repo read; calls the registries
 - `asc.v1.DepsService/ProposeUpdate` — repo maintainer; mutating; never trunk
+- `asc.v1.Insights/GetStats` — repo read; expensive; landed, stacks opened, review time, author mix
+- `asc.v1.Insights/ListContributors` — repo read; expensive; landed and reviews per person and agent
+- `asc.v1.Releases/DraftNotes` — repo read; expensive; the changes since a release, grouped
+- `asc.v1.Releases/Next` — repo read; changes since the latest release and a proposed tag
+- `asc.v1.Releases/Create` — repo write; mutating; a draft or a published release
+- `asc.v1.Releases/Publish` — repo write; mutating
+- `asc.v1.Releases/List` — repo read (drafts: repo write); paged
+- `asc.v1.Releases/Get` — repo read (a draft: repo write)
 - `asc.v1.DepsService/SetConfig` — repo maintainer; mutating; never trunk
 - `asc.v1.DepsService/GetConfig` — repo read
 - `asc.v1.DepsService/Dismiss` — repo maintainer; mutating
+- `asc.v1.Backups/ListBackups` — site admin
+- `asc.v1.Backups/ListTargets` — site admin
+- `asc.v1.Backups/RunBackup` — site admin
+- `asc.v1.Backups/SetSchedule` — site admin
+- `asc.v1.Backups/VerifyBackup` — site admin
+- `asc.v1.Backups/PreviewRestore` — site admin
+- `asc.v1.Backups/Restore` — site admin
+- `asc.v1.Usage/GetUsage` — owner: the four measures and the repository table
+- `asc.v1.Usage/ListSpend` — owner: AI spend grouped by key, user, repository, day or month
+- `asc.v1.Usage/GetQuota` — owner: the limits that apply
+- `asc.v1.Usage/SetQuota` — site admin
+- `asc.v1.Usage/Report` — host service or site admin
+- `asc.v1.OrgSettings/GetOrgSettings` — org read
+- `asc.v1.OrgSettings/SetAgentPolicy` — org admin
+- `asc.v1.OrgSettings/SetMergeDefaults` — org admin
+- `asc.v1.OrgSettings/ResolveMergePolicy` — org read
+- `asc.v1.OrgSettings/ListAgents` — org read
+- `asc.v1.OrgSettings/CreateAgent` — org admin
+- `asc.v1.OrgSettings/UpdateAgent` — org admin
+- `asc.v1.OrgSettings/DeleteAgent` — org admin
+- `asc.v1.OrgSettings/GetInstanceAgents` — site admin
+- `asc.v1.OrgSettings/SetInstanceAgents` — site admin
+- `asc.v1.Sessions/ListSessions`
+- `asc.v1.Sessions/RevokeSession` — mutating
+- `asc.v1.Sessions/RevokeOtherSessions` — mutating
+- `asc.v1.DataExport/RequestExport` — mutating
+- `asc.v1.DataExport/ListExports`
+- `asc.v1.DataExport/GetExport`
+- `asc.v1.DataExport/Download` — a ready archive, in chunks of at most 1 MiB
+- `asc.v1.DataExport/DeleteExport` — mutating
+- `asc.v1.AiKeyShares/ShareKey` — key owner
+- `asc.v1.AiKeyShares/ListShares` — key owner
+- `asc.v1.AiKeyShares/RevokeShare` — key owner
+- `asc.v1.AiKeyShares/ShareUsage` — key owner: use per sharer
+- `asc.v1.AiKeyShares/ListSharedWithMe` — grantee administrators
+- `asc.v1.AiKeyShares/GetKeyCaps` — key owner
+- `asc.v1.AiKeyShares/SetKeyCaps` — key owner
 <!-- rpc-index:end -->

@@ -321,7 +321,8 @@ impl ServerMutations {
             &o.entry,
             o.windows_safe,
         )
-        .by(owner);
+        .by(owner)
+        .staged_for(&ctx.principal.id);
         if let Some(owner) = owner {
             let left = quota
                 .remaining(self.registry.pool(), o.entry.ns, owner)

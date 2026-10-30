@@ -435,7 +435,8 @@ async fn a_write_through_the_pipeline_reaches_a_plain_clone_of_the_bridge() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_repeated_delivery_changes_nothing_and_a_row_of_the_hosts_own_git_is_left_alone() {
+async fn a_repeated_delivery_changes_nothing_and_a_row_of_the_hosts_own_git_waits_for_it_then_makes_the_directory_right()
+ {
     let env = Env::start().await;
     let git = &env.git;
     let a = git.repo("a", &env.url()).await;
@@ -451,8 +452,13 @@ async fn a_repeated_delivery_changes_nothing_and_a_row_of_the_hosts_own_git_is_l
     assert_eq!(env.bridge_ref("refs/heads/master").await, Some(c1.clone()));
 
     // A push the host's own git finishes (ImportGitPush) moves the bridge ref itself: the effect
-    // must not race it.
-    git.commit(&a, "f", "two\n", "two").await;
+    // must not race it. It waits for that git instead (the row stays, to be tried again).
+    let c2 = git
+        .commit(
+            &a, "f", "two
+", "two",
+        )
+        .await;
     assert!(git.run(&a, &["push", "origin", "master"]).await.ok);
     sqlx::query(
         "UPDATE ref_log SET via = 'host-git-push' WHERE seq = (SELECT MAX(seq) FROM ref_log)",
@@ -462,12 +468,91 @@ async fn a_repeated_delivery_changes_nothing_and_a_row_of_the_hosts_own_git_is_l
     .unwrap();
     env.deliver().await;
     assert_eq!(env.bridge_ref("refs/heads/master").await, Some(c1.clone()));
+    assert_eq!(
+        env.undelivered().await,
+        1,
+        "the row waits for the host's git"
+    );
 
-    // Any later row converges the bridge on asc's current value.
-    let c3 = git.commit(&a, "f", "three\n", "three").await;
+    // The host's git never finished that push (it was killed after its hook, or the host restarted), and
+    // asc holds the commit: after the tries it gives, the row makes the directory right itself.
+    sqlx::query("UPDATE outbox SET attempts = 3, next_at = 0 WHERE done_at IS NULL")
+        .execute(env.registry.pool())
+        .await
+        .unwrap();
+    env.deliver().await;
+    assert_eq!(env.bridge_ref("refs/heads/master").await, Some(c2.clone()));
+    assert_eq!(env.undelivered().await, 0);
+
+    // A push the host's git did finish: the directory already holds the ref and its commit, and the
+    // row passes at once, without a try more.
+    let c3 = git
+        .commit(
+            &a, "f", "three
+", "three",
+        )
+        .await;
+    assert!(git.run(&a, &["push", "origin", "master"]).await.ok);
+    sqlx::query(
+        "UPDATE ref_log SET via = 'host-git-push' WHERE seq = (SELECT MAX(seq) FROM ref_log)",
+    )
+    .execute(env.registry.pool())
+    .await
+    .unwrap();
+    let finished = env.job(&["refs/heads/master"]);
+    env.effect.run(&finished).await.unwrap(); // stands for the host's git moving the ref
+    assert_eq!(env.bridge_ref("refs/heads/master").await, Some(c3.clone()));
+    env.deliver().await;
+    assert_eq!(env.undelivered().await, 0);
+    assert_eq!(env.bridge_ref("refs/heads/master").await, Some(c3));
+}
+
+/// The state of the bug seen on staging: a ref of the host's directory names a commit the directory does not
+/// hold (or a ref asc has is missing). Nothing was queued for it, so only a look at the directory finds it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_directory_that_lost_commits_or_refs_is_made_right_at_start() {
+    let env = Env::start().await;
+    let git = &env.git;
+    let a = git.repo("a", &env.url()).await;
+    let c1 = git
+        .commit(
+            &a, "f", "one
+", "one",
+        )
+        .await;
     assert!(git.run(&a, &["push", "origin", "master"]).await.ok);
     env.deliver().await;
-    assert_eq!(env.bridge_ref("refs/heads/master").await, Some(c3));
+    assert_eq!(env.bridge_ref("refs/heads/master").await, Some(c1.clone()));
+
+    // The directory is right: nothing to do.
+    assert_eq!(env.effect.clone().reconcile_all().await, 0);
+
+    // The commits are gone while the ref stays (the push was never finished by the host's git).
+    for entry in std::fs::read_dir(env.bridge.join("objects")).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() && path.file_name().is_some_and(|n| n.len() == 2) {
+            std::fs::remove_dir_all(path).unwrap();
+        }
+    }
+    assert!(!git.run(&env.bridge, &["cat-file", "-e", &c1]).await.ok);
+    assert_eq!(env.effect.clone().reconcile_all().await, 1);
+    assert_eq!(env.bridge_ref("refs/heads/master").await, Some(c1.clone()));
+    let clone = env.clone_bridge("healed").await;
+    assert_eq!(
+        git.run(&clone, &["rev-parse", "HEAD"]).await.stdout.trim(),
+        c1
+    );
+
+    // The ref is gone too (a restored volume).
+    assert!(
+        git.run(&env.bridge, &["update-ref", "-d", "refs/heads/master"])
+            .await
+            .ok
+    );
+    assert_eq!(env.bridge_ref("refs/heads/master").await, None);
+    assert_eq!(env.effect.clone().reconcile_all().await, 1);
+    assert_eq!(env.bridge_ref("refs/heads/master").await, Some(c1));
+    assert_eq!(env.effect.clone().reconcile_all().await, 0);
 }
 
 #[tokio::test(flavor = "multi_thread")]

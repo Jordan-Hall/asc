@@ -17,8 +17,9 @@ mod forgejo {
     use asc_rpc::server::{CallCtx, RepoName};
     use asc_serve::config::CompositionGrant;
     use asc_serve::forgejo::{
-        AuthzCacheConfig, ForgejoClient, ForgejoHooks, HookClient, HookOptions, InternalAuthz,
-        InternalToken, PostReceiveEffect, PublicApiAuthz, RepoIdBinding, RunFinishedEffect,
+        AuthzCacheConfig, BridgeHold, BridgeSlot, ForgejoClient, ForgejoHooks, HookClient,
+        HookOptions, InternalAuthz, InternalToken, PostReceiveEffect, PublicApiAuthz,
+        RepoIdBinding, RunFinishedEffect,
     };
     use asc_serve::outbox::{Effect, Job};
     use asc_serve::registry::{NewRepo, Registry, SqlGitMap};
@@ -1819,6 +1820,156 @@ mod forgejo {
             .await
             .unwrap_err();
         assert_eq!(e.0, "no such branch");
+    }
+
+    /// A forge git directory that only remembers the hold refs made in it.
+    #[derive(Default)]
+    struct FakeHold {
+        refs: Mutex<std::collections::BTreeSet<String>>,
+        fail_hold: Mutex<bool>,
+        fail_release: Mutex<bool>,
+    }
+
+    impl FakeHold {
+        fn refs(&self) -> Vec<String> {
+            self.refs.lock().unwrap().iter().cloned().collect()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl BridgeHold for FakeHold {
+        async fn hold(
+            &self,
+            _repo: &Arc<asc_serve::registry::RepoEntry>,
+            items: &[(String, ChangesetId)],
+        ) -> Result<(), String> {
+            self.refs
+                .lock()
+                .unwrap()
+                .extend(items.iter().map(|(n, _)| n.clone()));
+            if *self.fail_hold.lock().unwrap() {
+                return Err("disk full".into());
+            }
+            Ok(())
+        }
+
+        async fn release(
+            &self,
+            _repo: &Arc<asc_serve::registry::RepoEntry>,
+            names: &[String],
+        ) -> Result<(), String> {
+            if *self.fail_release.lock().unwrap() {
+                return Err("locked".into());
+            }
+            let mut refs = self.refs.lock().unwrap();
+            for n in names {
+                refs.remove(n);
+            }
+            Ok(())
+        }
+
+        async fn held(
+            &self,
+            _repo: &Arc<asc_serve::registry::RepoEntry>,
+        ) -> Result<Vec<String>, String> {
+            Ok(self.refs())
+        }
+    }
+
+    fn hold_ref(b: u8) -> String {
+        format!("refs/asc/for/{}", format!("{b:02x}").repeat(32))
+    }
+
+    async fn submit_hooks(url: &str) -> (Arc<ForgejoHooks>, Arc<FakeHold>, tempfile::TempDir) {
+        let (registry, dir) = registry().await;
+        map_commit(&registry, [2; 32], [0xbb; 20]).await;
+        let slot = BridgeSlot::default();
+        let hold = Arc::new(FakeHold::default());
+        slot.set(hold.clone());
+        let hooks = Arc::new(
+            ForgejoHooks::new(HookClient::new(client(url, true)), registry).with_bridge(slot),
+        );
+        (hooks, hold, dir)
+    }
+
+    fn submit_update() -> [HookUpdate; 1] {
+        [HookUpdate {
+            name: "refs/for/master/asc-0102".into(),
+            old: None,
+            new: Some(target(2)),
+        }]
+    }
+
+    #[tokio::test]
+    async fn the_hold_of_a_submit_is_gone_when_the_forge_has_answered_or_refused() {
+        let (fake, url) = start().await;
+        let (hooks, hold, _dir) = submit_hooks(&url).await;
+        let repo = RepoName::parse("o/r").unwrap();
+        let principal = Principal {
+            id: "7:alice".into(),
+        };
+        let updates = submit_update();
+        let req = HookRequest {
+            repo: &repo,
+            op_id: Uuid::new_v4(),
+            principal: &principal,
+            updates: &updates,
+            push_options: &[],
+        };
+
+        // An answer: the hold was there for the call and is removed after it.
+        fake.with(|i| i.proc_answer = Some(json!({"Results": []})));
+        hooks.proc_receive(&req).await.unwrap();
+        assert!(hold.refs().is_empty(), "{:?}", hold.refs());
+
+        // A refusal of the forge, and an abort after it, leave nothing.
+        fake.with(|i| i.proc_answer = Some(json!({"Results": [], "Err": "no such branch"})));
+        hooks.proc_receive(&req).await.unwrap_err();
+        hooks.abort(&req).await;
+        assert!(hold.refs().is_empty());
+
+        // A hold that failed half way is removed too.
+        *hold.fail_hold.lock().unwrap() = true;
+        hooks.proc_receive(&req).await.unwrap_err();
+        assert!(hold.refs().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_hold_another_submit_still_needs_is_kept_and_an_orphan_is_swept_after_the_ttl() {
+        let (fake, url) = start().await;
+        fake.with(|i| i.proc_answer = Some(json!({"Results": []})));
+        let (hooks, hold, _dir) = submit_hooks(&url).await;
+        let repo = RepoName::parse("o/r").unwrap();
+        let principal = Principal {
+            id: "7:alice".into(),
+        };
+        let updates = submit_update();
+        let req = HookRequest {
+            repo: &repo,
+            op_id: Uuid::new_v4(),
+            principal: &principal,
+            updates: &updates,
+            push_options: &[],
+        };
+
+        // A release that fails leaves the ref for the sweep.
+        *hold.fail_release.lock().unwrap() = true;
+        hooks.proc_receive(&req).await.unwrap();
+        assert_eq!(hold.refs(), vec![hold_ref(2)]);
+        *hold.fail_release.lock().unwrap() = false;
+        // A ref nothing in this process owns, in the same directory.
+        hold.refs.lock().unwrap().insert(hold_ref(9));
+
+        let ttl = Duration::from_secs(900);
+        let t0 = std::time::Instant::now();
+        // The first sighting only marks; nothing is younger-than-ttl removed.
+        assert_eq!(hooks.sweep_orphans(t0, ttl).await, 0);
+        assert_eq!(hooks.sweep_orphans(t0 + ttl / 2, ttl).await, 0);
+        assert_eq!(hold.refs().len(), 2);
+        assert_eq!(hooks.sweep_orphans(t0 + ttl, ttl).await, 2);
+        assert!(hold.refs().is_empty());
+        // Nothing else is touched afterwards.
+        assert_eq!(hooks.sweep_orphans(t0 + ttl * 3, ttl).await, 0);
     }
 
     #[tokio::test]

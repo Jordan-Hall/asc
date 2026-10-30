@@ -142,6 +142,7 @@ fn describe(
                 require_approvals: p.trunk.require_approvals,
                 require_checks: p.trunk.require_checks.clone(),
                 allow_force: p.trunk.allow_force,
+                require_signed: p.signing.require_signed,
             });
             out.paths = p
                 .paths
@@ -156,6 +157,28 @@ fn describe(
                 denied_paths: globs(&p.agents.denied_paths),
                 max_changes_per_run: p.agents.budgets.max_changes_per_run.unwrap_or(0),
                 max_paths_per_run: p.agents.budgets.max_paths_per_run.unwrap_or(0),
+                enabled: p.agents.enabled,
+                max_runtime_seconds: p.agents.max_runtime_seconds.unwrap_or(0),
+                max_tokens: p.agents.budgets.max_tokens.unwrap_or(0),
+                max_cost_micro_usd: p.agents.budgets.max_cost_micro_usd.unwrap_or(0),
+            });
+            out.review = Some(wire::PolicyReview {
+                author_may_approve: p.review.author_may_approve,
+                human_approval: p.review.human_approval,
+                keep_approvals_on_restack: p.review.keep_approvals_on_restack,
+                dismiss: p.review.dismiss.as_str().to_owned(),
+            });
+            out.merge = Some(wire::PolicyMerge {
+                queue: p.merge.queue,
+                revalidate: p.merge.revalidate,
+                batch: p.merge.batch,
+                post_merge_checks: p.merge.post_merge_checks,
+            });
+            out.stacks = Some(wire::PolicyStacks {
+                max_depth: p.stacks.max_depth.unwrap_or(0),
+                cleanup_days: p.stacks.cleanup_days.unwrap_or(0),
+                restack_on_main_move: p.stacks.restack_on_main_move,
+                collaborators_may_push: p.stacks.collaborators_may_push,
             });
             out.merge_strategy = p.strategy.as_str().to_owned();
             out.decisions = paths

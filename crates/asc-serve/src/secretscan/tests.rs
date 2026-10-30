@@ -236,6 +236,42 @@ async fn scanning_again_keeps_one_finding_and_its_first_sighting() {
 }
 
 #[tokio::test]
+async fn a_scan_on_demand_leaves_an_audit_event_with_counts_and_never_the_value() {
+    let (s, _) = with_a_planted_token().await;
+    s.svc
+        .scan(call(scan_rev("master"), Some("admin"), false))
+        .await
+        .unwrap();
+    s.svc
+        .scan(call(scan_rev("master"), Some("admin"), false))
+        .await
+        .unwrap();
+    let details: Vec<String> = sqlx::query_scalar(
+        "SELECT details_json FROM audit_events WHERE action = 'secret.scan.run' AND scope_kind = 'repo' ORDER BY seq",
+    )
+    .fetch_all(s.f.reg.pool())
+    .await
+    .unwrap();
+    assert_eq!(details.len(), 2, "one event for each scan");
+    assert!(
+        details
+            .iter()
+            .all(|d| d.contains("findings") && d.contains("files"))
+    );
+    assert!(details.iter().all(|d| !d.contains(&token()[4..])));
+    // A check records nothing: it is not a scan of the repository.
+    s.svc
+        .check(call(check_rev("master"), Some("writer"), false))
+        .await
+        .unwrap();
+    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM audit_events WHERE action = 'secret.scan.run' AND scope_kind = 'repo'")
+        .fetch_one(s.f.reg.pool())
+        .await
+        .unwrap();
+    assert_eq!(n, 2);
+}
+
+#[tokio::test]
 async fn paths_narrow_a_scan_and_bad_requests_are_refused() {
     let (s, _) = with_a_planted_token().await;
     let mut req = scan_rev("master");
@@ -669,4 +705,89 @@ async fn a_tree_walk_cut_short_says_the_scan_was_truncated() {
         resp.truncated,
         "a scan that left files unvisited must say so"
     );
+}
+
+fn check_rev(rev: &str) -> wire::CheckSecretsRequest {
+    wire::CheckSecretsRequest {
+        repo: repo_ref(),
+        at: Some(wire::check_secrets_request::At::Rev(rev.into())),
+        paths: vec![],
+    }
+}
+
+#[tokio::test]
+async fn a_writer_can_check_what_the_gate_would_refuse_and_nothing_is_recorded() {
+    let (s, t) = with_a_planted_token().await;
+    let got = s
+        .svc
+        .check(call(check_rev("master"), Some("writer"), false))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(got.blocks && got.block_on_push);
+    assert_eq!(got.files_scanned, 2);
+    assert_eq!(got.findings.len(), 1, "{:?}", got.findings);
+    let f = &got.findings[0];
+    assert_eq!((f.rule_id.as_str(), f.line), ("github-token", 2));
+    assert_eq!(f.path.as_ref(), b"conf/app.toml");
+    assert_eq!(f.id, 0, "nothing is stored");
+    assert!(
+        !format!("{got:?}").contains(&t),
+        "the value is never returned"
+    );
+    // An administrator sees no finding: the check recorded none.
+    let listed = s
+        .svc
+        .list_findings(call(list_all(), Some("admin"), false))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(listed.findings.is_empty(), "{listed:?}");
+    // Checking a change the same way: what its newest version adds.
+    let clean = commit(&s.f.e, &[], &[("src/main.rs", b"fn main() {}\n")]).await;
+    s.f.set_master(clean).await;
+    let ok = s
+        .svc
+        .check(call(check_rev("master"), Some("writer"), false))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(!ok.blocks && ok.findings.is_empty() && !ok.truncated);
+}
+
+#[tokio::test]
+async fn a_check_needs_write_and_refuses_what_is_unknown() {
+    let (s, _) = with_a_planted_token().await;
+    let err = s
+        .svc
+        .check(call(check_rev("master"), Some("reader"), false))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::PermissionDenied);
+    let err = s
+        .svc
+        .check(call(check_rev("master"), None, false))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::Unauthenticated);
+    let err = s
+        .svc
+        .check(call(check_rev("no-such-branch"), Some("writer"), false))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::NotFound);
+    let err = s
+        .svc
+        .check(call(
+            wire::CheckSecretsRequest {
+                repo: repo_ref(),
+                at: None,
+                paths: vec![],
+            },
+            Some("writer"),
+            false,
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::InvalidArgument);
 }

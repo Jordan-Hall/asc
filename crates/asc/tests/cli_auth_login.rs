@@ -182,9 +182,17 @@ fn device_hub(token: &'static str) -> (String, std::thread::JoinHandle<Vec<Strin
     let h = std::thread::spawn(move || {
         let mut paths = Vec::new();
         let script = [
-            (200, format!("{{\"device_code\":\"dc9\",\"user_code\":\"WXYZ-1234\",\"verification_uri\":\"{b2}/login/device\",\"verification_uri_complete\":\"{b2}/login/device?user_code=WXYZ-1234\",\"expires_in\":600,\"interval\":1}}")),
+            (
+                200,
+                format!(
+                    "{{\"device_code\":\"dc9\",\"user_code\":\"WXYZ-1234\",\"verification_uri\":\"{b2}/login/device\",\"verification_uri_complete\":\"{b2}/login/device?user_code=WXYZ-1234\",\"expires_in\":600,\"interval\":1}}"
+                ),
+            ),
             (400, "{\"error\":\"authorization_pending\"}".to_owned()),
-            (200, format!("{{\"access_token\":\"{token}\",\"token_type\":\"bearer\"}}")),
+            (
+                200,
+                format!("{{\"access_token\":\"{token}\",\"token_type\":\"bearer\"}}"),
+            ),
         ];
         for (status, body) in script {
             let (mut c, _) = l.accept().unwrap();
@@ -202,7 +210,11 @@ fn device_hub(token: &'static str) -> (String, std::thread::JoinHandle<Vec<Strin
             let h = head.find("\r\n\r\n").unwrap_or(0) + 4;
             let want: usize = head
                 .lines()
-                .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse().unwrap_or(0)))
+                .find_map(|l| {
+                    l.to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                        .map(|v| v.trim().parse().unwrap_or(0))
+                })
                 .unwrap_or(0);
             while n < h + want {
                 let r = c.read(&mut buf[n..]).unwrap();
@@ -212,7 +224,10 @@ fn device_hub(token: &'static str) -> (String, std::thread::JoinHandle<Vec<Strin
                 n += r;
             }
             paths.push(head.split_whitespace().nth(1).unwrap_or("").to_owned());
-            let resp = format!("HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+            let resp = format!(
+                "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
             let _ = c.write_all(resp.as_bytes());
         }
         paths
@@ -229,24 +244,66 @@ fn login_without_a_method_signs_in_through_the_browser_flow_and_stores_the_token
     assert!(out.status.success(), "{}", text(&out.stderr));
     never_leaks(&out);
     let err = text(&out.stderr);
-    assert!(err.contains(&format!("{hub}/login/device?user_code=WXYZ-1234")), "{err}");
+    assert!(
+        err.contains(&format!("{hub}/login/device?user_code=WXYZ-1234")),
+        "{err}"
+    );
     assert!(err.contains("WXYZ-1234"), "{err}");
-    assert_eq!(served.join().unwrap(), ["/login/device/code", "/login/device/token", "/login/device/token"]);
+    assert_eq!(
+        served.join().unwrap(),
+        [
+            "/login/device/code",
+            "/login/device/token",
+            "/login/device/token"
+        ]
+    );
     let log = calls(&log);
     assert!(log.contains("== store"), "{log}");
-    assert!(log.contains(&format!("password={TOKEN}
-")), "{log}");
-    assert!(log.contains("username=asc
-"), "{log}");
+    assert!(
+        log.contains(&format!(
+            "password={TOKEN}
+"
+        )),
+        "{log}"
+    );
+    assert!(
+        log.contains(
+            "username=asc
+"
+        ),
+        "{log}"
+    );
 }
 
 #[test]
 fn the_login_methods_exclude_each_other() {
     let sb = Sandbox::new();
     let log = install_helper(&sb);
-    let out = asc(&sb, &["login", "--host", "https://hub.example.com", "--device", "--token-stdin"], Some(TOKEN), false);
+    let out = asc(
+        &sb,
+        &[
+            "login",
+            "--host",
+            "https://hub.example.com",
+            "--device",
+            "--token-stdin",
+        ],
+        Some(TOKEN),
+        false,
+    );
     assert!(!out.status.success());
-    let out = asc(&sb, &["login", "--host", "https://hub.example.com", "--prompt", "--device"], None, false);
+    let out = asc(
+        &sb,
+        &[
+            "login",
+            "--host",
+            "https://hub.example.com",
+            "--prompt",
+            "--device",
+        ],
+        None,
+        false,
+    );
     assert!(!out.status.success());
     assert_eq!(calls(&log), "");
 }

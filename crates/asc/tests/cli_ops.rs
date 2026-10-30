@@ -6,7 +6,7 @@ mod support;
 
 use std::fs;
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::Output;
 
 use asc_store::refs::Refs as _;
 use support::{Fixture, Sandbox, text};
@@ -35,7 +35,7 @@ fn ok(o: &Output) -> String {
 
 /// Real git in `dir`, hermetic; returns trimmed stdout.
 fn git(dir: &Path, sb: &Sandbox, args: &[&str]) -> String {
-    let o = Command::new("git") // lint:allow-raw-git
+    let o = asc_git::realgit::pinned_command()
         .current_dir(dir)
         .env("HOME", &sb.user)
         .env("USERPROFILE", &sb.user)

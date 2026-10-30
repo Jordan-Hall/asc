@@ -1,0 +1,78 @@
+syntax = "proto3";
+package asc.v1;
+
+import "asc/v1/options.proto";
+
+// Export of a person's own data (docs/BUILDOUT.md section 30), for "Export your data" in account settings. The hub starts the job
+// for the signed-in person, tells them (an emailed link on the hub's side) and streams the archive to them with `Download`.
+//
+// What the archive holds, for the person only: the metadata of their AI keys (never a key), the AI usage of those keys, the
+// agent runs they started, the agent tokens, personal access tokens and SSH keys they made (labels and dates, never a secret or
+// a digest), the review comments they wrote, and the audit events they caused. It is JSON Lines, one object per line
+// `{"table": "...", "row": {...}}`, in a file only the server can read. Other people's rows, other owners' repositories and every
+// secret are not in it. The job is asynchronous: PENDING, RUNNING, then READY or FAILED. A ready archive is kept for 7 days and then
+// deleted (EXPIRED). One export per person per 24 hours; one at a time.
+//
+// Every call is for the person's own account: the hub's claim `user:<login>` (read to list and get, write to request, download and
+// delete), or the person's own token. Another person's job id is NOT_FOUND. Requests, downloads and deletions are written to the
+// audit log with the person and the host as the relay. Mutating calls need `x-asc-op-id`. Advertised as Version.features
+// "dataexport.v1".
+service DataExport {
+  rpc RequestExport(RequestExportRequest) returns (RequestExportResponse);    // mutating
+  rpc ListExports(ListExportsRequest) returns (ListExportsResponse);
+  rpc GetExport(GetExportRequest) returns (GetExportResponse);
+  rpc Download(DownloadExportRequest) returns (stream ExportChunk);           // a ready archive, in chunks of at most 1 MiB
+  rpc DeleteExport(DeleteExportRequest) returns (DeleteExportResponse);       // mutating
+}
+
+enum ExportState {
+  EXPORT_STATE_UNSPECIFIED = 0;
+  EXPORT_STATE_PENDING = 1;
+  EXPORT_STATE_RUNNING = 2;
+  EXPORT_STATE_READY = 3;
+  EXPORT_STATE_FAILED = 4;
+  EXPORT_STATE_EXPIRED = 5;
+}
+
+message ExportJob {
+  string id = 1;                       // "ex_" + 20 characters
+  ExportState state = 2;
+  int64 requested = 3;                 // unix seconds
+  int64 finished = 4;                  // 0 until it ends
+  int64 expires = 5;                   // when the archive is deleted; 0 until ready
+  uint64 size_bytes = 6;
+  uint64 rows = 7;
+  bool truncated = 8;                  // a table was cut at the size or row limit
+  string error = 9;                    // sanitised, FAILED only
+}
+
+message RequestExportRequest {}
+message RequestExportResponse {
+  ExportJob job = 1;
+}
+
+message ListExportsRequest {}
+message ListExportsResponse {
+  repeated ExportJob jobs = 1;         // newest first, at most 20
+}
+
+message GetExportRequest {
+  string id = 1;
+}
+message GetExportResponse {
+  ExportJob job = 1;
+}
+
+message DownloadExportRequest {
+  string id = 1;
+}
+message ExportChunk {
+  uint64 offset = 1;
+  bytes data = 2 [(asc.v1.json) = JSON_KIND_DATA];
+  bool last = 3;
+}
+
+message DeleteExportRequest {
+  string id = 1;
+}
+message DeleteExportResponse {}
