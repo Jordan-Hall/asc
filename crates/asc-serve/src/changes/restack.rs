@@ -73,6 +73,10 @@ pub const MAX_ITEMS: usize = MAX_STACK;
 pub const MAX_CONFLICTS: usize = 1_000;
 /// Longest committer name or email accepted.
 const MAX_IDENT: usize = 512;
+/// Most files, bytes of one file and bytes of message one amend takes.
+const MAX_AMEND_FILES: usize = 16;
+const MAX_AMEND_BYTES: usize = 4 * 1024 * 1024;
+const MAX_AMEND_MESSAGE: usize = 64 * 1024;
 
 type Pairs = Vec<(ChangesetId, ChangesetId)>;
 
@@ -188,6 +192,28 @@ fn copies_of(cs: &Changeset) -> Vec<(asc_core::path::RepoPath, asc_core::path::R
         .collect()
 }
 
+/// What kind of rewrite a publication records.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Rewriting {
+    /// A restack: the change moves onto a new base, so a parent change outside the call is cleared.
+    Restack,
+    /// An amend of one change: it keeps its parent change.
+    Amend,
+}
+
+impl Rewriting {
+    fn op(self) -> RewriteOp {
+        match self {
+            Self::Restack => RewriteOp::Restack,
+            Self::Amend => RewriteOp::Amend,
+        }
+    }
+
+    fn keeps_parent(self) -> bool {
+        self == Self::Amend
+    }
+}
+
 // ------------------------------------------------------------------------------ the request
 
 /// One validated item.
@@ -210,6 +236,15 @@ impl Parsed {
     fn with_refs(&self) -> bool {
         self.items.iter().any(|i| i.update_ref.is_some())
     }
+}
+
+/// A validated `AmendChange` request.
+struct Amend {
+    change: ChangeId,
+    base_version: u32,
+    files: Vec<(asc_core::path::RepoPath, Bytes)>,
+    message: Vec<u8>,
+    parsed: Parsed,
 }
 
 /// What one item's head is.
@@ -515,11 +550,26 @@ impl Restacker {
             ));
         }
         let rewritten = if parsed.with_refs() {
-            self.publish_refs(entry, ctx, parsed, &steps, &pairs, committer.time())
-                .await?
+            self.publish_refs(
+                entry,
+                ctx,
+                parsed,
+                &steps,
+                &pairs,
+                committer.time(),
+                Rewriting::Restack,
+            )
+            .await?
         } else {
-            self.publish_plain(entry, ctx, &pairs, windows_safe, committer.time())
-                .await?;
+            self.publish_plain(
+                entry,
+                ctx,
+                &pairs,
+                windows_safe,
+                committer.time(),
+                Rewriting::Restack,
+            )
+            .await?;
             wire_pairs(&pairs)
         };
         Ok(wire::RestackChangesResponse {
@@ -721,6 +771,7 @@ impl Restacker {
         pairs: &[(ChangesetId, ChangesetId)],
         windows_safe: bool,
         at: i64,
+        how: Rewriting,
     ) -> Result<(), Status> {
         let targets: Vec<RefTarget> = pairs.iter().map(|p| RefTarget::Changeset(p.1)).collect();
         // The policy of the `Ingest` RPC (SPEC §21.3.7), the only one a call with no ref has:
@@ -759,10 +810,10 @@ impl Restacker {
         }
         self.pipeline
             .observer()
-            .on_rewritten(&mut tx, entry.key, pairs, RewriteOp::Restack)
+            .on_rewritten(&mut tx, entry.key, pairs, how.op())
             .await
             .map_err(|e| internal("on_rewritten", &e))?;
-        self.append_versions(&mut tx, entry.ns, ctx, pairs, at)
+        self.append_versions(&mut tx, entry.ns, ctx, pairs, at, how)
             .await?;
         tx.commit().await.map_err(|e| internal("commit", &e))
     }
@@ -776,6 +827,7 @@ impl Restacker {
         steps: &[Step],
         pairs: &[(ChangesetId, ChangesetId)],
         at: i64,
+        how: Rewriting,
     ) -> Result<Vec<wire::Rewrite>, Status> {
         let updates = steps
             .iter()
@@ -807,11 +859,11 @@ impl Restacker {
                 update,
                 Some(Rewrites {
                     pairs,
-                    op: RewriteOp::Restack,
+                    op: how.op(),
                 }),
             )
             .await?;
-        self.versions_after_move(entry, ctx, pairs, at).await?;
+        self.versions_after_move(entry, ctx, pairs, at, how).await?;
         Ok(done.rewritten)
     }
 
@@ -821,6 +873,7 @@ impl Restacker {
         ctx: &CallCtx,
         pairs: &[(ChangesetId, ChangesetId)],
         at: i64,
+        how: Rewriting,
     ) -> Result<(), Status> {
         let mut tx = self
             .registry
@@ -829,7 +882,7 @@ impl Restacker {
             .await
             .map_err(|e| internal("refs", &e))?;
         self.registry.guard(&mut tx, entry).await?;
-        self.append_versions(&mut tx, entry.ns, ctx, pairs, at)
+        self.append_versions(&mut tx, entry.ns, ctx, pairs, at, how)
             .await?;
         tx.commit().await.map_err(|e| internal("commit", &e))
     }
@@ -842,6 +895,7 @@ impl Restacker {
         ctx: &CallCtx,
         pairs: &[(ChangesetId, ChangesetId)],
         at: i64,
+        how: Rewriting,
     ) -> Result<(), Status> {
         let news: Vec<ChangesetId> = pairs.iter().map(|p| p.1).collect();
         let rows = index::rows_of(tx, ns, &news)
@@ -858,7 +912,7 @@ impl Restacker {
             let parent_change = versions::latest(tx, ns, change)
                 .await?
                 .and_then(|l| l.parent_change)
-                .filter(|p| in_call.contains(p));
+                .filter(|p| how.keeps_parent() || in_call.contains(p));
             versions::append(
                 tx,
                 ns,
@@ -875,6 +929,316 @@ impl Restacker {
             .await?;
         }
         Ok(())
+    }
+
+    // ------------------------------------------------------------------ AmendChange
+
+    /// `AmendChange`: the next version of one change, its newest tree with some files replaced.
+    pub async fn amend_change(
+        &self,
+        ctx: &CallCtx,
+        req: wire::AmendChangeRequest,
+    ) -> Result<wire::AmendChangeResponse, Status> {
+        let amend = self.parse_amend(ctx, &req)?;
+        if ctx.id_mode != IdMode::Asc {
+            return Err(Status::unimplemented(
+                "git id mode is not served by AmendChange",
+            ));
+        }
+        if ctx.op_id.is_none() {
+            return Err(invalid("mutating calls need x-asc-op-id"));
+        }
+        let entry = self.registry.open(&ctx.repo).await.map_err(|e| match e {
+            crate::registry::RegistryError::NotFound(_) => Status::not_found("no such repository"),
+            e => internal("registry", &e),
+        })?;
+        if entry.mode == RepoMode::Mirror {
+            return Err(rpc(RpcError::MirrorMode(info(vec![ctx.repo.to_string()]))));
+        }
+        self.authorize(&entry, ctx, &amend.parsed.items).await?;
+        let committer = Self::committer(ctx, &amend.parsed)?;
+        let at = committer.time();
+        if amend.parsed.with_refs()
+            && let Some(pairs) = self.replayed(&entry, ctx, &amend.parsed).await?
+        {
+            // A finished attempt of this op id: finish its versions and answer with what it made.
+            self.versions_after_move(&entry, ctx, &pairs, at, Rewriting::Amend)
+                .await?;
+            let new = pairs
+                .first()
+                .map(|p| p.1)
+                .ok_or_else(|| internal("op_results", &"an amend with no rewrite"))?;
+            return self.amend_answer(&entry, ctx, amend.change, new).await;
+        }
+        let Some(lease) =
+            crate::lease::Lease::acquire(self.registry.pool(), entry.ns.as_bytes(), "restack")
+                .await
+                .map_err(|e| internal("database", &e))?
+        else {
+            return Err(Status::aborted(
+                "another rewrite of this repository is running; retry shortly",
+            ));
+        };
+        let outcome = self
+            .amend_held(ctx, &amend, &entry, &committer, &lease)
+            .await;
+        lease.release().await;
+        outcome
+    }
+
+    fn parse_amend(&self, ctx: &CallCtx, req: &wire::AmendChangeRequest) -> Result<Amend, Status> {
+        let change = <[u8; 16]>::try_from(req.change.as_ref())
+            .map(ChangeId::from_bytes)
+            .map_err(|_| invalid("a change id is 16 bytes"))?;
+        if req.base_version == 0 {
+            return Err(invalid("base_version is the version the caller looked at"));
+        }
+        if req.files.is_empty() || req.files.len() > MAX_AMEND_FILES {
+            return Err(invalid(format!(
+                "amend 1 to {MAX_AMEND_FILES} files per call"
+            )));
+        }
+        if req.message.len() > MAX_AMEND_MESSAGE {
+            return Err(invalid("the message is too long"));
+        }
+        let mut seen = HashSet::new();
+        let mut files = Vec::with_capacity(req.files.len());
+        for f in &req.files {
+            if f.content.len() > MAX_AMEND_BYTES {
+                return Err(invalid("a file is too large for an amend"));
+            }
+            let path = asc_core::path::RepoPath::new(f.path.as_ref())
+                .map_err(|e| invalid(e.to_string()))?;
+            if !asc_core::path::checkout_safe(&path) {
+                return Err(invalid(format!("{path} is not a safe path")));
+            }
+            if !seen.insert(path.clone()) {
+                return Err(invalid(format!("{path} is listed twice")));
+            }
+            files.push((path, f.content.clone()));
+        }
+        let update_ref = (!req.update_ref.is_empty()).then(|| req.update_ref.clone());
+        if let Some(name) = &update_ref
+            && !is_pull_head(name)
+        {
+            return Err(invalid("only refs/pull/<n>/head can be moved by an amend"));
+        }
+        let overrides = !req.committer_name.is_empty()
+            || !req.committer_email.is_empty()
+            || req.committer_time != 0;
+        if overrides && !self.pipeline.push_hooks().may_skip_pre(ctx) {
+            return Err(Status::permission_denied(
+                "only the forge may set the committer or the time of an amend",
+            ));
+        }
+        if req.committer_time < 0 {
+            return Err(invalid("committer_time is negative"));
+        }
+        if req.committer_name.is_empty() != req.committer_email.is_empty() {
+            return Err(invalid("set the committer name and email together"));
+        }
+        if req.committer_name.len() > MAX_IDENT || req.committer_email.len() > MAX_IDENT {
+            return Err(invalid("committer name or email is too long"));
+        }
+        // The compare-and-set value is the newest version's changeset, known only under the lease; the
+        // replay check needs the shape of the item only.
+        let item = Item {
+            change,
+            expect: wire::ref_update::Expect::Absent(true),
+            expected: None,
+            update_ref,
+        };
+        Ok(Amend {
+            change,
+            base_version: req.base_version,
+            files,
+            message: req.message.to_vec(),
+            parsed: Parsed {
+                items: vec![item],
+                ident: (!req.committer_name.is_empty())
+                    .then(|| (req.committer_name.clone(), req.committer_email.clone())),
+                time: (req.committer_time != 0).then_some(req.committer_time),
+            },
+        })
+    }
+
+    async fn amend_held(
+        &self,
+        ctx: &CallCtx,
+        amend: &Amend,
+        entry: &Arc<RepoEntry>,
+        committer: &Signature,
+        lease: &crate::lease::Lease,
+    ) -> Result<wire::AmendChangeResponse, Status> {
+        let latest = {
+            let mut conn = self
+                .registry
+                .pool()
+                .acquire()
+                .await
+                .map_err(|e| internal("database", &e))?;
+            versions::latest(&mut conn, entry.ns, amend.change)
+                .await
+                .map_err(|e| internal("versions", &e))?
+                .ok_or_else(|| {
+                    Status::not_found(format!("change {} has no published version", amend.change))
+                })?
+        };
+        let stale = |reason: &str| wire::AmendChangeResponse {
+            stale: true,
+            reason: reason.to_owned(),
+            version: latest.v,
+            latest_version: latest.v,
+            changeset: Bytes::copy_from_slice(latest.cs.as_bytes()),
+            ..wire::AmendChangeResponse::default()
+        };
+        if latest.v != amend.base_version {
+            return Ok(stale(
+                "the change has a newer version than the one looked at",
+            ));
+        }
+        let engine = entry.backend.engine().clone();
+        let windows_safe = self.refs.windows_safe(entry).await?;
+        let old = engine
+            .get_changeset(latest.cs)
+            .await
+            .map_err(commit_status)?;
+        let mut changes = Vec::with_capacity(amend.files.len());
+        for (path, data) in &amend.files {
+            let found = engine
+                .lookup(old.root, path)
+                .await
+                .map_err(|e| internal("tree", &e))?;
+            let kind = match found.map(|e| e.kind) {
+                Some(k @ (Kind::File | Kind::Exec)) => k,
+                Some(_) => return Ok(stale(&format!("{path} is not a regular file"))),
+                None => return Ok(stale(&format!("{path} is not in the newest version"))),
+            };
+            let stored = crate::mutations::store_file(entry, data).await?;
+            changes.push((
+                path.clone(),
+                crate::mutations::write_stored(kind, &stored)?,
+            ));
+        }
+        changes.sort_by(|a, b| a.0.cmp(&b.0));
+        let root = {
+            let (engine, base) = (engine.clone(), old.root);
+            on_blocking_thread(move || async move { engine.apply(base, &changes).await })
+                .await?
+                .map_err(|e| internal("tree", &e))?
+        };
+        if root == old.root {
+            return Ok(stale("the files already have that content"));
+        }
+        let new = NewChangeset {
+            parents: old.parents.clone(),
+            author: old.author.clone(),
+            committer: committer.clone(),
+            message: if amend.message.is_empty() {
+                old.message.clone()
+            } else {
+                amend.message.clone()
+            },
+            extra: old.extra.as_slice().to_vec(),
+            root,
+            copies: copies_of(&old),
+        };
+        let created = {
+            let (engine, policy) = (engine.clone(), PathPolicy::Native { windows_safe });
+            on_blocking_thread(move || async move { engine.create_changeset(new, policy).await })
+                .await?
+                .map_err(commit_status)?
+        };
+        if !lease
+            .ensure_held()
+            .await
+            .map_err(|e| internal("database", &e))?
+        {
+            return Err(Status::aborted(
+                "the amend lost its lock on the repository; retry",
+            ));
+        }
+        let pairs: Pairs = vec![(latest.cs, created)];
+        let at = committer.time();
+        if let Some(name) = &amend.parsed.items[0].update_ref {
+            // The ref moves only while it still points at the newest version.
+            let parsed = Parsed {
+                items: vec![Item {
+                    change: amend.change,
+                    update_ref: Some(name.clone()),
+                    expect: wire::ref_update::Expect::Value(wire::RefTarget::from(
+                        &RefTarget::Changeset(latest.cs),
+                    )),
+                    expected: Some(latest.cs),
+                }],
+                ident: None,
+                time: amend.parsed.time,
+            };
+            let steps = [Step {
+                item: 0,
+                change: amend.change,
+                old: latest.cs,
+                new: created,
+                unchanged: false,
+            }];
+            match self
+                .publish_refs(entry, ctx, &parsed, &steps, &pairs, at, Rewriting::Amend)
+                .await
+            {
+                Ok(_) => {}
+                Err(status)
+                    if asc_rpc::server::status_rpc_error(&status)
+                        .is_some_and(|e| e.code() == "REF_CONFLICT") =>
+                {
+                    return Ok(stale("the pull request moved since it was looked at"));
+                }
+                Err(e) => return Err(e),
+            }
+        } else {
+            let _gc = self.pipeline.gc().shared().await.map_err(|e| {
+                tracing::warn!(error = %e, "gc fence unavailable");
+                Status::unavailable("garbage-collection fence unavailable; retry")
+            })?;
+            self.publish_plain(entry, ctx, &pairs, windows_safe, at, Rewriting::Amend)
+                .await?;
+        }
+        self.amend_answer(entry, ctx, amend.change, created).await
+    }
+
+    /// The answer for a finished amend: the version the change is at now, and the git id of its changeset.
+    async fn amend_answer(
+        &self,
+        entry: &Arc<RepoEntry>,
+        ctx: &CallCtx,
+        change: ChangeId,
+        new: ChangesetId,
+    ) -> Result<wire::AmendChangeResponse, Status> {
+        let latest = {
+            let mut conn = self
+                .registry
+                .pool()
+                .acquire()
+                .await
+                .map_err(|e| internal("database", &e))?;
+            versions::latest(&mut conn, entry.ns, change)
+                .await
+                .map_err(|e| internal("versions", &e))?
+                .ok_or_else(|| internal("versions", &"the amended change has no version"))?
+        };
+        let ids = IdCodec::new(ctx.id_mode, &self.registry, entry).for_viewer(&ctx.principal);
+        let git = ids
+            .git_of(new)
+            .await
+            .map(|g| Bytes::copy_from_slice(g.as_bytes()))
+            .unwrap_or_default();
+        Ok(wire::AmendChangeResponse {
+            version: latest.v,
+            changeset: Bytes::copy_from_slice(new.as_bytes()),
+            git,
+            stale: false,
+            reason: String::new(),
+            latest_version: latest.v,
+        })
     }
 
     // ------------------------------------------------------------------ retries
@@ -925,7 +1289,8 @@ impl Restacker {
         pairs: &[(ChangesetId, ChangesetId)],
         at: i64,
     ) -> Result<wire::RestackChangesResponse, Status> {
-        self.versions_after_move(entry, ctx, pairs, at).await?;
+        self.versions_after_move(entry, ctx, pairs, at, Rewriting::Restack)
+            .await?;
         let olds: Vec<ChangesetId> = pairs.iter().map(|p| p.0).collect();
         let rows = {
             let mut conn = self
@@ -1839,5 +2204,244 @@ mod tests {
         let mut m = msg(f.t, vec![item(1)]);
         m.onto = "refs/heads/main".into();
         assert_eq!(f.run(m, WRITER).await.unwrap().rewritten.len(), 1);
+    }
+
+    // ------------------------------------------------------------------ AmendChange
+
+    fn amend_msg(n: u8, base: u32, files: &[(&str, &str)]) -> wire::AmendChangeRequest {
+        wire::AmendChangeRequest {
+            repo: Some(wire::RepoRef {
+                name: "o/r".into(),
+                id_mode: IdMode::Asc as i32,
+            }),
+            change: cbytes(n),
+            base_version: base,
+            files: files
+                .iter()
+                .map(|(p, c)| wire::AmendFile {
+                    path: Bytes::copy_from_slice(p.as_bytes()),
+                    content: Bytes::copy_from_slice(c.as_bytes()),
+                })
+                .collect(),
+            ..wire::AmendChangeRequest::default()
+        }
+    }
+
+    impl Fx {
+        async fn amend(
+            &self,
+            m: wire::AmendChangeRequest,
+            token: &str,
+            op: Option<Uuid>,
+        ) -> Result<wire::AmendChangeResponse, Status> {
+            let mut r = Request::new(m);
+            r.extensions_mut()
+                .insert(Credential::bearer(BearerToken::new(token).unwrap()));
+            if let Some(op) = op {
+                r.metadata_mut()
+                    .insert("x-asc-op-id", op.to_string().parse().unwrap());
+            }
+            self.svc
+                .amend_change(r)
+                .await
+                .map(tonic::Response::into_inner)
+        }
+
+        async fn file_id(&self, cs: ChangesetId, path: &str) -> Option<[u8; 32]> {
+            let body = self.cs(cs).await;
+            self.e
+                .backend
+                .engine()
+                .lookup(body.root, &asc_core::path::RepoPath::new(path).unwrap())
+                .await
+                .unwrap()
+                .map(|e| e.id)
+        }
+    }
+
+    fn cs_of(b: &Bytes) -> ChangesetId {
+        ChangesetId::from_slice(b).unwrap()
+    }
+
+    #[tokio::test]
+    async fn an_amend_is_the_next_version_with_the_same_parents_and_the_parent_change_kept() {
+        let f = fx().await;
+        // Change 2 sits on change 1: its next version keeps that parent.
+        let r = f
+            .amend(amend_msg(2, 1, &[("two", "22\n")]), WRITER, Some(Uuid::new_v4()))
+            .await
+            .unwrap();
+        assert!(!r.stale, "{}", r.reason);
+        assert_eq!((r.version, r.latest_version), (2, 2));
+        let new = cs_of(&r.changeset);
+        let (old, newer) = (f.cs(f.c[1]).await, f.cs(new).await);
+        assert_eq!(newer.parents, old.parents, "the same parents");
+        assert_eq!(newer.author, old.author);
+        assert_eq!(newer.message, old.message, "the message is kept");
+        assert_eq!(newer.committer.name(), b"writer", "the actor is the committer");
+        assert_eq!(
+            f.file_id(new, "two").await,
+            Some(*asc_core::id::FileId::of(b"22\n").as_bytes())
+        );
+        assert_eq!(
+            f.file_id(new, "one").await,
+            f.file_id(f.c[1], "one").await,
+            "other files are untouched"
+        );
+        let v = f.latest(2).await;
+        assert_eq!((v.v, v.cs, v.parent_change), (2, new, Some(cid(1))));
+        assert_eq!(f.latest(1).await.v, 1, "no other change moves");
+        // The index knows it as an amend of the old head.
+        let op: i64 = f
+            .count(&format!(
+                "SELECT CAST(op AS BIGINT) FROM changes WHERE cs = x'{}'",
+                hex(new.as_bytes())
+            ))
+            .await;
+        assert_eq!(op, RewriteOp::Amend as i64);
+    }
+
+    #[tokio::test]
+    async fn an_amend_of_an_old_version_is_stale_and_writes_nothing() {
+        let f = fx().await;
+        f.amend(amend_msg(1, 1, &[("one", "11\n")]), WRITER, Some(Uuid::new_v4()))
+            .await
+            .unwrap();
+        let before = f.count("SELECT COUNT(*) FROM change_versions").await;
+        let r = f
+            .amend(amend_msg(1, 1, &[("one", "111\n")]), WRITER, Some(Uuid::new_v4()))
+            .await
+            .unwrap();
+        assert!(r.stale);
+        assert_eq!((r.version, r.latest_version), (2, 2));
+        assert_eq!(f.count("SELECT COUNT(*) FROM change_versions").await, before);
+        // The same text again is no change.
+        let r = f
+            .amend(amend_msg(1, 2, &[("one", "11\n")]), WRITER, Some(Uuid::new_v4()))
+            .await
+            .unwrap();
+        assert!(r.stale && r.reason.contains("already"), "{}", r.reason);
+        // A file that is not in the version, and one that is a directory, are stale.
+        for path in ["nope", "."] {
+            let r = f
+                .amend(amend_msg(1, 2, &[(path, "x\n")]), WRITER, Some(Uuid::new_v4()))
+                .await;
+            match r {
+                Ok(r) => assert!(r.stale, "{path}"),
+                Err(e) => assert_eq!(e.code(), tonic::Code::InvalidArgument, "{path}"),
+            }
+        }
+        assert_eq!(f.latest(1).await.v, 2);
+    }
+
+    #[tokio::test]
+    async fn an_amend_moves_the_pull_head_only_while_it_points_at_the_newest_version() {
+        let f = fx().await;
+        f.set_ref("refs/pull/1/head", f.c[0]).await;
+        let mut m = amend_msg(1, 1, &[("one", "11\n")]);
+        m.update_ref = "refs/pull/1/head".into();
+        let r = f.amend(m, WRITER, Some(Uuid::new_v4())).await.unwrap();
+        assert!(!r.stale, "{}", r.reason);
+        let new = cs_of(&r.changeset);
+        assert_eq!(
+            f.ref_of("refs/pull/1/head").await,
+            Some(RefTarget::Changeset(new))
+        );
+        assert_eq!(f.latest(1).await.cs, new);
+
+        // A push moved the head since: the amend loses, the ref stays, no version is added.
+        f.set_ref("refs/pull/1/head", f.x).await;
+        let mut m = amend_msg(1, 2, &[("one", "111\n")]);
+        m.update_ref = "refs/pull/1/head".into();
+        let r = f.amend(m, WRITER, Some(Uuid::new_v4())).await.unwrap();
+        assert!(r.stale, "a concurrent push wins");
+        assert_eq!(
+            f.ref_of("refs/pull/1/head").await,
+            Some(RefTarget::Changeset(f.x))
+        );
+        assert_eq!(f.latest(1).await.v, 2);
+
+        // Only a pull head can be named.
+        let mut m = amend_msg(1, 2, &[("one", "x\n")]);
+        m.update_ref = "refs/heads/main".into();
+        assert_eq!(
+            f.amend(m, WRITER, Some(Uuid::new_v4()))
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::InvalidArgument
+        );
+    }
+
+    #[tokio::test]
+    async fn an_amend_retried_with_its_op_id_makes_one_version() {
+        let f = fx().await;
+        f.set_ref("refs/pull/1/head", f.c[0]).await;
+        let op = Uuid::new_v4();
+        let mut m = amend_msg(1, 1, &[("one", "11\n")]);
+        m.update_ref = "refs/pull/1/head".into();
+        let first = f.amend(m.clone(), WRITER, Some(op)).await.unwrap();
+        let again = f.amend(m, WRITER, Some(op)).await.unwrap();
+        assert!(!again.stale);
+        assert_eq!(again.changeset, first.changeset);
+        assert_eq!(again.version, 2);
+        assert_eq!(f.latest(1).await.v, 2);
+    }
+
+    #[tokio::test]
+    async fn an_amend_needs_write_access_the_owner_or_the_forge_and_an_op_id() {
+        let f = fx().await;
+        let m = || amend_msg(1, 1, &[("one", "11\n")]);
+        assert_eq!(
+            f.amend(m(), READER, Some(Uuid::new_v4())).await.unwrap_err().code(),
+            tonic::Code::PermissionDenied
+        );
+        assert_eq!(
+            f.amend(m(), MALLORY, Some(Uuid::new_v4())).await.unwrap_err().code(),
+            tonic::Code::PermissionDenied,
+            "not the owner of the change"
+        );
+        assert_eq!(
+            f.amend(m(), WRITER, None).await.unwrap_err().code(),
+            tonic::Code::InvalidArgument
+        );
+        // The forge may amend a change it does not own, and names the committer.
+        let mut m = m();
+        m.committer_name = "Alice".into();
+        m.committer_email = "alice@example.com".into();
+        m.committer_time = 1_800_000_000;
+        let r = f.amend(m.clone(), FORGE, Some(Uuid::new_v4())).await.unwrap();
+        assert!(!r.stale, "{}", r.reason);
+        let body = f.cs(cs_of(&r.changeset)).await;
+        assert_eq!(body.committer.name(), b"Alice");
+        assert_eq!(body.committer.time(), 1_800_000_000);
+        // Nobody else may name the committer.
+        m.base_version = 2;
+        assert_eq!(
+            f.amend(m, WRITER, Some(Uuid::new_v4())).await.unwrap_err().code(),
+            tonic::Code::PermissionDenied
+        );
+    }
+
+    #[tokio::test]
+    async fn a_malformed_amend_is_refused_before_any_write() {
+        let f = fx().await;
+        let bad: Vec<wire::AmendChangeRequest> = vec![
+            amend_msg(1, 0, &[("one", "x\n")]),
+            amend_msg(1, 1, &[]),
+            amend_msg(1, 1, &[("one", "x\n"), ("one", "y\n")]),
+            amend_msg(1, 1, &[("../one", "x\n")]),
+            amend_msg(1, 1, &[(".git/config", "x\n")]),
+            {
+                let mut m = amend_msg(1, 1, &[("one", "x\n")]);
+                m.change = Bytes::from_static(b"short");
+                m
+            },
+        ];
+        for m in bad {
+            let e = f.amend(m, WRITER, Some(Uuid::new_v4())).await.unwrap_err();
+            assert_eq!(e.code(), tonic::Code::InvalidArgument, "{e:?}");
+        }
+        assert_eq!(f.latest(1).await.v, 1);
     }
 }

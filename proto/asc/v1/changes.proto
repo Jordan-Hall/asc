@@ -13,6 +13,7 @@ service Changes {
   rpc Mergeability(MergeabilityRequest) returns (MergeabilityResponse);        // expensive, memoised
   rpc Overlaps(OverlapsRequest) returns (OverlapsResponse);                    // cheap (index)
   rpc RestackChanges(RestackChangesRequest) returns (RestackChangesResponse);  // mutating, x-asc-op-id
+  rpc AmendChange(AmendChangeRequest) returns (AmendChangeResponse);           // mutating, x-asc-op-id; repo write; a new version of one change
   rpc SetReviewState(SetReviewStateRequest) returns (SetReviewStateResponse);  // internal token only
   rpc RequestMerge(RequestMergeRequest) returns (RequestMergeResponse);        // mutating; proxies to the forge's queue
 }
@@ -39,6 +40,21 @@ message RestackItem { bytes change = 1 [(asc.v1.json) = JSON_KIND_CHANGE]; strin
 message RestackChangesRequest { RepoRef repo = 1; string onto = 2; repeated RestackItem items = 3; bool atomic = 4; bool dry_run = 5;
   string committer_name = 6; string committer_email = 7; int64 committer_time = 8; }   // defaults: the authenticated actor and the server clock
 message RestackChangesResponse { repeated Rewrite rewritten = 1; repeated Conflict conflicts = 2; repeated bytes patch_unchanged = 3 [(asc.v1.json) = JSON_KIND_CHANGE]; }
+// AmendChange commits new content for files of a change as its next version: the same parents, author and message, the
+// tree of the newest version with the named files replaced, and the newest version as the predecessor. It is how a host
+// applies a review suggestion (Review.PrepareSuggestion, this call, then Review.MarkSuggestionApplied).
+//
+// `base_version` must be the newest version, else the answer is `stale` and nothing is written. `update_ref` is empty or
+// `refs/pull/<n>/head`, the only ref an amend moves; it moves only while it still points at the newest version
+// (compare-and-set), else the answer is `stale`. A user's draft refs never move: the author gets the new version on the
+// next fetch or sync. A file must exist in the newest version and be a regular file. The committer defaults to the
+// authenticated actor; only the forge's internal principal may name one. Idempotent by x-asc-op-id.
+message AmendFile { bytes path = 1 [(asc.v1.json) = JSON_KIND_PATH]; bytes content = 2 [(asc.v1.json) = JSON_KIND_DATA]; }
+message AmendChangeRequest { RepoRef repo = 1; bytes change = 2 [(asc.v1.json) = JSON_KIND_CHANGE]; uint32 base_version = 3;
+  repeated AmendFile files = 4; bytes message = 5 [(asc.v1.json) = JSON_KIND_TEXT]; string update_ref = 6;
+  string committer_name = 7; string committer_email = 8; int64 committer_time = 9; }
+message AmendChangeResponse { uint32 version = 1; bytes changeset = 2 [(asc.v1.json) = JSON_KIND_HEX]; bytes git = 3 [(asc.v1.json) = JSON_KIND_HEX];
+  bool stale = 4; string reason = 5; uint32 latest_version = 6; }   // stale: nothing was written; version is the one the change is at
 message SetReviewStateRequest { RepoRef repo = 1; repeated bytes changes = 2 [(asc.v1.json) = JSON_KIND_CHANGE]; repeated ReviewState states = 3; }
 message SetReviewStateResponse {}
 message RequestMergeRequest { RepoRef repo = 1; bytes change = 2 [(asc.v1.json) = JSON_KIND_CHANGE]; bool now = 3; }   // bottom..change

@@ -526,47 +526,57 @@ fn kind_of_mode(mode: u32) -> Result<Option<Kind>, Status> {
 }
 
 /// A new file's identity and where its bytes are stored.
-struct Stored {
-    file: FileId,
-    size: u64,
-    git: GitOid,
+pub(crate) struct Stored {
+    pub(crate) file: FileId,
+    pub(crate) size: u64,
+    pub(crate) git: GitOid,
+}
+
+/// Stores `data` in the objects of `entry` as a file (chunked above the inline threshold) and returns its identity.
+pub(crate) async fn store_file(entry: &RepoEntry, data: &[u8]) -> Result<Stored, Status> {
+    let got = ingest_content(std::io::Cursor::new(data)).map_err(|e| invalid(e.to_string()))?;
+    match got.body {
+        Body::Inline(b) => {
+            entry
+                .objects
+                .put(&ObjKey::File(got.file), encode_stored(&b))
+                .await
+                .map_err(store_status)?;
+        }
+        Body::Chunked { list, chunks } => {
+            for (id, chunk) in chunks {
+                entry
+                    .objects
+                    .put(&ObjKey::Chunk(id), encode_stored(&chunk))
+                    .await
+                    .map_err(store_status)?;
+            }
+            entry
+                .objects
+                .put(
+                    &ObjKey::ChunkList(got.file),
+                    encode_stored(&asc_core::codec::Enveloped::to_envelope(&list)),
+                )
+                .await
+                .map_err(store_status)?;
+        }
+    }
+    Ok(Stored {
+        file: got.file,
+        size: got.size,
+        git: got.git,
+    })
+}
+
+/// The leaf change that writes a stored file with the given kind and no copy source.
+pub(crate) fn write_stored(kind: Kind, s: &Stored) -> Result<Change, Status> {
+    write(kind, s, None)
 }
 
 impl ServerMutations {
     /// Stores `data` as a file (chunked above the inline threshold) and returns its identity.
     async fn store_content(&self, o: &Opened, data: &[u8]) -> Result<Stored, Status> {
-        let got = ingest_content(std::io::Cursor::new(data)).map_err(|e| invalid(e.to_string()))?;
-        match got.body {
-            Body::Inline(b) => {
-                o.entry
-                    .objects
-                    .put(&ObjKey::File(got.file), encode_stored(&b))
-                    .await
-                    .map_err(store_status)?;
-            }
-            Body::Chunked { list, chunks } => {
-                for (id, chunk) in chunks {
-                    o.entry
-                        .objects
-                        .put(&ObjKey::Chunk(id), encode_stored(&chunk))
-                        .await
-                        .map_err(store_status)?;
-                }
-                o.entry
-                    .objects
-                    .put(
-                        &ObjKey::ChunkList(got.file),
-                        encode_stored(&asc_core::codec::Enveloped::to_envelope(&list)),
-                    )
-                    .await
-                    .map_err(store_status)?;
-            }
-        }
-        Ok(Stored {
-            file: got.file,
-            size: got.size,
-            git: got.git,
-        })
+        store_file(&o.entry, data).await
     }
 
     /// Size and blob oid of a stored file, computed from its bytes (a client-named `FileId` is

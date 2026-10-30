@@ -887,6 +887,21 @@ impl Changes for ChangesService {
         handler.restack_changes(&ctx, msg).await.map(Response::new)
     }
 
+    async fn amend_change(
+        &self,
+        request: Request<wire::AmendChangeRequest>,
+    ) -> Result<Response<wire::AmendChangeResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        let mut ctx = self
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Write)
+            .await?;
+        ctx.op_id = super::restack::op_id_of(&meta)?;
+        let Some(handler) = self.rpc.restack.get() else {
+            return Err(later("AmendChange"));
+        };
+        handler.amend_change(&ctx, msg).await.map(Response::new)
+    }
+
     async fn set_review_state(
         &self,
         request: Request<wire::SetReviewStateRequest>,
