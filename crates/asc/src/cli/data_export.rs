@@ -73,6 +73,7 @@ pub const NATIVE: &[NativeSpec] = &[NativeSpec {
 
 pub(crate) fn id_ok(id: &str) -> Result<()> {
     if id.starts_with("ex_")
+        && id.len() > 3
         && id.len() <= 40
         && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
     {
