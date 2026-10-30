@@ -1146,10 +1146,7 @@ impl Restacker {
                 None => return Ok(stale(&format!("{path} is not in the newest version"))),
             };
             let stored = crate::mutations::store_file(entry, data).await?;
-            changes.push((
-                path.clone(),
-                crate::mutations::write_stored(kind, &stored)?,
-            ));
+            changes.push((path.clone(), crate::mutations::write_stored(kind, &stored)?));
         }
         changes.sort_by(|a, b| a.0.cmp(&b.0));
         let root = {
@@ -2331,7 +2328,11 @@ mod tests {
         let f = fx().await;
         // Change 2 sits on change 1: its next version keeps that parent.
         let r = f
-            .amend(amend_msg(2, 1, &[("two", "22\n")]), WRITER, Some(Uuid::new_v4()))
+            .amend(
+                amend_msg(2, 1, &[("two", "22\n")]),
+                WRITER,
+                Some(Uuid::new_v4()),
+            )
             .await
             .unwrap();
         assert!(!r.stale, "{}", r.reason);
@@ -2341,7 +2342,11 @@ mod tests {
         assert_eq!(newer.parents, old.parents, "the same parents");
         assert_eq!(newer.author, old.author);
         assert_eq!(newer.message, old.message, "the message is kept");
-        assert_eq!(newer.committer.name(), b"writer", "the actor is the committer");
+        assert_eq!(
+            newer.committer.name(),
+            b"writer",
+            "the actor is the committer"
+        );
         assert_eq!(
             f.file_id(new, "two").await,
             Some(*asc_core::id::FileId::of(b"22\n").as_bytes())
@@ -2367,27 +2372,46 @@ mod tests {
     #[tokio::test]
     async fn an_amend_of_an_old_version_is_stale_and_writes_nothing() {
         let f = fx().await;
-        f.amend(amend_msg(1, 1, &[("one", "11\n")]), WRITER, Some(Uuid::new_v4()))
-            .await
-            .unwrap();
+        f.amend(
+            amend_msg(1, 1, &[("one", "11\n")]),
+            WRITER,
+            Some(Uuid::new_v4()),
+        )
+        .await
+        .unwrap();
         let before = f.count("SELECT COUNT(*) FROM change_versions").await;
         let r = f
-            .amend(amend_msg(1, 1, &[("one", "111\n")]), WRITER, Some(Uuid::new_v4()))
+            .amend(
+                amend_msg(1, 1, &[("one", "111\n")]),
+                WRITER,
+                Some(Uuid::new_v4()),
+            )
             .await
             .unwrap();
         assert!(r.stale);
         assert_eq!((r.version, r.latest_version), (2, 2));
-        assert_eq!(f.count("SELECT COUNT(*) FROM change_versions").await, before);
+        assert_eq!(
+            f.count("SELECT COUNT(*) FROM change_versions").await,
+            before
+        );
         // The same text again is no change.
         let r = f
-            .amend(amend_msg(1, 2, &[("one", "11\n")]), WRITER, Some(Uuid::new_v4()))
+            .amend(
+                amend_msg(1, 2, &[("one", "11\n")]),
+                WRITER,
+                Some(Uuid::new_v4()),
+            )
             .await
             .unwrap();
         assert!(r.stale && r.reason.contains("already"), "{}", r.reason);
         // A file that is not in the version, and one that is a directory, are stale.
         for path in ["nope", "."] {
             let r = f
-                .amend(amend_msg(1, 2, &[(path, "x\n")]), WRITER, Some(Uuid::new_v4()))
+                .amend(
+                    amend_msg(1, 2, &[(path, "x\n")]),
+                    WRITER,
+                    Some(Uuid::new_v4()),
+                )
                 .await;
             match r {
                 Ok(r) => assert!(r.stale, "{path}"),
@@ -2456,11 +2480,17 @@ mod tests {
         let f = fx().await;
         let m = || amend_msg(1, 1, &[("one", "11\n")]);
         assert_eq!(
-            f.amend(m(), READER, Some(Uuid::new_v4())).await.unwrap_err().code(),
+            f.amend(m(), READER, Some(Uuid::new_v4()))
+                .await
+                .unwrap_err()
+                .code(),
             tonic::Code::PermissionDenied
         );
         assert_eq!(
-            f.amend(m(), MALLORY, Some(Uuid::new_v4())).await.unwrap_err().code(),
+            f.amend(m(), MALLORY, Some(Uuid::new_v4()))
+                .await
+                .unwrap_err()
+                .code(),
             tonic::Code::PermissionDenied,
             "not the owner of the change"
         );
@@ -2473,7 +2503,10 @@ mod tests {
         m.committer_name = "Alice".into();
         m.committer_email = "alice@example.com".into();
         m.committer_time = 1_800_000_000;
-        let r = f.amend(m.clone(), FORGE, Some(Uuid::new_v4())).await.unwrap();
+        let r = f
+            .amend(m.clone(), FORGE, Some(Uuid::new_v4()))
+            .await
+            .unwrap();
         assert!(!r.stale, "{}", r.reason);
         let body = f.cs(cs_of(&r.changeset)).await;
         assert_eq!(body.committer.name(), b"Alice");
@@ -2481,7 +2514,10 @@ mod tests {
         // Nobody else may name the committer.
         m.base_version = 2;
         assert_eq!(
-            f.amend(m, WRITER, Some(Uuid::new_v4())).await.unwrap_err().code(),
+            f.amend(m, WRITER, Some(Uuid::new_v4()))
+                .await
+                .unwrap_err()
+                .code(),
             tonic::Code::PermissionDenied
         );
     }
