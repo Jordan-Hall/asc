@@ -162,7 +162,7 @@ Code: `crates/asc-serve/src/web/` (`mod.rs`, `assets.rs`; the asset table is gen
 Build and embed:
 
 1. `bun run --cwd web build` runs Rsbuild, then `scripts/post-build.ts`: writes `.br` and `.gz` siblings for every compressible file and `dist/manifest.json` (path, size, sha256, content type, hashed or not).
-2. `build.rs` reads `web/dist` (override: `ASC_WEB_DIST`), and generates `$OUT_DIR/web_assets.rs`: a static table of `include_bytes!` for identity, br and gz bodies, with the content type, a strong ETag (sha256 prefix) and the hashed flag. It emits `cargo:rerun-if-changed` for the directory. With no `dist`, the table is empty and the crate still builds, so `cargo check` and CI jobs without bun are unaffected.
+2. `build.rs` reads `web/dist` (override: `ASC_WEB_DIST`), and generates `$OUT_DIR/web_assets.rs`: a static table of `include_bytes!` for identity, br and gz bodies, with the content type, a strong ETag (sha256 prefix) and the hashed flag. It emits `cargo:rerun-if-changed` for the directory. With no `dist`, the table is empty and the crate still builds, so `cargo check` and CI jobs without bun are unaffected. The container image (`deploy/Dockerfile.serve`, first stage) and the release (`release.yml`, job `web`) build the bundle first (`bun install`, `codegen` in `packages/asc-client-ts`, `bun run build` in `web`) and set `ASC_REQUIRE_WEB=1`, which makes a missing `web/dist/index.html` a build error.
 3. `web::register` mounts the routes when `[web] enabled` is true. If it is enabled and the table is empty and `[web] dir` is unset, startup fails with a clear error (an enabled UI that serves nothing is a misconfiguration).
 
 Serving rules:
