@@ -281,8 +281,7 @@ impl ChangeIndex {
     }
 
     fn objects(&self, ns: Ns) -> BucketObjects {
-        let (store, root) = self.registry.namespace(ns);
-        BucketObjects::new(store, root)
+        self.registry.namespace_objects(ns)
     }
 
     /// The namespace of `repo`, read inside `tx`.

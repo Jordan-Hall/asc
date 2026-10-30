@@ -21,7 +21,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use asc_codeintel::index::segments::WRITER_HEAP;
-use asc_store::bucket::BucketObjects;
 use sqlx::AnyPool;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -195,8 +194,7 @@ impl Fleet {
             }
             return None;
         };
-        let (store, root) = self.registry.namespace(id);
-        let objects = Arc::new(BucketObjects::new(store, root));
+        let objects = Arc::new(self.registry.namespace_objects(id));
         match Worker::new(
             self.pool.clone(),
             objects,
