@@ -682,6 +682,11 @@ impl Reviews {
                 ));
             }
         };
+        if state == wire::ApprovalState::Dismissed && req.version == 0 {
+            return Err(Status::invalid_argument(
+                "a dismissal names the version whose verdict it dismisses",
+            ));
+        }
         let entry = self.open(ctx).await?;
         self.known(&entry, change).await?;
         let vs = self.all_versions(&entry, change).await?;
@@ -763,9 +768,10 @@ impl Reviews {
         })
     }
 
-    /// A reviewer's verdicts stop counting because a maintainer dismissed them: every approval and
-    /// request for changes of that reviewer that counts or blocks on the newest version becomes a
-    /// dismissal (a verdict that does neither is left as it is). Only a repository admin may, and
+    /// A reviewer's verdict on one version stops counting because a maintainer dismissed it: the
+    /// approval or request for changes of that reviewer on `req.version` that counts or blocks now
+    /// becomes a dismissal (a verdict on another version, or one that does neither, is left as it
+    /// is). Only a repository admin may, and
     /// not the author of the change nor an agent: those could clear the way to their own merge.
     /// The reviewer is named by login, by the hub's user id, or both.
     #[allow(clippy::too_many_arguments)]
@@ -803,6 +809,7 @@ impl Reviews {
             .into_iter()
             .filter(|a| {
                 a.applies
+                    && a.version == req.version
                     && (a.state == wire::ApprovalState::Approved as i32
                         || a.state == wire::ApprovalState::ChangesRequested as i32)
                     && ((!req.reviewer.is_empty() && a.reviewer == req.reviewer)
@@ -811,7 +818,7 @@ impl Reviews {
             .collect();
         if live.is_empty() {
             return Err(Status::not_found(
-                "that reviewer has no verdict on this change that counts or blocks",
+                "that reviewer has no verdict on that version of this change that counts or blocks",
             ));
         }
         let ns = entry.ns.as_bytes().to_vec();
