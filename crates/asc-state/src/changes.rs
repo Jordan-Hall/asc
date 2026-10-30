@@ -74,6 +74,24 @@ impl StateChanges {
         Ok(true)
     }
 
+    async fn insert_batch(&self, rows: &[ChangeRow]) -> Result<()> {
+        let mut tx = self.db.begin().await?;
+        for row in rows {
+            sqlx::query(
+                "INSERT OR IGNORE INTO changes (repo_id, cs, change, meta, op)                  VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(self.repo.0)
+            .bind(row.cs.as_bytes().to_vec())
+            .bind(row.change.as_bytes().to_vec())
+            .bind(row.meta.as_bytes().to_vec())
+            .bind(rewrite_op_to_i64(row.op))
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
     async fn ids(&self, sql: &'static str, key: ChangesetId, n: i64) -> Result<Vec<ChangesetId>> {
         sqlx::query(sql)
             .bind(self.repo.0)
@@ -169,6 +187,10 @@ impl ChangeRows for StateChanges {
             return Err(change::Error::TooManyPreds(preds.len()));
         }
         self.insert_inner(row, preds).await.map_err(err)
+    }
+
+    async fn insert_many(&self, rows: &[ChangeRow]) -> change::Result<()> {
+        self.insert_batch(rows).await.map_err(err)
     }
 
     async fn get(&self, cs: ChangesetId) -> change::Result<Option<ChangeRow>> {

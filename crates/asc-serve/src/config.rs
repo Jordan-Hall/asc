@@ -1063,6 +1063,10 @@ pub struct ServeConfig {
     /// `[ssh]` (SPEC §25.11); honoured only with the feature `git-ssh`.
     pub ssh: SshConfig,
     pub gc: crate::gc::GcSettings,
+    /// `[pack]`: packed objects (docs/design/PACKED-OBJECTS.md).
+    pub pack: crate::pack_service::PackSettings,
+    /// `[import]`: how a git import batches its writes.
+    pub import: crate::pack_service::ImportSettings,
     /// `[cloud]` (SPEC §21.3.7): `max_user_refs` and `max_user_bytes`.
     pub cloud: CloudConfig,
     /// `[web]`: the web UI under `/ui` (docs/WEB-UI.md).
@@ -1123,6 +1127,8 @@ impl Default for ServeConfig {
             git: GitConfig::default(),
             ssh: SshConfig::default(),
             gc: crate::gc::GcSettings::default(),
+            pack: crate::pack_service::PackSettings::default(),
+            import: crate::pack_service::ImportSettings::default(),
             cloud: CloudConfig::default(),
             web: WebConfig::default(),
             vault: crate::vault::VaultConfig::default(),
@@ -1172,6 +1178,8 @@ impl ServeConfig {
     /// Checks everything the types do not: URL schemes, role requirements, bounds.
     pub fn validate(&self) -> Result<(), ConfigError> {
         self.gc.to_config()?;
+        self.pack.to_config()?;
+        self.import.to_policy()?;
         if let Some(store) = &self.store {
             let scheme = url_scheme(store);
             if !matches!(scheme, "s3" | "file" | "memory") {

@@ -1,6 +1,7 @@
 # Packed objects
 
-Status: proposal. Written for the agent that implements it. Nothing here is built yet.
+Status: built behind `[pack] enabled` (off by default) and `[import]` batching (on). The sections below
+are the design; "As built" at the end lists where the code differs from it and how to run it.
 
 ## Why
 
@@ -224,3 +225,41 @@ Independent of packs and built before them:
   lone object; measure with the 163 MB repository.
 - Whether the index in SQL becomes the bottleneck for very large repositories (hundreds of millions of
   rows); the bucket-mode index is the fallback design if so.
+
+## As built
+
+Where the code is: `crates/asc-store/src/pack/` (`format`, `index`, `bucket_index`, `layer`, `job`, `tests`),
+`crates/asc-store/src/batch.rs` (the import write buffer), `crates/asc-serve/src/pack_sql.rs` (the SQL index and
+the write gate), `crates/asc-serve/src/pack_service.rs` (`[pack]`, `[import]`, the job), migration `0596_packs`.
+
+Differences from the design above, and why:
+
+- **The layer lives inside `BucketObjects`**, not in a `PackedObjects<Inner>` wrapper. `BucketObjects` is a concrete
+  type in dozens of signatures; an optional `PackLayer` field gives every reader and writer of a namespace the
+  packs without changing one of them. `BucketObjects::from_url` and `local` attach the bucket-mode index (reading
+  only), so every bucket-mode tool reads packs.
+- **A bulk write packs directly.** `Objects::put_many` (new; the default puts concurrently) writes the small objects
+  of one call as one pack when `[pack] enabled`, instead of writing loose files and packing them at the end of the
+  import. The importer calls it once per batch. The index commit still follows the durable pack file.
+- **Import batching** is a `BatchedObjects` buffer in the importer: a batch's objects are flushed first, then its
+  git-map and change rows in one call each (`[import] batch_commits` = 500, `batch_bytes` = 128 MiB; `1` is a write
+  after every commit). `SqlGitMap::put` is one multi-row statement per 500 rows. Objects are durable before any row
+  names them, so a crash re-imports the last batch and produces identical bytes.
+- **Index lookups are cheap for repositories without packs.** "No packs here" is trusted for `negative_ttl` (5 s), so
+  a read costs no query and no pooled connection. The cost is a window in which a server that has not yet noticed the
+  first pack would miss an object that exists only in a pack; so the first pack of a namespace keeps the loose
+  copies for `negative_ttl`, and bulk writes pack directly only once this process has known of packs that long.
+- **Bucket mode index.** `pack/<id>.idx` is read whole once and cached (not a ranged binary search); the manifest is
+  cached for 2 s. A GC delete writes `pack/<id>.del`, the sorted keys that pack no longer holds. A store without
+  conditional writes (a local directory) gets a plain manifest write.
+- **GC.** `list` includes packed keys (with their pack's time, so packing restarts an object's age: conservative), and
+  `delete` forgets the row. A sweep that purged objects compacts the packs at once (`pack_compact_all`).
+- **Features.** The first pack write records `pack1` in `store_features`; opening a namespace that lists a feature
+  this build does not know is refused. Older builds do not read the table: the reader ships first, as above.
+- **Not done:** whole-pack caching in the tiered store (a packed object is fetched by range, as the design's fallback
+  says), and a packed form for `Derived` values.
+
+Operation: `[pack] enabled = true` turns on the job (every `repack_interval`) and the direct bulk packing;
+`asc serve admin pack run|status|verify|reindex --repo R | --all` do it by hand. Rollback: set `enabled = false`;
+packs stay readable, nothing new is packed, and `pack run` still deletes retired packs.
+
