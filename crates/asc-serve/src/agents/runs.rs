@@ -176,6 +176,35 @@ const COLS: &str = "id, repo, agent, title, state, target, base, task, paths_jso
      changes_json, ref_name, created_by, starter, owner_id, created, started, finished, failure_code, failure_message, \
      token_id, workflow_run_id, workflow_step, cancel_requested, question";
 
+/// The outbox effect that tells the forge a run ended, so it can open the run's changes for review.
+pub const FINISHED_EFFECT: &str = "agent_run_finished";
+
+/// Queues the "run finished" effect for the repository with the id `repo_id` (the `repos` row). The row is
+/// delivered at least once; the receiver is idempotent (it finds the pull request of a change that has one).
+pub async fn enqueue_finished(
+    pool: &AnyPool,
+    repo_id: i64,
+    run: u64,
+    state: RunState,
+    changes: usize,
+) -> Result<(), sqlx::Error> {
+    let doc = serde_json::json!({
+        "effects": [FINISHED_EFFECT],
+        "run": run,
+        "state": state.name(),
+        "changes": changes,
+    });
+    let doc = serde_json::to_vec(&doc).unwrap_or_default();
+    sqlx::query("INSERT INTO outbox (repo_id, op_id, effects, next_at) VALUES ($1, $2, $3, $4)")
+        .bind(repo_id)
+        .bind(uuid::Uuid::new_v4().as_bytes().to_vec())
+        .bind(doc)
+        .bind(crate::outbox::now())
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 fn u(v: i64) -> u64 {
     u64::try_from(v).unwrap_or(0)
 }
