@@ -278,13 +278,14 @@ async fn notes_are_written_from_the_changes_since_the_previous_release() {
 async fn the_next_release_counts_the_changes_since_the_latest_and_proposes_a_tag() {
     let (f, _) = world().await;
     let s = svc(&f);
-    let ask = || {
+    let ask_as = |token: &'static str| {
         s.next(req(
             wire::NextReleaseRequest { repo: repo_ref() },
-            READER,
+            token,
             false,
         ))
     };
+    let ask = || ask_as(READER);
     let none = ask().await.unwrap().into_inner();
     assert_eq!(
         (none.latest_tag.as_str(), none.proposed_tag.as_str()),
@@ -311,7 +312,13 @@ async fn the_next_release_counts_the_changes_since_the_latest_and_proposes_a_tag
     )
     .await
     .unwrap();
+    // The tag of a draft is for writers: a reader is not told it exists.
     let got = ask().await.unwrap().into_inner();
+    assert_eq!(
+        (got.latest_tag.as_str(), got.draft_tag.as_str()),
+        ("v1.4.2", "")
+    );
+    let got = ask_as(WRITER).await.unwrap().into_inner();
     assert_eq!(
         (got.latest_tag.as_str(), got.draft_tag.as_str()),
         ("v1.4.2", "v1.4.3")
