@@ -9,7 +9,7 @@ use tonic::Code;
 
 use super::OrgHub;
 use super::rpc::OrgService;
-use crate::settings::testkit::{Kit, Recorder, claim, kit, op, req};
+use crate::settings::testkit::{Kit, Recorded, Recorder, claim, kit, op, req};
 
 struct Fx {
     k: Kit,
@@ -114,6 +114,21 @@ async fn defaults_then_the_agents_card_is_set_by_owners_and_audited() {
     assert_eq!(
         (rec.len(), rec[0].1.as_str(), rec[0].2.as_deref()),
         (1, "9:owner", Some("host-service"))
+    );
+    let old: Vec<_> = rec[0]
+        .4
+        .iter()
+        .filter(|(k, _)| k.starts_with("old_"))
+        .cloned()
+        .collect();
+    assert_eq!(
+        old,
+        vec![
+            ("old_allow_agents".to_owned(), "true".to_owned()),
+            ("old_need_person".to_owned(), "true".to_owned()),
+            ("old_ceiling".to_owned(), "0".to_owned()),
+        ],
+        "the previous values ride along"
     );
     // Another organisation is untouched.
     let other = get("zed", Role::Read, 4).await.unwrap().into_inner();
@@ -240,7 +255,31 @@ async fn the_agent_gate_combines_the_instance_and_the_organisation() {
             .await
             .is_ok()
     );
-    assert_eq!(f.audit.of("instance.agents.updated").len(), 2);
+    let rec = f.audit.of("instance.agents.updated");
+    assert_eq!(rec.len(), 2);
+    let detail = |r: &Recorded, k: &str| {
+        r.4.iter()
+            .find(|(n, _)| n == k)
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default()
+    };
+    // The first change moved from the defaults (on, no budget); the last moved from 20 USD to off.
+    assert_eq!(
+        (
+            detail(&rec[0], "old_allow_agents"),
+            detail(&rec[0], "old_ceiling"),
+            detail(&rec[0], "ceiling")
+        ),
+        ("true".into(), "0".into(), "20000000".into())
+    );
+    assert_eq!(
+        (
+            detail(&rec[1], "old_allow_agents"),
+            detail(&rec[1], "old_ceiling"),
+            detail(&rec[1], "allow_agents")
+        ),
+        ("true".into(), "20000000".into(), "false".into())
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
