@@ -25,7 +25,7 @@ use uuid::Uuid;
 use super::info::resolve_change;
 use super::sl::{Local, clean, fatal};
 use crate::cli::common::{CliError, Ctx, Result};
-use crate::remote::server::ServerRemote;
+use crate::remote::server::{MAX_REAUTH, ServerRemote};
 use crate::remote::{self, Intent};
 use crate::stack::json::{VERSION, line};
 
@@ -80,14 +80,14 @@ fn out_of(change: String, o: &MergeOutcome) -> Out {
     }
 }
 
-/// `Changes.RequestMerge`, retried once with a new credential after a 401 (same operation id).
+/// `Changes.RequestMerge`, retried with a new credential after a 401 (a stored one, then the person's) (same operation id).
 async fn request(
     server: &ServerRemote,
     change: &asc_core::change::ChangeId,
     now: bool,
 ) -> std::result::Result<MergeOutcome, CallError> {
     let op = Uuid::new_v4();
-    let mut retried = false;
+    let mut retried = 0usize;
     loop {
         let session = server.session();
         let mut client = ChangesClient::new(session.wire.channel.clone())
@@ -110,9 +110,9 @@ async fn request(
                 let r = r.into_inner();
                 return MergeOutcome::try_from(&r).map_err(CallError::from);
             }
-            Err(s) if s.code() == Code::Unauthenticated && !retried => {
-                retried = true;
-                if server.reauth(&session).is_err() {
+            Err(s) if s.code() == Code::Unauthenticated && retried < MAX_REAUTH => {
+                retried += 1;
+                if server.reauth(&session).await.is_err() {
                     return Err(CallError::from(s));
                 }
             }

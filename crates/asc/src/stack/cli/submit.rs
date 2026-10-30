@@ -44,14 +44,14 @@ use asc_store::refs::Expect;
 use serde::Serialize;
 use tonic::Code;
 
-use super::info::resolve_change;
+use super::info::{config_run, resolve_change, valid_trunk};
 use super::sl::{LStacks, Local, clean, fatal, stack_err};
 use super::uncommit::subject_of;
 use crate::cli::common::{CliError, Ctx, Result};
 use crate::cli::fetch::sync_error;
 use crate::cli::switch::ref_name;
 use crate::native::NativeSpec;
-use crate::remote::server::{PushIntent, ServerRemote};
+use crate::remote::server::{MAX_REAUTH, PushIntent, ServerRemote};
 use crate::remote::{self, Intent, StateBoundaries};
 use crate::stack::json::{VERSION, line};
 
@@ -410,12 +410,12 @@ fn status_text(e: &CallError) -> String {
     clean(&e.to_string())
 }
 
-/// `Changes.ResolveChanges` for `changes`, retried once with a new credential after a 401.
+/// `Changes.ResolveChanges` for `changes`, retried with a new credential after a 401 (a stored one, then the person's).
 async fn resolve_on_server(
     server: &ServerRemote,
     changes: &[ChangeId],
 ) -> std::result::Result<Vec<ChangeInfo>, CallError> {
-    let mut retried = false;
+    let mut retried = 0usize;
     loop {
         let session = server.session();
         let mut client = ChangesClient::new(session.wire.channel.clone())
@@ -444,9 +444,9 @@ async fn resolve_on_server(
                 }
                 return change_infos(&r.changes).map_err(CallError::from);
             }
-            Err(s) if s.code() == Code::Unauthenticated && !retried => {
-                retried = true;
-                if server.reauth(&session).is_err() {
+            Err(s) if s.code() == Code::Unauthenticated && retried < MAX_REAUTH => {
+                retried += 1;
+                if server.reauth(&session).await.is_err() {
                     return Err(CallError::from(s));
                 }
             }
@@ -484,6 +484,29 @@ fn plain_remote_refusal() -> CliError {
     )
 }
 
+/// A stack with no trunk that exists here (`asc.stack.trunk` unset and no `master`, or naming a
+/// branch that is gone): takes the branch the server calls its default, when this repository has
+/// that branch, and stores it. Returns the branch taken.
+async fn repair_trunk(ctx: &Ctx, l: &Local<'_>, opened: &remote::Opened) -> Result<Option<String>> {
+    const KEY: &str = "asc.stack.trunk";
+    let Some(head) = opened.remote.default_branch().await.ok().flatten() else {
+        return Ok(None);
+    };
+    if !valid_trunk(&head) || !l.env.has_branch(&head) {
+        return Ok(None);
+    }
+    if ctx.config.get_all(KEY).is_empty() {
+        config_run(ctx, &["--local", KEY, &head]).await?;
+    } else {
+        config_run(ctx, &["--local", "--add", KEY, &head]).await?;
+    }
+    eprintln!(
+        "asc: submit: {KEY} named no branch that exists here; using the server's default branch '{}'",
+        clean(&head)
+    );
+    Ok(Some(head))
+}
+
 pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let reviewers = reviewers(&a.reviewer).map_err(CliError::Usage)?;
     let draft = if a.publish {
@@ -501,7 +524,12 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     };
 
     // The local plan: which changes, in which order, under which trunk.
-    let l = Local::open(ctx).await?;
+    let mut l = Local::open(ctx).await?;
+    if l.env.trunk_info().is_empty()
+        && let Some(head) = repair_trunk(ctx, &l, &opened).await?
+    {
+        l.env.add_trunk(&head);
+    }
     let st = l.stacks().await?;
     let target = match resolve_change(ctx, &l, &st, a.change.as_deref()).await {
         Ok((cs, _)) => cs,

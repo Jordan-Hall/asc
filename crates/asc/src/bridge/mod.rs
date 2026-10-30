@@ -407,6 +407,7 @@ impl Bridge {
                     attempt += 1;
                     server
                         .reauth(&session)
+                        .await
                         .map_err(|e| Status::unauthenticated(e.to_string()))?;
                 }
                 Err(s) => {
