@@ -397,9 +397,8 @@ impl WsCtx {
         let head_now = self.projection.read_head()?;
         // `update-ref --no-deref HEAD <commit>` on a branch detaches HEAD at the commit; nothing
         // else may name HEAD while it is a branch.
-        let from_branch = detach_branch
-            && !head_updates.is_empty()
-            && matches!(head_now, Head::Branch(_));
+        let from_branch =
+            detach_branch && !head_updates.is_empty() && matches!(head_now, Head::Branch(_));
         let (new_head, detached) = match head_now {
             Head::Branch(b) if !from_branch => {
                 if !head_updates.is_empty() {
