@@ -476,21 +476,30 @@ fn kind_code(k: asc_core::git::ObjectKind) -> i16 {
 impl GitMapSink for SqlGitMap {
     async fn put(&self, rows: &[GitMapRow]) -> Result<(), DeriveError> {
         let sink = |e: sqlx::Error| DeriveError::Sink(e.to_string());
+        if rows.is_empty() {
+            return Ok(());
+        }
         let mut tx = self.pool.begin().await.map_err(sink)?;
+        // One statement per chunk: a round trip per row dominates a large import.
         for chunk in rows.chunks(GIT_MAP_BATCH) {
-            for r in chunk {
-                sqlx::query(
-                    "INSERT INTO git_map (ns, git, kind, asc) VALUES ($1, $2, $3, $4) \
-                     ON CONFLICT (ns, git, kind) DO NOTHING",
-                )
-                .bind(self.ns.as_bytes().to_vec())
-                .bind(r.git.as_bytes().to_vec())
-                .bind(i32::from(kind_code(r.kind)))
-                .bind(r.asc.to_vec())
-                .execute(&mut *tx)
-                .await
-                .map_err(sink)?;
+            let mut sql = String::from("INSERT INTO git_map (ns, git, kind, asc) VALUES ");
+            for i in 0..chunk.len() {
+                if i > 0 {
+                    sql.push_str(", ");
+                }
+                let b = i * 4;
+                sql.push_str(&format!("(${}, ${}, ${}, ${})", b + 1, b + 2, b + 3, b + 4));
             }
+            sql.push_str(" ON CONFLICT (ns, git, kind) DO NOTHING");
+            let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
+            for r in chunk {
+                q = q
+                    .bind(self.ns.as_bytes().to_vec())
+                    .bind(r.git.as_bytes().to_vec())
+                    .bind(i32::from(kind_code(r.kind)))
+                    .bind(r.asc.to_vec());
+            }
+            q.execute(&mut *tx).await.map_err(sink)?;
         }
         tx.commit().await.map_err(sink)
     }
