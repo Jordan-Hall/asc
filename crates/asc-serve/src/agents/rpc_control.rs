@@ -715,7 +715,22 @@ impl AgentService {
         let mut by: std::collections::BTreeMap<String, wire::RepoAgentInfo> = Default::default();
         let (mut running, mut landed_all, mut changes_all) = (0u32, 0u32, 0u32);
         let mut checked = 0usize;
+        // One entry for each of the last 14 days (UTC), oldest first.
+        let today = now.div_euclid(86_400);
+        let mut days: Vec<wire::AgentActivityDay> = (0..ACTIVITY_DAYS)
+            .map(|i| wire::AgentActivityDay {
+                day: day_of(today - (ACTIVITY_DAYS - 1 - i)),
+                ..Default::default()
+            })
+            .collect();
         for r in runs.iter().take(1000) {
+            let slot = usize::try_from(r.created.div_euclid(86_400) - (today - (ACTIVITY_DAYS - 1)))
+                .ok()
+                .filter(|i| *i < days.len());
+            if let Some(i) = slot {
+                days[i].started += 1;
+                days[i].changes += u32::try_from(r.changes.len()).unwrap_or(u32::MAX);
+            }
             let e = by
                 .entry(r.agent.clone())
                 .or_insert_with(|| wire::RepoAgentInfo {
@@ -748,6 +763,9 @@ impl AgentService {
                     if hit.is_some() {
                         e.landed_30d += 1;
                         landed_all += 1;
+                        if let Some(i) = slot {
+                            days[i].landed += 1;
+                        }
                     }
                 }
             }
@@ -770,6 +788,7 @@ impl AgentService {
             max_concurrent: self.hub.core.cfg.max_concurrent_per_repo,
             landed_30d: landed_all,
             changes_30d: changes_all,
+            days,
         }))
     }
 
@@ -928,4 +947,37 @@ impl AgentService {
 
 fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// How many days of activity `ListAgents` reports.
+const ACTIVITY_DAYS: i64 = 14;
+
+/// `YYYY-MM-DD` of a day number counted from 1970-01-01 (UTC).
+fn day_of(days_since_epoch: i64) -> String {
+    // Civil-from-days (Howard Hinnant): exact for every day of the proleptic Gregorian calendar.
+    let z = days_since_epoch + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+#[cfg(test)]
+mod activity_day_tests {
+    use super::day_of;
+
+    #[test]
+    fn a_day_number_is_a_calendar_date() {
+        assert_eq!(day_of(0), "1970-01-01");
+        assert_eq!(day_of(19_723), "2024-01-01");
+        assert_eq!(day_of(19_782), "2024-02-29");
+        assert_eq!(day_of(19_783), "2024-03-01");
+        assert_eq!(day_of(-1), "1969-12-31");
+    }
 }
