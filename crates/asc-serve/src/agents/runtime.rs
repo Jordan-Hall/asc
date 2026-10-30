@@ -977,11 +977,10 @@ impl AgentsHub {
                 return Ended::failed("internal", "the run's token could not be made");
             }
         };
-        let _ = sqlx::query("UPDATE agent_runs SET token_id = $2 WHERE id = $1")
-            .bind(i64::try_from(run.id).unwrap_or(0))
-            .bind(token.id.clone())
-            .execute(&core.pool)
-            .await;
+        // The token goes onto the run and takes the run's limits of this moment in one step: limits
+        // edited while the run was starting reached only the run row, and `SetRunLimits` reads the
+        // token again after it stores them, so no edit is missed and none is seen half-applied.
+        let _ = core.tokens.attach_to_run(run.id, &token.id).await;
         self.audit(
             "agent.token.created",
             &run.created_by,
