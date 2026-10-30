@@ -253,7 +253,11 @@ async fn a_scan_on_demand_leaves_an_audit_event_with_counts_and_never_the_value(
     .await
     .unwrap();
     assert_eq!(details.len(), 2, "one event for each scan");
-    assert!(details.iter().all(|d| d.contains("findings") && d.contains("files")));
+    assert!(
+        details
+            .iter()
+            .all(|d| d.contains("findings") && d.contains("files"))
+    );
     assert!(details.iter().all(|d| !d.contains(&token()[4..])));
     // A check records nothing: it is not a scan of the repository.
     s.svc
