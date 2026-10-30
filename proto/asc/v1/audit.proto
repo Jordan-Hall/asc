@@ -15,6 +15,7 @@ service Audit {
   rpc Export(ExportAuditRequest) returns (stream ExportAuditResponse);   // expensive; rate class `export`
   rpc VerifyChain(VerifyAuditChainRequest) returns (VerifyAuditChainResponse);   // expensive
   rpc ListActions(ListAuditActionsRequest) returns (ListAuditActionsResponse);   // cheap; the catalogue for filters
+  rpc Append(AppendAuditRequest) returns (AppendAuditResponse);   // the host service only; records an action the host did for a person. Advertised as "audit.append.v1"
 }
 
 enum AuditOutcome {
@@ -108,4 +109,26 @@ message AuditActionInfo {
 message ListAuditActionsRequest {}
 message ListAuditActionsResponse {
   repeated AuditActionInfo actions = 1;
+}
+
+// The host application (the hub) keeps settings of its own that asc does not see: who may register, the maintenance notice, the
+// sign-up switches. A change of one is recorded here, so the audit log of the instance (or of a repository) holds it next to the
+// events asc writes itself. Only the host service credential may call it; any other caller gets PERMISSION_DENIED. The action
+// must be one the catalogue marks for the host (its name starts with "host."), so the host cannot write the events that only asc
+// writes (a ref update, a land). `actor` is the login the host verified: the event names that person as the actor and the host
+// service as the relay (`on_behalf_of`). `details` is cut to the allow-list of the action, as for every event. The call is not
+// idempotent: the host sends it once, after the change is made.
+message AppendAuditRequest {
+  string action = 1;                 // from the catalogue, "host." prefix
+  string actor = 2;                  // the login of the person; 1 to 255 bytes
+  string repo = 3;                   // "owner/name" when the action concerned a repository, else empty (the instance)
+  string target = 4;                 // what was changed
+  AuditOutcome outcome = 5;          // unspecified means success
+  map<string, string> details = 6;
+  string remote_addr = 7;            // the address of the person's request, an IP; kept as a /24 (IPv4) or /48 (IPv6)
+  string user_agent = 8;
+  string request_id = 9;
+}
+message AppendAuditResponse {
+  uint64 seq = 1;                    // the number of the event in the instance log
 }

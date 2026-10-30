@@ -49,6 +49,10 @@ use crate::registry::{Extensions, Registry};
 pub const FEATURE: &str = "audit.v1";
 /// What `Version.features` adds for the ref log and ref undo of `Stacks`.
 pub const STACKS_FEATURE: &str = "stacks.undo.v1";
+/// What `Version.features` adds for `Audit.Append`.
+pub const APPEND_FEATURE: &str = "audit.append.v1";
+/// Prefix of the actions only the host service may append (`Audit.Append`).
+pub const HOST_ACTION_PREFIX: &str = "host.";
 /// Longest text of one detail value or target, in bytes.
 pub const MAX_DETAIL_BYTES: usize = 256;
 /// Longest target, in bytes.
