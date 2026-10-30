@@ -1211,7 +1211,7 @@ async fn root_blocks_change_2(f: &Fx) {
             wire::RecordApprovalRequest {
                 repo: repo_ref(),
                 change: cbytes(2),
-                version: 0,
+                version: 1,
                 state: wire::ApprovalState::ChangesRequested as i32,
                 ..Default::default()
             },
