@@ -153,6 +153,10 @@ fn invalid(m: impl Into<String>) -> Status {
 }
 
 /// A repository-scoped audit event of `principal`.
+fn mode_word(branchless: bool) -> &'static str {
+    if branchless { "branchless" } else { "branches" }
+}
+
 fn repo_event(action: &str, principal: &str, repo: &RepoName) -> crate::audit::NewEvent {
     crate::audit::NewEvent::new(action, crate::audit::actor::actor_of(principal))
         .repo(repo.as_str())
@@ -1419,6 +1423,82 @@ impl AdminService {
         })
     }
 
+    /// `RepoAdmin.set_branchless`: flips the ref policy (SPEC 21.5.1) when no ref would be left outside it.
+    async fn set_branchless(
+        &self,
+        ctx: &CallCtx,
+        branchless: bool,
+    ) -> Result<wire::RepoAdminResponse, Status> {
+        use crate::refpolicy::{RepoPolicy, USER_NS};
+        const HEADS: &str = "refs/heads/";
+        let entry = self
+            .registry
+            .open(&ctx.repo)
+            .await
+            .map_err(registry_status)?;
+        let policy = RepoPolicy::load(self.pool(), entry.key.0).await?;
+        if policy.branchless() == branchless {
+            return Ok(wire::RepoAdminResponse {
+                report: format!("{} is already {}", ctx.repo, mode_word(branchless)),
+                ..Default::default()
+            });
+        }
+        let refs = self.registry.refs();
+        if branchless {
+            // Every branch must already be a shared ref: a branch that is not would become a user ref in a branchless
+            // repository and vanish for the others. `asc serve admin branchless enable` moves them first.
+            let branches = refs
+                .list(entry.key, HEADS)
+                .await
+                .map_err(|e| internal("refs", &e))?;
+            if let Some(b) = branches
+                .iter()
+                .find(|b| !policy.is_shared(&String::from_utf8_lossy(b.name.as_bytes())))
+            {
+                return Err(Status::failed_precondition(format!(
+                    "branch {} is not a shared ref; run `asc serve admin branchless enable` to move the branches first",
+                    String::from_utf8_lossy(b.name.as_bytes()).trim_start_matches(HEADS)
+                )));
+            }
+        } else if !refs
+            .list(entry.key, USER_NS)
+            .await
+            .map_err(|e| internal("refs", &e))?
+            .is_empty()
+        {
+            return Err(Status::failed_precondition(
+                "user refs exist; a repository with them cannot go back to branches",
+            ));
+        }
+        let mut tx = refs.begin().await.map_err(|e| internal("refs", &e))?;
+        // the literal, not a bound bool: the column is a BOOLEAN on one database and an integer on the other
+        let done = sqlx::query(if branchless {
+            "UPDATE repos SET branchless = TRUE WHERE id = $1"
+        } else {
+            "UPDATE repos SET branchless = FALSE WHERE id = $1"
+        })
+            .bind(entry.key.0)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| sql("repos", e))?;
+        if done.rows_affected() != 1 {
+            return Err(Status::not_found("no such repository"));
+        }
+        audit_in_tx(
+            &mut tx,
+            repo_event("repo.branchless", &ctx.principal.id, &ctx.repo)
+                .detail("from", mode_word(!branchless))
+                .detail("to", mode_word(branchless)),
+        )
+        .await?;
+        tx.commit().await.map_err(|e| sql("repos", e))?;
+        self.registry.forget(&ctx.repo);
+        Ok(wire::RepoAdminResponse {
+            report: format!("{} is now {}", ctx.repo, mode_word(branchless)),
+            ..Default::default()
+        })
+    }
+
     // -------------------------------------------------------------------------- size, verify
 
     /// A line for a fork that is not ready, or `None` for a ready repository.
@@ -1753,6 +1833,7 @@ impl AdminHandler for AdminService {
             Some(Op::Delete(true)) => self.delete(ctx).await,
             Some(Op::RenameTo(to)) => self.rename(ctx, &to).await,
             Some(Op::SetDefaultBranch(branch)) => self.set_default_branch(ctx, &branch).await,
+            Some(Op::SetBranchless(op)) => self.set_branchless(ctx, op.branchless).await,
             Some(Op::Size(true)) => self.size(ctx).await,
             Some(Op::Verify(true)) => self.verify(ctx).await,
             Some(Op::Delete(false) | Op::Size(false) | Op::Verify(false)) | None => {
@@ -3371,6 +3452,61 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(owner, 1);
+    }
+
+    const BRANCHLESS: &str =
+        "SELECT CAST(CASE WHEN branchless THEN 1 ELSE 0 END AS BIGINT) FROM repos WHERE id = $1";
+
+    #[tokio::test]
+    async fn set_branchless_flips_the_policy_and_audits_each_change() {
+        let f = fx().await;
+        let e = f.init("o/e").await;
+        let set = |on: bool| Op::SetBranchless(wire::SetBranchlessOp { branchless: on });
+        assert_eq!(f.scalar(BRANCHLESS, e.key.0).await, 0);
+        let r = f.call("o/e", set(true)).await.unwrap();
+        assert!(r.report.contains("now branchless"), "{}", r.report);
+        assert_eq!(f.scalar(BRANCHLESS, e.key.0).await, 1);
+        // The mode a repository has already: OK, and nothing is recorded again.
+        let r = f.call("o/e", set(true)).await.unwrap();
+        assert!(r.report.contains("already"), "{}", r.report);
+        f.call("o/e", set(false)).await.unwrap();
+        assert_eq!(f.scalar(BRANCHLESS, e.key.0).await, 0);
+        let rows: Vec<(String, String, String)> = sqlx::query(
+            "SELECT action, actor_name, details_json FROM audit_events WHERE action = 'repo.branchless' ORDER BY seq",
+        )
+        .fetch_all(f.registry.pool())
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| (r.get("action"), r.get("actor_name"), r.get("details_json")))
+        .collect();
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert!(rows.iter().all(|(_, who, _)| who == "alice"));
+        assert!(rows[0].2.contains("branchless") && rows[1].2.contains("branches"), "{rows:?}");
+    }
+
+    #[tokio::test]
+    async fn set_branchless_refuses_what_it_would_strand() {
+        let f = fx().await;
+        let s = source(&f).await;
+        let set = |on: bool| Op::SetBranchless(wire::SetBranchlessOp { branchless: on });
+        // `dev` is a branch that is not a shared ref: it would become somebody's user ref.
+        let e = f.call("o/src", set(true)).await.unwrap_err();
+        assert_eq!(e.code(), tonic::Code::FailedPrecondition);
+        assert!(e.message().contains("dev"), "{}", e.message());
+        assert_eq!(f.scalar(BRANCHLESS, s.entry.key.0).await, 0);
+        // A user ref exists: the repository cannot go back to branches.
+        sqlx::query("UPDATE repos SET branchless = TRUE")
+            .execute(f.registry.pool())
+            .await
+            .unwrap();
+        f.registry.forget(&name("o/src"));
+        let e = f.call("o/src", set(false)).await.unwrap_err();
+        assert_eq!(e.code(), tonic::Code::FailedPrecondition);
+        assert_eq!(f.scalar(BRANCHLESS, s.entry.key.0).await, 1);
+        // No operation is still an error, and a missing repository is not found.
+        let e = f.call("o/none", set(true)).await.unwrap_err();
+        assert_eq!(e.code(), tonic::Code::NotFound);
     }
 
     #[tokio::test]

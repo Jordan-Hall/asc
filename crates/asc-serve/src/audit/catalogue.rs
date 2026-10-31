@@ -69,6 +69,11 @@ pub const CATALOGUE: &[ActionInfo] = &[
         &["from", "to"],
     ),
     a(
+        "repo.branchless",
+        "The ref policy of a repository was switched between branches and branchless.",
+        &["from", "to"],
+    ),
+    a(
         "settings.updated",
         "A setting of a repository, an owner or the server changed.",
         &["setting", "old", "new"],
