@@ -168,7 +168,13 @@ message CopyClosureResponse { uint64 copied = 1; }
 
 message RepoAdminRequest { RepoRef repo = 1;
   oneof op { InitOp init = 2; ForkOp fork = 3; bool delete = 4; string rename_to = 5; bool size = 6; bool verify = 7;
-    string set_default_branch = 8; /* trunk: the branch the gate protects (secret scan, path rules, review) */ } }
+    string set_default_branch = 8; /* trunk: the branch the gate protects (secret scan, path rules, review) */
+    SetBranchlessOp set_branchless = 9; } }
+// Switches the ref policy of a repository (SPEC 21.5.1). Repo admin; mutating, x-asc-op-id; audited as `repo.branchless`.
+// It only flips the policy: turning branchless on needs every branch to be a shared ref already (a new or empty repository,
+// or one that `asc serve admin branchless enable` has migrated), and turning it off needs that no user ref exists. Otherwise
+// FAILED_PRECONDITION says which. Setting the mode a repository has is a no-op that still answers OK.
+message SetBranchlessOp { bool branchless = 1; }
 message InitOp { string default_branch = 1; bool windows_safe = 2; string mode = 3; /* "primary"|"mirror" */
   string mirror_url = 4; repeated string land_branches = 5; }
 message ForkOp { RepoRef from = 1; }
