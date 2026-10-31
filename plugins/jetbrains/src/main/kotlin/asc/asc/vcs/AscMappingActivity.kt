@@ -56,7 +56,7 @@ class AscMappingActivity : ProjectActivity {
         // Mapping the root to `asc` registers it, which Git4Idea's unregistered-root notice skips; ignoring the
         // root as well is the fallback (spikes/git4idea-root/RESULTS.md: not yet run in a live IDE).
         val config = VcsConfiguration.getInstance(project)
-        val ignored = config.ignoredUnregisteredRoots.map { it.replace('\\', '/') }
+        val ignored = config.IGNORED_UNREGISTERED_ROOTS.map { it.replace('\\', '/') }
         val toIgnore = roots.map { it.replace('\\', '/') }.filter { it !in ignored }
         if (toIgnore.isNotEmpty()) config.addIgnoredUnregisteredRoots(toIgnore)
 

@@ -347,8 +347,8 @@ object RelayChecks {
             if (pair.body != null) {
                 if (hasBody && !body!!.isJsonObject) return no("bad body")
                 val b = if (hasBody) body!!.asJsonObject else JsonObject()
-                for (k in b.keySet()) if (k !in pair.body) return no("body field not allowed")
                 if (pair.path.endsWith("/reviews") && b.has("event")) return no("pending review only")
+                for (k in b.keySet()) if (k !in pair.body) return no("body field not allowed")
                 if (b.has("Do")) {
                     val d = b.get("Do")
                     if (!d.isJsonPrimitive || !d.asJsonPrimitive.isString || d.asString !in MERGE_DO) return no("bad merge mode")

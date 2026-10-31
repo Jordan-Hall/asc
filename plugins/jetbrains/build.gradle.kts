@@ -52,6 +52,9 @@ protobuf {
 }
 
 intellijPlatform {
+    // The plugin has no settings page, so the searchable-options index is empty; the headless IDE run that builds
+    // it fails on the coroutines debug agent (kotlinx.coroutines.debug.internal.AgentPremain) and blocks buildPlugin.
+    buildSearchableOptions = false
     pluginConfiguration {
         name = "ASC"
         version = project.version.toString()

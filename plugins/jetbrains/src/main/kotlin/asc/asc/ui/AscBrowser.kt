@@ -51,12 +51,12 @@ import org.cef.CefApp
 import org.cef.browser.CefBrowser
 import org.cef.browser.CefFrame
 import org.cef.callback.CefCallback
+import org.cef.callback.CefSchemeHandlerFactory
 import org.cef.handler.CefLoadHandlerAdapter
 import org.cef.handler.CefRequestHandlerAdapter
 import org.cef.handler.CefResourceHandler
 import org.cef.handler.CefResourceRequestHandler
 import org.cef.handler.CefResourceRequestHandlerAdapter
-import org.cef.handler.CefSchemeHandlerFactory
 import org.cef.misc.BoolRef
 import org.cef.misc.IntRef
 import org.cef.misc.StringRef
@@ -256,6 +256,7 @@ private object AscScheme {
                 pages[browser]?.serve(uri.rawPath ?: "/")
             },
         )
+        Unit
     }
 
     fun add(browser: CefBrowser, server: PageServer) {

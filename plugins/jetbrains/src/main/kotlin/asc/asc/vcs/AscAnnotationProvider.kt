@@ -106,6 +106,8 @@ class AscFileAnnotation(
 ) : FileAnnotation(project) {
     private fun info(line: Int) = lines.getOrNull(line)
 
+    override fun getLineCount(): Int = lines.size
+
     override fun getToolTip(line: Int): String? = AscBlame.tooltip(info(line))
 
     override fun getHtmlToolTip(line: Int): String? =
@@ -124,18 +126,18 @@ class AscFileAnnotation(
     override fun getLineDate(lineNumber: Int): Date? = info(lineNumber)?.let { Date(it.time * 1000) }
 
     override fun getAspects(): Array<LineAnnotationAspect> = arrayOf(
-        aspect(LineAnnotationAspect.REVISION) { it.revision.id.take(8) },
-        aspect(LineAnnotationAspect.AUTHOR) { it.author },
-        aspect(LineAnnotationAspect.DATE) { DateFormat.getDateInstance(DateFormat.SHORT).format(Date(it.time * 1000)) },
+        aspect(LineAnnotationAspect.REVISION, "Revision") { it.revision.id.take(8) },
+        aspect(LineAnnotationAspect.AUTHOR, "Author") { it.author },
+        aspect(LineAnnotationAspect.DATE, "Date") { DateFormat.getDateInstance(DateFormat.SHORT).format(Date(it.time * 1000)) },
     )
 
-    private fun aspect(id: String, value: (AscLineInfo) -> String): LineAnnotationAspect =
-        object : LineAnnotationAspectAdapter(id, true) {
+    private fun aspect(id: String, name: String, value: (AscLineInfo) -> String): LineAnnotationAspect =
+        object : LineAnnotationAspectAdapter(id, name, true) {
             override fun getValue(line: Int): String = info(line)?.let(value).orEmpty()
 
             override fun getTooltipText(line: Int): String? = AscBlame.tooltip(info(line))
 
-            override fun getRevisionNumber(line: Int): VcsRevisionNumber? = info(line)?.revision
+            override fun showAffectedPaths(lineNum: Int) {}
         }
 
     override fun dispose() {}
@@ -145,7 +147,11 @@ class AscFileAnnotation(
 class AscAnnotationProvider(private val project: Project) : AnnotationProvider {
     private val bridge get() = service<AscBridgeService>()
 
-    override fun isAnnotationValid(rev: VcsFileRevision): Boolean = true
+    // Only the working copy is annotated: Workspace.Blame has no revision argument.
+    override fun isAnnotationValid(rev: VcsFileRevision): Boolean = false
+
+    override fun annotate(file: VirtualFile, revision: VcsFileRevision): FileAnnotation =
+        throw VcsException("ASC: annotating a past revision is not supported")
 
     override fun annotate(file: VirtualFile): FileAnnotation {
         val root = ProjectLevelVcsManager.getInstance(project).getVcsRootFor(file)?.path

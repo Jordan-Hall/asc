@@ -110,6 +110,6 @@ class AscBridgeServiceExecutableTest {
     }
 
     @Test fun aSubfolderOfTheProjectIsForbiddenToo() {
-        assertNull(service("$ws/bin", listOf(ws)).also { it.isFile = { true } }.executablePath())
+        assertNull(service("$ws/bin", listOf(ws)).also { it.isFile = { f -> f.replace('\\', '/').lowercase().startsWith("c:/work/repo/bin/") } }.executablePath())
     }
 }

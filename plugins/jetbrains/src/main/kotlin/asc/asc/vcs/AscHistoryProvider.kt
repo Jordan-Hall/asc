@@ -164,7 +164,6 @@ class AscHistoryProvider(private val project: Project) : VcsHistoryProvider {
             for (e in page.entries) partner.acceptRevision(AscFileRevision(e, c.rel, c.root, c.wsId, calls))
             token = page.nextToken
         } while (token.isNotEmpty())
-        partner.finished()
     }
 
     /** History for the selected lines (1-based, inclusive), newest first. A truncated scan is reported, not hidden. */
@@ -177,7 +176,6 @@ class AscHistoryProvider(private val project: Project) : VcsHistoryProvider {
         if (page.truncated) {
             partner.reportException(VcsException("ASC: the line history scan budget ran out; the list is partial"))
         }
-        partner.finished()
     }
 
     override fun createSessionFor(filePath: FilePath): VcsHistorySession? = null
@@ -201,7 +199,7 @@ class AscHistoryProvider(private val project: Project) : VcsHistoryProvider {
 private class AscHistorySession(revs: List<VcsFileRevision>) : VcsAbstractHistorySession(revs) {
     override fun calcCurrentRevisionNumber(): VcsRevisionNumber? = null
 
-    override fun copyWithCachedRevision(): VcsHistorySession = AscHistorySession(revisionList)
+    override fun copy(): VcsHistorySession = AscHistorySession(revisionList)
 
     override fun isCurrentRevision(rev: VcsRevisionNumber): Boolean = false
 }

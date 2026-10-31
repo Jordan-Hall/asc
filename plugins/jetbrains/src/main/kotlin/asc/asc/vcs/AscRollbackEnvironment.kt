@@ -26,19 +26,19 @@ class AscRollbackEnvironment(private val project: Project) : RollbackEnvironment
 
     override fun rollbackMissingFileDeletion(
         files: List<FilePath>,
-        exceptions: MutableList<VcsException>,
+        exceptions: MutableList<in VcsException>,
         listener: RollbackProgressListener,
     ) = restore(files.map { Paths.get(it.path) }, exceptions)
 
     override fun rollbackModifiedWithoutCheckout(
         files: List<com.intellij.openapi.vfs.VirtualFile>,
-        exceptions: MutableList<VcsException>,
+        exceptions: MutableList<in VcsException>,
         listener: RollbackProgressListener,
     ) {}
 
     override fun rollbackIfUnchanged(file: com.intellij.openapi.vfs.VirtualFile) {}
 
-    private fun restore(paths: List<java.nio.file.Path>, exceptions: MutableList<VcsException>) {
+    private fun restore(paths: List<java.nio.file.Path>, exceptions: MutableList<in VcsException>) {
         for ((root, files) in CheckinPlan.groupByRoot(paths)) {
             val args = CheckinPlan.rollbackArgs(CheckinPlan.relativePaths(root, files)) ?: continue
             try {

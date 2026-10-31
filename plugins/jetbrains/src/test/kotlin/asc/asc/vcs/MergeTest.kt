@@ -53,7 +53,7 @@ class MergeTest {
 
     @Test fun loadsBaseOursAndTheirsFromStages() = runBlocking {
         val fake = Fake(listOf(conflict("a/b.txt")), mapOf(1 to "base", 2 to "ours", 3 to "theirs"))
-        val s = AscMerge.load(fake, "/r", "ws", "a\b.txt")
+        val s = AscMerge.load(fake, "/r", "ws", "a\\b.txt")
         assertArrayEquals("base".toByteArray(), s.base)
         assertArrayEquals("ours".toByteArray(), s.ours)
         assertArrayEquals("theirs".toByteArray(), s.theirs)
@@ -87,7 +87,7 @@ class MergeTest {
 
     @Test fun resolvedStagesTheFile() = runBlocking {
         val fake = Fake(emptyList(), emptyMap())
-        AscMerge.resolved(fake, "/r", "ws", "src\m.txt")
+        AscMerge.resolved(fake, "/r", "ws", "src\\m.txt")
         assertEquals(listOf("asc.v1.Workspace/Stage"), fake.seen)
         assertEquals("src/m.txt", fake.staged!!.getAdd(0).toStringUtf8())
         assertEquals("ws", fake.staged!!.wsId)
