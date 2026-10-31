@@ -50,7 +50,7 @@ class HistoryTest {
             req = WsBlameRequest.parseFrom(r)
             flowOf(resp.toByteArray())
         }
-        val lines = AscBlame.load(fake, "/r", "ws", "src\a.kt", "buf".toByteArray(), 4)
+        val lines = AscBlame.load(fake, "/r", "ws", "src\\a.kt", "buf".toByteArray(), 4)
         assertEquals(4, lines.size)
         assertEquals("01", lines[0]!!.revision.id)
         assertEquals("01", lines[1]!!.revision.id)
@@ -105,7 +105,7 @@ class HistoryTest {
             req = WsLogRequest.parseFrom(r)
             flowOf(LogResponse.newBuilder().addEntries(commit(2, "b", 5, "m")).setNextPageToken("p2").build().toByteArray())
         }
-        val page = AscHistory.page(fake, "/r", "ws", "d\f.kt", "p1")
+        val page = AscHistory.page(fake, "/r", "ws", "d\\f.kt", "p1")
         assertEquals(50, req!!.query.limit)
         assertTrue(req!!.query.follow)
         assertEquals(listOf("d/f.kt"), req!!.query.pathsList)
@@ -130,7 +130,7 @@ class HistoryTest {
                     .setTruncated(first).setResumeToken(if (first) "tok" else "").build().toByteArray(),
             )
         }
-        val page = AscHistory.lineHistory(fake, "/r", "a\b.kt", "", 3, 9)
+        val page = AscHistory.lineHistory(fake, "/r", "a\\b.kt", "", 3, 9)
         assertEquals(2, page.entries.size)
         assertFalse(page.truncated)
         assertEquals("tok", reqs[1].resumeToken)
