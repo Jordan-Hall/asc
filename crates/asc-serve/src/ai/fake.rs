@@ -1,5 +1,6 @@
 //! A scripted model server for tests: speaks the Anthropic Messages API (`/v1/messages`,
-//! `/v1/models`) and OpenAI chat completions (`/chat/completions`, `/models`) on a loopback port.
+//! `/v1/models`), OpenAI chat completions (`/chat/completions`, `/models`) and Gemini
+//! (`/v1beta/models/{model}:generateContent`, `/v1beta/models`) on a loopback port.
 //!
 //! The test enables `allow_loopback_http` on the network guard, which is the one way a plain
 //! loopback endpoint is accepted, so the whole path (guard, pinned client, wire format) runs.
@@ -161,10 +162,15 @@ async fn handle(State(st): State<Arc<Mutex<Inner>>>, req: Request<Body>) -> Resp
     let (parts, body) = req.into_parts();
     let path = parts.uri.path().to_owned();
     let anthropic = path.starts_with("/v1/");
-    let key = if anthropic {
+    let google = path.starts_with("/v1beta/");
+    let key = if anthropic || google {
         parts
             .headers
-            .get("x-api-key")
+            .get(if google {
+                "x-goog-api-key"
+            } else {
+                "x-api-key"
+            })
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_owned()
@@ -188,7 +194,9 @@ async fn handle(State(st): State<Arc<Mutex<Inner>>>, req: Request<Body>) -> Resp
             body: body_json.clone(),
         });
         let valid = key == g.valid_key;
-        let is_completion = path.ends_with("/messages") || path.ends_with("/chat/completions");
+        let is_completion = path.ends_with("/messages")
+            || path.ends_with("/chat/completions")
+            || path.ends_with(":generateContent");
         let reply = if is_completion {
             Some(g.script.pop_front().unwrap_or_else(|| g.default.clone()))
         } else {
@@ -196,6 +204,12 @@ async fn handle(State(st): State<Arc<Mutex<Inner>>>, req: Request<Body>) -> Resp
         };
         (valid, reply)
     };
+    if !valid && google {
+        return json_response(
+            403,
+            &json!({"error": {"code": 403, "status": "PERMISSION_DENIED", "message": "API key not valid sk-LEAK"}}),
+        );
+    }
     if !valid {
         return json_response(
             401,
@@ -203,6 +217,16 @@ async fn handle(State(st): State<Arc<Mutex<Inner>>>, req: Request<Body>) -> Resp
         );
     }
     let Some(reply) = reply else {
+        if google {
+            return json_response(
+                200,
+                &json!({"models": [
+                    {"name": "models/gemini-a", "displayName": "Gemini A", "inputTokenLimit": 1_048_576,
+                     "supportedGenerationMethods": ["generateContent", "countTokens"]},
+                    {"name": "models/embed-a", "displayName": "Embed", "supportedGenerationMethods": ["embedContent"]},
+                ]}),
+            );
+        }
         let data = json!({"data": [
             {"id": "model-a", "display_name": "Model A", "context_window": 200_000},
             {"id": "model-b", "display_name": "Model B"},
@@ -237,25 +261,58 @@ async fn handle(State(st): State<Arc<Mutex<Inner>>>, req: Request<Body>) -> Resp
             text,
             input,
             output,
-        } => completion(anthropic, &text, &[], input, output),
+        } => completion(wire_of(anthropic, google), &text, &[], input, output),
         Reply::Tools {
             text,
             calls,
             input,
             output,
-        } => completion(anthropic, &text, &calls, input, output),
+        } => completion(wire_of(anthropic, google), &text, &calls, input, output),
         Reply::Delay(..) | Reply::Gate(..) | Reply::Dynamic(_) => unreachable!(),
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum Wire {
+    Anthropic,
+    OpenAi,
+    Google,
+}
+
+fn wire_of(anthropic: bool, google: bool) -> Wire {
+    if anthropic {
+        Wire::Anthropic
+    } else if google {
+        Wire::Google
+    } else {
+        Wire::OpenAi
+    }
+}
+
 fn completion(
-    anthropic: bool,
+    wire: Wire,
     text: &str,
     calls: &[(String, Value)],
     input: u64,
     output: u64,
 ) -> Response<Body> {
-    if anthropic {
+    if wire == Wire::Google {
+        let mut parts = Vec::new();
+        if !text.is_empty() {
+            parts.push(json!({"text": text}));
+        }
+        for (name, args) in calls {
+            parts.push(json!({"functionCall": {"name": name, "args": args}}));
+        }
+        return json_response(
+            200,
+            &json!({
+                "candidates": [{"content": {"role": "model", "parts": parts}, "finishReason": "STOP"}],
+                "usageMetadata": {"promptTokenCount": input, "candidatesTokenCount": output},
+            }),
+        );
+    }
+    if wire == Wire::Anthropic {
         let mut content = Vec::new();
         if !text.is_empty() {
             content.push(json!({"type": "text", "text": text}));

@@ -57,6 +57,7 @@ request_timeout_secs = 30
 max_targets_per_owner = 64
 max_repos_per_target = 1000
 allow_user_targets = true                # false: only organisations and repositories may add targets
+allow_private = false                    # true: a target's host may resolve to a private address (RFC 1918, fc00::/7, 100.64.0.0/10), for a Garage or MinIO on a LAN
 health_interval_secs = 300               # 0 turns the checks off
 repin_secs = 300                         # how often a target's DNS answer is judged again
 migration_settle_secs = 5                # how long replicas get to notice a route change

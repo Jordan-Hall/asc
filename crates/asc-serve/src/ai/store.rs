@@ -27,6 +27,7 @@ pub enum Provider {
     Anthropic,
     OpenAi,
     OpenAiCompatible,
+    Google,
 }
 
 impl Provider {
@@ -35,9 +36,7 @@ impl Provider {
             Ok(wire::AiProvider::Anthropic) => Ok(Self::Anthropic),
             Ok(wire::AiProvider::Openai) => Ok(Self::OpenAi),
             Ok(wire::AiProvider::OpenaiCompatible) => Ok(Self::OpenAiCompatible),
-            Ok(wire::AiProvider::Google) => Err(Status::invalid_argument(
-                "the Google provider is not supported by this server; use an OpenAI-compatible endpoint",
-            )),
+            Ok(wire::AiProvider::Google) => Ok(Self::Google),
             _ => Err(Status::invalid_argument("unknown provider")),
         }
     }
@@ -47,6 +46,7 @@ impl Provider {
             Self::Anthropic => wire::AiProvider::Anthropic,
             Self::OpenAi => wire::AiProvider::Openai,
             Self::OpenAiCompatible => wire::AiProvider::OpenaiCompatible,
+            Self::Google => wire::AiProvider::Google,
         }) as i32
     }
 
@@ -56,6 +56,7 @@ impl Provider {
             Self::Anthropic => "anthropic",
             Self::OpenAi => "openai",
             Self::OpenAiCompatible => "openai-compatible",
+            Self::Google => "google",
         }
     }
 
@@ -64,6 +65,7 @@ impl Provider {
         match self {
             Self::Anthropic => Some(super::provider::ANTHROPIC_BASE),
             Self::OpenAi => Some(super::provider::OPENAI_BASE),
+            Self::Google => Some(super::provider::GOOGLE_BASE),
             Self::OpenAiCompatible => None,
         }
     }
@@ -177,6 +179,7 @@ const COLS: &str = "id, owner_kind, owner_name, label, provider, base_url, defau
 fn row_of(r: &AnyRow) -> Result<KeyRow, sqlx::Error> {
     let provider = match r.try_get::<i64, _>("provider")? {
         2 => Provider::OpenAi,
+        3 => Provider::Google,
         4 => Provider::OpenAiCompatible,
         _ => Provider::Anthropic,
     };
