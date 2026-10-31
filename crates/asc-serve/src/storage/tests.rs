@@ -56,6 +56,7 @@ struct Opts {
     settle: u64,
     repin: u64,
     max_targets: u32,
+    allow_private: bool,
 }
 
 impl Default for Opts {
@@ -65,6 +66,7 @@ impl Default for Opts {
             settle: 0,
             repin: 300,
             max_targets: 64,
+            allow_private: false,
         }
     }
 }
@@ -120,6 +122,7 @@ async fn fx_with(o: Opts) -> Fx {
                 migration_settle_secs: o.settle,
                 repin_secs: o.repin,
                 health_interval_secs: 0,
+                allow_private: o.allow_private,
                 ..StorageConfig::default()
             },
             authorizer: Arc::new(crate::DenyAll),
@@ -803,6 +806,57 @@ async fn a_target_in_use_cannot_be_deleted_or_disabled() {
 }
 
 // ------------------------------------------------------------------------------ the guard
+
+#[tokio::test]
+async fn allow_private_admits_a_lan_target_and_nothing_else_inward() {
+    let f = fx_with(Opts {
+        loopback: false,
+        allow_private: true,
+        ..Opts::default()
+    })
+    .await;
+    f.resolver.script(
+        "garage.lan.example.com",
+        vec![vec!["192.168.1.20".parse().unwrap()]],
+    );
+    let mut x = f.fields("lan");
+    x.endpoint = "https://garage.lan.example.com".into();
+    f.svc
+        .create_target(&alice(), x)
+        .await
+        .expect("a private address is admitted when the operator allows it");
+    // a literal private address too, and every other inward range is still refused
+    for (endpoint, reason) in [
+        ("https://10.0.0.1", None),
+        ("https://127.0.0.1", Some(BlockReason::Loopback)),
+        ("https://169.254.169.254", Some(BlockReason::Metadata)),
+        ("https://[fe80::1]", Some(BlockReason::LinkLocal)),
+        ("https://0.0.0.0", Some(BlockReason::Reserved)),
+        ("http://192.168.1.20:9000", Some(BlockReason::NotHttps)),
+    ] {
+        let mut x = f.fields("t2");
+        x.endpoint = endpoint.into();
+        let r = f.svc.create_target(&alice(), x).await;
+        match reason {
+            Some(reason) => assert_eq!(r.unwrap_err(), StorageError::Blocked(reason), "{endpoint}"),
+            None => {
+                r.expect(endpoint);
+            }
+        }
+    }
+    // the default stays deny
+    let g = fx_with(Opts {
+        loopback: false,
+        ..Opts::default()
+    })
+    .await;
+    let mut x = g.fields("lan");
+    x.endpoint = "https://192.168.1.20".into();
+    assert_eq!(
+        g.svc.create_target(&alice(), x).await.unwrap_err(),
+        StorageError::Blocked(BlockReason::Private)
+    );
+}
 
 #[tokio::test]
 async fn every_guard_rule_is_reached_through_the_service() {

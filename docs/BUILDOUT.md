@@ -329,7 +329,9 @@ the `MergeQueue` service: its methods answer `UNIMPLEMENTED` from the router unt
   cancelled migration leaves the source authoritative. Writes during the copy go to both until the switch.
 - **Data:** `storage_targets(id, owner_kind, owner_name, name, endpoint, region, bucket, prefix, addressing, sealed_credentials, key_gen,
   state, last_error, verified_at, created, updated)`, `repo_storage(repo, target_id)`, `storage_migrations(...)`.
-- **Config:** `[storage] max_targets_per_owner` (64), `[storage] allow_user_targets` (default `true`); the operator's own S3 setting
+- **Config:** `[storage] max_targets_per_owner` (64), `[storage] allow_user_targets` (default `true`), `[storage] allow_private`
+  (default `false`; storage targets only, never AI keys: the host of a target may resolve to a private address such as a LAN Garage or MinIO;
+  loopback, link-local, metadata and reserved addresses stay refused and the endpoint stays https); the operator's own S3 setting
   keeps working and is the default target.
 - **Errors:** `STORAGE_ENDPOINT_BLOCKED`, `STORAGE_VERIFY_FAILED`, `STORAGE_IN_USE`, `MIGRATION_ACTIVE`, `QUOTA_EXCEEDED`.
 - **Hub:** `/user/settings/asc/storage`, `/org/<org>/settings/asc/storage`, repository settings "Storage" picker and migration
@@ -351,6 +353,9 @@ the `MergeQueue` service: its methods answer `UNIMPLEMENTED` from the router unt
   cost_micro_usd)`.
 - **Config:** `[aikeys] max_keys_per_owner` (32), `instance_monthly_cap_micro_usd` (0 = none), price table path `price_file`
   (JSON model to micro-USD per million tokens; unknown model costs are recorded as 0 and flagged in `Usage`).
+  Google (Gemini) keys use the Gemini API (`generateContent`, `x-goog-api-key` header, never a URL parameter; https to
+  `generativelanguage.googleapis.com` only, no `base_url`); the models are listed from `/v1beta/models`, and a price-file pattern such as
+  `"gemini-*": [1250000, 10000000]` prices them (the operator supplies the numbers).
 - **Errors:** `AI_ENDPOINT_BLOCKED`, `AI_KEY_UNTESTED`, `AI_CAP_REACHED`.
 - **Hub:** `/user/settings/asc/ai`, organisation and repository equivalents, a usage table; the key field is write-only.
 - **Tests:** never returned or logged (planted key), guard on `base_url`, test against a local provider double for each provider (success,

@@ -35,6 +35,10 @@ pub struct StorageConfig {
     pub max_repos_per_target: u32,
     /// Whether a user (not an organisation or a repository) may add targets.
     pub allow_user_targets: bool,
+    /// Lets a target's host resolve to a private address (RFC 1918, unique-local, carrier-grade NAT): a self-hosted Garage
+    /// or MinIO on a LAN. Off by default. Loopback, link-local, metadata and reserved addresses stay refused, https stays
+    /// required, and AI keys and the rest of the server keep the strict guard; only storage targets are affected.
+    pub allow_private: bool,
     /// Seconds between health checks of enabled targets; 0 turns the checks off.
     pub health_interval_secs: u64,
     /// Seconds before a target's DNS answer is judged again.
@@ -51,6 +55,7 @@ impl Default for StorageConfig {
             max_targets_per_owner: model::DEFAULT_MAX_TARGETS,
             max_repos_per_target: 1000,
             allow_user_targets: true,
+            allow_private: false,
             health_interval_secs: 300,
             repin_secs: 300,
             migration_settle_secs: 5,
