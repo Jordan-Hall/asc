@@ -104,6 +104,17 @@ pub const CATALOGUE: &[ActionInfo] = &[
         "A site administrator took away the second factors of a person on the host application.",
         &["reason"],
     ),
+    a(
+        "host.moderation.acted",
+        "A site administrator acted on an abuse report on the host application (dismissed it, or removed the content or the account).",
+        &[
+            "content_type",
+            "content_id",
+            "content_action",
+            "report_action",
+            "reason",
+        ],
+    ),
     // Policy.
     a(
         "policy.proposed",
