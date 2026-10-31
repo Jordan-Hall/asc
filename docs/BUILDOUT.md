@@ -850,6 +850,7 @@ Every method of the build-out services (98). A test keeps this list equal to the
 - `asc.v1.Audit/Export` — expensive; rate class `export`
 - `asc.v1.Audit/VerifyChain` — expensive
 - `asc.v1.Audit/ListActions` — cheap; the catalogue for filters
+- `asc.v1.Audit/Append` — cheap; host service only, `host.*` actions
 
 **Stacks** (`stacks.proto`)
 
