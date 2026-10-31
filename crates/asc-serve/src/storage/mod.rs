@@ -191,8 +191,10 @@ pub fn features(slot: &ByosSlot) -> Vec<String> {
 pub fn register(ext: &Extensions, registry: &Arc<Registry>, parts: Parts) -> Arc<Byos> {
     let db = Db::new(registry.pool().clone());
     let (default_store, default_root) = registry.default_place();
+    // Storage targets are the one place that may be told to accept a private address (`[storage] allow_private`).
+    let guard = parts.guard.allowing_private(parts.cfg.allow_private);
     let builder = Builder {
-        guard: parts.guard.clone(),
+        guard: guard.clone(),
         vault: parts.vault.clone(),
     };
     let router = Arc::new(Router::new(
@@ -226,7 +228,7 @@ pub fn register(ext: &Extensions, registry: &Arc<Registry>, parts: Parts) -> Arc
     let service = Arc::new(service::Service {
         db,
         vault: parts.vault.clone(),
-        guard: parts.guard,
+        guard,
         router: router.clone(),
         engine: engine.clone(),
         audit: parts.audit.clone(),
