@@ -1583,6 +1583,41 @@ async fn the_host_appends_the_actions_on_a_person_with_the_reason() {
     }
 }
 
+#[tokio::test]
+async fn the_host_appends_a_moderation_action_with_its_reason_and_the_allowed_details() {
+    let (svc, p) = service().await;
+    let mut m = host_append("host.moderation.acted", "carol");
+    m.target = "user:12".into();
+    m.details = [
+        ("content_type", "user"),
+        ("content_id", "12"),
+        ("content_action", "suspend_account"),
+        ("report_action", "mark_as_handled"),
+        ("reason", "Spam links in the profile"),
+        ("remarks", "the reporter's text is not kept"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_owned(), v.to_owned()))
+    .collect();
+    svc.append(req(m, Some(HOST))).await.unwrap();
+    let events = list_all(&p, &Scope::instance()).await;
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].action, "host.moderation.acted");
+    assert_eq!(events[0].target, "user:12");
+    assert_eq!(
+        events[0].details.get("reason").map(String::as_str),
+        Some("Spam links in the profile")
+    );
+    assert_eq!(
+        events[0].details.get("content_action").map(String::as_str),
+        Some("suspend_account")
+    );
+    assert!(
+        !events[0].details.contains_key("remarks"),
+        "details are cut to the allow-list of the action"
+    );
+}
+
 #[test]
 fn a_host_address_is_made_coarse() {
     use super::rpc::coarse_addr_for_tests as coarse;
