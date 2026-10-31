@@ -50,7 +50,7 @@ pub use config::AiKeysConfig;
 use model::{Message, ModelError, ModelInfo, ModelRequest, ModelResponse, Usage};
 use owner::{Owner, OwnerAdmin};
 use prices::Prices;
-use provider::{Anthropic, ModelClient, OpenAi};
+use provider::{Anthropic, Google, ModelClient, OpenAi};
 use store::{AiStore, KeyRow, KeyState, Provider, ReserveError, UsageRecord};
 
 use crate::netguard::{Guard, Shape};
@@ -538,6 +538,9 @@ impl AiHub {
             }
             Provider::OpenAiCompatible => {
                 Box::new(OpenAi::new(&pinned, secret, timeout, false).map_err(AiError::Model)?)
+            }
+            Provider::Google => {
+                Box::new(Google::new(&pinned, secret, timeout).map_err(AiError::Model)?)
             }
         };
         Ok(c)

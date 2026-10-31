@@ -298,8 +298,17 @@ async fn keys_are_validated() {
         .create_key(&user("bob"), new_key("dup", &url))
         .await
         .unwrap();
-    // Google is not offered.
-    assert!(Provider::from_wire(wire::AiProvider::Google as i32).is_err());
+    // Google is a provider of its own, with its own API root and no base_url.
+    assert_eq!(
+        Provider::from_wire(wire::AiProvider::Google as i32).unwrap(),
+        Provider::Google
+    );
+    assert_eq!(Provider::Google.to_wire(), wire::AiProvider::Google as i32);
+    assert_eq!(Provider::Google.name(), "google");
+    assert_eq!(
+        Provider::Google.default_base(),
+        Some("https://generativelanguage.googleapis.com")
+    );
     assert!(Provider::from_wire(0).is_err());
 }
 
