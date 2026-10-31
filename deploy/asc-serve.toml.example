@@ -49,6 +49,7 @@ trusted_proxies = []                 # the exact /32 of your TLS proxy, if any
 # max_targets_per_owner = 64
 # max_repos_per_target = 1000
 # allow_user_targets = true
+# allow_private = false                  # true: a target may live on a private address (a self-hosted Garage or MinIO on a LAN)
 # health_interval_secs = 300             # 0 turns the checks off
 # repin_secs = 300
 # migration_settle_secs = 5

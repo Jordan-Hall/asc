@@ -355,11 +355,18 @@ pub enum Profile {
 pub struct Guard {
     cfg: Arc<NetGuardConfig>,
     resolver: Arc<dyn Resolver>,
+    /// Admits addresses in the private ranges (RFC 1918, unique-local, carrier-grade NAT) and nothing else that is
+    /// inward. Not a file setting of the guard: it is set on the copy a feature hands to one caller
+    /// ([`Guard::allowing_private`]), so a feature that does not ask for it cannot reach a private address.
+    allow_private: bool,
 }
 
 impl fmt::Debug for Guard {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Guard").field("cfg", &self.cfg).finish()
+        f.debug_struct("Guard")
+            .field("cfg", &self.cfg)
+            .field("allow_private", &self.allow_private)
+            .finish()
     }
 }
 
@@ -373,6 +380,18 @@ impl Guard {
         Self {
             cfg: Arc::new(cfg),
             resolver,
+            allow_private: false,
+        }
+    }
+
+    /// The same guard with the private ranges admitted when `on` (a self-hosted store on a LAN). Loopback, link-local,
+    /// the metadata addresses and the reserved ranges stay refused, https stays required, and the original guard is
+    /// unchanged.
+    #[must_use]
+    pub fn allowing_private(&self, on: bool) -> Self {
+        Self {
+            allow_private: on,
+            ..self.clone()
         }
     }
 
@@ -442,6 +461,7 @@ impl Guard {
             {
                 Ok(())
             }
+            Some(BlockReason::Private) if self.allow_private => Ok(()),
             Some(r) => Err(Blocked(r)),
         }
     }
@@ -850,6 +870,67 @@ mod tests {
                 "{url}: {err}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn private_ranges_are_admitted_only_by_a_guard_that_was_asked_to() {
+        let (g, r) = guard(false);
+        let lan = g.allowing_private(true);
+        r.script(
+            "garage.lan",
+            vec![vec![ip("192.168.1.20")], vec![ip("192.168.1.20")]],
+        );
+        assert_eq!(
+            g.pin("https://garage.lan", Shape::Endpoint)
+                .await
+                .unwrap_err()
+                .reason(),
+            BlockReason::Private,
+            "the default stays deny"
+        );
+        let pinned = lan
+            .pin("https://garage.lan", Shape::Endpoint)
+            .await
+            .unwrap();
+        assert!(format!("{pinned:?}").contains("192.168.1.20"));
+        // the original guard is not changed by the copy, and a copy can be switched off again
+        assert_eq!(
+            g.pin("https://garage.lan", Shape::Endpoint)
+                .await
+                .unwrap_err()
+                .reason(),
+            BlockReason::Private
+        );
+        assert!(!lan.allowing_private(false).allow_private);
+        // everything else that is inward stays refused, whatever name leads there
+        for (name, addr, want) in [
+            ("loop.lan", "127.0.0.1", BlockReason::Loopback),
+            ("meta.lan", "169.254.169.254", BlockReason::Metadata),
+            ("link.lan", "169.254.1.1", BlockReason::LinkLocal),
+            ("res.lan", "240.0.0.1", BlockReason::Reserved),
+            ("mapped.lan", "::ffff:127.0.0.1", BlockReason::Loopback),
+        ] {
+            r.script(name, vec![vec![ip(addr)]]);
+            assert_eq!(
+                lan.pin(&format!("https://{name}"), Shape::Endpoint)
+                    .await
+                    .unwrap_err()
+                    .reason(),
+                want,
+                "{name}"
+            );
+        }
+        // one private and one metadata address: refused as a whole
+        r.script("mix.lan", vec![vec![ip("10.0.0.7"), ip("169.254.169.254")]]);
+        assert_eq!(
+            lan.pin("https://mix.lan", Shape::Endpoint)
+                .await
+                .unwrap_err()
+                .reason(),
+            BlockReason::Metadata
+        );
+        // plain http to a private address is still not allowed
+        assert_eq!(reason(&lan, "http://garage.lan"), BlockReason::NotHttps);
     }
 
     #[tokio::test]
