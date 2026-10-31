@@ -1477,10 +1477,10 @@ impl AdminService {
         } else {
             "UPDATE repos SET branchless = FALSE WHERE id = $1"
         })
-            .bind(entry.key.0)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| sql("repos", e))?;
+        .bind(entry.key.0)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| sql("repos", e))?;
         if done.rows_affected() != 1 {
             return Err(Status::not_found("no such repository"));
         }
@@ -3472,7 +3472,7 @@ mod tests {
         f.call("o/e", set(false)).await.unwrap();
         assert_eq!(f.scalar(BRANCHLESS, e.key.0).await, 0);
         let rows: Vec<(String, String, String)> = sqlx::query(
-            "SELECT action, actor_name, details_json FROM audit_events WHERE action = 'repo.branchless' ORDER BY seq",
+            "SELECT action, actor_name, details_json FROM audit_events WHERE action = 'repo.branchless' AND scope_kind = 'instance' ORDER BY seq",
         )
         .fetch_all(f.registry.pool())
         .await
@@ -3482,7 +3482,10 @@ mod tests {
         .collect();
         assert_eq!(rows.len(), 2, "{rows:?}");
         assert!(rows.iter().all(|(_, who, _)| who == "alice"));
-        assert!(rows[0].2.contains("branchless") && rows[1].2.contains("branches"), "{rows:?}");
+        assert!(
+            rows[0].2.contains("branchless") && rows[1].2.contains("branches"),
+            "{rows:?}"
+        );
     }
 
     #[tokio::test]
