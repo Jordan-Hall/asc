@@ -91,6 +91,8 @@ const MAX_CHANGES: usize = 10_000;
 const FANOUT: usize = 16;
 /// Files larger than this are binary (`core.bigFileThreshold`, SPEC §16.4).
 const BIG_FILE: u64 = 512 * 1024 * 1024;
+/// Log pages one `count_only` call walks before it answers `truncated` with a page token.
+const MAX_COUNT_PAGES: usize = 64;
 
 // ------------------------------------------------------------------------------ statuses
 
@@ -2108,6 +2110,7 @@ impl ReadsHandler for ServerReads {
                 Status::not_found(format!("{p} is not a file at that revision"))
             }
             blame::Error::BadRange { .. } => Status::out_of_range(e.to_string()),
+            e @ blame::Error::TooLarge(_) => Status::failed_precondition(e.to_string()),
             blame::Error::NotAncestor => Status::failed_precondition(format!(
                 "{e} (reverse blame walks from rev to HEAD, at most {} changesets)",
                 blame::MAX_REVERSE_STEPS
@@ -2116,9 +2119,12 @@ impl ReadsHandler for ServerReads {
         };
         let whole = if req.reverse {
             // Like `git blame --reverse rev`: from `rev` to the default branch head.
+            use asc_engine::history::linehist::MAX_FILE_BYTES;
             let head = call.rev("HEAD").await?;
+            // Two versions are held at once; each is capped by the walk.
+            let _pair = call.budget(2 * MAX_FILE_BYTES).await?;
             call.engine
-                .reverse_blame(rev, head, &path)
+                .reverse_blame(rev, head, &path, MAX_FILE_BYTES)
                 .await
                 .map_err(blame_err)?
         } else {
@@ -2373,9 +2379,13 @@ impl HistoryHandler for ServerHistory {
             }
             let mut token = token;
             if count_only {
-                // Every page is walked; only the total is sent.
+                // Pages are walked up to a cap; only the total is sent. Past the cap the
+                // answer is `truncated` with a page token to continue the count from.
                 let mut count = 0u64;
-                loop {
+                for _ in 0..MAX_COUNT_PAGES {
+                    if out.0.is_closed() {
+                        return Err(Status::cancelled("the client went away"));
+                    }
                     let page = call
                         .engine
                         .log(&query, token.as_ref())
@@ -2394,6 +2404,15 @@ impl HistoryHandler for ServerHistory {
                         }
                     }
                 }
+                let next = token.map_or_else(String::new, |t| URL_SAFE_NO_PAD.encode(&t.0));
+                return out
+                    .send(wire::LogResponse {
+                        count,
+                        truncated: true,
+                        next_page_token: next,
+                        ..wire::LogResponse::default()
+                    })
+                    .await;
             }
             loop {
                 let page = call

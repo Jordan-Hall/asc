@@ -39,6 +39,8 @@ pub enum Error {
     BadRange { range: Range<u32>, lines: u32 },
     #[error("the start revision is not a first-parent ancestor of the end revision")]
     NotAncestor,
+    #[error("a version of the file is over {0} bytes")]
+    TooLarge(u64),
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
@@ -577,16 +579,21 @@ impl<O: Objects, R: Refs> Engine<O, R> {
     /// the last changeset on the first-parent line from `start` to `end` that still has it.
     /// Each run's `origin` is that changeset and `orig_line`/`orig_path` place the line in it.
     /// `start` must be a first-parent ancestor-or-self of `end` within
-    /// [`MAX_REVERSE_STEPS`]; otherwise [`Error::NotAncestor`].
+    /// [`MAX_REVERSE_STEPS`]; otherwise [`Error::NotAncestor`]. Every version read must be at
+    /// most `max_file` bytes ([`Error::TooLarge`]), so at most two such versions are held.
     pub async fn reverse_blame(
         &self,
         start: ChangesetId,
         end: ChangesetId,
         path: &RepoPath,
+        max_file: u64,
     ) -> Result<Blame> {
         let entry = file_in(self, start, path)
             .await?
             .ok_or_else(|| Error::NotFound(path.clone()))?;
+        if entry.size > max_file {
+            return Err(Error::TooLarge(max_file));
+        }
         // The first-parent chain from `end` back to `start`, then walked forward.
         let mut chain = Vec::new();
         let mut cs = end;
@@ -639,6 +646,9 @@ impl<O: Objects, R: Refs> Engine<O, R> {
                 break;
             };
             if ne.id != cur.id {
+                if ne.size > max_file {
+                    return Err(Error::TooLarge(max_file));
+                }
                 let new = self.read_file(FileId::from_bytes(ne.id), ne.size).await?;
                 let d = line::diff(&cur_text, &new, Algorithm::Myers, false);
                 // Old line -> new line for the lines outside every hunk.
@@ -880,7 +890,10 @@ mod tests {
         ];
         let e = engine();
         let ids = build(&e, &steps).await;
-        let b = e.reverse_blame(ids[0], ids[3], &p("f.txt")).await.unwrap();
+        let b = e
+            .reverse_blame(ids[0], ids[3], &p("f.txt"), 1 << 20)
+            .await
+            .unwrap();
         let got: Vec<_> = (0..b.lines())
             .map(|l| {
                 let r = b.run_at(l).unwrap();
@@ -890,10 +903,17 @@ mod tests {
         // `a` lives to the end (shifted down by `x`), `b` dies in step 1, `c` in step 3.
         assert_eq!(got, vec![(ids[3], 1), (ids[0], 1), (ids[2], 3)]);
         assert!(matches!(
-            e.reverse_blame(ids[3], ids[0], &p("f.txt")).await,
+            e.reverse_blame(ids[3], ids[0], &p("f.txt"), 1 << 20).await,
             Err(Error::NotAncestor)
         ));
-        let same = e.reverse_blame(ids[3], ids[3], &p("f.txt")).await.unwrap();
+        assert!(matches!(
+            e.reverse_blame(ids[0], ids[3], &p("f.txt"), 4).await,
+            Err(Error::TooLarge(4))
+        ));
+        let same = e
+            .reverse_blame(ids[3], ids[3], &p("f.txt"), 1 << 20)
+            .await
+            .unwrap();
         assert_eq!(same.runs().len(), 1);
         assert_eq!(same.runs()[0].origin, ids[3]);
     }
