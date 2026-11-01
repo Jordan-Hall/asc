@@ -1562,6 +1562,7 @@ async fn the_host_appends_the_actions_on_a_person_with_the_reason() {
         "host.user.suspended",
         "host.user.unsuspended",
         "host.user.2fa_reset",
+        "host.user.2fa_required",
     ] {
         let mut m = host_append(action, "carol");
         m.target = "dana".into();

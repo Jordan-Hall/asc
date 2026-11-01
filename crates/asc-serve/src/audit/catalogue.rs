@@ -105,6 +105,11 @@ pub const CATALOGUE: &[ActionInfo] = &[
         &["reason"],
     ),
     a(
+        "host.user.2fa_required",
+        "A site administrator required a person on the host application to have a second factor.",
+        &["reason"],
+    ),
+    a(
         "host.user.sessions_revoked",
         "A site administrator signed a person out of one browser or of every browser on the host application.",
         &["sessions", "reason"],
