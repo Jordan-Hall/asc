@@ -220,6 +220,12 @@ impl PathAcl {
 
     /// The viewer's level on `path` (a file or directory).
     pub fn level(&self, v: &Viewer, path: &[u8]) -> Level {
+        self.decide(v, path).0
+    }
+
+    /// The viewer's level on `path` and the directory whose rules decided it (`None`: no rule
+    /// matched, so the repository level stands).
+    pub fn decide<'p>(&self, v: &Viewer, path: &'p [u8]) -> (Level, Option<&'p [u8]>) {
         for dir in ancestors(path) {
             if let Some(rules) = self.by_dir.get(dir)
                 && let Some(best) = rules
@@ -228,10 +234,10 @@ impl PathAcl {
                     .map(|(_, l)| *l)
                     .max()
             {
-                return best.min(v.repo_level);
+                return (best.min(v.repo_level), Some(dir));
             }
         }
-        v.repo_level
+        (v.repo_level, None)
     }
 
     pub fn can_read(&self, v: &Viewer, path: &[u8]) -> bool {

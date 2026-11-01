@@ -364,6 +364,16 @@ pub const CATALOGUE: &[ActionInfo] = &[
         &["allow_agents", "ceiling", "old_allow_agents", "old_ceiling"],
     ),
     a(
+        "pathrules.set",
+        "The per-directory access rules of a repository were replaced.",
+        &["revision", "rules"],
+    ),
+    a(
+        "pathrules.team_set",
+        "The members of a team used by path rules were replaced.",
+        &["members", "team"],
+    ),
+    a(
         "session.revoked",
         "A credential of a person was revoked.",
         &["kind"],

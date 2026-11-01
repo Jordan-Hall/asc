@@ -65,6 +65,7 @@ pub mod pack_sql;
 #[cfg(test)]
 mod pack_tests;
 pub mod pagetoken;
+pub mod pathrules;
 pub mod policy;
 pub mod profile;
 pub mod projects;
@@ -475,6 +476,14 @@ pub fn build_grpc(ext: &Extensions, authorizer: Arc<dyn Authorizer>, info: Serve
             .add_service(
                 export::rpc::ExportService::new(s.export.clone(), authorizer.clone(), info.clone())
                     .into_service(),
+            )
+            .add_service(
+                pathrules::rpc::PathRulesService::new(
+                    s.pathrules.clone(),
+                    authorizer.clone(),
+                    info.clone(),
+                )
+                .into_service(),
             );
     }
     if let Some(h) = ext.deps.get() {

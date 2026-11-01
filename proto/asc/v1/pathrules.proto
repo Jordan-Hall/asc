@@ -1,0 +1,96 @@
+syntax = "proto3";
+package asc.v1;
+
+// Per-directory access inside one repository (docs/SPEC.md section 15.5.1): a big monorepo where each
+// person, team, agent, CI job or deploy key sees only what it is allowed to.
+//
+// A rule names a plain directory (no glob; empty = the root), a subject (`*`, `team:<name>`,
+// `user:<glob>`, `agent:<glob>`, `ci:<glob>`, `deploy:<glob>`) and a level (none, build, read, write,
+// admin). For a path, the deepest ancestor directory with a rule matching the viewer decides; among
+// matching rules there the highest level wins; the result is capped at the viewer's level on the
+// repository. A directory the viewer may not read is listed as restricted (its name, no contents).
+// Rules are kept by the server, never in the repository, so a branch cannot change them.
+//
+// Rules are read and written by repository administrators only (the hub's claim for `<owner>/<name>`
+// with role admin, or a credential with admin access on the repository): the rules tell who may see
+// what. Teams are kept per organisation; the hub sends their members (the claim `org:<name>`, role
+// admin). Every change is written to the audit log. Mutating calls need `x-asc-op-id`. Advertised as
+// Version.features "pathrules.v1".
+service PathRules {
+  rpc ListPathRules(ListPathRulesRequest) returns (ListPathRulesResponse);           // repo admin
+  rpc SetPathRules(SetPathRulesRequest) returns (SetPathRulesResponse);              // repo admin; mutating
+  rpc CheckPathAccess(CheckPathAccessRequest) returns (CheckPathAccessResponse);     // repo admin
+  rpc ListTeams(ListTeamsRequest) returns (ListTeamsResponse);                       // org admin
+  rpc SetTeamMembers(SetTeamMembersRequest) returns (SetTeamMembersResponse);        // org admin; mutating
+}
+
+message PathRule {
+  string dir = 1;        // repository-relative, `/` separated, no leading or trailing `/`; empty = the root
+  string subject = 2;    // `*`, `team:<name>`, `user:<glob>`, `agent:<glob>`, `ci:<glob>`, `deploy:<glob>`
+  string level = 3;      // none, build, read, write, admin
+}
+
+message ListPathRulesRequest {
+  string repo = 1;       // owner/name
+}
+
+message ListPathRulesResponse {
+  repeated PathRule rules = 1;   // in the order they were set
+  uint64 revision = 2;           // 0 = never set
+  int64 updated = 3;             // unix seconds; 0 = never set
+  string updated_by = 4;         // the principal that set them
+}
+
+// Replaces the whole rule set. `expected_revision` must be the current revision (0 for none), so two
+// administrators never overwrite each other: a stale one is FAILED_PRECONDITION. An invalid rule is
+// INVALID_ARGUMENT naming it; nothing is stored then. At most 512 rules.
+message SetPathRulesRequest {
+  string repo = 1;
+  repeated PathRule rules = 2;
+  uint64 expected_revision = 3;
+}
+
+message SetPathRulesResponse {
+  uint64 revision = 1;
+}
+
+// "Preview as": the level a viewer would have on each path, with the rules as stored.
+message CheckPathAccessRequest {
+  string repo = 1;
+  string principal = 2;          // `user:<login>`, `agent:<name>`, `ci:<job>` or `deploy:<key>`
+  string repo_level = 3;         // the viewer's level on the whole repository: none, read, write or admin
+  repeated string paths = 4;     // at most 200
+}
+
+message PathAccess {
+  string path = 1;
+  string level = 2;
+  string decided_by = 3;         // the directory whose rules decided; "" = the root or no rule
+}
+
+message CheckPathAccessResponse {
+  repeated PathAccess access = 1;
+  repeated string teams = 2;     // the teams the principal was found in
+}
+
+message ListTeamsRequest {
+  string org = 1;
+}
+
+message Team {
+  string name = 1;
+  repeated string members = 2;   // logins or `<kind>:<name>` principals, sorted
+}
+
+message ListTeamsResponse {
+  repeated Team teams = 1;
+}
+
+// Replaces the members of one team; no members removes the team. At most 5000 members.
+message SetTeamMembersRequest {
+  string org = 1;
+  string team = 2;
+  repeated string members = 3;
+}
+
+message SetTeamMembersResponse {}

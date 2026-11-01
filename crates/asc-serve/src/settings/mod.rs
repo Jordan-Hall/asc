@@ -1,6 +1,6 @@
 //! The account, organisation and administration settings services the hub's boards call
 //! (docs/BUILDOUT.md sections 26 to 31): backups, usage, organisation settings, sessions,
-//! data export and the sharing of AI keys.
+//! data export, the sharing of AI keys and per-directory path rules.
 //!
 //! [`access`] is the one rule they share. [`register`] builds every hub on the server's
 //! database and installs them in [`SettingsSlot`]; `build_grpc` serves the services from there.
@@ -18,6 +18,7 @@ use crate::backups::{BackupsHub, RealEngine};
 use crate::config::ServeConfig;
 use crate::export::ExportHub;
 use crate::org::OrgHub;
+use crate::pathrules::PathRulesHub;
 use crate::registry::{Extensions, Registry};
 use crate::sessions::SessionsHub;
 use crate::usage::UsageHub;
@@ -29,6 +30,7 @@ pub struct SettingsHubs {
     pub org: Arc<OrgHub>,
     pub sessions: Arc<SessionsHub>,
     pub export: Arc<ExportHub>,
+    pub pathrules: Arc<PathRulesHub>,
 }
 
 /// The place the hubs are registered, once.
@@ -78,6 +80,7 @@ pub fn register(
         org: OrgHub::new(pool.clone(), audit.clone()),
         sessions: SessionsHub::new(pool.clone(), audit.clone()),
         export,
+        pathrules: PathRulesHub::new(pool.clone(), audit.clone()),
     });
     // The land gate, the agent runtime and the object server find the hubs through these slots.
     if let Some(s) = ext.security.get() {
@@ -88,6 +91,7 @@ pub fn register(
         let _ = a.org.set(hubs.org.clone());
     }
     let _ = ext.usage.set(hubs.usage.clone());
+    let _ = ext.pathrules.set(hubs.pathrules.clone());
     if !ext.settings.set(hubs.clone()) {
         return Err("the settings services were already registered".into());
     }
@@ -103,6 +107,7 @@ impl SettingsHubs {
             crate::org::FEATURE,
             crate::sessions::FEATURE,
             crate::export::FEATURE,
+            crate::pathrules::FEATURE,
         ]
         .map(str::to_owned)
         .to_vec()

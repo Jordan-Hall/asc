@@ -705,6 +705,8 @@ pub struct Extensions {
     pub security: crate::policy::SecuritySlot,
     /// Backups, usage, organisation settings, sessions, data export; `build_grpc` serves them.
     pub settings: crate::settings::SettingsSlot,
+    /// Per-directory path rules; every read and write path asks it what a viewer may see.
+    pub pathrules: Arc<crate::pathrules::PathRulesSlot>,
     /// The usage hub, which counts the bytes the server serves.
     pub usage: Arc<crate::usage::UsageSlot>,
     /// Raised while a restore is staged: no ref moves and no object is accepted until the restart.
@@ -733,6 +735,7 @@ impl Extensions {
             byos: Default::default(),
             security: Default::default(),
             settings: Default::default(),
+            pathrules: Arc::default(),
             usage: Arc::default(),
             read_only: Arc::default(),
             deps: Default::default(),
