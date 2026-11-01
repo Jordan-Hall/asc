@@ -349,7 +349,8 @@ pub fn register(
         gate::ServerGate::new(registry.clone(), policies, scanner, signing_hub.clone())
             .with_deps(deps_gate.clone())
             .with_org(org_slot.clone())
-            .with_read_only(read_only.clone()),
+            .with_read_only(read_only.clone())
+            .with_pathrules(ext.pathrules.clone()),
     );
     if ext.pipeline.set_gate(gate).is_err() {
         return Err("the ref gate was already set".into());

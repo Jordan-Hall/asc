@@ -365,6 +365,8 @@ pub struct GitServices {
     /// Receive-pack: the hook socket, tokens and push slots. `None` refuses pushes.
     pub(crate) push: Option<GitPush>,
     pub(crate) usage: Arc<crate::usage::UsageSlot>,
+    /// The path rules: git has no partial view, so a caller with a restricted path gets none.
+    pub(crate) pathrules: Arc<crate::pathrules::PathRulesSlot>,
 }
 
 // ------------------------------------------------------------------------------ state
@@ -381,6 +383,7 @@ pub struct GitHttp {
     push: Option<GitPush>,
     /// Counts the bytes a response sends against the repository's bandwidth.
     usage: Arc<crate::usage::UsageSlot>,
+    pathrules: Arc<crate::pathrules::PathRulesSlot>,
 }
 
 /// A refused request: the status, the reason for metrics and audit, and the answer.
@@ -1248,6 +1251,27 @@ impl GitHttp {
             .await
             .map_err(Self::authorize_error)?;
         audit.principal = Some(principal.id.clone());
+        match crate::pathrules::scope::Scope::of(
+            &self.pathrules,
+            &name,
+            &principal.id,
+            asc_core::pathacl::Level::Read,
+        )
+        .await
+        {
+            Ok(None) => {}
+            Ok(Some(_)) => {
+                return Err(Refusal::plain(
+                    StatusCode::FORBIDDEN,
+                    "path_policy",
+                    crate::pathrules::scope::GIT_REFUSED,
+                ));
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "reading the path rules for git");
+                return Err(Refusal::internal("pathrules"));
+            }
+        }
 
         // The service (SPEC §25.8 item 1): only the two, from `service=` on discovery.
         let service = match endpoint {
@@ -1689,6 +1713,7 @@ fn register_routes(
         limits,
         push,
         usage: ext.usage.clone(),
+        pathrules: ext.pathrules.clone(),
     };
     let shared = services.clone();
     let factory: GitRouterFactory = Arc::new(move |authorizer| {
@@ -1700,6 +1725,7 @@ fn register_routes(
             limits: shared.limits.clone(),
             push: shared.push.clone(),
             usage: shared.usage.clone(),
+            pathrules: shared.pathrules.clone(),
         })
     });
     if ext.git.set(factory).is_err() {

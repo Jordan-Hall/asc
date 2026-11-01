@@ -311,6 +311,26 @@ impl GitSshExec {
                 return Err(Refuse::internal("registry"));
             }
         };
+        match crate::pathrules::scope::Scope::of(
+            &self.svc.pathrules,
+            name.as_str(),
+            &principal.id,
+            asc_core::pathacl::Level::Read,
+        )
+        .await
+        {
+            Ok(None) => {}
+            Ok(Some(_)) => {
+                return Err(Refuse::new(
+                    "path_policy",
+                    crate::pathrules::scope::GIT_REFUSED,
+                ));
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "reading the path rules for git over ssh");
+                return Err(Refuse::internal("pathrules"));
+            }
+        }
         let mut principal = principal;
         let mut push_slot = None;
         if push {

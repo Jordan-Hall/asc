@@ -107,6 +107,8 @@ pub struct ServerGate {
     org: Arc<crate::org::OrgSlot>,
     /// Set while a restore waits for the next start: no ref moves in the meantime.
     read_only: Arc<std::sync::atomic::AtomicBool>,
+    /// The repository path rules: an update writes only where its sender may (SPEC §15.5.1).
+    pathrules: Arc<crate::pathrules::PathRulesSlot>,
 }
 
 /// The refusal of a rewrite of trunk that the organisation's merge policy forbids.
@@ -229,7 +231,84 @@ impl ServerGate {
             deps: Arc::default(),
             org: Arc::default(),
             read_only: Arc::default(),
+            pathrules: Arc::default(),
         }
+    }
+
+    /// Checks every update against the repository path rules.
+    #[must_use]
+    pub fn with_pathrules(mut self, slot: Arc<crate::pathrules::PathRulesSlot>) -> Self {
+        self.pathrules = slot;
+        self
+    }
+
+    /// Whether the sender may write every path the update's new changesets change. A change a
+    /// merge carries over unchanged from another parent is not the sender's write; a copy needs
+    /// read on its source. The refusal names the first paths, never a path the sender cannot
+    /// read.
+    async fn check_paths(&self, req: &GateRequest<'_>) -> Result<(), Status> {
+        use asc_core::object::Change;
+        let scope = crate::pathrules::scope::Scope::for_call(
+            &self.pathrules,
+            req.ctx,
+            asc_core::pathacl::Level::Write,
+        )
+        .await?;
+        let Some(scope) = scope else {
+            return Ok(());
+        };
+        let engine = req.entry.backend.engine();
+        let mut refused: BTreeSet<Vec<u8>> = BTreeSet::new();
+        for u in req.updates {
+            let Some(RefTarget::Changeset(new)) = u.new else {
+                continue;
+            };
+            let old = match u.old {
+                Some(RefTarget::Changeset(o)) => Some(o),
+                _ => None,
+            };
+            let added = self.added(req.entry, old, new, MAX_ADDED).await?;
+            for body in &added.bodies {
+                let mut others = Vec::new();
+                for p in body.parents.iter().skip(1) {
+                    let cs = engine
+                        .get_changeset(*p)
+                        .await
+                        .map_err(|e| internal("gate: changeset", &e))?;
+                    others.push(cs.root);
+                }
+                for (path, change) in body.changes.as_slice() {
+                    let p = path.as_bytes();
+                    let from = match change {
+                        Change::Write {
+                            copy_from: Some(f), ..
+                        } => Some(f.as_bytes()),
+                        _ => None,
+                    };
+                    if scope.can_write(p) && from.is_none_or(|f| scope.can_read(f)) {
+                        continue;
+                    }
+                    if carried(engine, &others, path, change).await? {
+                        continue;
+                    }
+                    let shown = scope.restricted_root(p).unwrap_or(p);
+                    refused.insert(shown.to_vec());
+                }
+            }
+        }
+        if refused.is_empty() {
+            return Ok(());
+        }
+        Err(rpc(RpcError::PathPolicy(info(
+            std::iter::once("the update writes where the path rules do not let its sender".into())
+                .chain(
+                    refused
+                        .iter()
+                        .take(MAX_REPORTED)
+                        .map(|p| String::from_utf8_lossy(p).into_owned()),
+                )
+                .collect(),
+        ))))
     }
 
     /// Shares the maintenance flag: while it is set every update is refused.
@@ -1030,6 +1109,14 @@ impl RefGate for ServerGate {
                 "the server is read-only: a restore is staged and applies when the server restarts",
             ));
         }
+        if let Err(status) = self.check_paths(req).await {
+            let name = req
+                .updates
+                .first()
+                .map_or("", |u| u.name.as_str())
+                .to_owned();
+            return Err(self.refuse(req.ctx, &name, status).await);
+        }
         let who = who_of(&req.ctx.principal.id);
         if matches!(req.mode, GateMode::Submit) {
             return self.check_submitted(req, &who).await;
@@ -1086,4 +1173,34 @@ impl RefGate for ServerGate {
         }
         Ok(())
     }
+}
+
+/// Whether a merge took `change` at `path` unchanged from one of its other parents (`roots`).
+async fn carried(
+    engine: &crate::idmode::Eng,
+    roots: &[asc_core::id::TreeId],
+    path: &asc_core::path::RepoPath,
+    change: &asc_core::object::Change,
+) -> Result<bool, Status> {
+    use asc_core::object::Change;
+    for root in roots {
+        let at = engine
+            .lookup(*root, path)
+            .await
+            .map_err(|e| internal("gate: tree", &e))?;
+        let same = match (change, &at) {
+            (Change::Delete, None) => true,
+            (Change::Write { file, kind, .. }, Some(e)) => {
+                e.kind == *kind && e.id == *file.as_bytes()
+            }
+            (Change::Gitlink { commit }, Some(e)) => {
+                e.kind == asc_core::object::Kind::Gitlink && e.git == *commit
+            }
+            _ => false,
+        };
+        if same {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
