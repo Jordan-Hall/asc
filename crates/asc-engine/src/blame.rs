@@ -37,6 +37,8 @@ pub enum Error {
     NotFound(RepoPath),
     #[error("line range {}..{} is outside a file of {lines} lines", .range.start, .range.end)]
     BadRange { range: Range<u32>, lines: u32 },
+    #[error("the start revision is not a first-parent ancestor of the end revision")]
+    NotAncestor,
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
@@ -559,6 +561,130 @@ async fn compute<O: Objects, R: Refs>(
     Ok(out)
 }
 
+/// Most first-parent steps a reverse blame walks.
+pub const MAX_REVERSE_STEPS: usize = 50_000;
+
+/// A line of the start version still present in the walk.
+struct Alive {
+    /// Zero-based line in the start version.
+    start: u32,
+    /// Zero-based line in the current version.
+    at: u32,
+}
+
+impl<O: Objects, R: Refs> Engine<O, R> {
+    /// Reverse blame (`git blame --reverse start..end`): for every line of `path` at `start`,
+    /// the last changeset on the first-parent line from `start` to `end` that still has it.
+    /// Each run's `origin` is that changeset and `orig_line`/`orig_path` place the line in it.
+    /// `start` must be a first-parent ancestor-or-self of `end` within
+    /// [`MAX_REVERSE_STEPS`]; otherwise [`Error::NotAncestor`].
+    pub async fn reverse_blame(
+        &self,
+        start: ChangesetId,
+        end: ChangesetId,
+        path: &RepoPath,
+    ) -> Result<Blame> {
+        let entry = file_in(self, start, path)
+            .await?
+            .ok_or_else(|| Error::NotFound(path.clone()))?;
+        // The first-parent chain from `end` back to `start`, then walked forward.
+        let mut chain = Vec::new();
+        let mut cs = end;
+        while cs != start {
+            if chain.len() >= MAX_REVERSE_STEPS {
+                return Err(Error::NotAncestor);
+            }
+            chain.push(cs);
+            let c = self.get_changeset(cs).await?;
+            cs = *c.parents.first().ok_or(Error::NotAncestor)?;
+        }
+        chain.reverse();
+        let text = self
+            .read_file(FileId::from_bytes(entry.id), entry.size)
+            .await?;
+        let total = line::split_lines(&text).len() as u32;
+        let mut alive: Vec<Alive> = (0..total).map(|i| Alive { start: i, at: i }).collect();
+        // Per start line: (last changeset holding it, its line there, the path there).
+        let mut last: Vec<Option<(ChangesetId, u32, RepoPath)>> = vec![None; total as usize];
+        let (mut prev, mut cur_path, mut cur) = (start, path.clone(), entry);
+        let mut cur_text = text;
+        for cs in chain {
+            if alive.is_empty() {
+                break;
+            }
+            let c = self.get_changeset(cs).await?;
+            let touched = c.changes.get(&cur_path).is_some();
+            if !touched && c.parents.len() == 1 {
+                prev = cs;
+                continue;
+            }
+            // Follow a rename recorded on this changeset.
+            let mut next_path = cur_path.clone();
+            if matches!(c.changes.get(&cur_path), Some(Change::Delete))
+                && let Some(dst) = c.changes.as_slice().iter().find_map(|(dst, ch)| match ch {
+                    Change::Write {
+                        copy_from: Some(src),
+                        ..
+                    } if *src == cur_path => Some(dst.clone()),
+                    _ => None,
+                })
+            {
+                next_path = dst;
+            }
+            let found = file_in(self, cs, &next_path).await?;
+            let Some(ne) = found else {
+                for a in alive.drain(..) {
+                    last[a.start as usize] = Some((prev, a.at, cur_path.clone()));
+                }
+                break;
+            };
+            if ne.id != cur.id {
+                let new = self.read_file(FileId::from_bytes(ne.id), ne.size).await?;
+                let d = line::diff(&cur_text, &new, Algorithm::Myers, false);
+                // Old line -> new line for the lines outside every hunk.
+                // `alive` stays sorted by `at`, so one pass over the hunks maps it.
+                let mut keep = Vec::with_capacity(alive.len());
+                let (mut hi, mut delta) = (0, 0i64);
+                for a in alive.drain(..) {
+                    while let Some(h) = d.hunks.get(hi)
+                        && h.before.end <= a.at
+                    {
+                        delta += i64::from(h.after.end - h.after.start)
+                            - i64::from(h.before.end - h.before.start);
+                        hi += 1;
+                    }
+                    if d.hunks.get(hi).is_some_and(|h| h.before.start <= a.at) {
+                        last[a.start as usize] = Some((prev, a.at, cur_path.clone()));
+                    } else {
+                        let at = (i64::from(a.at) + delta) as u32;
+                        keep.push(Alive { start: a.start, at });
+                    }
+                }
+                alive = keep;
+                cur_text = new;
+            }
+            prev = cs;
+            cur_path = next_path;
+            cur = ne;
+        }
+        for a in alive {
+            last[a.start as usize] = Some((prev, a.at, cur_path.clone()));
+        }
+        let mut out = Blame::default();
+        for (i, l) in last.into_iter().enumerate() {
+            let (origin, orig_line, orig_path) = l.expect("every start line is recorded");
+            out.push(Run {
+                start: i as u32,
+                len: 1,
+                origin,
+                orig_line,
+                orig_path,
+            });
+        }
+        Ok(out)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -740,6 +866,36 @@ mod tests {
             );
         }
         ours
+    }
+
+    #[tokio::test]
+    async fn reverse_blame_names_the_last_changeset_holding_each_line() {
+        let mut untouched = step(&[1], "x\na\nB\nc\n");
+        untouched.files.push(("g.txt", "g\n".into()));
+        let steps = [
+            step(&[], "a\nb\nc\n"),
+            step(&[0], "x\na\nB\nc\n"),
+            untouched,
+            step(&[2], "x\na\nB\n"),
+        ];
+        let e = engine();
+        let ids = build(&e, &steps).await;
+        let b = e.reverse_blame(ids[0], ids[3], &p("f.txt")).await.unwrap();
+        let got: Vec<_> = (0..b.lines())
+            .map(|l| {
+                let r = b.run_at(l).unwrap();
+                (r.origin, r.orig_line + (l - r.start))
+            })
+            .collect();
+        // `a` lives to the end (shifted down by `x`), `b` dies in step 1, `c` in step 3.
+        assert_eq!(got, vec![(ids[3], 1), (ids[0], 1), (ids[2], 3)]);
+        assert!(matches!(
+            e.reverse_blame(ids[3], ids[0], &p("f.txt")).await,
+            Err(Error::NotAncestor)
+        ));
+        let same = e.reverse_blame(ids[3], ids[3], &p("f.txt")).await.unwrap();
+        assert_eq!(same.runs().len(), 1);
+        assert_eq!(same.runs()[0].origin, ids[3]);
     }
 
     #[tokio::test]

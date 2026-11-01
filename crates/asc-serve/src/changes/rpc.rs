@@ -827,8 +827,11 @@ impl ChangesService {
     }
 }
 
-fn later(what: &str) -> Status {
-    Status::unimplemented(format!("{what} is not available on this server yet"))
+/// The refusal when this server was started without the handler for `what`.
+fn not_served(what: &str) -> Status {
+    Status::unimplemented(format!(
+        "{what} is not served by this server (it was started without that handler)"
+    ))
 }
 
 #[tonic::async_trait]
@@ -878,7 +881,7 @@ impl Changes for ChangesService {
             .context(&meta, &ext, msg.repo.as_ref(), Access::Read)
             .await?;
         let Some(handler) = self.rpc.interdiff.get() else {
-            return Err(later("InterDiff"));
+            return Err(not_served("InterDiff"));
         };
         handler.inter_diff(&ctx, msg).await.map(Response::new)
     }
@@ -915,7 +918,7 @@ impl Changes for ChangesService {
             .await?;
         ctx.op_id = super::restack::op_id_of(&meta)?;
         let Some(handler) = self.rpc.restack.get() else {
-            return Err(later("RestackChanges"));
+            return Err(not_served("RestackChanges"));
         };
         handler.restack_changes(&ctx, msg).await.map(Response::new)
     }
@@ -930,7 +933,7 @@ impl Changes for ChangesService {
             .await?;
         ctx.op_id = super::restack::op_id_of(&meta)?;
         let Some(handler) = self.rpc.restack.get() else {
-            return Err(later("AmendChange"));
+            return Err(not_served("AmendChange"));
         };
         handler.amend_change(&ctx, msg).await.map(Response::new)
     }
@@ -959,7 +962,7 @@ impl Changes for ChangesService {
             .await?;
         ctx.op_id = super::request_merge::op_id_of(&meta)?;
         let Some(handler) = self.rpc.request_merge.get() else {
-            return Err(later("RequestMerge"));
+            return Err(not_served("RequestMerge"));
         };
         handler.request_merge(&ctx, msg).await.map(Response::new)
     }

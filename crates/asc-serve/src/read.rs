@@ -2089,11 +2089,6 @@ impl ReadsHandler for ServerReads {
     ) -> Result<RpcStream<wire::BlameResponse>, Status> {
         const BLAME_CHUNK: usize = 1_000;
         let call = self.core.call(ctx).await?;
-        if req.reverse {
-            return Err(Status::unimplemented(
-                "reverse blame is not available on this server yet",
-            ));
-        }
         let rev = call.rev(&req.rev).await?;
         let path = repo_path(&req.path)?;
         let root = call.root(rev).await?;
@@ -2113,11 +2108,24 @@ impl ReadsHandler for ServerReads {
                 Status::not_found(format!("{p} is not a file at that revision"))
             }
             blame::Error::BadRange { .. } => Status::out_of_range(e.to_string()),
+            blame::Error::NotAncestor => Status::failed_precondition(format!(
+                "{e} (reverse blame walks from rev to HEAD, at most {} changesets)",
+                blame::MAX_REVERSE_STEPS
+            )),
             e => internal("blame", &e),
         };
-        let whole = BlameApi::blame(&*call.engine, rev, &path, None)
-            .await
-            .map_err(blame_err)?;
+        let whole = if req.reverse {
+            // Like `git blame --reverse rev`: from `rev` to the default branch head.
+            let head = call.rev("HEAD").await?;
+            call.engine
+                .reverse_blame(rev, head, &path)
+                .await
+                .map_err(blame_err)?
+        } else {
+            BlameApi::blame(&*call.engine, rev, &path, None)
+                .await
+                .map_err(blame_err)?
+        };
         let view = if req.start_line == 0 && req.end_line == 0 {
             whole
         } else {
@@ -2170,9 +2178,9 @@ pub struct ServerHistory {
 
 impl ServerHistory {
     fn query(req: &wire::LogRequest) -> Result<LogQuery, Status> {
-        if req.count_only || !req.pickaxe.is_empty() || !req.resume_token.is_empty() {
-            return Err(Status::unimplemented(
-                "count_only, pickaxe and resume_token are not available on this server yet",
+        if !req.resume_token.is_empty() {
+            return Err(Status::invalid_argument(
+                "resume_token continues a pickaxe search; page a plain log with page_token",
             ));
         }
         if req.paths.len() > MAX_LIST || req.paths.iter().any(|p| p.len() > MAX_STRING) {
@@ -2316,6 +2324,25 @@ impl HistoryHandler for ServerHistory {
     ) -> Result<RpcStream<wire::LogResponse>, Status> {
         use base64::Engine as _;
         use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        let count_only = req.count_only;
+        if crate::history::pickaxe_rpc::is_pickaxe(&req) {
+            let pickaxe = crate::history::pickaxe_rpc::ServerPickaxe::new(
+                self.core.registry.clone(),
+                self.core.hooks.clone(),
+            );
+            let s = pickaxe.log(ctx, req).await?;
+            return Ok(if count_only {
+                s.map(|r| {
+                    r.map(|mut r| {
+                        r.entries.clear();
+                        r
+                    })
+                })
+                .boxed()
+            } else {
+                s
+            });
+        }
         let call = self.core.call(ctx).await?;
         let mut query = Self::query(&req)?;
         let token = if req.page_token.is_empty() {
@@ -2345,6 +2372,29 @@ impl HistoryHandler for ServerHistory {
                 return out.send(wire::LogResponse::default()).await;
             }
             let mut token = token;
+            if count_only {
+                // Every page is walked; only the total is sent.
+                let mut count = 0u64;
+                loop {
+                    let page = call
+                        .engine
+                        .log(&query, token.as_ref())
+                        .await
+                        .map_err(graph_status)?;
+                    count += page.entries.len() as u64;
+                    match page.next {
+                        Some(t) => token = Some(t),
+                        None => {
+                            return out
+                                .send(wire::LogResponse {
+                                    count,
+                                    ..wire::LogResponse::default()
+                                })
+                                .await;
+                        }
+                    }
+                }
+            }
             loop {
                 let page = call
                     .engine
@@ -4205,10 +4255,37 @@ mod tests {
         })
         .await;
         assert_eq!(grep.iter().map(|r| r.entries.len()).sum::<usize>(), 1);
-        // Unsupported modes and bad tokens fail closed.
+        // count_only walks every page and sends one total with no entries.
+        let counted = ask(wire::LogRequest {
+            include: vec![tip.to_string()],
+            count_only: true,
+            ..Default::default()
+        })
+        .await;
+        assert_eq!(counted.len(), 1);
+        assert_eq!(counted[0].count, chain.len() as u64);
+        assert!(counted[0].entries.is_empty());
+        let counted = ask(wire::LogRequest {
+            include: vec![tip.to_string()],
+            paths: vec!["g".into()],
+            count_only: true,
+            ..Default::default()
+        })
+        .await;
+        assert_eq!(counted[0].count, 4);
+        // A pickaxe on the full server is routed to the pickaxe search.
+        let picked = ask(wire::LogRequest {
+            include: vec![tip.to_string()],
+            paths: vec!["g".into()],
+            pickaxe: Bytes::from_static(b"x2000"),
+            ..Default::default()
+        })
+        .await;
+        assert_eq!(picked.iter().map(|r| r.entries.len()).sum::<usize>(), 2);
+        // A resume token outside a pickaxe and bad tokens fail closed.
         for req in [
             wire::LogRequest {
-                count_only: true,
+                resume_token: "abc".into(),
                 ..Default::default()
             },
             wire::LogRequest {

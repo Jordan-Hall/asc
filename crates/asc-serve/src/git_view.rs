@@ -1393,7 +1393,13 @@ mod tests {
         let env = env().await;
         let a = commit(&env.repo, None, "f.txt", b"one").await;
         let root = tempfile::tempdir().unwrap();
-        let root_path = std::fs::canonicalize(root.path()).unwrap();
+        // Canonical for macOS's /private symlink; Windows' verbatim `\\?\` form is one git
+        // refuses, and its temp paths need no resolving.
+        let root_path = if cfg!(windows) {
+            root.path().to_path_buf()
+        } else {
+            std::fs::canonicalize(root.path()).unwrap()
+        };
         let git_dir = root_path.join("o").join("r.git");
         std::fs::create_dir_all(&git_dir).unwrap();
         env.service.server().init_bare(&git_dir).unwrap();
