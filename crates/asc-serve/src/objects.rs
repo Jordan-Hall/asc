@@ -25,6 +25,7 @@ pub struct ServerObjects {
     registry: Arc<Registry>,
     usage: Arc<crate::usage::UsageSlot>,
     read_only: Arc<std::sync::atomic::AtomicBool>,
+    pathrules: Arc<crate::pathrules::PathRulesSlot>,
 }
 
 impl ServerObjects {
@@ -33,7 +34,33 @@ impl ServerObjects {
             registry,
             usage: Arc::default(),
             read_only: Arc::default(),
+            pathrules: Arc::default(),
         }
+    }
+
+    /// Applies the repository's path rules: a restricted caller fetches no tree or changeset
+    /// by id (SPEC §15.5.1).
+    #[must_use]
+    pub fn with_pathrules(mut self, slot: Arc<crate::pathrules::PathRulesSlot>) -> Self {
+        self.pathrules = slot;
+        self
+    }
+
+    /// Refuses `keys` the caller's path scope does not allow by id.
+    async fn gate<'k>(
+        &self,
+        ctx: &CallCtx,
+        keys: impl Iterator<Item = &'k wire::ObjKey>,
+    ) -> Result<(), Status> {
+        let scope = crate::pathrules::scope::Scope::read(&self.pathrules, ctx).await?;
+        if scope.is_none() {
+            return Ok(());
+        }
+        for k in keys {
+            let key = ObjKey::try_from(k).map_err(|e| Status::invalid_argument(e.to_string()))?;
+            crate::read::object_allowed(true, &key)?;
+        }
+        Ok(())
     }
 
     /// Refuses uploads while the flag is raised (a restore is staged).
@@ -68,6 +95,7 @@ impl ObjectsHandler for ServerObjects {
         ctx: &CallCtx,
         req: wire::HasObjectsRequest,
     ) -> Result<wire::HasObjectsResponse, Status> {
+        self.gate(ctx, req.keys.iter()).await?;
         self.entry(ctx).await?.backend.has_objects(ctx, req).await
     }
 
@@ -115,6 +143,7 @@ impl ObjectsHandler for ServerObjects {
         req: wire::GetObjectsRequest,
     ) -> Result<RpcStream<wire::GetObjectsResponse>, Status> {
         use prost::Message as _;
+        self.gate(ctx, req.keys.iter()).await?;
         let entry = self.entry(ctx).await?;
         let stream = entry.backend.get_objects(ctx, req).await?;
         let Some(hub) = self.usage.get().cloned() else {
@@ -139,7 +168,8 @@ pub fn register(ext: &Extensions, registry: &Arc<Registry>) {
         .set_objects(Arc::new(
             ServerObjects::new(registry.clone())
                 .with_usage(ext.usage.clone())
-                .with_read_only(ext.read_only.clone()),
+                .with_read_only(ext.read_only.clone())
+                .with_pathrules(ext.pathrules.clone()),
         ))
         .expect("the objects handler group is registered once");
 }

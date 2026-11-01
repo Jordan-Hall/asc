@@ -11,6 +11,7 @@
 //! (`Access::Read`) is checked by the service before this runs. Tokens are accepted in
 //! `resume_token` only.
 
+use crate::pathrules::scope::Scope;
 use std::sync::Arc;
 
 use asc_core::id::ChangesetId;
@@ -157,6 +158,8 @@ impl ServerPickaxe {
             .await
             .map_err(registry_status)?;
         let ids = IdCodec::new(ctx.id_mode, &self.registry, &entry).for_viewer(&ctx.principal);
+        // `Log` checked the pathspecs against the scope before handing the call here.
+        let scope = Scope::read(&self.hooks.pathrules, ctx).await?;
         let engine = entry.backend.engine().clone();
         let q = Self::query(&entry, &ids, &req).await?;
         let page = {
@@ -178,12 +181,11 @@ impl ServerPickaxe {
         let count = page.hits.len() as u64;
         let mut messages = Vec::new();
         for group in page.hits.chunks(ROWS_PER_MESSAGE) {
-            let entries = futures::future::try_join_all(
-                group
-                    .iter()
-                    .map(|&id| ServerLineHistory::entry_message(&engine, &ids, id)),
-            )
-            .await?;
+            let entries =
+                futures::future::try_join_all(group.iter().map(|&id| {
+                    ServerLineHistory::entry_message(&engine, &ids, scope.as_deref(), id)
+                }))
+                .await?;
             messages.push(wire::LogResponse {
                 entries,
                 ..wire::LogResponse::default()

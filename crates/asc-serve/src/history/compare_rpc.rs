@@ -8,6 +8,8 @@
 //! size-bounded here and decoded strictly by the engine. Access (`Access::Read`) is checked by
 //! the service before this runs.
 
+use crate::pathrules::PathRulesSlot;
+use crate::pathrules::scope::Scope;
 use std::sync::Arc;
 
 use asc_core::id::ChangesetId;
@@ -34,6 +36,7 @@ const FANOUT: usize = 16;
 /// The `compare` method of the `insights` handler group.
 pub struct ServerCompare {
     registry: Arc<Registry>,
+    pathrules: Arc<PathRulesSlot>,
 }
 
 fn compare_status(e: compare::Error) -> Status {
@@ -118,7 +121,17 @@ fn path_change(mode: IdMode, c: &TreeChange) -> wire::PathChange {
 
 impl ServerCompare {
     pub fn new(registry: Arc<Registry>) -> Self {
-        Self { registry }
+        Self {
+            registry,
+            pathrules: Arc::default(),
+        }
+    }
+
+    /// Applies the repository's path rules to the entries and files compared.
+    #[must_use]
+    pub fn with_pathrules(mut self, slot: Arc<PathRulesSlot>) -> Self {
+        self.pathrules = slot;
+        self
     }
 
     async fn rev(entry: &RepoEntry, ids: &IdCodec, spec: &str) -> Result<ChangesetId, Status> {
@@ -136,6 +149,7 @@ impl ServerCompare {
     async fn entries(
         engine: &Eng,
         ids: &IdCodec,
+        scope: Option<&Scope>,
         list: &[ChangesetId],
     ) -> Result<Vec<wire::LogEntry>, Status> {
         let mut out = Vec::with_capacity(list.len());
@@ -144,7 +158,7 @@ impl ServerCompare {
                 futures::future::try_join_all(
                     group
                         .iter()
-                        .map(|&id| ServerLineHistory::entry_message(engine, ids, id)),
+                        .map(|&id| ServerLineHistory::entry_message(engine, ids, scope, id)),
                 )
                 .await?,
             );
@@ -166,6 +180,7 @@ impl ServerCompare {
             .await
             .map_err(registry_status)?;
         let ids = IdCodec::new(ctx.id_mode, &self.registry, &entry).for_viewer(&ctx.principal);
+        let scope = Scope::read(&self.pathrules, ctx).await?;
         let engine = entry.backend.engine().clone();
         let a = Self::rev(&entry, &ids, &req.a).await?;
         let b = Self::rev(&entry, &ids, &req.b).await?;
@@ -180,8 +195,9 @@ impl ServerCompare {
             })
             .await
             .map_err(compare_status)?;
-        let ahead_entries = Self::entries(&engine, &ids, &got.ahead.ids).await?;
-        let behind_entries = Self::entries(&engine, &ids, &got.behind.ids).await?;
+        let ahead_entries = Self::entries(&engine, &ids, scope.as_deref(), &got.ahead.ids).await?;
+        let behind_entries =
+            Self::entries(&engine, &ids, scope.as_deref(), &got.behind.ids).await?;
         let merge_base = match got.merge_base {
             Some(id) => ids.changeset_out(id).await?,
             None => Bytes::new(),
@@ -197,6 +213,11 @@ impl ServerCompare {
             files: got
                 .files
                 .iter()
+                .filter(|c| {
+                    scope.as_ref().is_none_or(|s| {
+                        s.can_read(c.path.as_bytes()) && s.can_read(c.old_path.as_bytes())
+                    })
+                })
                 .map(|c| path_change(ctx.id_mode, c))
                 .collect(),
         })

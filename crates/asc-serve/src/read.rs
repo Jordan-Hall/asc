@@ -41,6 +41,7 @@ use tonic::Status;
 
 use crate::idmode::{Eng, IdCodec};
 use crate::mainline::{MainlineIndex, SqlMainline};
+use crate::pathrules::scope::{RESTRICTED_MESSAGE, Scope, parent, redact_entry};
 use crate::registry::{Extensions, Registry, RegistryError, RepoEntry};
 use crate::{TextBudgetSlot, TextGuard};
 
@@ -191,6 +192,8 @@ pub struct ReadHooks {
     /// The budget for whole-file buffers made by the read RPCs. Until it is set the budget is
     /// unlimited; U69 installs the real one here and in `Extensions::text_budget`.
     pub text_budget: TextBudgetSlot,
+    /// The path rules (SPEC §15.5.1); every read applies them to its caller.
+    pub pathrules: Arc<crate::pathrules::PathRulesSlot>,
 }
 
 impl ReadHooks {
@@ -305,6 +308,8 @@ struct Call {
     ids: IdCodec,
     engine: Arc<Eng>,
     hooks: Arc<ReadHooks>,
+    /// What the caller may not see; `None` when nothing is restricted for it.
+    scope: Option<Arc<Scope>>,
 }
 
 struct Core {
@@ -319,11 +324,14 @@ impl Core {
             .open(&ctx.repo)
             .await
             .map_err(registry_status)?;
+        // The caller passed read on the repository to get here.
+        let scope = Scope::read(&self.hooks.pathrules, ctx).await?;
         Ok(Arc::new(Call {
             ids: IdCodec::new(ctx.id_mode, &self.registry, &entry).for_viewer(&ctx.principal),
             engine: entry.backend.engine().clone(),
             entry,
             hooks: self.hooks.clone(),
+            scope,
         }))
     }
 }
@@ -331,6 +339,44 @@ impl Core {
 impl Call {
     fn mode(&self) -> IdMode {
         self.ids.mode()
+    }
+
+    /// Whether the caller may read `path`.
+    fn readable(&self, path: &[u8]) -> bool {
+        self.scope.as_ref().is_none_or(|s| s.can_read(path))
+    }
+
+    /// `Ok` when the caller may read `path`, else `PATH_POLICY`.
+    fn require_read(&self, path: &[u8]) -> Result<(), Status> {
+        self.scope.as_ref().map_or(Ok(()), |s| s.require_read(path))
+    }
+
+    /// How an entry shows in a listing of `dir` (see [`Scope::listing`]).
+    fn listing(&self, dir: &[u8], path: &[u8], is_dir: bool) -> Option<bool> {
+        self.scope
+            .as_ref()
+            .map_or(Some(false), |s| s.listing(dir, path, is_dir))
+    }
+
+    /// An entry shown by name only.
+    fn restricted_info(&self, path: &RepoPath, e: &Entry) -> wire::TreeEntryInfo {
+        wire::TreeEntryInfo {
+            name: Bytes::copy_from_slice(e.name.as_bytes()),
+            path: Bytes::copy_from_slice(path.as_bytes()),
+            mode: diff::mode(e.kind),
+            // No id: an unreadable object's id is never disclosed, so holding an id is proof the
+            // caller was once shown it (see `require_object`).
+            restricted: true,
+            ..wire::TreeEntryInfo::default()
+        }
+    }
+
+    /// Whether a caller may fetch an object by id. A restricted caller is never shown the id of
+    /// an unreadable file, so a file id is fetchable; trees and changesets carry the names and
+    /// ids of what lies under restricted directories, so a restricted caller reads them only
+    /// through the redacting tree and history calls.
+    fn require_object(&self, key: &ObjKey) -> Result<(), Status> {
+        object_allowed(self.scope.is_some(), key)
     }
 
     /// The changeset a revision names.
@@ -384,6 +430,13 @@ impl Call {
         for e in self.hooks.enrichers() {
             e.enrich(&self.entry, &ids, &mut out).await?;
         }
+        for e in out.iter_mut().filter(|e| e.redacted) {
+            // The enrichers ran after the redaction: take back what they added.
+            e.stats = None;
+            if e.message.as_ref() == RESTRICTED_MESSAGE {
+                e.meta = Bytes::new();
+            }
+        }
         Ok(out)
     }
 
@@ -403,7 +456,7 @@ impl Call {
             Some((_, Some(g))) => g,
             _ => self.ids.git_of(id).await?,
         };
-        Ok(wire::LogEntry {
+        let mut e = wire::LogEntry {
             id: self.ids.changeset_out(id).await?,
             git: Bytes::copy_from_slice(git.as_bytes()),
             parents: self.ids.changesets_out(&cs.parents).await?,
@@ -412,7 +465,9 @@ impl Call {
             message: Bytes::copy_from_slice(&cs.message),
             r#gen: generation,
             ..wire::LogEntry::default()
-        })
+        };
+        redact_entry(self.scope.as_deref(), &cs, &mut e);
+        Ok(e)
     }
 
     /// The wire form of a file id with its git oid.
@@ -435,6 +490,7 @@ impl Call {
             } else {
                 e.size
             },
+            restricted: false,
         }
     }
 
@@ -1477,6 +1533,16 @@ impl ReadsHandler for ServerReads {
             cs.changes
                 .as_slice()
                 .iter()
+                .filter(|(path, change)| {
+                    // A restricted change is named by its directory in the header only.
+                    call.readable(path.as_bytes())
+                        && match change {
+                            Change::Write {
+                                copy_from: Some(f), ..
+                            } => call.readable(f.as_bytes()),
+                            _ => true,
+                        }
+                })
                 .take(MAX_CHANGES)
                 .map(|(path, change)| Self::change_wire(&call, parent_root, path, change))
                 .collect::<Vec<_>>(),
@@ -1492,6 +1558,11 @@ impl ReadsHandler for ServerReads {
             } else if let Ok(k) = std::str::from_utf8(k) {
                 extra.insert(k.to_owned(), Bytes::copy_from_slice(v));
             }
+        }
+        if header.message.as_ref() == RESTRICTED_MESSAGE {
+            // The raw commit and the extras repeat the withheld message.
+            raw_git_commit = Bytes::new();
+            extra.clear();
         }
         Ok(wire::ReadChangesetResponse {
             header: Some(header),
@@ -1523,7 +1594,24 @@ impl ReadsHandler for ServerReads {
                     .map(|p| {
                         let call = &call;
                         async move {
-                            match dir_path(p)? {
+                            let dp = dir_path(p)?;
+                            if let (Some(path), Some(_)) = (&dp, &call.scope) {
+                                // A path the caller cannot list the parent of does not exist
+                                // for it; one in a readable directory shows by name only.
+                                return Ok(match call.lookup(root, path).await? {
+                                    Some(e) => match call.listing(
+                                        parent(path.as_bytes()),
+                                        path.as_bytes(),
+                                        e.kind == Kind::Dir,
+                                    ) {
+                                        Some(false) => (call.entry_info(path, &e), true),
+                                        Some(true) => (call.restricted_info(path, &e), true),
+                                        None => (wire::TreeEntryInfo::default(), false),
+                                    },
+                                    None => (wire::TreeEntryInfo::default(), false),
+                                });
+                            }
+                            match dp {
                                 None => {
                                     let git = call.ids.tree_git(root).await?;
                                     let info = wire::TreeEntryInfo {
@@ -1609,6 +1697,7 @@ impl ReadsHandler for ServerReads {
         let mut per_path = Vec::with_capacity(req.paths.len());
         for p in &req.paths {
             let path = repo_path(p)?;
+            call.require_read(path.as_bytes())?;
             let got = attrs.lookup(path.as_bytes(), false, &names).await?;
             per_path.push(wire::AttrValues {
                 values: req
@@ -1646,7 +1735,18 @@ impl ReadsHandler for ServerReads {
             return Err(Status::not_found("no such directory"));
         };
         let tree = call.engine.get_tree(dir_id).await.map_err(tree_status)?;
-        names.retain(|n| tree.get(n).is_some());
+        let dir_bytes = dir.as_ref().map_or(&[][..], |d| d.as_bytes());
+        if call.scope.as_ref().is_some_and(|s| !s.can_list(dir_bytes)) {
+            return Err(crate::pathrules::scope::path_policy(dir_bytes));
+        }
+        names.retain(|n| {
+            tree.get(n).is_some_and(|e| {
+                let path = child(dir.as_ref(), n).map(|p| p.as_bytes().to_vec());
+                // A restricted entry still shows its last change; one whose name is
+                // withheld does not exist here.
+                path.is_ok_and(|p| call.listing(dir_bytes, &p, e.kind == Kind::Dir).is_some())
+            })
+        });
         names.sort();
         names.dedup();
 
@@ -1710,6 +1810,12 @@ impl ReadsHandler for ServerReads {
                 _ => Status::not_found("no such directory"),
             });
         };
+        if let Some(s) = &call.scope {
+            let d = dir.as_ref().map_or(&[][..], |d| d.as_bytes());
+            if !s.can_list(d) {
+                return Err(crate::pathrules::scope::path_policy(d));
+            }
+        }
         let dir_git = call.ids.tree_git(dir_id).await?;
         // The cursor is the `path` of the last entry received, below the directory.
         let after: Vec<Vec<u8>> = if req.after.is_empty() {
@@ -1790,6 +1896,19 @@ impl ReadsHandler for ServerReads {
                 };
                 top.next += 1;
                 let path = child(top.prefix.as_ref(), &e.name)?;
+                let parent_dir = top.prefix.as_ref().map_or(&[][..], |p| p.as_bytes());
+                match call.listing(parent_dir, path.as_bytes(), e.kind == Kind::Dir) {
+                    None => continue,
+                    Some(true) => {
+                        batch.push(call.restricted_info(&path, &e));
+                        sent += 1;
+                        if batch.len() >= TREE_CHUNK {
+                            out.send(head(std::mem::take(&mut batch))).await?;
+                        }
+                        continue;
+                    }
+                    Some(false) => {}
+                }
                 if recursive && e.kind == Kind::Dir {
                     if stack.len() > MAX_TREE_DEPTH {
                         return Err(Status::out_of_range("tree is nested too deeply"));
@@ -1835,6 +1954,7 @@ impl ReadsHandler for ServerReads {
                 let id = call.rev(rev).await?;
                 let root = call.root(id).await?;
                 let path = repo_path(path.as_bytes())?;
+                call.require_read(path.as_bytes())?;
                 let e = call
                     .lookup(root, &path)
                     .await?
@@ -1849,7 +1969,11 @@ impl ReadsHandler for ServerReads {
                     }
                 }
             }
-            Some(At::FileId(b)) => (call.ids.file_in(&b).await?, None),
+            Some(At::FileId(b)) => {
+                let id = call.ids.file_in(&b).await?;
+                call.require_object(&ObjKey::File(id))?;
+                (id, None)
+            }
             None => return Err(Status::invalid_argument("missing rev_path or file_id")),
         };
         let end = if req.length == 0 {
@@ -1915,6 +2039,9 @@ impl ReadsHandler for ServerReads {
             let mut walk = call.engine.walk(root, spec.as_ref());
             let (mut batch, mut found) = (Vec::new(), 0usize);
             'files: while let Some((path, e)) = walk.try_next().await.map_err(tree_status)? {
+                if !call.readable(path.as_bytes()) {
+                    continue;
+                }
                 if !matches!(e.kind, Kind::File | Kind::Exec)
                     || e.size == 0
                     || e.size > GREP_MAX_FILE
@@ -2029,6 +2156,7 @@ impl ReadsHandler for ServerReads {
                 let mut walk = call.engine.walk(root, spec.as_ref());
                 while let Some((path, e)) = handle.block_on(walk.try_next()).map_err(tree_status)? {
                     if e.kind == Kind::Gitlink
+                        || !call.readable(path.as_bytes())
                         || handle.block_on(attrs.export_ignored(path.as_bytes()))?
                     {
                         continue;
@@ -2093,6 +2221,7 @@ impl ReadsHandler for ServerReads {
         let call = self.core.call(ctx).await?;
         let rev = call.rev(&req.rev).await?;
         let path = repo_path(&req.path)?;
+        call.require_read(path.as_bytes())?;
         let root = call.root(rev).await?;
         let entry = call
             .lookup(root, &path)
@@ -2331,6 +2460,15 @@ impl HistoryHandler for ServerHistory {
         use base64::Engine as _;
         use base64::engine::general_purpose::URL_SAFE_NO_PAD;
         let count_only = req.count_only;
+        let call = self.core.call(ctx).await?;
+        if let Some(scope) = &call.scope {
+            // A path filter or content search must not reveal what lies under a restricted
+            // directory: a content search counts as a pattern over every path it covers.
+            scope.require_spec(&req.paths)?;
+            if crate::history::pickaxe_rpc::is_pickaxe(&req) && req.paths.is_empty() {
+                scope.require_spec(&["*".to_owned()])?;
+            }
+        }
         if crate::history::pickaxe_rpc::is_pickaxe(&req) {
             let pickaxe = crate::history::pickaxe_rpc::ServerPickaxe::new(
                 self.core.registry.clone(),
@@ -2349,7 +2487,6 @@ impl HistoryHandler for ServerHistory {
                 s
             });
         }
-        let call = self.core.call(ctx).await?;
         let mut query = Self::query(&req)?;
         let token = if req.page_token.is_empty() {
             None
@@ -2462,6 +2599,9 @@ impl HistoryHandler for ServerHistory {
         let format =
             F::try_from(req.format).map_err(|_| Status::invalid_argument("unknown diff format"))?;
         let spec = pathspec(&req.paths)?;
+        if let Some(scope) = &call.scope {
+            scope.require_spec(&req.paths)?;
+        }
         let mut base = call.rev(&req.base).await?;
         let head = call.rev(&req.head).await?;
         if req.merge_base {
@@ -2493,6 +2633,12 @@ impl HistoryHandler for ServerHistory {
             .diff_trees(a, b, spec.as_ref(), &opts)
             .await
             .map_err(diff_status)?;
+        if let Some(scope) = &call.scope {
+            // Changes under a restricted directory are left out, as from a tree listing.
+            changes.retain(|c| {
+                scope.can_read(c.path.as_bytes()) && scope.can_read(c.old_path.as_bytes())
+            });
+        }
         let truncated = changes.len() > cap;
         changes.truncate(cap);
         Ok(spawn_stream(move |out| async move {
@@ -2582,7 +2728,10 @@ fn read_cost(c: &TreeChange) -> u64 {
 /// Registers the `reads` and `history` groups. The returned hooks take enrichers (C18, C29) and
 /// the real text budget (U69).
 pub fn register(ext: &Extensions, registry: &Arc<Registry>) -> Arc<ReadHooks> {
-    let hooks = Arc::new(ReadHooks::default());
+    let hooks = Arc::new(ReadHooks {
+        pathrules: ext.pathrules.clone(),
+        ..ReadHooks::default()
+    });
     let core = Arc::new(Core {
         registry: registry.clone(),
         hooks: hooks.clone(),
@@ -2594,6 +2743,18 @@ pub fn register(ext: &Extensions, registry: &Arc<Registry>) -> Arc<ReadHooks> {
         .set_history(Arc::new(ServerHistory { core }))
         .expect("the history handler group is registered once");
     hooks
+}
+
+/// `Ok` when a caller (restricted or not) may fetch `key` by id: see [`Call::require_object`].
+pub(crate) fn object_allowed(restricted: bool, key: &ObjKey) -> Result<(), Status> {
+    match key {
+        ObjKey::Tree(_) | ObjKey::Changeset(_) | ObjKey::ChangeMeta(_) if restricted => {
+            Err(Status::permission_denied(
+                "PATH_POLICY: trees and changesets of this repository are read through ReadTree and Log",
+            ))
+        }
+        _ => Ok(()),
+    }
 }
 
 #[cfg(test)]

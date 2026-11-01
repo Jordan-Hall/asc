@@ -10,6 +10,7 @@
 //! Lines are zero-based, the range is half open and `end_line == 0` means the end of the file.
 //! Tokens are accepted in `resume_token` only.
 
+use crate::pathrules::scope::{Scope, redact_entry};
 use std::sync::Arc;
 
 use asc_core::id::ChangesetId;
@@ -75,6 +76,7 @@ impl ServerLineHistory {
     pub(crate) async fn entry_message(
         engine: &Eng,
         ids: &IdCodec,
+        scope: Option<&Scope>,
         id: ChangesetId,
     ) -> Result<wire::LogEntry, Status> {
         let cs = engine.get_changeset(id).await.map_err(commit_status)?;
@@ -84,7 +86,7 @@ impl ServerLineHistory {
             .map_err(|e| internal("generation", &e))?
             .generation;
         let git = ids.git_of(id).await?;
-        Ok(wire::LogEntry {
+        let mut e = wire::LogEntry {
             id: ids.changeset_out(id).await?,
             git: Bytes::copy_from_slice(git.as_bytes()),
             parents: ids.changesets_out(&cs.parents).await?,
@@ -93,7 +95,9 @@ impl ServerLineHistory {
             message: Bytes::copy_from_slice(&cs.message),
             r#gen: generation,
             ..wire::LogEntry::default()
-        })
+        };
+        redact_entry(scope, &cs, &mut e);
+        Ok(e)
     }
 
     async fn query(
@@ -154,6 +158,10 @@ impl ServerLineHistory {
             .await
             .map_err(registry_status)?;
         let ids = IdCodec::new(ctx.id_mode, &self.registry, &entry).for_viewer(&ctx.principal);
+        let scope = Scope::read(&self.hooks.pathrules, ctx).await?;
+        if let Some(s) = &scope {
+            s.require_read(&req.path)?;
+        }
         let engine = entry.backend.engine().clone();
         let q = Self::query(&entry, &ids, &req).await?;
         let page = {
@@ -178,7 +186,7 @@ impl ServerLineHistory {
             let entries = futures::future::try_join_all(
                 group
                     .iter()
-                    .map(|&id| Self::entry_message(&engine, &ids, id)),
+                    .map(|&id| Self::entry_message(&engine, &ids, scope.as_deref(), id)),
             )
             .await?;
             messages.push(wire::LogResponse {

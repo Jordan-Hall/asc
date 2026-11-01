@@ -602,7 +602,9 @@ pub fn register(ext: &Extensions, registry: &Arc<Registry>, hooks: &Arc<ReadHook
         .set_insights(Arc::new(
             ServerCommitGraph::new(registry.clone())
                 .with_line_history(ServerLineHistory::new(registry.clone(), hooks.clone()))
-                .with_compare(ServerCompare::new(registry.clone()))
+                .with_compare(
+                    ServerCompare::new(registry.clone()).with_pathrules(hooks.pathrules.clone()),
+                )
                 .with_repo_config(ServerRepoConfig::new(registry.clone(), hooks.clone())),
         ))
         .expect("the insights handler group is registered once");
