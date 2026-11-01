@@ -1573,7 +1573,7 @@ async fn the_host_appends_the_actions_on_a_person_with_the_reason() {
         svc.append(req(m, Some(HOST))).await.unwrap();
     }
     let events = list_all(&p, &Scope::instance()).await;
-    assert_eq!(events.len(), 3);
+    assert_eq!(events.len(), 4);
     for e in &events {
         assert_eq!(e.target, "dana");
         assert_eq!(
