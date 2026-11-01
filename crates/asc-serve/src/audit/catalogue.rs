@@ -105,6 +105,11 @@ pub const CATALOGUE: &[ActionInfo] = &[
         &["reason"],
     ),
     a(
+        "host.user.sessions_revoked",
+        "A site administrator signed a person out of one browser or of every browser on the host application.",
+        &["sessions", "reason"],
+    ),
+    a(
         "host.moderation.acted",
         "A site administrator acted on an abuse report on the host application (dismissed it, or removed the content or the account).",
         &[

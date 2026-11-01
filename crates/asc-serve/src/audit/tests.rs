@@ -1618,6 +1618,24 @@ async fn the_host_appends_a_moderation_action_with_its_reason_and_the_allowed_de
     );
 }
 
+#[tokio::test]
+async fn the_host_appends_a_sign_out_of_a_person_with_how_many_browsers() {
+    let (svc, p) = service().await;
+    let mut m = host_append("host.user.sessions_revoked", "carol");
+    m.details = [("sessions", "3"), ("reason", "Lost laptop")]
+        .into_iter()
+        .map(|(k, v)| (k.to_owned(), v.to_owned()))
+        .collect();
+    svc.append(req(m, Some(HOST))).await.unwrap();
+    let events = list_all(&p, &Scope::instance()).await;
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].action, "host.user.sessions_revoked");
+    assert_eq!(
+        events[0].details.get("sessions").map(String::as_str),
+        Some("3")
+    );
+}
+
 #[test]
 fn a_host_address_is_made_coarse() {
     use super::rpc::coarse_addr_for_tests as coarse;
