@@ -93,7 +93,8 @@ message LogRequest { RepoRef repo = 1; repeated string include = 2; repeated str
   uint32 scan_budget = 18; /* candidates, default 10000 */ string resume_token = 19; }
 message LogEntry { bytes id = 1 [(asc.v1.json) = JSON_KIND_HEX]; bytes git = 2 [(asc.v1.json) = JSON_KIND_HEX]; repeated bytes parents = 3 [(asc.v1.json) = JSON_KIND_HEX]; Signature author = 4;
   Signature committer = 5; bytes message = 6 [(asc.v1.json) = JSON_KIND_TEXT]; uint32 gen = 7;
-  bytes change = 8 [(asc.v1.json) = JSON_KIND_CHANGE]; DiffStat stats = 9; bytes meta = 10 [(asc.v1.json) = JSON_KIND_DATA]; }
+  bytes change = 8 [(asc.v1.json) = JSON_KIND_CHANGE]; DiffStat stats = 9; bytes meta = 10 [(asc.v1.json) = JSON_KIND_DATA];
+  bool redacted = 11; repeated bytes restricted_dirs = 12 [(asc.v1.json) = JSON_KIND_PATH]; }   // path rules, SPEC §15.5.1
 message LogResponse { repeated LogEntry entries = 1; uint64 count = 2; string next_page_token = 3;
   bool truncated = 4; string resume_token = 5; }   // truncated: the scan budget ran out
 message MergeBaseRequest { RepoRef repo = 1; bytes a = 2 [(asc.v1.json) = JSON_KIND_HEX]; repeated bytes b = 3 [(asc.v1.json) = JSON_KIND_HEX]; bool all = 4; }
@@ -125,7 +126,8 @@ message ReadChangesetResponse { LogEntry header = 1; bytes root_tree = 2 [(asc.v
 message ReadTreeRequest { RepoRef repo = 1; string rev = 2; bytes path = 3 [(asc.v1.json) = JSON_KIND_PATH]; bool recursive = 4; uint32 limit = 5;
   bytes after = 6 [(asc.v1.json) = JSON_KIND_PATH]; }
 message TreeEntryInfo { bytes name = 1 [(asc.v1.json) = JSON_KIND_PATH]; bytes path = 2 [(asc.v1.json) = JSON_KIND_PATH]; uint32 mode = 3; bytes id = 4 [(asc.v1.json) = JSON_KIND_HEX]; bytes git = 5 [(asc.v1.json) = JSON_KIND_HEX]; uint64 size = 6;
-  reserved 7, 8; }   // were lfs, lfs_size
+  reserved 7, 8;   // were lfs, lfs_size
+  bool restricted = 9; }   // path rules (SPEC §15.5.1): the caller sees this entry's name only; no size, no contents
 message ReadTreeResponse { repeated TreeEntryInfo entries = 1; bytes tree_id = 2 [(asc.v1.json) = JSON_KIND_HEX]; bytes tree_git = 3 [(asc.v1.json) = JSON_KIND_HEX]; }
 message ReadFileRequest { RepoRef repo = 1; oneof at { string rev_path = 2; bytes file_id = 3 [(asc.v1.json) = JSON_KIND_HEX]; } uint64 offset = 4;
   uint64 length = 5; reserved 6; }   // was resolve_lfs

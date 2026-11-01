@@ -240,6 +240,25 @@ impl PathAcl {
         (v.repo_level, None)
     }
 
+    /// Whether some path is unreadable for `v`. Every path's level is the level at a rule
+    /// directory or the repository level, so checking those is exact.
+    pub fn restricts(&self, v: &Viewer) -> bool {
+        v.repo_level < Level::Read || self.by_dir.keys().any(|d| !self.can_read(v, d))
+    }
+
+    /// Whether the viewer reads `dir` and everything below it (no rule under it withholds read).
+    pub fn subtree_readable(&self, v: &Viewer, dir: &[u8]) -> bool {
+        self.can_read(v, dir)
+            && self
+                .by_dir
+                .keys()
+                .filter(|d| {
+                    dir.is_empty()
+                        || (d.len() > dir.len() && d.starts_with(dir) && d[dir.len()] == b'/')
+                })
+                .all(|d| self.can_read(v, d))
+    }
+
     pub fn can_read(&self, v: &Viewer, path: &[u8]) -> bool {
         self.level(v, path) >= Level::Read
     }
@@ -303,6 +322,16 @@ mod tests {
             rule("infra", "team:ops", Level::Admin),
         ])
         .unwrap()
+    }
+
+    #[test]
+    fn restricts_is_exact_over_the_rule_directories() {
+        let a = acl();
+        assert!(a.restricts(&user("alice", &[], Level::Write)));
+        // `core` reads everything `secret` hides; nothing else is below read.
+        assert!(!a.restricts(&user("bob", &["core"], Level::Write)));
+        assert!(a.restricts(&user("bob", &["core"], Level::None)));
+        assert!(!PathAcl::default().restricts(&user("x", &[], Level::Read)));
     }
 
     #[test]
@@ -381,5 +410,20 @@ mod tests {
         assert_eq!(a.level(&v, b"open/file"), Level::Write);
         assert_eq!(Level::parse("build"), Some(Level::Build));
         assert!(Level::Build < Level::Read);
+    }
+
+    #[test]
+    fn a_subtree_is_readable_only_when_no_rule_below_hides_part_of_it() {
+        let a = acl();
+        let bob = user("bob", &[], Level::Write);
+        assert!(
+            !a.subtree_readable(&bob, b""),
+            "secret is hidden under the root"
+        );
+        assert!(a.subtree_readable(&bob, b"vendor"));
+        assert!(!a.subtree_readable(&bob, b"secret"));
+        assert!(a.subtree_readable(&bob, b"secret/docs"));
+        let core = user("carol", &["core"], Level::Write);
+        assert!(a.subtree_readable(&core, b""));
     }
 }
