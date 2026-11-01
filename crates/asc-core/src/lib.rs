@@ -8,6 +8,7 @@ pub mod git;
 pub mod id;
 pub mod object;
 pub mod path;
+pub mod pathacl;
 pub mod policy;
 pub mod secrets;
 pub mod sig;

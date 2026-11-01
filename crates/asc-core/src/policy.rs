@@ -356,7 +356,7 @@ fn valid_role_name(n: &str) -> Result<(), PolicyError> {
 }
 
 /// `*` matches any run of bytes (slashes included); everything else is literal.
-fn name_glob(pattern: &str, text: &str) -> bool {
+pub(crate) fn name_glob(pattern: &str, text: &str) -> bool {
     let (p, t) = (pattern.as_bytes(), text.as_bytes());
     let (mut pi, mut ti) = (0, 0);
     let (mut star, mut mark) = (None, 0);

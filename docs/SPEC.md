@@ -1418,7 +1418,13 @@ git runs `pre-commit` first and then re-reads the index, so a hook's `git add` (
 
 - Gitlinks are kept losslessly (`Kind::Gitlink`, `Change::Gitlink`).
 - **Read-only composition [graft: performance; decision per judge 2]:** each gitlink's repo is configured with `asc.submodule.<path>.repo` (default derived from `.gitmodules` `url`, e.g. `../nova.git` → `asc/nova`). The VFS and plain mode project the nested repo's tree at the pinned commit (git oid → changeset through the nested repo's git map) at that path, from the same shared cache. The composed subtree is **read-only**: writes fail with `EACCES`/`ERROR_ACCESS_DENIED`. `asc status` ignores it. The synthetic index keeps the gitlink entry (mode 160000), as git does for an initialised submodule. Plain mode records each composed directory with a read-only `.asc-composed` marker (submodule path, tree, entry and link counts, nonce) and replaces or deletes a directory only after verifying it: the marker matches, a bounded walk that never follows links finds every file still read-only and the recorded counts, and nothing was added. A directory that fails any check (no marker, a writable file at any depth, an added link or file, an unreadable entry, more than 1,000,000 entries) is not ours: asc refuses with a message naming the reason and leaves it untouched.
-- To change the sdk, work in a separate workspace of `asc/nova` and update the pin with `asc submodule set-pin <path> <rev>` (writes a `Change::Gitlink`). `asc submodule status` lists pins. `asc submodule update` is a no-op with a notice.
+- **Writable mounts [user decision 2026-11-01].** A mount is writable for a user who has `write` on the child repository. Otherwise it stays read-only, as above.
+  - **Recording.** Edits under a writable mount are tracked against the child. `asc status` and `asc diff` show them with the mount prefix.
+  - **Commit.** `asc commit` makes one changeset in the child (its parent is the pinned commit) and one in the parent repository. The parent changeset carries the `Change::Gitlink` to the new child commit, plus any parent-side edits.
+  - **Push and land.** Both changesets are uploaded, then landed by one `UpdateRefs` call with a `linked` group: `{repo: child, ref, old, new}` and `{repo: parent, ref, old, new}`. When both repositories are on the same server, the group applies in one SQL transaction, all or nothing. Policy, path rules and required checks are evaluated per repository. A refusal on either side refuses the group with that repository's error.
+  - **Cross-server mounts** cannot be linked. They land child first, then the pin, and report `linked: false`.
+  - **Restricted mounts.** A user without read on the child sees the mount as restricted (§15.5). Without write they can still move the pin only to commits that already exist in the child, and only if they have write on the parent.
+- Outside a mount, `asc submodule set-pin <path> <rev>` still updates a pin directly (it writes a `Change::Gitlink`). `asc submodule status` lists pins with their access level. `asc submodule update` is a no-op with a notice.
 - This removes the 27 GB of per-worktree submodule git dirs and `submodules: recursive` from CI without merging repositories. **Folding `nova` into `orbit` remains a user decision** (§19). If chosen, it is one changeset, and composition stops mattering.
 
 ---
@@ -2112,7 +2118,33 @@ ASC scale: 5,502 commits and about 50k blobs (6.99 GiB raw) import in minutes. T
 ### 15.5 Directory-level permissions [audit: 26-directory-permissions]
 
 - **Write:** path rules are Forgejo protected-file patterns plus path-scoped required approvals (K17). Pre-receive evaluates them on the changeset `changes` keys, which is metadata only (`Diff(NAMES)` from Stage 3). Violations return `PATH_POLICY` with the paths.
-- **Read:** asc does not filter objects by path inside a repository. A content-addressed object can appear under any path, so per-path checks on `GetObjects` would be unsound and costly; this is dropped deliberately. A sensitive directory is instead its own repository, composed at a gitlink (§10.6). The namespace rule (§15.1) then enforces read access for every RPC. When a user has no read access to the nested repo, the workspace projects the gitlink path as an empty read-only directory, and `asc status` prints `<path>: restricted (no access to <repo>)`.
+- **Read [user decision 2026-11-01, supersedes "no path reads"]:** a monorepo has two tools, used together.
+  - **Path rules** (§15.5.1) restrict parts of one repository. File contents and the trees below a restricted directory are not served; names in history stay visible.
+  - **Mounted repositories** (§10.6) give hard separation. A sensitive area is its own repository, composed at a gitlink. Its names, history and storage are separate, and the namespace rule (§15.1) applies to every RPC.
+  - In both cases a user without read access sees the directory as **restricted**: it is present by name, empty and read-only, and `asc status` prints `<path>: restricted (<reason>)`.
+
+#### 15.5.1 Path rules
+
+- **Levels.** A rule is `pattern → principal → level`, where the level is `none`, `build`, `read`, `write` or `admin`.
+  - A rule names a plain directory, not a glob (`asc-core::pathacl`). A directory prefix gives an exact answer to "can this directory be listed".
+  - Subjects are `*`, `team:<name>` and `user:`, `agent:`, `ci:` or `deploy:<glob>`.
+  - A viewer's level on a path comes from the deepest ancestor-or-self directory that has a rule matching the viewer. Among that directory's matching rules, the highest level wins, so a user in two teams gets the better level.
+  - With no matching rule, the repository level applies. Any rule result is capped at the repository level, so a rule never grants more than the repository does.
+  - To lock a directory for everyone except one team, write `*: none` and `team:<t>: write` on that directory.
+  - A directory with no read is still listed when a rule below it grants read. The listing is then filtered entry by entry.
+- **Storage.** Rules are server data, edited in repository settings by an admin and audited (§15.8). They are never stored in the repository, so a writer cannot widen them. Each rule change is a new policy version, and the server caches the compiled rules per viewer.
+- **What is withheld.** The server applies one predicate, `can_read(viewer, path)`, to every path-bearing answer:
+  - Tree listings. An entry for a restricted directory keeps its name, mode and id and is flagged `restricted`. The tree object itself is intact, so the BLAKE3 check (§3.2) still holds. The restricted subtree's own tree objects are never served.
+  - File reads, archives, diffs, blame, log `paths`, pickaxe, line history, search and code intelligence (§23.7). Diff and log entries for restricted paths keep the path name but carry no content or stats.
+- **Objects (`GetObjects`).** An object is served when it appears at some path the viewer can read. A per-repository derived index, `objpaths.v1` (object id → the smallest set of directory prefixes it occurs under, built at ingest), answers this. The check is sound because content addressing means an object readable at one path is the same bytes everywhere; serving it reveals nothing new. Objects that occur only under restricted paths fail with `PATH_POLICY`.
+- **Names are visible.** Changeset metadata (message, author, the `changes` key list) is hashed with the changeset and is served whole, so file names under a restricted directory appear in history. When names must be secret too, use a mounted repository.
+- **Writes.** Pre-receive evaluates the rules on the changeset's `changes` keys (metadata only). A changeset that touches a path above the pusher's level is refused with `PATH_POLICY` and the paths. Path-scoped required approvals (K17) stay as they are.
+- **Workspaces.** The VFS and plain mode project a restricted directory as empty and read-only. `status`, `diff` and `commit` ignore it. A commit keeps the restricted subtree's tree id from the parent unchanged, so a user can commit next to a directory they cannot read.
+- **`build` level: building without the source.** Anything delivered to a user's machine can be read there, so no client-side rule can let a local build use source while hiding it from the user. `build` therefore gives two things and no source:
+  - **Prebuilt outputs.** The restricted path's build outputs are published by CI to the remote cache (§12A, turbo cache) under the path's cache scope. Clients with `build` can fetch those outputs, and the local build uses them in place of compiling the path.
+  - **Remote builds.** `asc ci run` jobs whose task token has a composition or path grant build the path on a runner. The user receives the job's outputs and logs, not the source.
+
+  When a cached output is missing, the build reports `<path>: restricted (build level: no cached output for <hash>; run CI)`.
 - **CI and composition:** a task token is bound to its repo, so reading a composed repo needs an explicit grant: `asc-serve.toml [[composition_grants]] parent = "asc/orbit", child = "asc/nova"`. The grant gives the parent's Actions task tokens read-only access to the child for the token's lifetime. Without a grant, `asc ci checkout` fails with `PATH_POLICY: <path> needs read on <child>`.
 - **Code intelligence [audit: codeintel-folded]:** the read rule holds for derived data too. Each namespace has its own indexes, the server authorises read on a namespace before it opens that namespace's indexes, and a composed child is searched only when the caller can read it (§23.7). A future path-level deny rule would subtract the denied subtree in the same predicate.
 

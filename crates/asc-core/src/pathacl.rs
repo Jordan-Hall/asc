@@ -1,0 +1,379 @@
+//! Path rules: per-directory access levels inside one repository (SPEC §15.5.1).
+//!
+//! A rule is `directory → subject → level`. A viewer's level on a path comes from the deepest
+//! directory, ancestor-or-self of the path, that has a rule matching the viewer; among the
+//! viewer's rules there the highest level wins (a user in two teams gets the better one). With
+//! no matching rule anywhere the repository level applies. The result is capped by the
+//! repository level, so a rule never grants more than the repository does.
+//!
+//! Directories are plain prefixes, not globs, so "can this directory be listed" has an exact
+//! answer: a directory is listed when the viewer can read it or when some rule below it gives
+//! the viewer read (then the listing is filtered entry by entry).
+
+use std::collections::BTreeMap;
+
+use crate::policy::{Kind, Who, name_glob};
+
+/// Most rules on one repository.
+pub const MAX_RULES: usize = 512;
+/// Longest rule directory, in bytes.
+pub const MAX_DIR_LEN: usize = 1024;
+/// Longest subject, in bytes.
+pub const MAX_SUBJECT_LEN: usize = 128;
+
+/// An access level, ordered from least to most.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Level {
+    /// Nothing: the path shows as restricted.
+    None,
+    /// No source; cached build outputs and remote builds only.
+    Build,
+    Read,
+    Write,
+    Admin,
+}
+
+impl Level {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Build => "build",
+            Self::Read => "read",
+            Self::Write => "write",
+            Self::Admin => "admin",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "none" => Self::None,
+            "build" => Self::Build,
+            "read" => Self::Read,
+            "write" => Self::Write,
+            "admin" => Self::Admin,
+            _ => return None,
+        })
+    }
+}
+
+/// Who a path rule names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Subject {
+    /// `*`: everyone.
+    Anyone,
+    /// `user:<glob>`, `agent:<glob>`, `ci:<glob>`, `deploy:<glob>`.
+    Of { kind: Kind, glob: String },
+    /// `team:<name>`.
+    Team(String),
+}
+
+impl Subject {
+    pub fn parse(text: &str) -> Result<Self, AclError> {
+        if text.is_empty() || text.len() > MAX_SUBJECT_LEN {
+            return Err(AclError("a subject is empty or too long".into()));
+        }
+        if text == "*" {
+            return Ok(Self::Anyone);
+        }
+        let (head, rest) = text.split_once(':').ok_or_else(|| {
+            AclError(format!(
+                "subject {text:?} is not `*`, `team:<name>` or `<kind>:<name>`"
+            ))
+        })?;
+        let ok = !rest.is_empty()
+            && rest
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._@+-/*".contains(&b));
+        if !ok {
+            return Err(AclError(format!(
+                "subject {text:?} has an empty or unusual name"
+            )));
+        }
+        let kind = match head {
+            "team" => return Ok(Self::Team(rest.to_owned())),
+            "user" => Kind::User,
+            "agent" => Kind::Agent,
+            "ci" => Kind::Ci,
+            "deploy" => Kind::Deploy,
+            _ => return Err(AclError(format!("unknown subject kind {head:?}"))),
+        };
+        Ok(Self::Of {
+            kind,
+            glob: rest.to_owned(),
+        })
+    }
+
+    pub fn render(&self) -> String {
+        match self {
+            Self::Anyone => "*".into(),
+            Self::Of { kind, glob } => format!("{}:{glob}", kind.as_str()),
+            Self::Team(t) => format!("team:{t}"),
+        }
+    }
+
+    fn matches(&self, v: &Viewer) -> bool {
+        match self {
+            Self::Anyone => true,
+            Self::Of { kind, glob } => v.who.kind == Some(*kind) && name_glob(glob, &v.who.name),
+            Self::Team(t) => v.teams.iter().any(|m| m == t),
+        }
+    }
+}
+
+/// A refused rule.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{0}")]
+pub struct AclError(pub String);
+
+/// One rule as stored.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Rule {
+    /// Repository-relative directory, `/` separated, no leading or trailing `/`. Empty is the root.
+    pub dir: String,
+    pub subject: Subject,
+    pub level: Level,
+}
+
+/// A caller: the principal, its teams, and its level on the whole repository.
+#[derive(Clone, Debug)]
+pub struct Viewer {
+    pub who: Who,
+    pub teams: Vec<String>,
+    pub repo_level: Level,
+}
+
+/// A repository's compiled rules.
+#[derive(Clone, Debug, Default)]
+pub struct PathAcl {
+    /// Rules keyed by directory, as bytes.
+    by_dir: BTreeMap<Vec<u8>, Vec<(Subject, Level)>>,
+}
+
+fn valid_dir(d: &str) -> Result<(), AclError> {
+    if d.len() > MAX_DIR_LEN {
+        return Err(AclError("a rule directory is too long".into()));
+    }
+    if d.is_empty() {
+        return Ok(());
+    }
+    if d.starts_with('/') || d.ends_with('/') || d.contains('\\') || d.chars().any(char::is_control)
+    {
+        return Err(AclError(format!(
+            "rule directory {d:?} must be relative, with `/` separators and no trailing `/`"
+        )));
+    }
+    if d.split('/').any(|s| matches!(s, "" | "." | "..")) {
+        return Err(AclError(format!(
+            "rule directory {d:?} has an empty, `.` or `..` segment"
+        )));
+    }
+    if d.contains(['*', '?', '[']) {
+        return Err(AclError(format!(
+            "rule directory {d:?} is a glob; path rules name plain directories"
+        )));
+    }
+    Ok(())
+}
+
+/// The ancestors-or-self of `path`, deepest first, ending with the root (empty).
+fn ancestors(path: &[u8]) -> impl Iterator<Item = &[u8]> {
+    let cuts = path
+        .iter()
+        .enumerate()
+        .rev()
+        .filter(|(_, b)| **b == b'/')
+        .map(|(i, _)| i);
+    std::iter::once(path.len())
+        .filter(move |_| !path.is_empty())
+        .chain(cuts)
+        .map(move |i| &path[..i])
+        .chain(std::iter::once(&path[..0]))
+}
+
+impl PathAcl {
+    /// Validates and compiles `rules`. Two rules for one directory and subject are an error.
+    pub fn new(rules: &[Rule]) -> Result<Self, AclError> {
+        if rules.len() > MAX_RULES {
+            return Err(AclError(format!(
+                "too many path rules (at most {MAX_RULES})"
+            )));
+        }
+        let mut by_dir: BTreeMap<Vec<u8>, Vec<(Subject, Level)>> = BTreeMap::new();
+        for r in rules {
+            valid_dir(&r.dir)?;
+            let slot = by_dir.entry(r.dir.as_bytes().to_vec()).or_default();
+            if slot.iter().any(|(s, _)| *s == r.subject) {
+                return Err(AclError(format!(
+                    "two rules for {} on {:?}",
+                    r.subject.render(),
+                    r.dir
+                )));
+            }
+            slot.push((r.subject.clone(), r.level));
+        }
+        Ok(Self { by_dir })
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.by_dir.is_empty()
+    }
+
+    /// The viewer's level on `path` (a file or directory).
+    pub fn level(&self, v: &Viewer, path: &[u8]) -> Level {
+        for dir in ancestors(path) {
+            if let Some(rules) = self.by_dir.get(dir)
+                && let Some(best) = rules
+                    .iter()
+                    .filter(|(s, _)| s.matches(v))
+                    .map(|(_, l)| *l)
+                    .max()
+            {
+                return best.min(v.repo_level);
+            }
+        }
+        v.repo_level
+    }
+
+    pub fn can_read(&self, v: &Viewer, path: &[u8]) -> bool {
+        self.level(v, path) >= Level::Read
+    }
+
+    pub fn can_write(&self, v: &Viewer, path: &[u8]) -> bool {
+        self.level(v, path) >= Level::Write
+    }
+
+    /// Whether the directory `dir` may be listed: the viewer reads it, or some rule strictly
+    /// below it gives the viewer read. A listing must still filter each entry with
+    /// [`Self::entry_visible`].
+    pub fn can_list(&self, v: &Viewer, dir: &[u8]) -> bool {
+        self.can_read(v, dir) || self.reads_below(v, dir)
+    }
+
+    /// Whether an entry at `path` keeps its content in a listing; a `false` entry is shown by
+    /// name and flagged restricted.
+    pub fn entry_visible(&self, v: &Viewer, path: &[u8], is_dir: bool) -> bool {
+        self.can_read(v, path) || (is_dir && self.reads_below(v, path))
+    }
+
+    fn reads_below(&self, v: &Viewer, dir: &[u8]) -> bool {
+        let mut prefix = dir.to_vec();
+        if !prefix.is_empty() {
+            prefix.push(b'/');
+        }
+        self.by_dir
+            .range(prefix.clone()..)
+            .take_while(|(d, _)| d.starts_with(&prefix))
+            .filter(|(d, _)| d.len() > dir.len())
+            .any(|(d, _)| self.can_read(v, d))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rule(dir: &str, subject: &str, level: Level) -> Rule {
+        Rule {
+            dir: dir.into(),
+            subject: Subject::parse(subject).unwrap(),
+            level,
+        }
+    }
+
+    fn user(name: &str, teams: &[&str], repo_level: Level) -> Viewer {
+        Viewer {
+            who: Who::new(Kind::User, name),
+            teams: teams.iter().map(|t| (*t).to_owned()).collect(),
+            repo_level,
+        }
+    }
+
+    fn acl() -> PathAcl {
+        PathAcl::new(&[
+            rule("secret", "*", Level::None),
+            rule("secret", "team:core", Level::Write),
+            rule("secret/docs", "*", Level::Read),
+            rule("vendor", "user:bot*", Level::Read),
+            rule("infra", "team:ops", Level::Admin),
+        ])
+        .unwrap()
+    }
+
+    #[test]
+    fn the_deepest_matching_directory_decides() {
+        let a = acl();
+        let alice = user("alice", &[], Level::Write);
+        assert_eq!(a.level(&alice, b"src/main.rs"), Level::Write);
+        assert_eq!(a.level(&alice, b"secret"), Level::None);
+        assert_eq!(a.level(&alice, b"secret/key.pem"), Level::None);
+        assert_eq!(a.level(&alice, b"secret/docs/readme.md"), Level::Read);
+        // `secretive` is not under `secret`.
+        assert_eq!(a.level(&alice, b"secretive/x"), Level::Write);
+    }
+
+    #[test]
+    fn the_best_rule_for_the_viewer_wins_and_the_repo_level_caps_it() {
+        let a = acl();
+        let core = user("bob", &["core"], Level::Write);
+        assert_eq!(a.level(&core, b"secret/key.pem"), Level::Write);
+        let ops_reader = user("carol", &["ops"], Level::Read);
+        assert_eq!(a.level(&ops_reader, b"infra/main.tf"), Level::Read);
+        let bot = Viewer {
+            who: Who::new(Kind::User, "bot-1"),
+            teams: vec![],
+            repo_level: Level::Write,
+        };
+        // A rule that does not match the viewer leaves the repository level.
+        assert_eq!(a.level(&bot, b"vendor/lib.c"), Level::Read);
+        assert_eq!(
+            a.level(&user("dan", &[], Level::Write), b"vendor/lib.c"),
+            Level::Write
+        );
+    }
+
+    #[test]
+    fn listing_shows_a_restricted_directory_only_down_to_what_is_readable() {
+        let a = acl();
+        let alice = user("alice", &[], Level::Write);
+        assert!(a.can_list(&alice, b""));
+        // `secret` is listed because `secret/docs` is readable below it.
+        assert!(a.can_list(&alice, b"secret"));
+        assert!(a.entry_visible(&alice, b"secret/docs", true));
+        assert!(!a.entry_visible(&alice, b"secret/key.pem", false));
+        assert!(!a.entry_visible(&alice, b"secret/inner", true));
+        let a2 = PathAcl::new(&[rule("hidden", "*", Level::None)]).unwrap();
+        assert!(!a2.can_list(&alice, b"hidden"));
+        assert!(!a2.entry_visible(&alice, b"hidden", true));
+        assert!(a2.entry_visible(&alice, b"shown", true));
+    }
+
+    #[test]
+    fn rules_are_validated() {
+        for dir in ["/a", "a/", "a//b", "a/../b", "a/*", "a\\b"] {
+            assert!(
+                PathAcl::new(&[rule(dir, "*", Level::None)]).is_err(),
+                "{dir}"
+            );
+        }
+        assert!(PathAcl::new(&[rule("a", "*", Level::None), rule("a", "*", Level::Read)]).is_err());
+        assert!(Subject::parse("role:x").is_err());
+        assert!(Subject::parse("user:").is_err());
+        assert_eq!(Subject::parse("team:core").unwrap().render(), "team:core");
+        assert!(PathAcl::new(&[rule("", "*", Level::Read)]).is_ok());
+        let many: Vec<Rule> = (0..=MAX_RULES)
+            .map(|i| rule(&format!("d{i}"), "*", Level::Read))
+            .collect();
+        assert!(PathAcl::new(&many).is_err());
+    }
+
+    #[test]
+    fn a_root_rule_applies_everywhere_below() {
+        let a =
+            PathAcl::new(&[rule("", "*", Level::Read), rule("open", "*", Level::Write)]).unwrap();
+        let v = user("x", &[], Level::Admin);
+        assert_eq!(a.level(&v, b"any/file"), Level::Read);
+        assert_eq!(a.level(&v, b"open/file"), Level::Write);
+        assert_eq!(Level::parse("build"), Some(Level::Build));
+        assert!(Level::Build < Level::Read);
+    }
+}
