@@ -468,6 +468,17 @@ const TABLE: &[(&str, Class, &[&str])] = &[
     ),
     ("Policy", Class::Cheap, &["GetSource"]),
     (
+        "PathRules",
+        Class::Cheap,
+        &[
+            "ListPathRules",
+            "SetPathRules",
+            "CheckPathAccess",
+            "ListTeams",
+            "SetTeamMembers",
+        ],
+    ),
+    (
         "Policy",
         Class::Expensive,
         &["Evaluate", "Propose", "Validate"],

@@ -320,6 +320,11 @@ fn register_all(
 /// of the MCP backend).
 pub fn build_grpc(ext: &Extensions, authorizer: Arc<dyn Authorizer>, info: ServerInfo) -> Routes {
     let mut grpc = ext.grpc.routes();
+    // Services that do not filter by path refuse callers with a restricted path.
+    let guarded: Arc<dyn Authorizer> = Arc::new(pathrules::guard::PathGuard::new(
+        authorizer.clone(),
+        ext.pathrules.clone(),
+    ));
     if let Some(h) = ext.projects.get() {
         grpc = grpc.add_service(
             asc_rpc::projects::ProjectsService::new(h.clone(), authorizer.clone(), info.clone())
@@ -328,55 +333,50 @@ pub fn build_grpc(ext: &Extensions, authorizer: Arc<dyn Authorizer>, info: Serve
     }
     if let Some(h) = ext.cloud.get() {
         grpc = grpc.add_service(
-            cloud::rpc::CloudService::new(h.clone(), authorizer.clone(), info.clone())
-                .into_service(),
+            cloud::rpc::CloudService::new(h.clone(), guarded.clone(), info.clone()).into_service(),
         );
     }
     if let Some(h) = ext.changes.get() {
         grpc = grpc.add_service(
-            changes::rpc::ChangesService::new(h.clone(), authorizer.clone(), info.clone())
+            changes::rpc::ChangesService::new(h.clone(), guarded.clone(), info.clone())
                 .into_service(),
         );
     }
     if let Some(h) = ext.review.get() {
         grpc = grpc
             .add_service(
-                review::rpc::ReviewService::new(h.clone(), authorizer.clone(), info.clone())
+                review::rpc::ReviewService::new(h.clone(), guarded.clone(), info.clone())
                     .into_service(),
             )
             .add_service(
-                inbox::rpc::InboxService::new(h.clone(), authorizer.clone(), info.clone())
+                inbox::rpc::InboxService::new(h.clone(), guarded.clone(), info.clone())
                     .into_service(),
             )
             .add_service(
-                stats::rpc::InsightsService::new(h.clone(), authorizer.clone(), info.clone())
+                stats::rpc::InsightsService::new(h.clone(), guarded.clone(), info.clone())
                     .into_service(),
             )
             .add_service(
-                releases::rpc::ReleasesService::new(h.clone(), authorizer.clone(), info.clone())
+                releases::rpc::ReleasesService::new(h.clone(), guarded.clone(), info.clone())
                     .into_service(),
             )
             .add_service(
-                ci::rpc::CiService::new(h.clone(), authorizer.clone(), info.clone()).into_service(),
+                ci::rpc::CiService::new(h.clone(), guarded.clone(), info.clone()).into_service(),
             )
             .add_service(
-                queue::rpc::QueueService::new(h.clone(), authorizer.clone(), info.clone())
+                queue::rpc::QueueService::new(h.clone(), guarded.clone(), info.clone())
                     .into_service(),
             );
     }
     if let Some(h) = ext.codeintel.get() {
         grpc = grpc
             .add_service(
-                codeintel::rpc::CodeIntelService::new(h.clone(), authorizer.clone(), info.clone())
+                codeintel::rpc::CodeIntelService::new(h.clone(), guarded.clone(), info.clone())
                     .into_service(),
             )
             .add_service(
-                codeintel::cross::CrossSearchService::new(
-                    h.clone(),
-                    authorizer.clone(),
-                    info.clone(),
-                )
-                .into_service(),
+                codeintel::cross::CrossSearchService::new(h.clone(), guarded.clone(), info.clone())
+                    .into_service(),
             );
     }
     // `Storage` and `Vault` (bring-your-own storage): present once the feature is registered.
@@ -387,7 +387,7 @@ pub fn build_grpc(ext: &Extensions, authorizer: Arc<dyn Authorizer>, info: Serve
     }
     if let Some(h) = ext.insights.get() {
         grpc = grpc.add_service(
-            ci::insights::rpc::CiInsightsService::new(h.clone(), authorizer.clone(), info.clone())
+            ci::insights::rpc::CiInsightsService::new(h.clone(), guarded.clone(), info.clone())
                 .into_service(),
         );
     }
@@ -412,7 +412,7 @@ pub fn build_grpc(ext: &Extensions, authorizer: Arc<dyn Authorizer>, info: Serve
             .add_service(
                 secretscan::rpc::SecretScanService::new(
                     s.secrets.clone(),
-                    authorizer.clone(),
+                    guarded.clone(),
                     info.clone(),
                 )
                 .into_service(),
@@ -428,7 +428,7 @@ pub fn build_grpc(ext: &Extensions, authorizer: Arc<dyn Authorizer>, info: Serve
     }
     if let Some(h) = ext.ai.get() {
         grpc = grpc.add_service(
-            ai::rpc::AiService::new(h.clone(), authorizer.clone(), info.clone()).into_service(),
+            ai::rpc::AiService::new(h.clone(), guarded.clone(), info.clone()).into_service(),
         );
         grpc = grpc.add_service(
             ai::share_rpc::AiKeySharesService::new(h.clone(), authorizer.clone(), info.clone())
@@ -436,14 +436,14 @@ pub fn build_grpc(ext: &Extensions, authorizer: Arc<dyn Authorizer>, info: Serve
         );
     }
     if let Some(h) = ext.agents.get() {
-        let svc = agents::rpc::AgentService::new(h.clone(), authorizer.clone(), info.clone());
+        let svc = agents::rpc::AgentService::new(h.clone(), guarded.clone(), info.clone());
         grpc = grpc
             .add_service(svc.tokens().into_service())
             .add_service(svc.into_service());
     }
     if let Some(h) = ext.workflows.get() {
         grpc = grpc.add_service(
-            workflows::rpc::WorkflowService::new(h.clone(), authorizer.clone(), info.clone())
+            workflows::rpc::WorkflowService::new(h.clone(), guarded.clone(), info.clone())
                 .into_service(),
         );
     }
@@ -474,7 +474,7 @@ pub fn build_grpc(ext: &Extensions, authorizer: Arc<dyn Authorizer>, info: Serve
                 .into_service(),
             )
             .add_service(
-                export::rpc::ExportService::new(s.export.clone(), authorizer.clone(), info.clone())
+                export::rpc::ExportService::new(s.export.clone(), guarded.clone(), info.clone())
                     .into_service(),
             )
             .add_service(
@@ -488,7 +488,7 @@ pub fn build_grpc(ext: &Extensions, authorizer: Arc<dyn Authorizer>, info: Serve
     }
     if let Some(h) = ext.deps.get() {
         grpc = grpc.add_service(
-            deps::rpc::DepsRpc::new(h.clone(), authorizer.clone(), info.clone()).into_service(),
+            deps::rpc::DepsRpc::new(h.clone(), guarded.clone(), info.clone()).into_service(),
         );
     }
     grpc.add_service(RepoService::new(ext.handlers.clone(), authorizer, info).into_service())

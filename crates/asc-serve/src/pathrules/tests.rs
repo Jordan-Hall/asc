@@ -373,3 +373,40 @@ async fn the_compiled_rules_are_cached_and_a_change_here_is_seen_at_once() {
     assert!(!acl.can_read(&v, b"x/y"));
     assert!(acl.can_read(&v, b"z"));
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_guard_refuses_restricted_callers_and_admits_the_host_and_unrestricted_repos() {
+    use asc_rpc::auth::{Access, AuthError, Authorizer, BearerToken};
+    let f = fx().await;
+    let slot = Arc::new(super::PathRulesSlot::default());
+    assert!(slot.set(f.hub.clone()));
+    let guard = super::guard::PathGuard::new(f.k.authz.clone(), slot);
+    let tok = |t: &str| BearerToken::new(t).unwrap();
+    // No rules: everyone the inner authorizer admits is admitted.
+    let p = guard
+        .authorize(Some(&tok("reader-token")), "acme/mono", Access::Read)
+        .await
+        .unwrap();
+    assert!(!p.id.is_empty());
+    let rules = [super::parse_rule("secret", "*", "none").unwrap()];
+    f.hub
+        .set("acme/mono", &rules, 0, "pat:alice")
+        .await
+        .unwrap();
+    for t in ["reader-token", "alice-token"] {
+        let e = guard
+            .authorize(Some(&tok(t)), "acme/mono", Access::Read)
+            .await
+            .unwrap_err();
+        assert!(matches!(e, AuthError::Forbidden), "{t} is restricted");
+    }
+    // The host's own work, and another repository, are not restricted.
+    guard
+        .authorize(Some(&tok("host-token")), "acme/mono", Access::Read)
+        .await
+        .unwrap();
+    guard
+        .authorize(Some(&tok("reader-token")), "acme/other", Access::Read)
+        .await
+        .unwrap();
+}
