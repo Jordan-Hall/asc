@@ -1618,6 +1618,7 @@ There is no submodule clone (sdk composed via the nested repo, §10.6) and no LF
 - Retention: `pr-*` 14 days and `trusted` 60 days, by last access (a daily sweep).
 - `OPTIONS` preflight returns presigned S3 URLs for artefacts > 8 MiB when the store is S3.
 - Developers set `TURBO_API` to the same server, which gives one cache across all their worktrees and CI's trusted scope (read).
+- **Path rules:** `POST /v8/asc/artifact-paths` (trusted scope only, else 403) registers the project directory of each trusted artefact in its own object `<hash>.path`, created once (`PutMode::Create`) and never rewritten by an upload or touch; a different directory for the same hash is a 400, and hashes with no artefact come back in `missing`. A caller whose path rules restrict something gets a shared (`trusted`) artefact only when its directory is registered and the caller has at least `build` there; an unregistered one fails closed. The caller's own scope is unaffected.
 - **Auth:** turbo sends `Authorization: Bearer $TURBO_TOKEN`; the server verifies it as §15.6.2 says, so any asc PAT, deploy token or Actions task token works, and a wrong or missing one gets the 401 challenge.
 
 ### 12.5 ASC changes independent of asc (do now)
@@ -2162,6 +2163,7 @@ ASC scale: 5,502 commits and about 50k blobs (6.99 GiB raw) import in minutes. T
   - **Remote builds.** `asc ci run` jobs whose task token has a composition or path grant build the path on a runner. The user receives the job's outputs and logs, not the source.
 
   When a cached output is missing, the build reports `<path>: restricted (build level: no cached output for <hash>; run CI)`.
+  - **Prebuilt registration [built 2026-11-02].** After a trusted CI build, `asc ci prebuilt register` reads turbo's run summary (`--summarize`, newest `.turbo/runs/*.json` or `--summary`) and sends each task's `{hash, directory}` to `POST /v8/asc/artifact-paths?slug=<owner>.<repo>` (§12.4). Before a local build, `asc ci prebuilt check` exits 1 and prints the line above for every task whose directory the stored levels put below `read` and whose cache status is not `HIT`.
 - **CI and composition:** a task token is bound to its repo, so reading a composed repo needs an explicit grant: `asc-serve.toml [[composition_grants]] parent = "asc/orbit", child = "asc/nova"`. The grant gives the parent's Actions task tokens read-only access to the child for the token's lifetime. Without a grant, `asc ci checkout` fails with `PATH_POLICY: <path> needs read on <child>`.
 - **Code intelligence [audit: codeintel-folded]:** the read rule holds for derived data too. Each namespace has its own indexes, the server authorises read on a namespace before it opens that namespace's indexes, and a composed child is searched only when the caller can read it (§23.7). A future path-level deny rule would subtract the denied subtree in the same predicate.
 
