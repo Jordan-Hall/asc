@@ -14,7 +14,7 @@ use asc_core::object::{Change, Entry, Kind, ObjectError, Tree};
 use asc_core::path::{MAX_TREE_DEPTH, Name, PathError, RepoPath};
 use asc_store::codec::encode_stored;
 use asc_store::key::ObjKey;
-use asc_store::objects::{self, Objects};
+use asc_store::objects::{self, Objects, restricted_tree_key};
 use asc_store::refs::Refs;
 use futures::stream::{BoxStream, StreamExt, TryStreamExt};
 
@@ -73,6 +73,9 @@ pub enum Error {
     DeleteDir(RepoPath),
     #[error("{0} is written with a directory kind")]
     BadWriteKind(RepoPath),
+    /// A change below a directory the remote's path rules hide (SPEC §15.5.1).
+    #[error("PATH_POLICY: {0} is restricted; changes below it cannot be made here")]
+    Restricted(RepoPath),
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
@@ -230,11 +233,31 @@ impl<O: Objects, R: Refs> Engine<O, R> {
         if id == Self::empty_tree_id() {
             return Ok(Arc::new(empty_tree()));
         }
-        let data = self
-            .objects
-            .get(&ObjKey::Tree(id))
-            .await?
-            .ok_or(Error::MissingTree(id))?;
+        let data = match self.objects.get(&ObjKey::Tree(id)).await {
+            Ok(Some(data)) => data,
+            Ok(None)
+                if self
+                    .objects
+                    .has_many(&[restricted_tree_key(id)])
+                    .await?
+                    .first()
+                    == Some(&true) =>
+            {
+                self.note_restricted(id);
+                return Ok(Arc::new(empty_tree()));
+            }
+            Ok(None) => return Err(Error::MissingTree(id)),
+            // A restricted directory reads as empty, so diffs, status and commits leave it be.
+            // The note lets later reads know without asking the remote again.
+            Err(objects::Error::Restricted(_)) => {
+                self.note_restricted(id);
+                self.objects
+                    .put(&restricted_tree_key(id), encode_stored(&[]))
+                    .await?;
+                return Ok(Arc::new(empty_tree()));
+            }
+            Err(e) => return Err(e.into()),
+        };
         let tree = decode_envelope::<Tree>(&data)?;
         // Stored trees are untrusted: a name past the path bound can never appear in a path
         // asc builds, and diffing would otherwise copy and compare it once per directory pair.
@@ -242,6 +265,13 @@ impl<O: Objects, R: Refs> Engine<O, R> {
         let tree = Arc::new(tree);
         self.trees.insert(id, tree.clone());
         Ok(tree)
+    }
+
+    fn note_restricted(&self, id: TreeId) {
+        self.restricted
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id);
     }
 
     /// Stores a tree and returns its id.
@@ -388,6 +418,9 @@ impl<O: Objects, R: Refs> Engine<O, R> {
                             top.loaded.insert(j, t);
                         }
                     }
+                    if self.is_restricted(TreeId::from_bytes(d.id)) {
+                        return Err(Error::Restricted(node.path.clone()));
+                    }
                     let Some(top) = stack.last_mut() else {
                         return Err(Error::TooDeep);
                     };
@@ -471,6 +504,41 @@ impl<O: Objects, R: Refs> Engine<O, R> {
             tree = self.get_tree(TreeId::from_bytes(entry.id)).await?;
         }
         Ok(None)
+    }
+
+    /// The directories of `root` whose trees the store refused under path rules, sorted by path.
+    /// Nothing is read when no refusal has been seen; restricted directories are not descended,
+    /// and the walk fails with [`Error::TooLarge`] after [`MAX_DIFF_VISITS`] entries.
+    pub async fn restricted_dirs(&self, root: TreeId) -> Result<Vec<RepoPath>> {
+        let mut out = Vec::new();
+        if !self.any_restricted() {
+            return Ok(out);
+        }
+        let mut visits = 0usize;
+        let mut stack: Vec<(Option<RepoPath>, TreeId)> = vec![(None, root)];
+        while let Some((at, id)) = stack.pop() {
+            let tree = self.get_tree(id).await?;
+            for e in tree.entries().iter().filter(|e| e.kind == Kind::Dir) {
+                visits += 1;
+                if visits > MAX_DIFF_VISITS {
+                    return Err(Error::TooLarge(MAX_DIFF_VISITS));
+                }
+                let path = match &at {
+                    Some(p) => p.join(&e.name),
+                    None => RepoPath::new(e.name.as_bytes().to_vec())?,
+                };
+                let child = TreeId::from_bytes(e.id);
+                // Reading the child records whether the store refused it.
+                self.get_tree(child).await?;
+                if self.is_restricted(child) {
+                    out.push(path);
+                } else {
+                    stack.push((Some(path), child));
+                }
+            }
+        }
+        out.sort();
+        Ok(out)
     }
 
     /// Leaf changes that turn `a` into `b`, sorted by path.
@@ -1021,12 +1089,17 @@ mod tests {
         puts: AtomicUsize,
         in_flight: AtomicUsize,
         max_in_flight: AtomicUsize,
+        /// A key read as refused by path rules.
+        refused: std::sync::Mutex<Option<ObjKey>>,
     }
 
     #[async_trait]
     impl Objects for Counting {
         async fn get(&self, key: &ObjKey) -> objects::Result<Option<Bytes>> {
             self.gets.fetch_add(1, SeqCst);
+            if *self.refused.lock().unwrap() == Some(*key) {
+                return Err(objects::Error::Restricted(*key));
+            }
             let now = self.in_flight.fetch_add(1, SeqCst) + 1;
             self.max_in_flight.fetch_max(now, SeqCst);
             tokio::task::yield_now().await;
@@ -1069,6 +1142,7 @@ mod tests {
             puts: AtomicUsize::new(0),
             in_flight: AtomicUsize::new(0),
             max_in_flight: AtomicUsize::new(0),
+            refused: std::sync::Mutex::new(None),
         })
     }
 
@@ -1136,6 +1210,66 @@ mod tests {
             .unwrap();
         v.sort_by(|a, b| a.0.cmp(&b.0));
         v
+    }
+
+    #[tokio::test]
+    async fn a_restricted_tree_reads_empty_and_is_kept_by_changes_beside_it() {
+        let objs = counting();
+        let root = build(
+            &engine_on(objs.clone()),
+            &[(p("a"), file(1)), (p("secret/k"), file(2))],
+        )
+        .await;
+        let e = engine_on(objs.clone());
+        let secret = e.get_tree(root).await.unwrap().entries()[1].id;
+        let secret = TreeId::from_bytes(secret);
+        *objs.refused.lock().unwrap() = Some(ObjKey::Tree(secret));
+        let e = engine_on(objs);
+        assert!(!e.any_restricted());
+        assert!(e.get_tree(secret).await.unwrap().entries().is_empty());
+        assert!(e.is_restricted(secret));
+        assert!(e.any_restricted());
+
+        // The restricted directory shows no leaves, and a change beside it keeps its id.
+        assert_eq!(all_leaves(&e, root, None).await, vec![(p("a"), file(1))]);
+        let next = e.apply(root, &[(p("b"), file(3))]).await.unwrap();
+        let kept = e.get_tree(next).await.unwrap();
+        let entry = kept
+            .entries()
+            .iter()
+            .find(|en| en.name.as_bytes() == b"secret")
+            .unwrap();
+        assert_eq!(TreeId::from_bytes(entry.id), secret);
+        assert!(
+            e.leafdiff(root, next, None)
+                .await
+                .unwrap()
+                .iter()
+                .all(|(path, _)| *path == p("b"))
+        );
+
+        // A change below it is refused rather than written over an empty view.
+        match e.apply(root, &[(p("secret/new"), file(4))]).await {
+            Err(Error::Restricted(at)) => assert_eq!(at, p("secret")),
+            other => panic!("{other:?}"),
+        }
+
+        // The checkout finds it, and the refusal is noted for later reads.
+        assert_eq!(e.restricted_dirs(next).await.unwrap(), vec![p("secret")]);
+        assert_eq!(
+            e.objects
+                .has_many(&[restricted_tree_key(secret)])
+                .await
+                .unwrap(),
+            vec![true]
+        );
+    }
+
+    #[tokio::test]
+    async fn restricted_dirs_reads_nothing_until_a_refusal_is_seen() {
+        let e = engine();
+        let root = build(&e, &[(p("a/b/x"), file(1))]).await;
+        assert!(e.restricted_dirs(root).await.unwrap().is_empty());
     }
 
     #[tokio::test]

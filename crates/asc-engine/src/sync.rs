@@ -11,8 +11,8 @@ use asc_core::codec::{CodecError, decode_envelope};
 use asc_core::id::{ChangesetId, FileId, RefTarget, TagId, TreeId};
 use asc_core::object::{Change, Changeset, ChunkList, Kind, TagRecord};
 use asc_core::path::{Name, RefName, RepoPath};
-use asc_store::key::ObjKey;
-use asc_store::objects::{self, Objects, decode_verified};
+use asc_store::key::{KeyClass, ObjKey};
+use asc_store::objects::{self, Objects, REDACTED, decode_verified, redacted_key};
 use asc_store::refs::{Actor, Expect, RefEntry, RefError, RefTxn, RefUpdate, Refs, RepoKey};
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -80,6 +80,9 @@ pub enum Error {
     Inconsistent(ChangesetId),
     #[error("remote: {0}")]
     Remote(String),
+    /// The remote refused some of the requested objects by path rules (SPEC §15.5.1).
+    #[error("remote: {0}")]
+    PathPolicy(String),
     /// Deciding a fast-forward needed more history than `asc.fetch.ancestryBudget` allows.
     #[error(
         "cannot tell whether {name} fast-forwards: more than {budget} changesets of history \
@@ -119,6 +122,12 @@ pub trait Remote: Send + Sync {
     /// The remote's history service, when it has one (a server; not a bucket).
     fn history(&self) -> Option<Arc<dyn HistoryApi>> {
         None
+    }
+    /// Whether the remote is an authenticated server that applies path rules and may answer a
+    /// changeset with its redacted body (SPEC §15.5.1). A redacted body cannot be checked
+    /// against its id, so one from any other remote is dropped.
+    fn serves_redacted(&self) -> bool {
+        false
     }
 }
 
@@ -498,17 +507,27 @@ impl<O: Objects, R: Refs> Engine<O, R> {
         Ok(parts.into_iter().flatten().collect())
     }
 
-    /// The subset of `ids` whose body and `gen.v1` are both local.
+    /// Whether each changeset's body is local, verified or redacted.
+    async fn local_bodies(&self, ids: &[ChangesetId]) -> Result<Vec<bool>> {
+        let keys: Vec<ObjKey> = ids
+            .iter()
+            .flat_map(|&i| [ObjKey::Changeset(i), redacted_key(i)])
+            .collect();
+        let has = self.local_has(&keys).await?;
+        Ok(has.chunks(2).map(|h| h[0] || h[1]).collect())
+    }
+
+    /// The subset of `ids` whose body (verified or redacted) and `gen.v1` are both local.
     async fn complete_changesets(&self, ids: &[ChangesetId]) -> Result<HashSet<ChangesetId>> {
         let keys: Vec<ObjKey> = ids
             .iter()
-            .flat_map(|&i| [ObjKey::Changeset(i), derived_key::<Gen>(i)])
+            .flat_map(|&i| [ObjKey::Changeset(i), redacted_key(i), derived_key::<Gen>(i)])
             .collect();
         let has = self.local_has(&keys).await?;
         Ok(ids
             .iter()
-            .zip(has.chunks(2))
-            .filter(|(_, h)| h[0] && h[1])
+            .zip(has.chunks(3))
+            .filter(|(_, h)| (h[0] || h[1]) && h[2])
             .map(|(&i, _)| i)
             .collect())
     }
@@ -558,6 +577,29 @@ impl<O: Objects, R: Refs> Engine<O, R> {
         let mut batches = std::pin::pin!(get_batches(remote, keys));
         while let Some(batch) = batches.try_next().await? {
             for (key, stored) in batch {
+                // A redacted body answers its changeset's key (SPEC §15.5.1): it does not hash
+                // to its id, so it is kept under its own key and never uploaded.
+                if let ObjKey::Derived {
+                    name: REDACTED, id, ..
+                } = key
+                {
+                    let id = ChangesetId::from_bytes(id);
+                    if !remote.serves_redacted()
+                        || key != redacted_key(id)
+                        || !requested.contains(&ObjKey::Changeset(id))
+                        || !received.insert(id)
+                    {
+                        continue;
+                    }
+                    let data = asc_store::codec::decode_stored_capped(
+                        &stored,
+                        asc_store::objects::max_decoded(KeyClass::Changeset),
+                    )
+                    .map_err(|e| objects::Error::Codec(key, e))?;
+                    out.push((id, decode_envelope::<Changeset>(&data)?));
+                    self.objects.put(&key, stored).await?;
+                    continue;
+                }
                 if !requested.contains(&key) {
                     continue;
                 }
@@ -596,8 +638,7 @@ impl<O: Objects, R: Refs> Engine<O, R> {
         &self,
         ids: &[ChangesetId],
     ) -> Result<(HashMap<ChangesetId, u32>, HashSet<ChangesetId>)> {
-        let keys: Vec<ObjKey> = ids.iter().map(|&i| ObjKey::Changeset(i)).collect();
-        let has = self.local_has(&keys).await?;
+        let has = self.local_bodies(ids).await?;
         let mut gens = HashMap::new();
         let mut bodies = HashSet::new();
         for (&id, present) in ids.iter().zip(has) {
@@ -715,7 +756,9 @@ impl<O: Objects, R: Refs> Engine<O, R> {
         Ok(())
     }
 
-    /// Downloads `keys` that are not local, verifying and storing each.
+    /// Downloads `keys` that are not local, verifying and storing each, and returns how many
+    /// were stored. Keys the remote refuses by path rules are left out: they occur only under
+    /// directories the caller cannot read, which read as restricted (SPEC §15.5.1).
     pub(crate) async fn fetch_objects(
         &self,
         remote: &dyn Remote,
@@ -728,24 +771,60 @@ impl<O: Objects, R: Refs> Engine<O, R> {
             .filter(|(_, h)| !**h)
             .map(|(k, _)| *k)
             .collect();
-        let wanted = want.len();
         let asked: HashSet<ObjKey> = want.iter().copied().collect();
         let mut got = HashSet::new();
+        let mut refused = false;
         let mut batches = std::pin::pin!(get_batches(remote, want.clone()));
-        while let Some(batch) = batches.try_next().await? {
-            for (key, stored) in batch {
-                if !asked.contains(&key) || got.contains(&key) {
+        while let Some(batch) = batches.next().await {
+            let batch = match batch {
+                Ok(b) => b,
+                // One refused key refuses its batch; the keys not yet stored are retried alone.
+                Err(Error::PathPolicy(_)) => {
+                    refused = true;
                     continue;
                 }
-                decode_verified(&key, &stored)?;
-                self.objects.put(&key, stored).await?;
-                got.insert(key);
+                Err(e) => return Err(e),
+            };
+            self.keep(&asked, &mut got, batch).await?;
+        }
+        let mut restricted = HashSet::new();
+        if refused {
+            let left: Vec<ObjKey> = want.iter().filter(|k| !got.contains(k)).copied().collect();
+            for k in left {
+                match remote.get_many(vec![k]).try_collect::<Vec<_>>().await {
+                    Ok(b) => self.keep(&asked, &mut got, b).await?,
+                    Err(Error::PathPolicy(_)) => {
+                        restricted.insert(k);
+                    }
+                    Err(e) => return Err(e),
+                }
             }
         }
-        if let Some(k) = want.iter().find(|k| !got.contains(k)) {
+        if let Some(k) = want
+            .iter()
+            .find(|k| !got.contains(k) && !restricted.contains(k))
+        {
             return Err(Error::RemoteMissing(*k));
         }
-        Ok(wanted)
+        Ok(got.len())
+    }
+
+    /// Verifies and stores the requested objects of one answer.
+    async fn keep(
+        &self,
+        asked: &HashSet<ObjKey>,
+        got: &mut HashSet<ObjKey>,
+        batch: Vec<(ObjKey, Bytes)>,
+    ) -> Result<()> {
+        for (key, stored) in batch {
+            if !asked.contains(&key) || got.contains(&key) {
+                continue;
+            }
+            decode_verified(&key, &stored)?;
+            self.objects.put(&key, stored).await?;
+            got.insert(key);
+        }
+        Ok(())
     }
 
     // ---- fetch -------------------------------------------------------------------------
@@ -1040,8 +1119,7 @@ impl<O: Objects, R: Refs> Engine<O, R> {
             .filter(|p| !in_set.contains(p))
             .collect();
         dedup(&mut outside);
-        let keys: Vec<ObjKey> = outside.iter().map(|&p| ObjKey::Changeset(p)).collect();
-        let has = self.local_has(&keys).await?;
+        let has = self.local_bodies(&outside).await?;
         let absent: HashSet<ChangesetId> = outside
             .iter()
             .zip(&has)
@@ -1065,8 +1143,7 @@ impl<O: Objects, R: Refs> Engine<O, R> {
             }
         }
         dedup(&mut parents);
-        let keys: Vec<ObjKey> = parents.iter().map(|&p| ObjKey::Changeset(p)).collect();
-        let has = self.local_has(&keys).await?;
+        let has = self.local_bodies(&parents).await?;
         let local: HashSet<ChangesetId> = parents
             .iter()
             .zip(&has)
@@ -1090,8 +1167,7 @@ impl<O: Objects, R: Refs> Engine<O, R> {
         let mut claims: Vec<(ChangesetId, u32, Vec<ChangesetId>)> = Vec::new();
         while !frontier.is_empty() {
             dedup(&mut frontier);
-            let keys: Vec<ObjKey> = frontier.iter().map(|&i| ObjKey::Changeset(i)).collect();
-            let has = self.local_has(&keys).await?;
+            let has = self.local_bodies(&frontier).await?;
             let missing: Vec<ChangesetId> = frontier
                 .iter()
                 .zip(&has)
@@ -1133,8 +1209,7 @@ impl<O: Objects, R: Refs> Engine<O, R> {
             tips.extend(self.get_changeset(b).await?.parents.iter().copied());
         }
         dedup(&mut tips);
-        let keys: Vec<ObjKey> = tips.iter().map(|&p| ObjKey::Changeset(p)).collect();
-        let has = self.local_has(&keys).await?;
+        let has = self.local_bodies(&tips).await?;
         let tips: Vec<ChangesetId> = tips
             .into_iter()
             .zip(has)
@@ -2436,6 +2511,11 @@ mod tests {
             extra: Vec<(ObjKey, Bytes)>,
             /// Never sent, though asked for.
             withhold: Option<ObjKey>,
+            /// Answered as a redacted body with another message, the way a server with path
+            /// rules answers a restricted caller.
+            redact: Option<ChangesetId>,
+            /// Whether it claims to be a server that applies path rules.
+            redacting: bool,
         }
 
         impl Evil {
@@ -2445,6 +2525,8 @@ mod tests {
                     history: None,
                     extra: Vec::new(),
                     withhold: None,
+                    redact: None,
+                    redacting: true,
                 }
             }
         }
@@ -2454,6 +2536,9 @@ mod tests {
             fn name(&self) -> &str {
                 "origin"
             }
+            fn serves_redacted(&self) -> bool {
+                self.redacting
+            }
             async fn list_refs(&self) -> Result<Vec<RefEntry>> {
                 self.inner.list_refs().await
             }
@@ -2462,10 +2547,21 @@ mod tests {
             }
             fn get_many(&self, keys: Vec<ObjKey>) -> BoxStream<'_, Result<(ObjKey, Bytes)>> {
                 let withhold = self.withhold;
+                let redact = self.redact;
                 let real = self
                     .inner
                     .get_many(keys)
-                    .try_filter(move |(k, _)| futures::future::ready(Some(*k) != withhold));
+                    .try_filter(move |(k, _)| futures::future::ready(Some(*k) != withhold))
+                    .map_ok(move |(k, stored)| match k {
+                        ObjKey::Changeset(id) if Some(id) == redact => {
+                            let data = decode_verified(&k, &stored).unwrap();
+                            let mut cs: Changeset = decode_envelope(&data).unwrap();
+                            cs.message = b"(restricted change)".to_vec();
+                            let body = asc_core::codec::Enveloped::to_envelope(&cs);
+                            (redacted_key(id), asc_store::codec::encode_stored(&body))
+                        }
+                        _ => (k, stored),
+                    });
                 real.chain(stream::iter(self.extra.clone().into_iter().map(Ok)))
                     .boxed()
             }
@@ -2644,6 +2740,79 @@ mod tests {
                     .unwrap_err();
                 assert!(matches!(err, Error::RemoteMissing(_)), "{err}");
             }
+        }
+
+        #[tokio::test]
+        async fn a_redacted_body_is_kept_apart_and_read_in_place_of_its_changeset() {
+            let dir = tempfile::tempdir().unwrap();
+            let (server, ids) = server_chain(dir.path(), 5).await;
+            let bounds = MemBoundaries::default();
+            for (n, with_history) in [true, false].into_iter().enumerate() {
+                let client = engine(&sqlite(dir.path(), &format!("r{n}.db")).await, 2);
+                let mut remote = Evil::new(MockRemote::server(&server));
+                if !with_history {
+                    remote.inner = MockRemote::bucket(
+                        server.objects.clone(),
+                        server.refs.clone(),
+                        server.repo.0,
+                    );
+                }
+                remote.history = with_history.then(|| remote.inner.history().unwrap());
+                remote.redact = Some(ids[2]);
+                client
+                    .fetch(
+                        &remote,
+                        &Refspec::defaults("origin"),
+                        &SyncOptions::new(&bounds),
+                    )
+                    .await
+                    .unwrap();
+                let present = client
+                    .objects
+                    .has_many(&[ObjKey::Changeset(ids[2]), redacted_key(ids[2])])
+                    .await
+                    .unwrap();
+                assert_eq!(present, vec![false, true], "history={with_history}");
+                let cs = client.get_changeset(ids[2]).await.unwrap();
+                assert_eq!(cs.message, b"(restricted change)");
+                assert_eq!(
+                    client.get_changeset(ids[3]).await.unwrap().parents,
+                    vec![ids[2]]
+                );
+                // History still connects through it.
+                let g = client.get_derived::<Gen>(ids[4]).await.unwrap().generation;
+                assert_eq!(
+                    g,
+                    server.get_derived::<Gen>(ids[4]).await.unwrap().generation
+                );
+            }
+        }
+
+        #[tokio::test]
+        async fn a_redacted_body_from_a_remote_that_does_not_apply_path_rules_is_dropped() {
+            let dir = tempfile::tempdir().unwrap();
+            let (server, ids) = server_chain(dir.path(), 5).await;
+            let bounds = MemBoundaries::default();
+            let client = engine(&sqlite(dir.path(), "client.db").await, 2);
+            let mut remote = Evil::new(MockRemote::server(&server));
+            remote.redact = Some(ids[2]);
+            remote.redacting = false;
+            let fetched = client
+                .fetch(
+                    &remote,
+                    &Refspec::defaults("origin"),
+                    &SyncOptions::new(&bounds),
+                )
+                .await;
+            assert!(fetched.is_err(), "{fetched:?}");
+            assert_eq!(
+                client
+                    .objects
+                    .has_many(&[redacted_key(ids[2])])
+                    .await
+                    .unwrap(),
+                vec![false]
+            );
         }
 
         #[tokio::test]

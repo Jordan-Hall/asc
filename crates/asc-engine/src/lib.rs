@@ -1,6 +1,7 @@
 //! asc-engine.
 
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use asc_core::id::{ChangesetId, TreeId};
 use asc_core::object::{Changeset, Tree};
@@ -44,6 +45,8 @@ pub struct Engine<O: Objects, R: Refs> {
     pub(crate) trees: quick_cache::sync::Cache<TreeId, Arc<Tree>>,
     pub(crate) changesets: quick_cache::sync::Cache<ChangesetId, Arc<Changeset>>,
     pub(crate) projects: projects::State,
+    /// Trees the remote refused by path rules (SPEC §15.5.1), read as empty.
+    pub(crate) restricted: Mutex<HashSet<TreeId>>,
 }
 
 impl<O: Objects, R: Refs> Engine<O, R> {
@@ -56,7 +59,26 @@ impl<O: Objects, R: Refs> Engine<O, R> {
             trees: quick_cache::sync::Cache::new(TREE_CACHE_ITEMS),
             changesets: quick_cache::sync::Cache::new(CHANGESET_CACHE_ITEMS),
             projects: projects::State::new(),
+            restricted: Mutex::default(),
         }
+    }
+
+    /// True when `tree` was refused by the remote's path rules: its directory is restricted,
+    /// projected empty and read-only, and kept unchanged by commits.
+    pub fn is_restricted(&self, tree: TreeId) -> bool {
+        self.restricted
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(&tree)
+    }
+
+    /// True when any tree read so far was restricted.
+    pub fn any_restricted(&self) -> bool {
+        !self
+            .restricted
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_empty()
     }
 
     /// An engine for the same refs and repository over other objects, with empty caches. A bulk

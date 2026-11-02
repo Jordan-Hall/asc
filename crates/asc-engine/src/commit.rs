@@ -144,11 +144,15 @@ impl<O: Objects, R: Refs> Engine<O, R> {
         if let Some(cs) = self.changesets.get(&id) {
             return Ok(cs);
         }
-        let data = self
-            .objects
-            .get(&ObjKey::Changeset(id))
-            .await?
-            .ok_or(Error::MissingChangeset(id))?;
+        // A changeset the server redacted for this caller is kept apart from verified ones.
+        let data = match self.objects.get(&ObjKey::Changeset(id)).await? {
+            Some(data) => data,
+            None => self
+                .objects
+                .get(&asc_store::objects::redacted_key(id))
+                .await?
+                .ok_or(Error::MissingChangeset(id))?,
+        };
         let cs = Arc::new(decode_envelope::<Changeset>(&data)?);
         self.changesets.insert(id, cs.clone());
         Ok(cs)
@@ -231,8 +235,14 @@ impl<O: Objects, R: Refs> Engine<O, R> {
                 return Err(Error::DuplicateParent(*p));
             }
         }
-        let keys: Vec<ObjKey> = cs.parents.iter().map(|&p| ObjKey::Changeset(p)).collect();
-        let present = self.objects.has_many(&keys).await?;
+        // A parent the server redacted for this caller is present under its own key.
+        let keys: Vec<ObjKey> = cs
+            .parents
+            .iter()
+            .flat_map(|&p| [ObjKey::Changeset(p), asc_store::objects::redacted_key(p)])
+            .collect();
+        let has = self.objects.has_many(&keys).await?;
+        let present: Vec<bool> = has.chunks(2).map(|h| h[0] || h[1]).collect();
         if let Some(i) = present.iter().position(|&x| !x) {
             return Err(Error::MissingParent(cs.parents[i]));
         }
