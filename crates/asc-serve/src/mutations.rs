@@ -182,6 +182,14 @@ where
 }
 
 impl Opened {
+    /// `Ok` when the caller may read `path` (see [`Opened::scope`]).
+    fn require(&self, path: &RepoPath) -> Result<(), Status> {
+        match &self.scope {
+            Some(s) => s.require_read(path.as_bytes()),
+            None => Ok(()),
+        }
+    }
+
     /// `Engine::apply` of `changes` onto `base`.
     async fn apply_changes(
         &self,
@@ -222,6 +230,9 @@ struct Opened {
     engine: Arc<Eng>,
     ids: IdCodec,
     windows_safe: bool,
+    /// The caller's read scope: a path it may not read is refused before it is looked up, so
+    /// an answer never tells whether something exists there.
+    scope: Option<Arc<crate::pathrules::scope::Scope>>,
 }
 
 impl ServerMutations {
@@ -256,7 +267,9 @@ impl ServerMutations {
             return Err(rpc(RpcError::MirrorMode(info(vec![ctx.repo.to_string()]))));
         }
         let windows_safe = self.refs.windows_safe(&entry).await?;
+        let scope = crate::pathrules::scope::Scope::read(&self.hooks.pathrules, ctx).await?;
         Ok(Opened {
+            scope,
             ids: IdCodec::new(ctx.id_mode, &self.registry, &entry).for_viewer(&ctx.principal),
             engine: entry.backend.engine().clone(),
             entry,
@@ -660,6 +673,7 @@ impl ServerMutations {
         };
         for op in ops {
             let path = op_path(&op.path)?;
+            o.require(&path)?;
             claim(&path)?;
             let kind = kind_of_mode(op.mode)?;
             match op
@@ -698,6 +712,7 @@ impl ServerMutations {
                 Op::Delete(false) => return Err(invalid("an operation needs an action")),
                 Op::MoveFrom(from) => {
                     let from = op_path(from)?;
+                    o.require(&from)?;
                     claim(&from)?;
                     let entry = tree_entry(o, base, &from).await?;
                     let entry_kind = match entry.kind {
@@ -1261,6 +1276,7 @@ impl ServerMutations {
                 && old != new
             {
                 let (old, new) = (op_path(old)?, op_path(new)?);
+                o.require(&old)?;
                 if o.engine
                     .lookup(base, &old)
                     .await
@@ -1288,6 +1304,7 @@ impl ServerMutations {
         overlay: &Overlay,
         path: &RepoPath,
     ) -> Result<Option<Probe>, Status> {
+        o.require(path)?;
         let too_large = |len: u64| {
             if len > MAX_CONTENT_BYTES as u64 {
                 Err(invalid(format!("{path}: the file is too large to patch")))
@@ -1898,6 +1915,64 @@ mod commit_rpc {
                 wire::file_op::Op::PutFileId(Bytes::copy_from_slice(file.as_bytes())),
             ),
         ]
+    }
+
+    #[tokio::test]
+    async fn a_commit_may_not_touch_or_move_from_a_restricted_path() {
+        let f = fx().await;
+        let base = commit(
+            &f.entry,
+            &[],
+            &[
+                (
+                    "keep", b"k
+",
+                ),
+                (
+                    "g/s", b"s
+",
+                ),
+            ],
+        )
+        .await;
+        ingest_one(&f, base).await;
+        let hub = crate::pathrules::PathRulesHub::new(
+            f.registry.pool().clone(),
+            Arc::new(crate::settings::testkit::Recorder::default()),
+        );
+        let rules = [crate::pathrules::parse_rule("g", "*", "none").unwrap()];
+        hub.set("o/r", &rules, 0, "pat:admin").await.unwrap();
+        assert!(f.hooks.pathrules.set(hub));
+        let refused = [
+            vec![put(
+                "g/new", b"n
+",
+            )],
+            vec![op("g/s", wire::file_op::Op::Delete(true))],
+            vec![op(
+                "out",
+                wire::file_op::Op::MoveFrom(Bytes::from_static(b"g/s")),
+            )],
+        ];
+        for ops in refused {
+            let e =
+                f.m.commit_inner(&ctx(), request(&base.to_string(), ops.clone()))
+                    .await
+                    .unwrap_err();
+            assert_eq!(e.code(), tonic::Code::PermissionDenied, "{ops:?}");
+        }
+        f.m.commit_inner(
+            &ctx(),
+            request(
+                &base.to_string(),
+                vec![put(
+                    "keep", b"2
+",
+                )],
+            ),
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
