@@ -23,7 +23,7 @@ use asc_engine::sync::{self, GET_BATCH, GET_STREAMS, HAS_BATCH, PUT_BATCH_BYTES,
 use asc_store::codec::check_codec;
 use asc_store::key::KeyPrefix;
 use asc_store::key::{KeyClass, ObjKey};
-use asc_store::objects::{self, Objects, decode_verified, slice_range};
+use asc_store::objects::{self, Objects, REDACTED, decode_verified, slice_range};
 use asc_store::refs::{Expect, RefConflict, RefEntry, RefError, RefUpdate};
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -101,6 +101,17 @@ impl CallError {
                 code: Code::Unavailable,
                 ..
             }
+        )
+    }
+
+    /// True when the server refused by path rules (SPEC §15.5.1).
+    pub fn is_path_policy(&self) -> bool {
+        matches!(
+            self,
+            Self::Status {
+                code: Code::PermissionDenied,
+                message,
+            } if message.starts_with("PATH_POLICY:")
         )
     }
 
@@ -1256,15 +1267,25 @@ impl Objects for RemoteObjects {
         }
     }
 
+    /// A changeset the server redacts reads as absent under its own key and is answered under
+    /// [`objects::redacted_key`]; a key refused by path rules is [`objects::Error::Restricted`].
     async fn get_stored(&self, key: &ObjKey) -> objects::Result<Option<Bytes>> {
-        if matches!(key, ObjKey::Derived { .. }) {
-            return Ok(None);
-        }
-        let mut found = self.0.fetch(vec![*key]);
-        match found.try_next().await.map_err(Self::fail)? {
-            Some((k, stored)) if k == *key => Ok(Some(stored)),
-            Some(_) => Err(remote_store_error("the server sent a different object")),
-            None => Ok(None),
+        let (asked, want_redacted) = match *key {
+            ObjKey::Derived {
+                name: REDACTED,
+                version: 1,
+                id,
+            } => (ObjKey::Changeset(ChangesetId::from_bytes(id)), true),
+            ObjKey::Derived { .. } => return Ok(None),
+            k => (k, false),
+        };
+        let mut found = self.0.fetch_marked(vec![asked]);
+        match found.try_next().await {
+            Ok(Some(f)) if f.key == asked => Ok((f.redacted == want_redacted).then_some(f.data)),
+            Ok(Some(_)) => Err(remote_store_error("the server sent a different object")),
+            Ok(None) => Ok(None),
+            Err(e) if e.is_path_policy() => Err(objects::Error::Restricted(asked)),
+            Err(e) => Err(Self::fail(e)),
         }
     }
 

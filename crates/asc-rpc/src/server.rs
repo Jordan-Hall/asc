@@ -343,6 +343,7 @@ fn store_status(e: objects::Error) -> Status {
             Status::data_loss("stored object is corrupt")
         }
         objects::Error::RangeUnsupported(_) => Status::invalid_argument("range not supported"),
+        e @ objects::Error::Restricted(_) => Status::permission_denied(e.to_string()),
         e => internal("object store", &e),
     }
 }
