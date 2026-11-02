@@ -130,6 +130,31 @@ pub async fn by_name(db: &StateDb, name: &str) -> Result<Vec<Repo>> {
     rows.iter().map(decode).collect()
 }
 
+/// Repositories cloned from a URL whose path ends in `owner/name` (with or without `.git`),
+/// oldest first: how a server repository name finds its local clone.
+pub async fn by_remote_repo(db: &StateDb, owner_name: &str) -> Result<Vec<Repo>> {
+    let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT {COLS} FROM repos WHERE remote_url IS NOT NULL AND remote_kind <> ? ORDER BY rowid"
+    )))
+    .bind(RemoteKind::BucketLocalRefs.as_str())
+    .fetch_all(db.pool())
+    .await?;
+    let want = format!("/{owner_name}");
+    let mut out = Vec::new();
+    for row in &rows {
+        let repo = decode(row)?;
+        let matches = repo.repo.remote_url.as_deref().is_some_and(|u| {
+            let u = u.trim_end_matches('/');
+            let u = u.strip_suffix(".git").unwrap_or(u);
+            u.ends_with(&want)
+        });
+        if matches {
+            out.push(repo);
+        }
+    }
+    Ok(out)
+}
+
 /// Gets or inserts the dedicated `bucket-local-refs` row of the bucket at `url`
 /// (SPEC §3.4). The row's `name` is the normalised bucket URL; `ns` stays empty until the first
 /// push learns the bucket's namespace.

@@ -221,7 +221,7 @@ impl Submodules {
         let mut map = BTreeMap::new();
         for path in paths {
             let repo = configured(path)
-                .filter(|r| valid_repo_name(r.trim()))
+                .filter(|r| valid_repo_name(r.trim()) || valid_segment(r.trim()))
                 .map(|r| r.trim().to_owned())
                 .or_else(|| {
                     modules
