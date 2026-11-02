@@ -1641,6 +1641,15 @@ Delete the comment-only `.gitattributes`. Replace `"env": ["*"]` on `build` with
 - **Transparent adoption:** the Forgejo fork sets `[actions] DEFAULT_ACTIONS_URL` to the mirror, and the runner fork has an alias table that maps `actions/checkout@*` to `asc/actions/checkout` (likewise `cache`, `upload-artifact`, `download-artifact`). Existing workflows switch with no YAML edits.
 - **Runner-native fast path:** the runner fork recognises the checkout action and runs `asc ci checkout` on the host (sharing the host cache, §12.3) instead of running a node action in the job container. It runs `asc ci checkout` with `ASC_HOME=<job dir>/asc-home` and bind-mounts the tree, that `ASC_HOME`, and the `asc` binary directory into the container at identical absolute paths, so the gitfile's absolute target resolves inside the job. It then sets `GITHUB_ENV`/`GITHUB_PATH` as in §12.3 step 6.
 
+### 12.8 `.actions/` workflows and the `affected:` job key [built 2026-11-02]
+
+- **Directory:** the hub reads workflows from `.actions/workflows/` first, then `.forgejo/workflows/`, `.gitea/workflows/` and `.github/workflows/`. The first directory that holds workflows wins, so a repository moving to asc keeps its old files until it deletes them.
+- **`affected:`:** a job may name the projects it builds, as one string or a list of 1 to 256 strings. Each entry is a project name or id, a project root, or a path glob (`path.Match`), with no leading or trailing `/`, no comma and no newline.
+  - The hub removes the key before the job parser reads the workflow. A malformed value fails the run with a parse error.
+  - On an asc repository the hub calls `Projects.Affected` (§12A): a pull request compares against its merge base, a push against `before`. A job matches when any entry equals an affected project's name or id, when an entry and a root contain each other, or when a glob matches a root. `all` matches every entry.
+  - A job that matches nothing gets `if: false` and is skipped. The run page shows warning code 3 (`asc_not_affected_warning`) with the job and its entries.
+  - The hub runs every job when there is no base (a new branch), when the repository is not on asc, or when the call fails or takes more than 20 s. A skip is only ever an optimisation.
+
 ---
 
 ## 12A. Polyglot project graph and affected (crate `asc-graph`) [audit: projgraph-section-and-model]
