@@ -48,6 +48,7 @@ pub(crate) const GC_LOCK_KEY: i64 = 0x0063_675f_6763;
 /// Ref namespaces that are local to a client and never stored on a server (SPEC §2.7).
 const LOCAL_ONLY: &[&str] = &["refs/remotes/", "refs/stash", "refs/bisect/", "refs/for/"];
 
+mod linked;
 mod submit;
 
 /// The error code of a status, for the tests of the child modules.
@@ -388,15 +389,29 @@ pub(crate) struct Planned {
     pub(crate) user: bool,
 }
 
-fn plan(req: &wire::UpdateRefsRequest) -> Result<Vec<Planned>, Status> {
+/// The planned updates of one repository after step 5, in the forms each later step takes.
+pub(crate) struct Checked {
+    pub(crate) updates: Vec<RefUpdate>,
+    pub(crate) results: Vec<wire::RefResult>,
+    pub(crate) hook_updates: Vec<HookUpdate>,
+    pub(crate) agent_updates: Vec<RefChange>,
+    pub(crate) gate_updates: Vec<GateUpdate>,
+}
+
+pub(crate) fn plan(req: &wire::UpdateRefsRequest) -> Result<Vec<Planned>, Status> {
+    plan_updates(&req.updates)
+}
+
+/// Validates the updates of one repository.
+pub(crate) fn plan_updates(updates: &[wire::RefUpdate]) -> Result<Vec<Planned>, Status> {
     use wire::ref_update::Expect as Wire;
     let bad = |m: &str| Status::invalid_argument(m.to_owned());
-    if req.updates.is_empty() || req.updates.len() > MAX_REF_UPDATES {
+    if updates.is_empty() || updates.len() > MAX_REF_UPDATES {
         return Err(bad("bad number of updates"));
     }
     let mut seen = HashSet::new();
-    let mut out = Vec::with_capacity(req.updates.len());
-    for u in &req.updates {
+    let mut out = Vec::with_capacity(updates.len());
+    for u in updates {
         let name =
             RefName::new(u.name.as_bytes()).map_err(|e| Status::invalid_argument(e.to_string()))?;
         if LOCAL_ONLY.iter().any(|p| u.name.starts_with(p)) {
@@ -737,72 +752,15 @@ impl ServerRefs {
         }
 
         // Step 5: policy. FAST_FORWARD needs the new value to descend from the current one.
-        let mut updates = Vec::with_capacity(planned.len());
-        let mut results = Vec::with_capacity(planned.len());
-        let mut hook_updates = Vec::with_capacity(planned.len());
-        let mut agent_updates = Vec::with_capacity(planned.len());
-        let mut gate_updates = Vec::with_capacity(planned.len());
-        for p in planned {
-            let current = self
-                .registry
-                .refs()
-                .get(entry.key, &p.name)
-                .await
-                .map_err(|e| internal("refs", &e))?
-                .map(|e| e.target);
-            let mut expect = p.expect;
-            if mode == wire::UpdateMode::FastForward {
-                if let (Some(old), Some(new)) = (current, p.new) {
-                    let ff = match (old, new) {
-                        (RefTarget::Changeset(o), RefTarget::Changeset(n)) => {
-                            o == n
-                                || graph
-                                    .is_ancestor(o, n)
-                                    .await
-                                    .map_err(|e| internal("graph", &e))?
-                        }
-                        (o, n) => o == n,
-                    };
-                    if !ff {
-                        return Err(rpc(RpcError::NotFastForward(info(vec![p.text]))));
-                    }
-                }
-                // Pin the value the check saw, so a concurrent move cannot slip past it.
-                if expect == Expect::Any {
-                    expect = current.map_or(Expect::Absent, Expect::Value);
-                }
-            }
-            results.push(wire::RefResult {
-                name: p.text.clone(),
-                old: current.as_ref().map(wire::RefTarget::from),
-                new: p.new.as_ref().map(wire::RefTarget::from),
-                user: p.user,
-            });
-            gate_updates.push(GateUpdate {
-                name: p.text.clone(),
-                old: current,
-                new: p.new,
-                user: p.user,
-            });
-            agent_updates.push(RefChange {
-                name: p.text.clone(),
-                old: current,
-                new: p.new,
-            });
-            if !p.user {
-                hook_updates.push(HookUpdate {
-                    name: p.text,
-                    old: current,
-                    new: p.new,
-                });
-            }
-            updates.push(RefUpdate {
-                name: p.name,
-                expect,
-                new: p.new,
-                expires_at: if p.new.is_some() { expires_at } else { None },
-            });
-        }
+        let Checked {
+            updates,
+            results,
+            hook_updates,
+            agent_updates,
+            gate_updates,
+        } = self
+            .check_planned(&entry, &graph, planned, mode, expires_at)
+            .await?;
 
         // The repository policy, secret scanning and signatures, before any hook runs.
         if let Some(gate) = self.hooks.gate() {
@@ -854,6 +812,7 @@ impl ServerRefs {
                     .collect()
             }),
             message: String::new(),
+            linked: Vec::new(),
         };
         let writes = rewrites
             .as_ref()
@@ -919,6 +878,87 @@ impl ServerRefs {
         }
     }
 
+    /// Step 5 for the planned updates of one repository: reads each current value, refuses a
+    /// FAST_FORWARD that does not descend from it, and pins `Any` to the value the check saw.
+    pub(crate) async fn check_planned(
+        &self,
+        entry: &RepoEntry,
+        graph: &Graph<impl asc_engine::graph::GraphSource>,
+        planned: Vec<Planned>,
+        mode: wire::UpdateMode,
+        expires_at: Option<i64>,
+    ) -> Result<Checked, Status> {
+        let mut out = Checked {
+            updates: Vec::with_capacity(planned.len()),
+            results: Vec::with_capacity(planned.len()),
+            hook_updates: Vec::with_capacity(planned.len()),
+            agent_updates: Vec::with_capacity(planned.len()),
+            gate_updates: Vec::with_capacity(planned.len()),
+        };
+        for p in planned {
+            let current = self
+                .registry
+                .refs()
+                .get(entry.key, &p.name)
+                .await
+                .map_err(|e| internal("refs", &e))?
+                .map(|e| e.target);
+            let mut expect = p.expect;
+            if mode == wire::UpdateMode::FastForward {
+                if let (Some(old), Some(new)) = (current, p.new) {
+                    let ff = match (old, new) {
+                        (RefTarget::Changeset(o), RefTarget::Changeset(n)) => {
+                            o == n
+                                || graph
+                                    .is_ancestor(o, n)
+                                    .await
+                                    .map_err(|e| internal("graph", &e))?
+                        }
+                        (o, n) => o == n,
+                    };
+                    if !ff {
+                        return Err(rpc(RpcError::NotFastForward(info(vec![p.text]))));
+                    }
+                }
+                // Pin the value the check saw, so a concurrent move cannot slip past it.
+                if expect == Expect::Any {
+                    expect = current.map_or(Expect::Absent, Expect::Value);
+                }
+            }
+            out.results.push(wire::RefResult {
+                name: p.text.clone(),
+                old: current.as_ref().map(wire::RefTarget::from),
+                new: p.new.as_ref().map(wire::RefTarget::from),
+                user: p.user,
+            });
+            out.gate_updates.push(GateUpdate {
+                name: p.text.clone(),
+                old: current,
+                new: p.new,
+                user: p.user,
+            });
+            out.agent_updates.push(RefChange {
+                name: p.text.clone(),
+                old: current,
+                new: p.new,
+            });
+            if !p.user {
+                out.hook_updates.push(HookUpdate {
+                    name: p.text,
+                    old: current,
+                    new: p.new,
+                });
+            }
+            out.updates.push(RefUpdate {
+                name: p.name,
+                expect,
+                new: p.new,
+                expires_at: if p.new.is_some() { expires_at } else { None },
+            });
+        }
+        Ok(out)
+    }
+
     /// The step-8 transaction: ref CAS and log, the op result, and the outbox row.
     pub(crate) async fn commit(
         &self,
@@ -973,6 +1013,7 @@ impl ServerRefs {
             results,
             rewritten: Vec::new(),
             message: String::new(),
+            linked: Vec::new(),
         };
         let txn = RefTxn {
             updates,
@@ -1043,11 +1084,30 @@ impl ServerRefs {
     ) -> Result<(), Status> {
         let refs = self.registry.refs();
         let mut tx = refs.begin().await.map_err(|e| internal("refs", &e))?;
-        self.registry.guard(&mut tx, entry).await?;
+        self.write_in_tx(&mut tx, entry, txn, response, outbox, land, writer)
+            .await?;
+        tx.commit().await.map_err(|e| internal("commit", &e))
+    }
+
+    /// The writes of one repository's step 8 inside `tx`: the repository guard, ref CAS and log,
+    /// user-ref checks, quota, the op result, the outbox row and the audit events.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn write_in_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+        entry: &RepoEntry,
+        txn: &RefTxn,
+        response: &wire::UpdateRefsResponse,
+        outbox: &[u8],
+        land: Option<&land::TxWrites<'_>>,
+        writer: UserRefWriter,
+    ) -> Result<(), Status> {
+        let refs = self.registry.refs();
+        self.registry.guard(&mut *tx, entry).await?;
         if let UserRefWriter::Expiry { at } = writer {
-            refpolicy::require_expired(&mut tx, entry.key, txn, at).await?;
+            refpolicy::require_expired(&mut *tx, entry.key, txn, at).await?;
         }
-        match refs.update_in_tx(&mut tx, entry.key, txn).await {
+        match refs.update_in_tx(&mut *tx, entry.key, txn).await {
             Ok(()) => {}
             Err(RefError::Conflict(c)) => return Err(conflict(c)),
             Err(e @ RefError::NonUtf8Name(_)) => {
@@ -1058,14 +1118,14 @@ impl ServerRefs {
         // User refs have no pre-receive, so the owner and the cap are checked here, in the same
         // transaction as the write (SPEC §21.5.1).
         let quota = self.hooks.user_quota();
-        refpolicy::check_user_ref_writes(&mut tx, entry.key, txn, writer, quota.max_user_refs())
+        refpolicy::check_user_ref_writes(&mut *tx, entry.key, txn, writer, quota.max_user_refs())
             .await?;
         // Quota (SPEC §21.3.7), part 2, in this transaction: a shared ref settles its closure
         // (shared history costs a user nothing), then each owner is charged what their refs newly
         // make reachable. A refusal, or any later failure, rolls the charge back with the refs.
-        self.settle_quota(&mut tx, entry, txn, quota).await?;
+        self.settle_quota(&mut *tx, entry, txn, quota).await?;
         if let Some(land) = land {
-            land.apply(&mut tx, entry, txn).await?;
+            land.apply(&mut *tx, entry, txn).await?;
         }
         let at = now();
         sqlx::query("INSERT INTO op_results (op_id, repo_id, result, at) VALUES ($1, $2, $3, $4)")
@@ -1073,7 +1133,7 @@ impl ServerRefs {
             .bind(entry.key.0)
             .bind(response.encode_to_vec())
             .bind(at)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
             .map_err(|e| internal("op_results", &e))?;
         sqlx::query(
@@ -1083,15 +1143,15 @@ impl ServerRefs {
         .bind(txn.op_id.as_bytes().to_vec())
         .bind(outbox.to_vec())
         .bind(at)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|e| internal("outbox", &e))?;
         // The audit events of this update, in the same transaction: a push that cannot be
         // recorded is not accepted.
-        crate::audit::hooks::append_ref_updates(&mut tx, entry.key.0, entry.name.as_str(), txn)
+        crate::audit::hooks::append_ref_updates(&mut *tx, entry.key.0, entry.name.as_str(), txn)
             .await
             .map_err(|e| internal("audit", &e))?;
-        tx.commit().await.map_err(|e| internal("commit", &e))
+        Ok(())
     }
 }
 
@@ -1153,6 +1213,9 @@ impl RefsHandler for ServerRefs {
 /// The one registration line of this unit (called from `lib.rs`).
 pub fn register(ext: &Extensions, registry: &Arc<Registry>) {
     let handler = Arc::new(ServerRefs::new(registry.clone(), ext.pipeline.clone()));
+    ext.handlers
+        .set_linked_refs(handler.clone())
+        .expect("the linked refs handler is registered once");
     ext.handlers
         .set_refs(handler)
         .expect("the refs handler group is registered once");
