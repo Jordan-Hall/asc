@@ -234,11 +234,6 @@ pub struct Meta {
     pub size: u64,
     /// Last access, unix seconds.
     pub at: i64,
-    /// The project directory the artefact was built from, as trusted CI registered it
-    /// (`POST /v8/asc/artifact-paths`). Under path rules it is served only to callers with at
-    /// least `build` there (SPEC §15.5.1).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
 }
 
 fn now_secs() -> i64 {
@@ -377,6 +372,26 @@ impl TurboState {
         self.path(slug, scope, &format!("{}.meta", hash.as_str()))
     }
 
+    /// The project directory a trusted artefact was built from, as trusted CI registered it
+    /// (`POST /v8/asc/artifact-paths`, SPEC §15.5.1). Its own object, created once and never
+    /// rewritten, so no upload or touch of the meta can lose it.
+    fn dir_path(&self, slug: &Slug, hash: &ArtifactHash) -> StorePath {
+        self.path(slug, &Scope::Trusted, &format!("{}.path", hash.as_str()))
+    }
+
+    /// The registered directory of a trusted artefact.
+    async fn read_dir(&self, p: &StorePath) -> Result<Option<String>, TurboError> {
+        let got = match self.store.get(p).await {
+            Ok(g) => g,
+            Err(object_store::Error::NotFound { .. }) => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        if got.meta.size > MAX_META_BYTES as u64 {
+            return Ok(None);
+        }
+        Ok(String::from_utf8(got.bytes().await?.to_vec()).ok())
+    }
+
     /// Authorises the call and works out its scope.
     async fn gate(
         &self,
@@ -499,9 +514,17 @@ impl TurboState {
             let Some(mut meta) = self.read_meta(&meta_path).await? else {
                 continue;
             };
-            // An output of a directory the caller may not even build from is not there for it.
-            if !c.may_use(&meta) {
-                continue;
+            // Under path rules a shared output is served only when CI registered its directory
+            // and the caller may at least build there; an unregistered one fails closed.
+            if let Some(rules) = &c.rules
+                && scope != c.scope
+            {
+                let dir = self.read_dir(&self.dir_path(&c.slug, hash)).await?;
+                if !dir
+                    .is_some_and(|d| rules.level(d.as_bytes()) >= asc_core::pathacl::Level::Build)
+                {
+                    continue;
+                }
             }
             let data = self.data_path(&c.slug, &scope, hash);
             match self.store.head(&data).await {
@@ -695,15 +718,6 @@ struct Caller {
     rules: Option<Arc<crate::pathrules::scope::Scope>>,
 }
 
-impl Caller {
-    fn may_use(&self, meta: &Meta) -> bool {
-        match (&self.rules, &meta.path) {
-            (Some(r), Some(p)) => r.level(p.as_bytes()) >= asc_core::pathacl::Level::Build,
-            _ => true,
-        }
-    }
-}
-
 struct Found {
     meta: Meta,
     data: StorePath,
@@ -806,8 +820,6 @@ async fn put_artifact(
         upload(&s, &data, body).await?
     };
     let meta_path = s.meta_path(&caller.slug, &caller.scope, &hash);
-    // A re-upload of the same hash keeps the directory it was registered under.
-    let path = s.read_meta(&meta_path).await?.and_then(|m| m.path);
     let meta = Meta {
         duration,
         tag,
@@ -815,7 +827,6 @@ async fn put_artifact(
         dirty_hash,
         size,
         at: now_secs(),
-        path,
     };
     s.write_meta(&meta_path, &meta).await?;
     let url = format!("{}/{}", caller.slug.dir(), hash.as_str());
@@ -1035,22 +1046,30 @@ async fn register_paths(
     }
     let (mut registered, mut missing) = (0u64, Vec::new());
     for (hash, path) in checked {
-        let p = s.meta_path(&caller.slug, &Scope::Trusted, &hash);
-        let Some(mut meta) = s.read_meta(&p).await? else {
+        let meta = s.meta_path(&caller.slug, &Scope::Trusted, &hash);
+        if s.read_meta(&meta).await?.is_none() {
             missing.push(hash.as_str().to_owned());
             continue;
+        }
+        let p = s.dir_path(&caller.slug, &hash);
+        let create = object_store::PutOptions {
+            mode: object_store::PutMode::Create,
+            ..Default::default()
         };
-        match &meta.path {
-            Some(old) if *old == path => {}
-            Some(_) => {
-                return Err(TurboError::BadRequest(
-                    "artifact is registered to another path",
-                ));
+        match s
+            .store
+            .put_opts(&p, path.clone().into_bytes().into(), create)
+            .await
+        {
+            Ok(_) => {}
+            Err(object_store::Error::AlreadyExists { .. }) => {
+                if s.read_dir(&p).await?.as_deref() != Some(path.as_str()) {
+                    return Err(TurboError::BadRequest(
+                        "artifact is registered to another path",
+                    ));
+                }
             }
-            None => {
-                meta.path = Some(path);
-                s.write_meta(&p, &meta).await?;
-            }
+            Err(e) => return Err(e.into()),
         }
         registered += 1;
     }
@@ -1271,10 +1290,27 @@ mod tests {
             register(&s, "ci-secret", &open, "../x").await,
             StatusCode::BAD_REQUEST
         );
+        assert_eq!(
+            register(&s, "ci-secret", &open, "src").await,
+            StatusCode::OK
+        );
         // A re-upload keeps the registration.
         assert_eq!(
             put(&s, "ci-secret", &hidden, b"out", None).await,
             StatusCode::ACCEPTED
+        );
+        // Under path rules an unregistered shared output fails closed.
+        let unregistered = "d".repeat(16);
+        assert_eq!(
+            put(&s, "ci-secret", &unregistered, b"out", None).await,
+            StatusCode::ACCEPTED
+        );
+        assert_eq!(
+            call("GET", &art(&unregistered), Some("dev-secret"))
+                .send(&s)
+                .await
+                .0,
+            StatusCode::NOT_FOUND
         );
 
         assert_eq!(
