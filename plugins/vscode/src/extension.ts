@@ -36,6 +36,7 @@ import { InboxCountPoller, registerInboxCount } from "./inbox-count";
 import { configureAgents, registerMcp, vscodeMcpApi } from "./mcp";
 import { StackCheckout } from "./review/checkout";
 import { bridgeReviewApi, currentChangeRef, registerReviewComments } from "./review/comments";
+import { registerReadOnly } from "./read-only";
 import { registerRevNav } from "./revnav";
 import { registerCommands, vscodeCommandsUi } from "./scm/commands";
 import { registerIgnoreCommand } from "./scm/ignore";
@@ -672,11 +673,13 @@ export function vscodeHost(vscode: typeof vscodeTypes, ctx: vscodeTypes.Extensio
       vscodeWebviews(vscode, ctx, folders, (l) => out().appendLine(l), bridge),
     registerScm: (bridge, folders) => {
       const reg = registerScm(vscode, bridge, folders, (l) => out().appendLine(l));
+      const ro = registerReadOnly(vscode, folders, (l) => out().appendLine(l));
       // The smoke test reads the SCM view's state through this command; it is not contributed.
       const probe = vscode.commands.registerCommand("asc.probe", () => reg.probe());
       return {
         dispose() {
           probe.dispose();
+          ro.dispose();
           reg.dispose();
         },
       };

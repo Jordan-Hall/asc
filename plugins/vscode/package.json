@@ -41,6 +41,9 @@
     "virtualWorkspaces": false
   },
   "contributes": {
+    "configurationDefaults": {
+      "files.readonlyFromPermissions": true
+    },
     "configuration": {
       "title": "ASC",
       "properties": {
