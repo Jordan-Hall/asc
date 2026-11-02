@@ -135,6 +135,15 @@ impl Server {
                     .into_service(),
                     log: log.clone(),
                 });
+                let path_rules = Counting {
+                    inner: asc_serve::pathrules::rpc::PathRulesService::new(
+                        rules.clone(),
+                        auth.clone(),
+                        ServerInfo::default(),
+                    )
+                    .into_service(),
+                    log: log.clone(),
+                };
                 let svc = Counting {
                     inner: RepoService::new(ext.handlers.clone(), auth, ServerInfo::default())
                         .into_service(),
@@ -159,6 +168,7 @@ impl Server {
                     .add_service(svc)
                     .add_optional_service(changes_svc)
                     .add_service(projects)
+                    .add_service(path_rules)
                     .serve_with_incoming_shutdown(incoming, async {
                         let _ = stop_rx.await;
                     })

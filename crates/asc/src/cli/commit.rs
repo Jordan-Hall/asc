@@ -656,6 +656,7 @@ async fn flow(
         None => CliEngine::empty_tree_id(),
     };
     let copies = pending_copies(ws, first_parent_root, root).await?;
+    authored_writable(ws, &parents, root).await?;
 
     // Step 6: sign, write, derive, move the branch, clear the stage.
     let mut new = NewChangeset {
@@ -1044,4 +1045,38 @@ fn io_reason(e: &std::io::Error) -> String {
         std::io::ErrorKind::PermissionDenied => "Permission denied".to_owned(),
         _ => e.to_string(),
     }
+}
+
+/// Refuses a commit that changes a path the path rules keep read-only for the caller: a path
+/// that differs from every parent (one taken unchanged from a merged parent was not authored
+/// here).
+async fn authored_writable(ws: &WsCtx, parents: &[ChangesetId], root: TreeId) -> Result<()> {
+    let Some(access) = super::path_lock::load(ws) else {
+        return Ok(());
+    };
+    let mut changed: Option<BTreeSet<String>> = None;
+    let roots = if parents.is_empty() {
+        vec![CliEngine::empty_tree_id()]
+    } else {
+        let mut v = Vec::with_capacity(parents.len());
+        for &p in parents {
+            v.push(ws.engine.get_changeset(p).await?.root);
+        }
+        v
+    };
+    for base in roots {
+        let here: BTreeSet<String> = ws
+            .engine
+            .leafdiff(base, root, None)
+            .await?
+            .into_iter()
+            .map(|(p, _)| p.to_string())
+            .collect();
+        changed = Some(match changed {
+            None => here,
+            Some(c) => c.intersection(&here).cloned().collect(),
+        });
+    }
+    let changed = changed.unwrap_or_default();
+    super::path_lock::require_writable_in(&access, changed.iter().map(String::as_str))
 }

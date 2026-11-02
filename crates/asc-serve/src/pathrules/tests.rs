@@ -483,7 +483,7 @@ async fn a_reader_gets_only_its_own_levels_and_no_other_subjects_directories() {
         mine(alice),
         ("write".into(), vec![s("", "read"), s("secret", "write")], 1)
     );
-    // A direct reader token: its rules are capped at read.
+    // A direct reader token: the rules' own levels, and its repository level.
     let carol = f
         .svc
         .get_my_path_access(req(get.clone(), "reader-token", None))

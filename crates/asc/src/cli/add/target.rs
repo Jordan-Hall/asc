@@ -312,11 +312,24 @@ impl Target {
     pub async fn apply(&mut self, ctx: &Ctx, edits: Vec<Edit>) -> Result<()> {
         let ws = ctx.ws()?;
         let (id, mut removes, mut upserts) = (ws.workspace.ws.id, Vec::new(), Vec::new());
+        let access = super::super::path_lock::load(ws);
         for edit in &edits {
             let key = edit.path().as_bytes().to_vec();
             let existing = self.rows.get(&key);
             let conflicted = existing.is_some_and(|r| r.iter().any(|x| x.stage > 0));
             let head = self.head_leaf(ws, edit.path()).await?;
+            if let Some(a) = &access {
+                let changes = match edit {
+                    Edit::Put { leaf, ita, .. } => *ita || head.as_ref() != Some(leaf),
+                    Edit::Drop(_) => head.is_some(),
+                };
+                if changes {
+                    super::super::path_lock::require_writable_in(
+                        a,
+                        [edit.path().to_string().as_str()],
+                    )?;
+                }
+            }
             let row = match edit {
                 Edit::Put { leaf, ita, .. } if *ita || head.as_ref() != Some(leaf) => {
                     let mut row = StageRow::from_leaf(key.clone(), Some(leaf));

@@ -75,9 +75,10 @@ message CheckPathAccessResponse {
 }
 
 // The caller's own access, so a client can keep read-only and restricted paths read-only on disk.
-// Only directories where a rule matches the caller are listed, with the level it gives there; for
-// any path the deepest listed ancestor decides, else `repo_level`. Other subjects' rules and the
-// directories they name are never sent. Advertised as Version.features "pathaccess.v1".
+// Only directories where a rule matches the caller are listed, with the level the rules give there
+// (not capped at `repo_level`); for any path the deepest listed ancestor decides, else `repo_level`,
+// and the result is capped at `repo_level`. Other subjects' rules and the directories they name are
+// never sent. Advertised as Version.features "pathaccess.v1".
 message GetMyPathAccessRequest {
   string repo = 1;               // owner/name
 }

@@ -647,6 +647,7 @@ async fn build(
             .map(|(p, _)| p)
             .collect();
         sync_worktree(&fresh, tree, &paths, true).await?;
+        super::path_lock::lock(ws)?;
     }
     drop(opened);
     ext::index_sink()

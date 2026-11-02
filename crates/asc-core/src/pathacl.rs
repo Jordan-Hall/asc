@@ -286,19 +286,23 @@ impl PathAcl {
         self.can_read(v, path) || (is_dir && self.reads_below(v, path))
     }
 
-    /// The directories where a rule matches `v`, with the level it gives there (capped at the
-    /// repository level), in path order. With the repository level this is all a client needs
-    /// to compute [`Self::level`] for `v` (the deepest listed ancestor decides), and it names no
-    /// directory whose rules are only about others. A hidden directory inside a hidden one is
+    /// The directories where a rule matches `v`, with the level the rules give there (not capped
+    /// at the repository level), in path order. With the repository level this is all a client
+    /// needs to compute [`Self::level`] for `v` (the deepest listed ancestor decides, capped at
+    /// the repository level), and it names no directory whose rules are only about others. A hidden directory inside a hidden one is
     /// left out: it changes no level, and its name is one no listing shows.
     pub fn decided_dirs(&self, v: &Viewer) -> Vec<(Vec<u8>, Level)> {
         let mut out: Vec<(Vec<u8>, Level)> = Vec::new();
         for (dir, rules) in &self.by_dir {
-            let Some(best) = rules.iter().filter(|(s, _)| s.matches(v)).map(|(_, l)| *l).max()
+            let Some(best) = rules
+                .iter()
+                .filter(|(s, _)| s.matches(v))
+                .map(|(_, l)| *l)
+                .max()
             else {
                 continue;
             };
-            let level = best.min(v.repo_level);
+            let level = best;
             let inherited = out
                 .iter()
                 .filter(|(d, _)| {
@@ -383,7 +387,7 @@ mod tests {
                 .into_iter()
                 .filter(|(d, _)| d.is_empty() || p.starts_with(&[&d[..], b"/"].concat()))
                 .max_by_key(|(d, _)| d.len())
-                .map(|(_, l)| l);
+                .map(|(_, l)| l.min(bob.repo_level));
             assert_eq!(deepest, Some(acl.level(&bob, p)), "{p:?}");
         }
     }

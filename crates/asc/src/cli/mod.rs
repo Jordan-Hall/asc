@@ -18,6 +18,7 @@ pub mod json;
 pub mod json_verbs;
 pub mod output;
 pub mod pager;
+pub mod path_lock;
 pub mod safe_dir;
 pub mod seed_opts;
 pub mod seqstate;
@@ -324,5 +325,44 @@ pub async fn run_command(ctx: &Ctx, argv: Vec<OsString>) -> Result<ExitCode> {
     let Some(command) = find(&name) else {
         return Err(CliError::Msg(native::not_served(&name)));
     };
-    (command.run)(ctx, argv).await
+    let locks = WRITES_TREE.contains(&name.as_str())
+        && ctx
+            .ws()
+            .ok()
+            .is_some_and(|ws| path_lock::load(ws).is_some());
+    if locks && let Ok(ws) = ctx.ws() {
+        path_lock::before_write(ws);
+    }
+    let out = (command.run)(ctx, argv).await;
+    if locks
+        && let Ok(ws) = ctx.ws()
+        && let Err(e) = path_lock::lock(ws)
+    {
+        eprintln!("warning: path rules: {e}");
+    }
+    out
 }
+
+/// The commands that may write tracked files of the work tree; the path rules' read-only files
+/// are locked again after each (SPEC §15.5.1).
+const WRITES_TREE: &[&str] = &[
+    "am",
+    "apply",
+    "checkout",
+    "cherry-pick",
+    "clean",
+    "merge",
+    "mv",
+    "pull",
+    "rebase",
+    "reset",
+    "restore",
+    "revert",
+    "rm",
+    "stash",
+    "submodule",
+    "switch",
+    "sync",
+    "undo",
+    "worktree",
+];

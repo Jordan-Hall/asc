@@ -444,6 +444,7 @@ pub(crate) async fn fetch_one(
     let local = std::mem::take(&mut report.local_updates.updates);
     apply_refs(ctx, local.clone(), &format!("fetch {}", opened.name)).await?;
     report.local_updates.updates = local;
+    super::path_lock::refresh(ctx, ws, &opened).await?;
 
     if !lines.is_empty() && !o.quiet {
         eprintln!("From {}", display_from(&opened.url));

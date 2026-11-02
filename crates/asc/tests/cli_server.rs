@@ -177,6 +177,58 @@ fn a_clone_shows_a_folder_path_rules_keep_from_the_caller_as_restricted() {
 }
 
 #[test]
+fn a_folder_path_rules_keep_read_only_is_read_only_on_disk_and_refused_by_add_and_commit() {
+    let server = Server::start(&["acme/mono"]);
+    let url = server.url("acme/mono");
+    let sb = Sandbox::new();
+    let a = first_client(&sb, "a", &url);
+    std::fs::create_dir(a.join("docs")).unwrap();
+    commit_file(&sb, &a, "docs/guide.md", "guide\n");
+    ok(&sb, &a, &["push", "origin", "master"]);
+    server.set_path_rules("acme/mono", &[("docs", "*", "read")]);
+
+    ok(&sb, &a, &["fetch", "origin"]);
+    let guide = a.join("docs/guide.md");
+    let readonly = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().readonly();
+    assert!(
+        readonly(&guide),
+        "a read-level file is read-only after fetch"
+    );
+    assert!(!readonly(&a.join("one.txt")), "other files stay writable");
+    assert!(std::fs::write(&guide, "changed\n").is_err());
+
+    // Forced past the bit, the change is still refused by add and by commit -a.
+    let mut perms = std::fs::metadata(&guide).unwrap().permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    perms.set_readonly(false);
+    std::fs::set_permissions(&guide, perms).unwrap();
+    std::fs::write(&guide, "changed\n").unwrap();
+    for argv in [
+        &["add", "docs/guide.md"][..],
+        &["commit", "-qam", "edit docs"],
+    ] {
+        let out = asc(&sb, &a, argv);
+        assert!(!out.status.success(), "{argv:?}");
+        let err = text(&out.stderr);
+        assert!(
+            err.contains("docs/guide.md: read-only for you by the repository's path rules"),
+            "{err}"
+        );
+    }
+    ok(&sb, &a, &["restore", "docs/guide.md"]);
+    assert!(
+        readonly(&guide),
+        "a command that writes the tree locks again"
+    );
+
+    // Without the rule the next fetch makes the file writable again.
+    server.set_path_rules("acme/mono", &[]);
+    ok(&sb, &a, &["fetch", "origin"]);
+    assert!(!readonly(&guide));
+    commit_file(&sb, &a, "docs/guide.md", "edited\n");
+}
+
+#[test]
 fn a_plain_push_while_behind_is_git_s_rejection() {
     let server = Server::start(&["acme/app"]);
     let url = server.url("acme/app");
