@@ -405,6 +405,9 @@ pub enum PushMode {
     ForceWithLease,
     /// `--no-ref`: upload the closure of the tips and `ingest` them.
     NoRef,
+    /// Upload the closure of the tips and nothing else: another repository's ref update names
+    /// them (a linked group, SPEC §10.6).
+    UploadOnly,
 }
 
 /// One ref a push moves.
@@ -1504,6 +1507,8 @@ impl<O: Objects, R: Refs> Engine<O, R> {
 
         if mode == PushMode::NoRef {
             remote.ingest(&tips).await?;
+        } else if mode == PushMode::UploadOnly {
+            // The caller's linked update names the tips; nothing moves here.
         } else if !updates.is_empty() {
             let refs: Vec<RefUpdate> = updates
                 .iter()
