@@ -1,0 +1,12 @@
+diff --git a/file b/file
+index 3787da2..041e2c3 100644
+--- a/file
++++ b/file
+@@ -4,6 +4,7 @@
+ // later units use; they are dead code until those units land.
+ #![allow(dead_code)]
+ 
++mod branchless;
+ mod branchless;
+ mod child;
+ mod cli;

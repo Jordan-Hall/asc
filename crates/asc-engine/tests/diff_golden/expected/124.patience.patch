@@ -1,0 +1,14 @@
+diff --git a/file b/file
+index 585a220..f620b64 100644
+--- a/file
++++ b/file
+@@ -57,6 +57,9 @@ reqwest = { workspace = true }
+ object_store = { workspace = true }
+ url = { workspace = true }
+ zip = { workspace = true }
++roaring = { workspace = true }
++tantivy = { workspace = true }
++blake3 = { workspace = true }
+ 
+ [dev-dependencies]
+ tempfile = { workspace = true }

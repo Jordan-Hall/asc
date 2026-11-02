@@ -1,0 +1,13 @@
+diff --git a/file b/file
+index 8223ba1..9c2a2f1 100644
+--- a/file
++++ b/file
+@@ -34,6 +34,8 @@ async fn main() -> ExitCode {
+     let _ = ext::set_index_sink(Box::new(index_sink::IndexSink::default()));
+     remote::bucket::register();
+     remote::server::register();
++    let _ = ext::set_rewrite_sink(Box::new(stack::sinks::Sinks));
++    let _ = ext::set_op_sink(Box::new(stack::sinks::Sinks));
+     let _ = ext::set_workspace_factory(Box::new(
+         daemon::workspace_factory::DaemonWorkspaceFactory::system(),
+     ));

@@ -1,0 +1,12 @@
+diff --git a/file b/file
+index 5f0cb35..aa4bd9e 100644
+--- a/file
++++ b/file
+@@ -55,6 +55,7 @@ uuid = { workspace = true }
+ reqwest = { workspace = true }
+ sha2 = { workspace = true }
+ hmac = { workspace = true }
++getrandom = "0.4"
+ 
+ [dev-dependencies]
+ tempfile = { workspace = true }

@@ -1,0 +1,15 @@
+diff --git a/file b/file
+index 0fb2742..7769dc5 100644
+--- a/file
++++ b/file
+@@ -31,8 +31,10 @@ async-trait = { workspace = true }
+ bytes = { workspace = true }
+ clap = { workspace = true }
+ futures = { workspace = true }
++gix = { workspace = true }
+ gix-attributes = { workspace = true }
+ gix-config = { workspace = true }
++gix-date = { workspace = true }
+ gix-sec = { workspace = true }
+ prost-reflect = { workspace = true }
+ regex = { workspace = true }

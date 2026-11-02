@@ -1,0 +1,9 @@
+diff --git a/file b/file
+index 6bae390..ea5a961 100644
+--- a/file
++++ b/file
+@@ -6,3 +6,4 @@ pub mod heads_sink;
+ pub mod local_gc;
+ pub mod migrate;
+ pub mod mode;
++pub mod push_map;

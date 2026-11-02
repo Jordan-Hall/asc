@@ -1,0 +1,12 @@
+diff --git a/file b/file
+index b3bd045..223f17f 100644
+--- a/file
++++ b/file
+@@ -19,6 +19,7 @@ async-trait = { workspace = true }
+ bytes = { workspace = true }
+ futures = { workspace = true }
+ globset = { workspace = true }
++postcard = { workspace = true }
+ serde = { workspace = true }
+ thiserror = { workspace = true }
+ toml = { workspace = true }

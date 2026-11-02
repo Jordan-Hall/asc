@@ -1,0 +1,28 @@
+diff --git a/file b/file
+index 24e3291..93df008 100644
+--- a/file
++++ b/file
+@@ -5,6 +5,7 @@ import {
+   type ConflictsState,
+   ConflictsModel,
+   hasConflictMarkers,
++  isPaused,
+   mergeEditorArgs,
+   planOpen,
+ } from "../src/conflicts";
+@@ -45,6 +46,15 @@ describe("conflicts: banner", () => {
+   });
+ });
+ 
++describe("conflicts: paused context", () => {
++  test("an operation in progress is paused, conflicts alone are not", () => {
++    expect(isPaused({ inProgress: "rebase", conflicts: [] })).toBe(true);
++    expect(isPaused({ inProgress: "merge", conflicts: [entry("a")] })).toBe(true);
++    expect(isPaused({ inProgress: "", conflicts: [entry("a")] })).toBe(false);
++    expect(isPaused({ inProgress: "bisect", conflicts: [] })).toBe(false);
++  });
++});
++
+ describe("conflicts: markers", () => {
+   test("detects diff3 markers", () => {
+     expect(hasConflictMarkers("a\n<<<<<<< ours\nx\n||||||| base\ny\n=======\nz\n>>>>>>> theirs\n")).toBe(true);

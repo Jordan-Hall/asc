@@ -1,0 +1,68 @@
+[package]
+name = "asc-rpc"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[features]
+default = ["http3"]
+# HTTP/3 in the HTTPS client (U89b): `Alt-Svc` upgrade over QUIC with a fall back to h2. rustls on
+# `ring`; certificates are checked by the platform verifier, as reqwest does for h2.
+http3 = ["dep:quinn", "dep:h3", "dep:h3-quinn", "dep:rustls", "dep:rustls-platform-verifier"]
+
+[dependencies]
+asc-core = { workspace = true }
+asc-engine = { workspace = true }
+asc-graph = { workspace = true }
+asc-store = { workspace = true }
+bytes = { workspace = true }
+prost = { workspace = true }
+thiserror = { workspace = true }
+tonic = { workspace = true, features = ["tls-ring", "tls-native-roots", "tls-webpki-roots"] }
+async-trait = { workspace = true }
+blake3 = { workspace = true }
+sha2 = { workspace = true }
+futures = { workspace = true }
+object_store = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+tonic-prost = { workspace = true }
+prost-reflect = { workspace = true }
+serde_json = { workspace = true }
+base64 = { workspace = true }
+postcard = { workspace = true }
+interprocess = { workspace = true }
+tower = { workspace = true }
+hyper-util = { workspace = true }
+tokio-stream = { workspace = true }
+http = { workspace = true }
+quinn = { workspace = true, optional = true }
+h3 = { workspace = true, optional = true }
+h3-quinn = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true, features = ["ring"] }
+rustls-platform-verifier = { workspace = true, optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = ["Win32_Security_Authorization", "Win32_System_Threading", "Win32_System_Memory"] }
+
+[target.'cfg(unix)'.dependencies]
+# Effective uid: the run directory and every peer must belong to it.
+rustix = { workspace = true, features = ["process"] }
+
+[dev-dependencies]
+protox = { workspace = true }
+sqlx = { workspace = true }
+tempfile = { workspace = true }
+rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "ring", "pem"] }
+tokio-stream = { workspace = true, features = ["net"] }
+
+[build-dependencies]
+prost = { workspace = true }
+protox = { workspace = true }
+tonic-prost-build = { workspace = true }

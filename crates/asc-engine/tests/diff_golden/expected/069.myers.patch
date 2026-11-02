@@ -1,0 +1,12 @@
+diff --git a/file b/file
+index 8013a79..ffdae31 100644
+--- a/file
++++ b/file
+@@ -33,6 +33,7 @@ asc-store = { workspace = true }
+ asc-engine = { workspace = true }
+ asc-graph = { workspace = true }
+ asc-codeintel = { path = "../asc-codeintel" }
++asc-mcp = { workspace = true }
+ roaring = { workspace = true }
+ blake3 = { workspace = true }
+ async-trait = { workspace = true }

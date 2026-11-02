@@ -1,0 +1,15 @@
+diff --git a/file b/file
+index 9519454..efaf99f 100644
+--- a/file
++++ b/file
+@@ -71,6 +71,10 @@ export const ROUTES: Record<string, string> = {
+   inbox: "/ui/inbox",
+   search: "/ui/search",
+   "new-repo": "/ui/new",
++  install: "/ui/install",
++  docs: "/ui/docs",
++  licenses: "/ui/licenses",
++  privacy: "/ui/privacy",
+   "new-stack": "/ui/new/change",
+   stacks: "/ui/stacks",
+   reviews: "/ui/reviews",

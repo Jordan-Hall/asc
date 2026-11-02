@@ -1,0 +1,73 @@
+name: image
+# `asc serve` as a container image in the Forgejo registry (deploy/Dockerfile.serve):
+#   push to master  ->  forge.example.org/asc/asc-serve:<sha12> and :master
+#   tag v*          ->  :<sha12> and :<version> (the tag without its leading v)
+#   pull_request    ->  build only: no sign-in, and the credential is never referenced
+# Needs the repository secret REGISTRY_TOKEN (a token with write:package) and the
+# repository variable REGISTRY_USER (the user the token belongs to).
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  pull_request:
+
+# Forgejo ignores `permissions:` (capabilities come from Authorized Integrations), so there is no
+# block here. The registry credential is the REGISTRY_TOKEN secret (write:package only);
+# the job token is only a fallback.
+
+concurrency:
+  group: image-${{ github.ref }}
+  # A running image build always finishes (cancelling a 50-minute cold build wastes it); newer
+  # pushes queue behind it. Pushes happen at milestones, not continuously.
+  cancel-in-progress: false
+
+env:
+  REGISTRY: forge.example.org
+  IMAGE: forge.example.org/asc/asc-serve
+
+jobs:
+  image:
+    runs-on: ${{ github.event_name == 'pull_request' && 'asc-build' || 'asc-build-trusted' }}
+    timeout-minutes: 150
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # Before the build, so a wrong credential fails in one clear step rather than after the
+      # compile. Skipped for a pull request, which never sees the secret.
+      - name: Sign in to the container registry
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: https://github.com/docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          # REGISTRY_TOKEN: a write:package-only token (Forgejo reserves the FORGEJO_ prefix).
+          username: ${{ vars.REGISTRY_USER || github.actor }}
+          password: ${{ secrets.REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Build
+        env:
+          DOCKER_BUILDKIT: 1
+        run: |
+          set -euo pipefail
+          docker build --file deploy/Dockerfile.serve --tag asc-serve:build .
+
+      # Two tags per image, as monorepo does: the commit sha, which is what a deploy pins to,
+      # and the name a person reaches for (the branch, or the version for a tag).
+      - name: Tag and push
+        if: ${{ github.event_name != 'pull_request' }}
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          sha="${GITHUB_SHA::12}"
+          if [ "$REF_TYPE" = tag ]; then
+            name="${REF_NAME#v}"
+          else
+            name="$(echo "$REF_NAME" | tr '/' '-')"
+          fi
+          for tag in "$sha" "$name"; do
+            docker tag asc-serve:build "${IMAGE}:${tag}"
+            docker push "${IMAGE}:${tag}"
+            echo "published ${IMAGE}:${tag}"
+          done

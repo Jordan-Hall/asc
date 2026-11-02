@@ -1,0 +1,12 @@
+diff --git a/file b/file
+index 760574e..54f2e2e 100644
+--- a/file
++++ b/file
+@@ -10,6 +10,7 @@ use asc_store::refs::{Refs, RepoKey};
+ pub mod blame;
+ pub mod branchless;
+ pub mod change;
++pub mod classify;
+ pub mod commit;
+ pub mod derive;
+ pub mod diff;

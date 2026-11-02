@@ -1,0 +1,25 @@
+[package]
+name = "asc-vfs"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+bytes = { workspace = true }
+asc-core = { workspace = true }
+asc-store = { workspace = true }
+asc-wc = { workspace = true }
+quick_cache = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[features]
+projfs = []
+fuse = []

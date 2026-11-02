@@ -1,0 +1,10 @@
+diff --git a/file b/file
+index ec15838..20f9b78 100644
+--- a/file
++++ b/file
+@@ -3,4 +3,5 @@
+ //! Later branchless units add their own `pub mod` line here (PLAN, branchless track).
+ 
+ pub mod heads_sink;
++pub mod local_gc;
+ pub mod mode;

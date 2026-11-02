@@ -1,0 +1,42 @@
+[package]
+name = "asc-store"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[features]
+# Exposes `conformance` to other crates' tests.
+testkit = []
+# Runs the MinIO/Garage integration tests (`docker compose -f docker-compose.it.yml up -d`).
+it-s3 = ["testkit"]
+
+[dependencies]
+asc-core = { workspace = true }
+async-trait = { workspace = true }
+backon = { workspace = true }
+blake3 = { workspace = true }
+bytes = { workspace = true }
+data-encoding = { workspace = true }
+filetime = { workspace = true }
+futures = { workspace = true }
+object_store = { workspace = true }
+postcard = { workspace = true }
+serde = { workspace = true }
+sqlx = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+uuid = { workspace = true }
+zstd = { workspace = true }
+tar = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

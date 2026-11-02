@@ -1,0 +1,13 @@
+diff --git a/file b/file
+index 67abbd9..4f8afe7 100644
+--- a/file
++++ b/file
+@@ -25,4 +25,8 @@ jobs:
+       - uses: EmbarkStudios/cargo-deny-action@v2
+         with:
+           command: check
++      - run: bash build/lint/no-main.sh --self-test
++      - run: bash build/lint/no-main.sh
++      - run: bash build/lint/no-raw-git.sh --self-test
++      - run: bash build/lint/no-raw-git.sh
+       - run: cargo test --workspace

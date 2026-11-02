@@ -1,0 +1,24 @@
+diff --git a/file b/file
+index 48db260..dfae98e 100644
+--- a/file
++++ b/file
+@@ -29,8 +29,10 @@ pub mod hub;
+ pub mod latest;
+ pub mod latest_facts;
+ pub mod listing;
++pub mod lock;
+ pub mod model;
+ pub mod names;
++pub mod ordered;
+ pub mod osv;
+ pub mod parse;
+ pub mod plan;
+@@ -50,6 +52,8 @@ pub mod yaml;
+ #[cfg(test)]
+ mod tests;
+ #[cfg(test)]
++mod tests_facts;
++#[cfg(test)]
+ mod tests_hub;
+ 
+ use std::sync::{Arc, OnceLock};

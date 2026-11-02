@@ -1,0 +1,12 @@
+diff --git a/file b/file
+index b015a35..f4651c7 100644
+--- a/file
++++ b/file
+@@ -19,6 +19,7 @@ blake3 = { workspace = true }
+ bytes = { workspace = true }
+ futures = { workspace = true }
+ globset = { workspace = true }
++memchr = { workspace = true }
+ quick_cache = { workspace = true }
+ regex = { workspace = true }
+ thiserror = { workspace = true }

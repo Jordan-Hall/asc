@@ -1,0 +1,42 @@
+# Staging Forgejo (the ASC fork) for Coolify. See docs/asc/STAGING.md in the fork.
+# Own SQLite database in its own named volume: shares nothing with production Forgejo or Postgres.
+# Set FORGEJO_IMAGE_TAG to the sha12 tag published by the fork's asc-image workflow.
+services:
+  forgejo:
+    image: forge.example.org/asc/forgejo:${FORGEJO_IMAGE_TAG:?pin the sha12 tag}
+    restart: unless-stopped
+    environment:
+      - SERVICE_FQDN_FORGEJO_3000
+      - FORGEJO__database__DB_TYPE=sqlite3
+      - FORGEJO__database__PATH=/var/lib/gitea/data/forgejo.db
+      - FORGEJO__server__ROOT_URL=https://forge-staging.example.org
+      - FORGEJO__server__HTTP_PORT=3000
+      - FORGEJO__server__DISABLE_SSH=true
+      - FORGEJO__ui__DEFAULT_THEME=asc-auto
+      - FORGEJO__ui__THEMES=asc-auto,asc-light,asc-dark,forgejo-auto,forgejo-light,forgejo-dark,gitea-auto,gitea-light,gitea-dark,forgejo-auto-deuteranopia-protanopia,forgejo-light-deuteranopia-protanopia,forgejo-dark-deuteranopia-protanopia,forgejo-auto-tritanopia,forgejo-light-tritanopia,forgejo-dark-tritanopia
+      - FORGEJO__security__INSTALL_LOCK=true
+      - FORGEJO__service__DISABLE_REGISTRATION=true
+      - FORGEJO__actions__ENABLED=true
+    volumes:
+      - forgejo-staging-data:/var/lib/gitea
+    tmpfs:
+      - /tmp:uid=1000,gid=1000,mode=1777,size=256m
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          pids: 512
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3000/api/healthz >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+volumes:
+  forgejo-staging-data:

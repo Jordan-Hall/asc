@@ -1,0 +1,12 @@
+diff --git a/file b/file
+index 5aa2693..ee6f0c7 100644
+--- a/file
++++ b/file
+@@ -29,6 +29,7 @@ pub mod overlaps;
+ pub mod request_merge;
+ pub mod restack;
+ pub mod rpc;
++pub mod staged;
+ pub mod versions;
+ pub mod watch;
+ 

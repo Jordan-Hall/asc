@@ -1,0 +1,12 @@
+diff --git a/file b/file
+index 377a931..4aa6d80 100644
+--- a/file
++++ b/file
+@@ -6,6 +6,7 @@
+ //! new ones arrive), [`MAX_JOBS`] jobs per run, [`MAX_LOG`] bytes of log per job (later bytes are
+ //! dropped and the append answers `dropped`), [`MAX_APPEND`] bytes per append.
+ 
++pub mod insights;
+ pub mod rpc;
+ 
+ #[cfg(test)]

@@ -1,0 +1,14 @@
+diff --git a/file b/file
+index 5ef771a..44431a2 100644
+--- a/file
++++ b/file
+@@ -32,6 +32,9 @@ tokio = { workspace = true }
+ url = { workspace = true }
+ uuid = { workspace = true }
+ zstd = { workspace = true }
++tar = { workspace = true }
++serde_json = { workspace = true }
++reqwest = { workspace = true }
+ 
+ [dev-dependencies]
+ blake3 = { workspace = true }

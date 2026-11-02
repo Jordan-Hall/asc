@@ -1,0 +1,37 @@
+[package]
+name = "asc-engine"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+asc-core = { workspace = true }
+asc-store = { workspace = true }
+asc-graph = { workspace = true }
+postcard = { workspace = true }
+async-trait = { workspace = true }
+blake3 = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+globset = { workspace = true }
+quick_cache = { workspace = true }
+regex = { workspace = true }
+thiserror = { workspace = true }
+imara-diff.workspace = true
+gix-merge = { workspace = true }
+gix-imara-diff = { workspace = true }
+gix-hash = { workspace = true }
+bstr = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+async-trait = { workspace = true }
+proptest = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true }
+sqlx = { workspace = true }

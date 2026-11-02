@@ -1,0 +1,14 @@
+diff --git a/file b/file
+index aa4bd9e..46f1d3f 100644
+--- a/file
++++ b/file
+@@ -57,5 +57,9 @@ sha2 = { workspace = true }
+ hmac = { workspace = true }
+ getrandom = "0.4"
+ 
++# The key file's access list (authz/key_file.rs).
++[target.'cfg(windows)'.dependencies]
++windows-sys = { workspace = true }
++
+ [dev-dependencies]
+ tempfile = { workspace = true }

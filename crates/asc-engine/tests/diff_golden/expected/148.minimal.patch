@@ -1,0 +1,14 @@
+diff --git a/file b/file
+index f8723b6..098bdc6 100644
+--- a/file
++++ b/file
+@@ -38,6 +38,9 @@ tokio-stream = { workspace = true }
+ [target.'cfg(windows)'.dependencies]
+ windows = { workspace = true, features = ["Win32_Security_Authorization", "Win32_System_Threading", "Win32_System_Memory"] }
+ 
++[target.'cfg(unix)'.dependencies]
++# Effective uid: the run directory and every peer must belong to it.
++rustix = { workspace = true, features = ["process"] }
+ 
+ [dev-dependencies]
+ protox = { workspace = true }

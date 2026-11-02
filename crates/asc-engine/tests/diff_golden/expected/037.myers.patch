@@ -1,0 +1,15 @@
+diff --git a/file b/file
+index 36c8eb3..ffbc7be 100644
+--- a/file
++++ b/file
+@@ -9,6 +9,10 @@ export const PATTERNS = {
+   search: "/search",
+   newRepo: "/new",
+   newChange: "/new/change",
++  install: "/install",
++  docs: "/docs",
++  licenses: "/licenses",
++  privacy: "/privacy",
+   stacks: "/stacks",
+   reviews: "/reviews",
+   repos: "/repos",

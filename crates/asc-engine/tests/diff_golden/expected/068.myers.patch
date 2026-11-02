@@ -1,0 +1,12 @@
+diff --git a/file b/file
+index eb16d9c..c79fcfc 100644
+--- a/file
++++ b/file
+@@ -3,6 +3,7 @@
+ 
+ pub mod backfill;
+ pub mod embedder;
++pub mod features;
+ pub mod files;
+ pub mod metrics;
+ pub mod modelgen;

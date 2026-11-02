@@ -1,0 +1,13 @@
+diff --git a/file b/file
+index 94e469e..94dfc59 100644
+--- a/file
++++ b/file
+@@ -78,6 +78,8 @@ pub mod services {
+     pub use crate::pb::policy_server;
+     pub use crate::pb::projects_client;
+     pub use crate::pb::projects_server;
++    pub use crate::pb::releases_client;
++    pub use crate::pb::releases_server;
+     pub use crate::pb::repo_client;
+     pub use crate::pb::repo_server;
+     pub use crate::pb::review_client;

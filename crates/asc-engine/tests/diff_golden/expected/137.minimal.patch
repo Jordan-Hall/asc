@@ -1,0 +1,12 @@
+diff --git a/file b/file
+index e94d13a..b934cd4 100644
+--- a/file
++++ b/file
+@@ -4,6 +4,7 @@
+ 
+ pub mod cli;
+ pub mod json;
++pub mod opstate;
+ pub mod precedence;
+ 
+ use asc_state::changes::StateChanges;

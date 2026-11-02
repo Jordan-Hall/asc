@@ -1,0 +1,12 @@
+diff --git a/file b/file
+index 6156bf3..cee9940 100644
+--- a/file
++++ b/file
+@@ -21,6 +21,7 @@ mod refs_guard;
+ mod remote;
+ mod shim;
+ mod stack;
++mod telemetry;
+ 
+ use std::ffi::OsString;
+ use std::process::ExitCode;

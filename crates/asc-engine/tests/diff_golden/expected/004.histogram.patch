@@ -1,0 +1,12 @@
+diff --git a/file b/file
+index 401eff8..4b4170e 100644
+--- a/file
++++ b/file
+@@ -1,6 +1,6 @@
+ [package]
+ name = "asc"
+-version = "0.1.0"
++version = "0.1.2"
+ edition.workspace = true
+ rust-version.workspace = true
+ license.workspace = true

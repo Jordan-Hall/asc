@@ -1,0 +1,12 @@
+diff --git a/file b/file
+index 2e4297f..3c0d55a 100644
+--- a/file
++++ b/file
+@@ -2,6 +2,7 @@
+ 
+ pub mod bun;
+ pub mod cargo;
++pub mod nuget;
+ 
+ /// Most dependency edges one lockfile may resolve: a small multiple of
+ /// [`MAX_LOCKFILE_PACKAGES`](crate::model::MAX_LOCKFILE_PACKAGES). A lock over

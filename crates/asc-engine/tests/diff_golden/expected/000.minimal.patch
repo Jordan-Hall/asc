@@ -1,0 +1,12 @@
+diff --git a/file b/file
+index 0368374..bf320d5 100644
+--- a/file
++++ b/file
+@@ -108,6 +108,7 @@ impl SettingsHubs {
+             crate::sessions::FEATURE,
+             crate::export::FEATURE,
+             crate::pathrules::FEATURE,
++            crate::pathrules::ACCESS_FEATURE,
+         ]
+         .map(str::to_owned)
+         .to_vec()

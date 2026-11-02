@@ -1,0 +1,16 @@
+diff --git a/file b/file
+index 76644da..d757bb9 100644
+--- a/file
++++ b/file
+@@ -53,6 +53,11 @@ scenarios! {
+     pick_basic = "pick-basic",
+     pick_sequence = "pick-sequence",
+     pick_empty = "pick-empty",
++    rebase_basic = "rebase-basic",
++    rebase_conflict = "rebase-conflict",
++    rebase_hooks = "rebase-hooks",
++    rebase_exec = "rebase-exec",
++    rebase_autostash = "rebase-autostash",
+     revert_basic = "revert-basic",
+     revert_merge = "revert-merge",
+     blame_basic = "blame-basic",

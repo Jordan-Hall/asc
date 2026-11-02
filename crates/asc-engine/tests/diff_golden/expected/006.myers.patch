@@ -1,0 +1,12 @@
+diff --git a/file b/file
+index 1fc6d1b..003f149 100644
+--- a/file
++++ b/file
+@@ -10,6 +10,7 @@ pub mod metrics;
+ pub mod modelgen;
+ pub mod ords;
+ pub mod queue;
++pub mod reason;
+ pub mod rpc;
+ pub mod runner;
+ pub mod scip;

@@ -1,0 +1,16 @@
+diff --git a/file b/file
+index 6475a39..b9010d8 100644
+--- a/file
++++ b/file
+@@ -55,6 +55,11 @@
+         "title": "Restart the bridge",
+         "category": "asc"
+       },
++      {
++        "command": "asc.diffAgainstStackParent",
++        "title": "Diff against stack parent",
++        "category": "asc"
++      },
+       {
+         "command": "asc.showOutput",
+         "title": "Show output",

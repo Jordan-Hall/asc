@@ -28,7 +28,7 @@ while read -r commit; do
   skip=$((skip + 1))
   [ $((skip % 2)) -eq 0 ] && continue
   while read -r _ _ old new status path; do
-    [ "$status" = "M" ] || continue
+    [ "$status" = "M" ] && [ "$old" != "$new" ] || continue
     case "$path" in
       *.ts|*.tsx|*.js|*.mjs|*.rs|*.go|*.py|*.md|*.json|*.css|*.yml|*.yaml|*.sh|*.toml|*.html|*.sql) ;;
       *) continue ;;

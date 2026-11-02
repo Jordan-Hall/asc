@@ -1,0 +1,12 @@
+diff --git a/file b/file
+index 4777612..9852b97 100644
+--- a/file
++++ b/file
+@@ -25,6 +25,7 @@ pub mod cvss;
+ pub mod egress;
+ pub mod facts;
+ pub mod gate;
++pub mod imports;
+ pub mod hub;
+ pub mod latest;
+ pub mod latest_facts;

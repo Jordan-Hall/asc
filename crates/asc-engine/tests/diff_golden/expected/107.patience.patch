@@ -1,0 +1,16 @@
+diff --git a/file b/file
+index a035310..485a8eb 100644
+--- a/file
++++ b/file
+@@ -11,3 +11,11 @@ workspace = true
+ 
+ [dependencies]
+ asc-serve = { workspace = true }
++asc-core = { workspace = true }
++asc-store = { workspace = true }
++async-trait = { workspace = true }
++bytes = { workspace = true }
++futures = { workspace = true }
++object_store = { workspace = true }
++tokio = { workspace = true }
++uuid = { workspace = true }

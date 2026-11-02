@@ -1,0 +1,15 @@
+diff --git a/file b/file
+index 46f1d3f..c1a1647 100644
+--- a/file
++++ b/file
+@@ -59,7 +59,9 @@ getrandom = "0.4"
+ 
+ # The key file's access list (authz/key_file.rs).
+ [target.'cfg(windows)'.dependencies]
+-windows-sys = { workspace = true }
++windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem"] }
+ 
+ [dev-dependencies]
+ tempfile = { workspace = true }
++# Builds gzip request bodies for the upload-pack tests (U81); the backend `zip` already uses.
++flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"] }

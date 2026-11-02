@@ -1,0 +1,12 @@
+diff --git a/file b/file
+index 672ad11..93f4fb9 100644
+--- a/file
++++ b/file
+@@ -16,6 +16,7 @@ mod env;
+ mod ext;
+ mod hooks_runner;
+ mod index_sink;
++mod keystore;
+ mod mcp;
+ mod msg;
+ mod native;

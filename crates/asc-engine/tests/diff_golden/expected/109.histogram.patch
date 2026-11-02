@@ -1,0 +1,21 @@
+diff --git a/file b/file
+index 041e2c3..01cfadb 100644
+--- a/file
++++ b/file
+@@ -4,8 +4,6 @@
+ // later units use; they are dead code until those units land.
+ #![allow(dead_code)]
+ 
+-mod branchless;
+-mod branchless;
+ mod child;
+ mod cli;
+ mod codeintel_local;
+@@ -36,6 +34,7 @@ async fn main() -> ExitCode {
+     let _ = ext::set_index_sink(Box::new(index_sink::IndexSink::default()));
+     remote::bucket::register();
+     remote::server::register();
++    remote::projects::register();
+     let _ = ext::set_rewrite_sink(Box::new(stack::sinks::Sinks));
+     let _ = ext::set_op_sink(Box::new(stack::sinks::Sinks));
+     let _ = ext::set_workspace_factory(Box::new(

@@ -1,0 +1,91 @@
+[package]
+name = "asc-serve"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[features]
+default = ["git-compat", "git-ssh", "http3", "forgejo"]
+# The Forgejo adapter (hooks, authz, SSH key lookup, push webhook, `[forgejo]`, `provider = "forgejo"`).
+# Off, the server knows no forge: `provider = "forgejo"` and `[forgejo]` are rejected at config load.
+forgejo = []
+# HTTP/3 (U89b): a QUIC listener when `[tls]` and `http3_port` are set. rustls on `ring`; the
+# `asc-rpc` client is the one the tests use. Off, none of the QUIC crates is built.
+http3 = ["asc-rpc/http3", "dep:quinn", "dep:h3", "dep:h3-quinn", "dep:rustls"]
+# The git smart-HTTP layer (SPEC 25); forwards to `asc-git`.
+git-compat = ["asc-git/git-compat"]
+# SSH public keys in the token store and the SSH listener (SPEC 25.11). `russh` is the one SSH
+# library: its `keys` module parses `authorized_keys` lines and fingerprints keys.
+git-ssh = ["git-compat", "dep:russh"]
+# Runs real `turbo` against the server (needs bunx and network).
+it-turbo = []
+
+[dependencies]
+asc-core = { workspace = true }
+asc-rpc = { workspace = true }
+asc-git = { workspace = true }
+asc-store = { workspace = true }
+asc-engine = { workspace = true }
+asc-graph = { workspace = true }
+asc-codeintel = { path = "../asc-codeintel" }
+roaring = { workspace = true }
+blake3 = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+prost = { workspace = true }
+serde_json = { workspace = true }
+postcard = { workspace = true }
+axum = { workspace = true }
+quick_cache = { workspace = true }
+base64 = { workspace = true }
+regex = { workspace = true }
+gix-attributes = { workspace = true }
+bstr = { workspace = true }
+tar = { workspace = true }
+zip = { workspace = true }
+serde = { workspace = true }
+sqlx = { workspace = true }
+thiserror = { workspace = true }
+object_store = { workspace = true }
+tokio = { workspace = true }
+tower = { workspace = true }
+http-body = { workspace = true }
+toml = { workspace = true }
+tonic = { workspace = true, features = ["tls-ring"] }
+tracing = { workspace = true }
+url = { workspace = true }
+prometheus-client = { workspace = true }
+uuid = { workspace = true }
+reqwest = { workspace = true }
+sha2 = { workspace = true }
+hmac = { workspace = true }
+getrandom = "0.4"
+# Free space of the volume that holds the git views (`min_free_disk`, SPEC 25.5).
+fs4 = "0.13.1"
+# SSH keys (SPEC 25.11.2). `ring` keeps OpenSSL and a C toolchain out; `rsa` is needed to parse RSA
+# keys and check their size. No compression, no legacy parsers.
+russh = { version = "=0.63.3", default-features = false, features = ["ring", "rsa"], optional = true }
+quinn = { workspace = true, optional = true }
+h3 = { workspace = true, optional = true }
+h3-quinn = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true, features = ["ring"] }
+
+# The key file's access list (authz/key_file.rs).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem"] }
+
+# The owner check of an SSH host key file (ssh/host_key.rs).
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "ring", "pem"] }
+# Builds gzip request bodies for the upload-pack tests (U81); the backend `zip` already uses.
+flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"] }

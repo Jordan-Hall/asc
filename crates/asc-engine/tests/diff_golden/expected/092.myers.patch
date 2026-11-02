@@ -1,0 +1,12 @@
+diff --git a/file b/file
+index f42b399..fcbe62c 100644
+--- a/file
++++ b/file
+@@ -5,6 +5,7 @@
+ #![allow(dead_code)]
+ 
+ mod branchless;
++mod bridge;
+ mod child;
+ mod cli;
+ mod codeintel_local;

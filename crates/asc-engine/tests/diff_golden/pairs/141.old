@@ -1,0 +1,67 @@
+[package]
+name = "asc"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[features]
+default = ["serve", "vfs-projfs", "vfs-fuse"]
+serve = ["dep:asc-serve"]
+vfs-projfs = ["dep:asc-vfs", "asc-vfs/projfs"]
+vfs-fuse = ["dep:asc-vfs", "asc-vfs/fuse"]
+
+[dependencies]
+asc-core = { workspace = true }
+asc-store = { workspace = true }
+asc-engine = { workspace = true }
+asc-graph = { workspace = true }
+asc-git = { workspace = true }
+asc-rpc = { workspace = true }
+asc-wc = { workspace = true }
+asc-ci = { workspace = true }
+asc-state = { workspace = true }
+asc-serve = { workspace = true, optional = true }
+anyhow = { workspace = true }
+bstr = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+clap = { workspace = true }
+futures = { workspace = true }
+gix = { workspace = true }
+gix-attributes = { workspace = true }
+gix-config = { workspace = true }
+gix-date = { workspace = true }
+gix-sec = { workspace = true }
+prost-reflect = { workspace = true }
+regex = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+linkme = { workspace = true }
+automod = { workspace = true }
+serde = { workspace = true }
+tonic = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+similar = { workspace = true }
+toml = { workspace = true }
+
+# vfs-projfs is Windows-only, vfs-fuse is Linux-only; the dep is optional on both.
+[target.'cfg(windows)'.dependencies]
+asc-vfs = { workspace = true, optional = true }
+# Ownership check of the safe.directory gate (cli/safe_dir.rs).
+windows-sys = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+asc-vfs = { workspace = true, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+# Effective uid for the safe.directory gate (cli/safe_dir.rs).
+rustix = { workspace = true, features = ["process"] }

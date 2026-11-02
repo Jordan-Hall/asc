@@ -1,0 +1,12 @@
+diff --git a/file b/file
+index 7e4f728..e93d4da 100644
+--- a/file
++++ b/file
+@@ -6,6 +6,7 @@
+       "*.json",
+       "packages/**/*.{ts,tsx,js,mjs,json}",
+       "plugins/**/*.{ts,tsx,js,mjs,json}",
++      "web/**/*.{ts,tsx,js,mjs,json}",
+       "!**/node_modules",
+       "!**/dist",
+       "!**/.turbo",
