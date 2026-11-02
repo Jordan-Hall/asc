@@ -18,14 +18,15 @@ use asc_core::id::{ChangesetId, FileId, TreeId};
 use asc_core::object::{ChunkList, Kind};
 use asc_engine::graph::Error as GraphError;
 use asc_engine::history::BoundaryStore;
-use asc_engine::sync::{BucketRemote, DEFAULT_ANCESTRY_BUDGET, Demote, Remote, SyncOptions};
+use asc_engine::sync::{self, BucketRemote, DEFAULT_ANCESTRY_BUDGET, Demote, Remote, SyncOptions};
 use asc_state::StateDb;
 use asc_state::state::{history_boundary, repos};
 use asc_store::bucket::BucketObjects;
 use asc_store::bucketrefs::BucketRefs;
 use asc_store::cachedir::CacheDir;
+use asc_store::codec::encode_stored;
 use asc_store::key::ObjKey;
-use asc_store::objects::{Objects, decode_verified};
+use asc_store::objects::{Objects, decode_verified, restricted_tree_key};
 use asc_store::refs::RepoKey;
 use asc_store::storeset::StoreSet;
 use async_trait::async_trait;
@@ -365,32 +366,51 @@ fn hydrate_error(e: impl std::fmt::Display) -> CliError {
 }
 
 /// Downloads the keys of `keys` the local tiers lack into the object stack, verifying each.
+///
+/// SPEC §15.5.1: a tree the remote refuses under path rules is noted as restricted rather than
+/// failing the download, so the directory reads as empty; a batch holding one is asked again
+/// key by key. A tree already noted is not asked for.
 async fn pull(ctx: &Ctx, ws: &WsCtx, remote: &dyn Remote, keys: Vec<ObjKey>) -> Result<usize> {
     if keys.is_empty() {
         return Ok(0);
     }
     let near = store_set(ctx, ws)?;
-    let have = near.has_many(&keys).await.map_err(hydrate_error)?;
+    let mut probe = keys.clone();
+    probe.extend(keys.iter().map(|k| match k {
+        ObjKey::Tree(t) => restricted_tree_key(*t),
+        other => *other,
+    }));
+    let have = near.has_many(&probe).await.map_err(hydrate_error)?;
+    let (own, noted) = have.split_at(keys.len());
     let want: Vec<ObjKey> = keys
         .into_iter()
-        .zip(have)
-        .filter(|(_, h)| !*h)
-        .map(|(k, _)| k)
+        .enumerate()
+        .filter(|(n, k)| !(own[*n] || matches!(k, ObjKey::Tree(_)) && noted[*n]))
+        .map(|(_, k)| k)
         .collect();
     if want.is_empty() {
         return Ok(0);
     }
-    let asked: HashSet<ObjKey> = want.iter().copied().collect();
     let mut got: HashSet<ObjKey> = HashSet::new();
-    let mut stream = remote.get_many(want.clone());
-    while let Some(item) = futures::StreamExt::next(&mut stream).await {
-        let (key, stored) = item.map_err(hydrate_error)?;
-        if !asked.contains(&key) || got.contains(&key) {
-            continue;
+    match pull_batch(ws, remote, &want, &mut got).await {
+        Ok(()) => {}
+        Err(sync::Error::PathPolicy(_)) => {
+            let left: Vec<ObjKey> = want.iter().filter(|k| !got.contains(k)).copied().collect();
+            for key in &left {
+                match pull_batch(ws, remote, std::slice::from_ref(key), &mut got).await {
+                    Ok(()) => {}
+                    Err(sync::Error::PathPolicy(_)) if let ObjKey::Tree(t) = key => {
+                        ws.objects
+                            .put(&restricted_tree_key(*t), encode_stored(&[]))
+                            .await
+                            .map_err(hydrate_error)?;
+                        got.insert(*key);
+                    }
+                    Err(e) => return Err(hydrate_error(e)),
+                }
+            }
         }
-        decode_verified(&key, &stored).map_err(hydrate_error)?;
-        ws.objects.put(&key, stored).await.map_err(hydrate_error)?;
-        got.insert(key);
+        Err(e) => return Err(hydrate_error(e)),
     }
     if let Some(k) = want.iter().find(|k| !got.contains(k)) {
         return Err(CliError::Fatal(format!(
@@ -398,6 +418,27 @@ async fn pull(ctx: &Ctx, ws: &WsCtx, remote: &dyn Remote, keys: Vec<ObjKey>) -> 
         )));
     }
     Ok(want.len())
+}
+
+/// Stores each verified object of `keys` the remote sends, adding its key to `got`.
+async fn pull_batch(
+    ws: &WsCtx,
+    remote: &dyn Remote,
+    keys: &[ObjKey],
+    got: &mut HashSet<ObjKey>,
+) -> sync::Result<()> {
+    let asked: HashSet<ObjKey> = keys.iter().copied().collect();
+    let mut stream = remote.get_many(keys.to_vec());
+    while let Some(item) = futures::StreamExt::next(&mut stream).await {
+        let (key, stored) = item?;
+        if !asked.contains(&key) || got.contains(&key) {
+            continue;
+        }
+        decode_verified(&key, &stored)?;
+        ws.objects.put(&key, stored).await?;
+        got.insert(key);
+    }
+    Ok(())
 }
 
 /// Brings the content of `files` (id and size) into the local store: a work tree is written from
