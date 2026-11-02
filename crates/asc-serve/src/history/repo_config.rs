@@ -108,6 +108,12 @@ impl ServerRepoConfig {
             .ok_or_else(|| Status::not_found(format!("revision {shown} does not exist")))?;
         let root = engine.get_changeset(cs).await.map_err(commit_status)?.root;
         let path = RepoPath::new(REVIEW_TOML).map_err(|e| internal("review.toml path", &e))?;
+        // A caller who may not read the file is answered as if there were none.
+        if let Some(s) = crate::pathrules::scope::Scope::read(&self.hooks.pathrules, ctx).await?
+            && !s.can_read(path.as_bytes())
+        {
+            return Ok(wire::RepoConfigResponse::default());
+        }
         let found = engine.lookup(root, &path).await.map_err(|e| match e {
             asc_engine::tree::Error::MissingTree(_) | asc_engine::tree::Error::Codec(_) => {
                 data_loss("tree", &e)
