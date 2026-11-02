@@ -31,6 +31,8 @@ use super::refs_plumbing::args::parse_oid;
 use crate::msg::Msg;
 use crate::native::NativeSpec;
 
+pub mod mount;
+
 #[derive(clap::Parser, Debug)]
 #[command(
     name = "submodule",
@@ -74,6 +76,15 @@ pub fn status_line(path: &RepoPath, pin: &GitOid, outcome: &Outcome) -> String {
     }
 }
 
+/// The `asc submodule status` line of a writable mount: `+` and the mount's head when it has
+/// moved past the pin, as git marks a checked-out submodule that differs.
+pub fn mount_line(path: &RepoPath, pin: &GitOid, head: Option<GitOid>, repo: &str) -> String {
+    match head {
+        Some(h) if h != *pin => format!("+{h} {path} ({repo}, writable mount)"),
+        _ => format!(" {pin} {path} ({repo}, writable mount)"),
+    }
+}
+
 fn fatal(e: impl std::fmt::Display) -> CliError {
     CliError::Fatal(e.to_string())
 }
@@ -93,6 +104,14 @@ async fn pins(ws: &WsCtx, target: &Target, only: &Spec) -> Result<Vec<(RepoPath,
         .await?;
     out.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(out)
+}
+
+/// The staged pin of the gitlink at `path`.
+async fn pin_of(ws: &WsCtx, target: &Target, path: &RepoPath) -> Result<GitOid> {
+    match target.staged(ws, path).await? {
+        Staged::Leaf { leaf, .. } if leaf.kind == Kind::Gitlink => Ok(leaf.git),
+        _ => Err(fatal(format!("no submodule mapping found for '{path}'"))),
+    }
 }
 
 /// `.gitmodules` of the work tree, bounded; a link or a missing file reads as absent.
@@ -122,8 +141,13 @@ fn submodules(ctx: &Ctx, ws: &WsCtx, paths: &[RepoPath]) -> Submodules {
 }
 
 /// The nested repository registered under `name`; none when absent or ambiguous.
+/// The local repository `name` names: the one registered under that name, else the one cloned
+/// from a server path ending in it. Two candidates are ambiguous and name none.
 async fn nested_repo(ws: &WsCtx, name: &str) -> Result<Option<Repo>> {
     let mut found = repos::by_name(&ws.db, name).await.map_err(fatal)?;
+    if found.is_empty() && name.contains('/') {
+        found = repos::by_remote_repo(&ws.db, name).await.map_err(fatal)?;
+    }
     Ok(if found.len() == 1 { found.pop() } else { None })
 }
 
@@ -170,7 +194,13 @@ async fn status(ctx: &Ctx, rest: &[OsString]) -> Result<ExitCode> {
     let pins = pins(ws, &target, &only).await?;
     let paths: Vec<RepoPath> = pins.iter().map(|(p, _)| p.clone()).collect();
     let subs = submodules(ctx, ws, &paths);
+    let writable = mount::mounts(ctx, ws, &paths).await?;
     for (path, pin) in &pins {
+        if let Some(m) = writable.iter().find(|m| &m.path == path) {
+            let head = mount::head_pin(ctx, m).await?;
+            println!("{}", mount_line(path, pin, head, &m.repo.repo.name));
+            continue;
+        }
         let o = outcome(ws, &subs, path, pin).await?;
         println!("{}", status_line(path, pin, &o));
     }
@@ -236,13 +266,7 @@ async fn set_pin(ctx: &Ctx, rest: &[OsString]) -> Result<ExitCode> {
         .ok_or_else(|| CliError::Usage(USAGE_SET_PIN.into()))?;
 
     let mut target = Target::open(ctx).await?;
-    let is_link = matches!(
-        target.staged(ws, &path).await?,
-        Staged::Leaf { leaf, .. } if leaf.kind == Kind::Gitlink
-    );
-    if !is_link {
-        return Err(fatal(format!("no submodule mapping found for '{path}'")));
-    }
+    pin_of(ws, &target, &path).await?;
     let subs = submodules(ctx, ws, std::slice::from_ref(&path));
     let nested = match subs.repo_for(&path) {
         Some(name) => nested_repo(ws, name).await?,
@@ -342,6 +366,8 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
             status(ctx, &paths).await
         }
         "set-pin" => set_pin(ctx, tail).await,
+        "edit" => mount::edit(ctx, tail).await,
+        "release" => mount::release(ctx, tail).await,
         "update" | "init" => Ok(update_notice()),
         other => Err(CliError::Msg(Msg::AscNotInWorkspace {
             cmd: format!("submodule {other}"),
@@ -355,6 +381,20 @@ mod tests {
 
     fn rp(s: &str) -> RepoPath {
         RepoPath::new(s).unwrap()
+    }
+
+    #[test]
+    fn mount_lines() {
+        let pin = GitOid::from_bytes([0xab; 20]);
+        let head = GitOid::from_bytes([0xcd; 20]);
+        assert_eq!(
+            mount_line(&rp("sdk"), &pin, Some(pin), "sdk"),
+            format!(" {} sdk (sdk, writable mount)", "ab".repeat(20))
+        );
+        assert_eq!(
+            mount_line(&rp("sdk"), &pin, Some(head), "sdk"),
+            format!("+{} sdk (sdk, writable mount)", "cd".repeat(20))
+        );
     }
 
     #[test]

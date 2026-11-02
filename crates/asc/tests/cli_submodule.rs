@@ -283,3 +283,131 @@ async fn update_and_init_are_no_ops_with_a_notice() {
     let add = rig.asc(&["submodule", "add", "x"]);
     assert_ne!(add.status.code(), Some(0));
 }
+
+#[tokio::test]
+async fn edit_makes_a_writable_mount_that_commits_through_and_releases() {
+    let rig = Rig::new().await;
+    // A mount's head is read back as its real git id, so the pin is that id here.
+    let cs = rig.nested_commit(oid(1), &[("lib.rs", b"v1")]).await;
+    let real = rig.engine.git_commit_of(cs).await.unwrap();
+    git_map::insert_many(
+        &rig.f.db,
+        rig.nested,
+        &[GitMapRow {
+            git: real,
+            kind: ObjectKind::Commit,
+            asc: *cs.as_bytes(),
+        }],
+    )
+    .await
+    .unwrap();
+    rig.stage_link("sdk", real).await;
+    let sdk = rig.f.root.join("sdk");
+    fs::create_dir_all(&sdk).unwrap();
+    let hex1 = real.to_string();
+    assert!(
+        rig.asc(&["submodule", "set-pin", "sdk", &hex1])
+            .status
+            .success()
+    );
+    assert!(
+        fs::metadata(sdk.join("lib.rs"))
+            .unwrap()
+            .permissions()
+            .readonly()
+    );
+
+    let o = rig.asc(&["submodule", "edit", "sdk"]);
+    assert!(o.status.success(), "{}", text(&o.stderr));
+    assert_eq!(
+        out(&o),
+        format!("sdk: writable mount of asc/nova at {hex1}\n")
+    );
+    assert!(
+        !fs::metadata(sdk.join("lib.rs"))
+            .unwrap()
+            .permissions()
+            .readonly()
+    );
+    assert_eq!(
+        out(&rig.asc(&["submodule", "status"])),
+        format!(" {hex1} sdk (asc/nova, writable mount)\n")
+    );
+    let again = rig.asc(&["submodule", "edit", "sdk"]);
+    assert!(!again.status.success());
+    assert!(text(&again.stderr).contains("already a writable mount"));
+
+    // An edit in the mount shows in the parent under the mount's path.
+    fs::write(sdk.join("lib.rs"), b"v2").unwrap();
+    let st = out(&rig.asc(&["status", "--porcelain"]));
+    assert!(st.contains(" M sdk/lib.rs"), "{st}");
+    let diff = out(&rig.asc(&["diff", "--no-color"]));
+    assert!(
+        diff.contains("diff --git a/sdk/lib.rs b/sdk/lib.rs"),
+        "{diff}"
+    );
+    assert!(diff.contains("-v1") && diff.contains("+v2"), "{diff}");
+    assert_eq!(out(&rig.asc(&["diff", "--name-only", "--", "other"])), "");
+
+    // Release refuses while the mount has changes.
+    let busy = rig.asc(&["submodule", "release", "sdk"]);
+    assert!(!busy.status.success());
+    assert!(text(&busy.stderr).contains("has changes"));
+
+    // The parent's commit commits the mount first and pins its new head.
+    let c = {
+        let mut cmd = rig.f.asc();
+        for (k, v) in [
+            ("GIT_AUTHOR_NAME", "Test"),
+            ("GIT_AUTHOR_EMAIL", "test@example.com"),
+            ("GIT_COMMITTER_NAME", "Test"),
+            ("GIT_COMMITTER_EMAIL", "test@example.com"),
+        ] {
+            cmd.env(k, v);
+        }
+        cmd.args([
+            "-c",
+            "asc.submodule.sdk.repo=asc/nova",
+            "commit",
+            "-a",
+            "-m",
+            "both",
+        ]);
+        cmd.output().unwrap()
+    };
+    assert!(c.status.success(), "{}", text(&c.stderr));
+    let pinned = out(&rig.asc(&["submodule", "status", "sdk"]));
+    assert!(!pinned.contains(&hex1), "{pinned}");
+    let child_log = {
+        let mut cmd = rig.f.asc();
+        cmd.current_dir(&sdk).args(["log", "-1", "--format=%s"]);
+        out(&cmd.output().unwrap())
+    };
+    assert_eq!(child_log, "both\n");
+    let st = out(&rig.asc(&["status", "--porcelain"]));
+    assert!(!st.contains("sdk"), "{st}");
+
+    // Nothing is left, so the mount goes back to the read-only composition.
+    let r = rig.asc(&["submodule", "release", "sdk"]);
+    assert!(r.status.success(), "{}", text(&r.stderr));
+    assert_eq!(fs::read(sdk.join("lib.rs")).unwrap(), b"v2");
+    assert!(
+        fs::metadata(sdk.join("lib.rs"))
+            .unwrap()
+            .permissions()
+            .readonly()
+    );
+}
+
+#[tokio::test]
+async fn edit_and_release_refuse_what_is_not_a_mount() {
+    let rig = Rig::new().await;
+    rig.nested_commit(oid(1), &[("lib.rs", b"v1")]).await;
+    rig.stage_link("sdk", oid(1)).await;
+    let o = rig.asc(&["submodule", "edit", "nope"]);
+    assert!(!o.status.success());
+    assert!(text(&o.stderr).contains("no submodule mapping found for 'nope'"));
+    let r = rig.asc(&["submodule", "release", "sdk"]);
+    assert!(!r.status.success());
+    assert!(text(&r.stderr).contains("not a writable mount"));
+}

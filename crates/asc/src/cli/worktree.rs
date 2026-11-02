@@ -232,7 +232,7 @@ fn slashed(path: &str) -> String {
     path.replace('\\', "/")
 }
 
-fn text_of(path: &Path) -> Result<&str> {
+pub(crate) fn text_of(path: &Path) -> Result<&str> {
     path.to_str()
         .ok_or_else(|| fatal(format!("'{}' is not valid UTF-8", path.display())))
 }
@@ -292,7 +292,7 @@ fn is_main(all: &[Workspace], row: &Workspace) -> bool {
 }
 
 /// A context for the workspace at `dir`, ignoring `GIT_DIR` and its kin in the environment.
-async fn open_at(ctx: &Ctx, dir: PathBuf) -> Result<Ctx> {
+pub(crate) async fn open_at(ctx: &Ctx, dir: PathBuf) -> Result<Ctx> {
     let mut env = ctx.env.clone();
     env.git_dir = None;
     env.work_tree = None;
@@ -304,7 +304,7 @@ async fn open_at(ctx: &Ctx, dir: PathBuf) -> Result<Ctx> {
 /// Whether the worktree at `dir` has modified or untracked files (ignored files do not count).
 /// The check is the `status` command itself, run in the worktree, so it sees exactly what
 /// `asc status` shows there.
-fn is_dirty(dir: &Path) -> Result<bool> {
+pub(crate) fn is_dirty(dir: &Path) -> Result<bool> {
     let exe = std::env::current_exe()?;
     let out = std::process::Command::new(exe)
         .args(["status", "--porcelain"])
@@ -1001,7 +1001,7 @@ async fn list_command(ctx: &Ctx, argv: &[OsString]) -> Result<ExitCode> {
 
 /// Deletes the worktree's files, link, gitdir and row. The row goes last, so a failure leaves
 /// something `remove` can be run on again.
-async fn delete(ws: &WsCtx, row: &Workspace) -> Result<()> {
+pub(crate) async fn delete(ws: &WsCtx, row: &Workspace) -> Result<()> {
     let id = row.ws.id;
     let path = PathBuf::from(&row.ws.path);
     let mount = PathBuf::from(&row.ws.mount);
@@ -1063,7 +1063,7 @@ async fn delete(ws: &WsCtx, row: &Workspace) -> Result<()> {
 
 /// Moves the process out of a directory about to be deleted (Windows will not delete the
 /// current directory).
-fn leave(row: &Workspace, ws: &WsCtx) {
+pub(crate) fn leave(row: &Workspace, ws: &WsCtx) {
     if let Ok(cwd) = std::env::current_dir() {
         let (p, m) = (Path::new(&row.ws.path), Path::new(&row.ws.mount));
         let inside = |d: &Path| wt::path_key(&cwd) == wt::path_key(d) || wt::is_inside(&cwd, d);
