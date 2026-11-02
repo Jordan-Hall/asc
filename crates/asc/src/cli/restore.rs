@@ -26,7 +26,7 @@ use asc_store::refs::Actor;
 use asc_store::sqlrefs::SqlRefs;
 use asc_store::storeset::StoreSet;
 use asc_wc::SafeRoot;
-use asc_wc::compose_plain::{Replace, is_restricted_projection, restrict};
+use asc_wc::compose_plain::{Replace, clear, is_restricted_projection, restrict};
 use asc_wc::ignore::IgnoreSources;
 use asc_wc::plain::{self, Mode, Sparse, Wc};
 use asc_wc::redirect::Redirections;
@@ -528,26 +528,77 @@ pub(crate) async fn sync_worktree(
 
 /// SPEC §15.5.1: shows each directory of `target` that path rules keep from the caller as an
 /// empty, read-only placeholder. A directory already shown so is left alone; one holding files
-/// is kept and named in a warning, since nothing of it can be checked out.
+/// is kept and named in a warning, since nothing of it can be checked out. Placeholders are
+/// listed in the git dir, so one whose directory `target` no longer has is removed.
 async fn project_restricted(ws: &WsCtx, target: TreeId) -> Result<()> {
+    let list = ws.projection.git_dir().join(RESTRICTED_LIST);
+    let shown: Vec<RepoPath> = fs::read(&list)
+        .map(|b| {
+            b.split(|&c| c == b'\n')
+                .filter_map(|l| RepoPath::new(l.to_vec()).ok())
+                .collect()
+        })
+        .unwrap_or_default();
     let dirs = ws.engine.restricted_dirs(target).await?;
-    if dirs.is_empty() {
+    if dirs.is_empty() && shown.is_empty() {
         return Ok(());
     }
     let gate = SafeRoot::new(ws.projection.toplevel());
+    let mut kept: BTreeSet<RepoPath> = BTreeSet::new();
+    for dir in &shown {
+        let still = dirs.contains(dir)
+            || ws
+                .engine
+                .lookup(target, dir)
+                .await?
+                .is_some_and(|e| e.kind == Kind::Dir);
+        if still {
+            kept.insert(dir.clone());
+        } else if let Err(e) = clear(&gate, dir) {
+            eprintln!(
+                "warning: asc: {}: the restricted placeholder was not removed: {e}",
+                dir.as_bytes().escape_ascii()
+            );
+        }
+    }
     for dir in &dirs {
         if gate
             .resolve(dir)
             .is_some_and(|abs| is_restricted_projection(&abs, dir))
         {
+            kept.insert(dir.clone());
             continue;
         }
-        if let Err(e) = restrict(&gate, dir, Replace::EmptyOnly) {
-            eprintln!("warning: asc: {dir}: restricted, and the folder was not replaced: {e}");
+        match restrict(&gate, dir, Replace::EmptyOnly) {
+            Ok(()) => {
+                kept.insert(dir.clone());
+            }
+            Err(e) => {
+                eprintln!(
+                    "warning: asc: {}: restricted, and the folder was not replaced: {e}",
+                    dir.as_bytes().escape_ascii()
+                );
+            }
         }
+    }
+    let mut text = Vec::new();
+    for dir in &kept {
+        text.extend_from_slice(dir.as_bytes());
+        text.push(b'\n');
+    }
+    if kept.is_empty() {
+        match fs::remove_file(&list) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+            _ => {}
+        }
+    } else {
+        fs::write(&list, text)?;
     }
     Ok(())
 }
+
+/// The file in the git dir that lists the restricted placeholders of the work tree.
+const RESTRICTED_LIST: &str = "asc-restricted";
 
 /// Whether the file at `path` differs from `entry` (size first, then the blob hash).
 fn differs(gate: &SafeRoot, path: &RepoPath, entry: &Entry) -> bool {
