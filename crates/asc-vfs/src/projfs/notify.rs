@@ -16,6 +16,9 @@ use super::{guard, rel_path};
 /// The notifications the root mapping asks for.
 pub const MOUNT_MASK: u32 = n::NEW_FILE_CREATED
     | n::PRE_RENAME
+    | n::PRE_DELETE
+    | n::PRE_SET_HARDLINK
+    | n::PRE_CONVERT_TO_FULL
     | n::FILE_OVERWRITTEN
     | n::CLOSED_FILE_MODIFIED
     | n::CLOSED_FILE_DELETED
@@ -31,6 +34,22 @@ pub fn is_redirected(red: &Redirections, name: &[u8]) -> bool {
 pub fn dropped(red: &Redirections, path: &RepoPath) -> bool {
     path.components()
         .any(|c| c.eq_ignore_ascii_case(b".git") || is_redirected(red, c))
+}
+
+/// Whether a pre-operation notification changes a path the path rules keep read-only
+/// (SPEC §15.5.1): a placeholder about to be written, a deletion, a hard link, or a rename from or
+/// into a locked path.
+pub fn denied(
+    locked: &dyn Fn(&RepoPath) -> bool,
+    note: u32,
+    path: &RepoPath,
+    dest: Option<&RepoPath>,
+) -> bool {
+    match note {
+        n::PRE_CONVERT_TO_FULL | n::PRE_DELETE | n::PRE_SET_HARDLINK => locked(path),
+        n::PRE_RENAME => locked(path) || dest.is_some_and(locked),
+        _ => false,
+    }
 }
 
 /// The journal entries of one notification: `(op, path)` pairs, in order.
@@ -103,14 +122,18 @@ pub(crate) unsafe extern "system" fn notification(
         if note != n::FILE_RENAMED && dropped(red, &path) {
             return ffi::S_OK;
         }
-        if note == n::PRE_RENAME {
-            // A directory is hydrated before it moves; the journal hears of the move afterwards.
-            return rename::pre_rename(sh, &path, is_dir != 0);
-        }
         // SAFETY: NUL terminated or null.
         let to = unsafe { ffi::wide_to_string(dest) }
             .and_then(|w| rel_path(&w).ok())
             .flatten();
+        let core = &sh.cfg.core;
+        if denied(&|p| core.locked(p), note, &path, to.as_ref()) {
+            return rename::STATUS_ACCESS_DENIED;
+        }
+        if note == n::PRE_RENAME {
+            // A directory is hydrated before it moves; the journal hears of the move afterwards.
+            return rename::pre_rename(sh, &path, is_dir != 0);
+        }
         for (op, p) in entries(red, note, is_dir != 0, &path, to.as_ref()) {
             sh.cfg.journal.record(op, p.as_bytes());
         }
@@ -128,6 +151,23 @@ mod tests {
 
     fn red() -> Redirections {
         Redirections::parse("node_modules\ndist\n")
+    }
+
+    #[test]
+    fn writes_under_a_locked_path_are_denied() {
+        let locked = |p: &RepoPath| p.as_bytes().starts_with(b"sdk");
+        let (sdk, src) = (rp("sdk/a.rs"), rp("src/a.rs"));
+        for note in [
+            n::PRE_CONVERT_TO_FULL,
+            n::PRE_DELETE,
+            n::PRE_SET_HARDLINK,
+            n::PRE_RENAME,
+        ] {
+            assert!(denied(&locked, note, &sdk, None), "{note:#x}");
+            assert!(!denied(&locked, note, &src, None), "{note:#x}");
+        }
+        assert!(denied(&locked, n::PRE_RENAME, &src, Some(&sdk)));
+        assert!(!denied(&locked, n::FILE_OPENED, &sdk, None));
     }
 
     #[test]

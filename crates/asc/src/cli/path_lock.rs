@@ -14,6 +14,8 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::{Duration, Instant, SystemTime};
 
 use asc_core::pathacl::Level;
 use asc_rpc::server::wire;
@@ -133,6 +135,39 @@ fn locked_path(ws: &WsCtx) -> PathBuf {
 pub fn load(ws: &WsCtx) -> Option<Access> {
     let text = fs::read_to_string(access_path(ws)).ok()?;
     Access::parse(&text)
+}
+
+/// A check of whether the path rules keep a path read-only, for a mounted worktree: it reads the
+/// stored levels again when the file changes (a fetch refreshes it), at most once a second.
+pub fn live_check(ws: &WsCtx) -> impl Fn(&str) -> bool + Send + Sync + 'static {
+    live_check_at(access_path(ws), Duration::from_secs(1))
+}
+
+fn live_check_at(path: PathBuf, every: Duration) -> impl Fn(&str) -> bool + Send + Sync + 'static {
+    struct Seen {
+        checked: Instant,
+        stamp: Option<SystemTime>,
+        access: Option<Access>,
+    }
+    let stamp = |p: &Path| fs::metadata(p).and_then(|m| m.modified()).ok();
+    let read = |p: &Path| fs::read_to_string(p).ok().and_then(|t| Access::parse(&t));
+    let seen = Mutex::new(Seen {
+        checked: Instant::now(),
+        stamp: stamp(&path),
+        access: read(&path),
+    });
+    move |p| {
+        let mut s = seen.lock().unwrap_or_else(|e| e.into_inner());
+        if s.checked.elapsed() >= every {
+            s.checked = Instant::now();
+            let now = stamp(&path);
+            if now != s.stamp {
+                s.stamp = now;
+                s.access = read(&path);
+            }
+        }
+        s.access.as_ref().is_some_and(|a| !a.writable(p))
+    }
 }
 
 fn store(ws: &WsCtx, access: Option<&Access>) -> Result<()> {
@@ -400,6 +435,22 @@ mod tests {
                 ("secret".into(), Level::None),
             ],
         }
+    }
+
+    #[test]
+    fn the_live_check_follows_the_stored_file() {
+        let dir = std::env::temp_dir().join(format!("asc-live-check-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(ACCESS_FILE);
+        let _ = fs::remove_file(&path);
+        let check = live_check_at(path.clone(), Duration::ZERO);
+        assert!(!check("docs/a.md"));
+        fs::write(&path, access().render()).unwrap();
+        assert!(check("docs/a.md") && check("secret/x") && !check("docs/drafts/b.md"));
+        assert!(!check("src/main.rs"));
+        fs::remove_file(&path).unwrap();
+        assert!(!check("docs/a.md"));
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

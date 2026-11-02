@@ -91,6 +91,9 @@ pub struct Options {
     /// The local content cache, used to tell backends where a file already is.
     pub local: Option<CacheDir>,
     pub compose: Option<Arc<dyn Compose>>,
+    /// Paths the path rules keep read-only for this person (SPEC §15.5.1): writes to them are
+    /// refused like those to a read-only mount.
+    pub locked: Option<Arc<dyn Fn(&RepoPath) -> bool + Send + Sync>>,
 }
 
 impl Default for Options {
@@ -103,6 +106,7 @@ impl Default for Options {
             policy: HydrationPolicy::default(),
             local: None,
             compose: None,
+            locked: None,
         }
     }
 }
@@ -330,6 +334,13 @@ impl CoreFs {
         self.opts.compose.as_ref()?.subtree(path, &e.git)
     }
 
+    /// Whether the path rules keep `path` read-only (see [`Options::locked`]).
+    pub fn locked(&self, path: &RepoPath) -> bool {
+        self.opts.locked.as_ref().is_some_and(|f| f(path))
+    }
+
+    /// The node of `e` at `path`; `inherited_ro` is the structural read-only state of its parent
+    /// (a composed mount or a restricted directory), the path rules' lock is added per path.
     fn node(&self, path: RepoPath, e: &Entry, inherited_ro: bool) -> Node {
         if e.kind == Kind::Gitlink
             && let Some(t) = self.compose(&path, e)
@@ -343,13 +354,14 @@ impl CoreFs {
                 read_only: true,
             };
         }
+        let read_only = inherited_ro || self.locked(&path);
         Node {
             path,
             kind: e.kind,
             id: e.id,
             size: e.size,
             git: e.git,
-            read_only: inherited_ro,
+            read_only,
         }
     }
 
@@ -381,6 +393,7 @@ impl CoreFs {
             if i + 1 == total {
                 return Ok(Some(node));
             }
+            // A locked directory locks everything below it, so its state passes down as is.
             read_only = node.read_only;
         }
         Ok(None)
@@ -1202,6 +1215,39 @@ mod tests {
                 .await
                 .is_ok()
         );
+    }
+
+    #[tokio::test]
+    async fn a_locked_path_and_everything_below_it_is_read_only() {
+        let fx = Fx::new();
+        let a = fx.dir_entry("a", vec![]).await;
+        let sdk = fx.dir_entry("sdk", vec![a]).await;
+        let open = fx.dir_entry("open", vec![]).await;
+        let root = fx.tree(vec![open, sdk]).await;
+        let fs = fx.fs(
+            root,
+            Options {
+                locked: Some(Arc::new(|p: &RepoPath| {
+                    p.as_bytes() == b"sdk" || p.as_bytes().starts_with(b"sdk/")
+                })),
+                ..Options::default()
+            },
+        );
+        assert!(fs.resolve(&rp("sdk")).await.unwrap().unwrap().read_only);
+        assert!(fs.resolve(&rp("sdk/a")).await.unwrap().unwrap().read_only);
+        assert!(!fs.resolve(&rp("open")).await.unwrap().unwrap().read_only);
+        let listed = fs.read_dir(None).await.unwrap().unwrap().entries;
+        assert_eq!(
+            listed.iter().map(|n| n.read_only).collect::<Vec<_>>(),
+            [false, true]
+        );
+        assert!(matches!(
+            crate::compose::check_write(&fs, &rp("sdk/a/new.txt")).await,
+            Err(crate::compose::WriteError::Denied(_))
+        ));
+        crate::compose::check_write(&fs, &rp("open/new.txt"))
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

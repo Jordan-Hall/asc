@@ -98,6 +98,7 @@ struct Opened {
     local: Option<CacheDir>,
     deny: String,
     budget: u64,
+    locked: Arc<dyn Fn(&RepoPath) -> bool + Send + Sync>,
 }
 
 async fn open(cx: &HostContext) -> Result<Opened, HostError> {
@@ -123,6 +124,9 @@ async fn open(cx: &HostContext) -> Result<Opened, HostError> {
     let local = CacheDir::open(cache_root, cx.home.tmp()).ok();
     let refs = Arc::new(ReadOnlyRefs(cx.db.refs()));
     let engine = Arc::new(CliEngine::new(ws.objects.clone(), refs, ws.repo.key));
+    let check = crate::cli::path_lock::live_check(ws);
+    let locked: Arc<dyn Fn(&RepoPath) -> bool + Send + Sync> =
+        Arc::new(move |p: &RepoPath| check(&String::from_utf8_lossy(p.as_bytes())));
     Ok(Opened {
         objects: ws.objects.clone(),
         engine,
@@ -137,6 +141,7 @@ async fn open(cx: &HostContext) -> Result<Opened, HostError> {
             .get("asc.vfs.hydrationBudget")
             .and_then(|t| parse_size(&t))
             .unwrap_or(DEFAULT_BUDGET),
+        locked,
     })
 }
 
@@ -152,6 +157,7 @@ async fn start(cx: HostContext, rt: Handle) -> Result<Arc<dyn Hosted>, HostError
             redirections: redirections.clone(),
             policy: HydrationPolicy::parse(&opened.deny),
             local: opened.local.clone(),
+            locked: Some(opened.locked.clone()),
             ..Options::windows()
         },
     ));
