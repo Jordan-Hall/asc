@@ -26,6 +26,7 @@ pub struct ServerObjects {
     usage: Arc<crate::usage::UsageSlot>,
     read_only: Arc<std::sync::atomic::AtomicBool>,
     pathrules: Arc<crate::pathrules::PathRulesSlot>,
+    objpaths: Arc<crate::pathrules::objpaths::ObjPaths>,
 }
 
 impl ServerObjects {
@@ -35,11 +36,12 @@ impl ServerObjects {
             usage: Arc::default(),
             read_only: Arc::default(),
             pathrules: Arc::default(),
+            objpaths: Arc::default(),
         }
     }
 
-    /// Applies the repository's path rules: a restricted caller fetches no tree or changeset
-    /// by id (SPEC §15.5.1).
+    /// Applies the repository's path rules: a restricted caller fetches a tree or file by id
+    /// only when it occurs at a path it can read, and no changeset (SPEC §15.5.1).
     #[must_use]
     pub fn with_pathrules(mut self, slot: Arc<crate::pathrules::PathRulesSlot>) -> Self {
         self.pathrules = slot;
@@ -50,17 +52,18 @@ impl ServerObjects {
     async fn gate<'k>(
         &self,
         ctx: &CallCtx,
+        entry: &RepoEntry,
         keys: impl Iterator<Item = &'k wire::ObjKey>,
     ) -> Result<(), Status> {
-        let scope = crate::pathrules::scope::Scope::read(&self.pathrules, ctx).await?;
-        if scope.is_none() {
+        let Some(scope) = crate::pathrules::scope::Scope::read(&self.pathrules, ctx).await? else {
             return Ok(());
-        }
-        for k in keys {
-            let key = ObjKey::try_from(k).map_err(|e| Status::invalid_argument(e.to_string()))?;
-            crate::read::object_allowed(true, &key)?;
-        }
-        Ok(())
+        };
+        let keys = keys
+            .map(|k| ObjKey::try_from(k).map_err(|e| Status::invalid_argument(e.to_string())))
+            .collect::<Result<Vec<_>, _>>()?;
+        self.objpaths
+            .require(self.registry.pool(), entry, &scope, &keys)
+            .await
     }
 
     /// Refuses uploads while the flag is raised (a restore is staged).
@@ -95,8 +98,9 @@ impl ObjectsHandler for ServerObjects {
         ctx: &CallCtx,
         req: wire::HasObjectsRequest,
     ) -> Result<wire::HasObjectsResponse, Status> {
-        self.gate(ctx, req.keys.iter()).await?;
-        self.entry(ctx).await?.backend.has_objects(ctx, req).await
+        let entry = self.entry(ctx).await?;
+        self.gate(ctx, &entry, req.keys.iter()).await?;
+        entry.backend.has_objects(ctx, req).await
     }
 
     async fn put_objects(
@@ -143,8 +147,8 @@ impl ObjectsHandler for ServerObjects {
         req: wire::GetObjectsRequest,
     ) -> Result<RpcStream<wire::GetObjectsResponse>, Status> {
         use prost::Message as _;
-        self.gate(ctx, req.keys.iter()).await?;
         let entry = self.entry(ctx).await?;
+        self.gate(ctx, &entry, req.keys.iter()).await?;
         let stream = entry.backend.get_objects(ctx, req).await?;
         let Some(hub) = self.usage.get().cloned() else {
             return Ok(stream);

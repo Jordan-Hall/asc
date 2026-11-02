@@ -6,6 +6,7 @@
 //! [`CACHE_TTL`], and a change made through this server drops the entry at once.
 
 pub mod guard;
+pub mod objpaths;
 pub mod rpc;
 pub mod scope;
 

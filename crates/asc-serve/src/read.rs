@@ -194,6 +194,8 @@ pub struct ReadHooks {
     pub text_budget: TextBudgetSlot,
     /// The path rules (SPEC §15.5.1); every read applies them to its caller.
     pub pathrules: Arc<crate::pathrules::PathRulesSlot>,
+    /// Where each object occurs, for reads by id of a restricted caller.
+    pub objpaths: Arc<crate::pathrules::objpaths::ObjPaths>,
 }
 
 impl ReadHooks {
@@ -310,6 +312,7 @@ struct Call {
     hooks: Arc<ReadHooks>,
     /// What the caller may not see; `None` when nothing is restricted for it.
     scope: Option<Arc<Scope>>,
+    pool: sqlx::AnyPool,
 }
 
 struct Core {
@@ -332,6 +335,7 @@ impl Core {
             entry,
             hooks: self.hooks.clone(),
             scope,
+            pool: self.registry.pool().clone(),
         }))
     }
 }
@@ -364,19 +368,24 @@ impl Call {
             name: Bytes::copy_from_slice(e.name.as_bytes()),
             path: Bytes::copy_from_slice(path.as_bytes()),
             mode: diff::mode(e.kind),
-            // No id: an unreadable object's id is never disclosed, so holding an id is proof the
-            // caller was once shown it (see `require_object`).
+            // No id, size or contents: the entry is a name only.
             restricted: true,
             ..wire::TreeEntryInfo::default()
         }
     }
 
-    /// Whether a caller may fetch an object by id. A restricted caller is never shown the id of
-    /// an unreadable file, so a file id is fetchable; trees and changesets carry the names and
-    /// ids of what lies under restricted directories, so a restricted caller reads them only
-    /// through the redacting tree and history calls.
-    fn require_object(&self, key: &ObjKey) -> Result<(), Status> {
-        object_allowed(self.scope.is_some(), key)
+    /// Whether a caller may fetch an object by id: a restricted caller only one that occurs at
+    /// a path it can read (`objpaths.v1`).
+    async fn require_object(&self, key: &ObjKey) -> Result<(), Status> {
+        match &self.scope {
+            Some(s) => {
+                let objpaths = &self.hooks.objpaths;
+                objpaths
+                    .require(&self.pool, &self.entry, s, std::slice::from_ref(key))
+                    .await
+            }
+            None => Ok(()),
+        }
     }
 
     /// The changeset a revision names.
@@ -1971,7 +1980,7 @@ impl ReadsHandler for ServerReads {
             }
             Some(At::FileId(b)) => {
                 let id = call.ids.file_in(&b).await?;
-                call.require_object(&ObjKey::File(id))?;
+                call.require_object(&ObjKey::File(id)).await?;
                 (id, None)
             }
             None => return Err(Status::invalid_argument("missing rev_path or file_id")),
@@ -2743,18 +2752,6 @@ pub fn register(ext: &Extensions, registry: &Arc<Registry>) -> Arc<ReadHooks> {
         .set_history(Arc::new(ServerHistory { core }))
         .expect("the history handler group is registered once");
     hooks
-}
-
-/// `Ok` when a caller (restricted or not) may fetch `key` by id: see [`Call::require_object`].
-pub(crate) fn object_allowed(restricted: bool, key: &ObjKey) -> Result<(), Status> {
-    match key {
-        ObjKey::Tree(_) | ObjKey::Changeset(_) | ObjKey::ChangeMeta(_) if restricted => {
-            Err(Status::permission_denied(
-                "PATH_POLICY: trees and changesets of this repository are read through ReadTree and Log",
-            ))
-        }
-        _ => Ok(()),
-    }
 }
 
 #[cfg(test)]
