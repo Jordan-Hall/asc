@@ -708,6 +708,40 @@ impl Inner {
         Ok(Arc::new(got))
     }
 
+    /// `keys` fetched upstream for this caller and not cached, each with its redacted mark; a
+    /// key the upstream does not send maps to `None`. An unredacted object is verified.
+    async fn passthrough(
+        &self,
+        repo: &str,
+        token: Option<BearerToken>,
+        keys: Vec<ObjKey>,
+    ) -> Result<HashMap<ObjKey, Option<(Bytes, bool)>>, Status> {
+        let mut out: HashMap<ObjKey, Option<(Bytes, bool)>> =
+            keys.iter().map(|k| (*k, None)).collect();
+        if keys.is_empty() {
+            return Ok(out);
+        }
+        let client = self
+            .upstream
+            .client(repo, token)
+            .map_err(|_| Status::unavailable("upstream unavailable"))?;
+        let mut items = client.fetch_marked(keys);
+        while let Some(item) = items.next().await {
+            let f = item.map_err(call_status)?;
+            if f.data.len() > MAX_RESPONSE_BYTES {
+                return Err(Status::resource_exhausted(
+                    "object is larger than one response message",
+                ));
+            }
+            if !f.redacted && !verified(f.key, &f.data).await {
+                tracing::error!(key = %f.key, "cache role: upstream object does not match its key");
+                return Err(Status::data_loss("upstream object does not match its key"));
+            }
+            out.insert(f.key, Some((f.data, f.redacted)));
+        }
+        Ok(out)
+    }
+
     /// The stored bytes of each of `keys` (`None` when the upstream has none), in order.
     async fn resolve(
         self: &Arc<Self>,
@@ -832,14 +866,16 @@ fn wire_key(key: &ObjKey) -> Result<pb::ObjKey, Status> {
 }
 
 /// Packs `items` into responses of at most [`MAX_RESPONSE_BYTES`].
-fn pack(items: Vec<(ObjKey, Option<Bytes>)>) -> Result<Vec<pb::GetObjectsResponse>, Status> {
+fn pack(
+    items: Vec<(ObjKey, Option<(Bytes, bool)>)>,
+) -> Result<Vec<pb::GetObjectsResponse>, Status> {
     let mut out = Vec::new();
     let mut cur = pb::GetObjectsResponse::default();
     let mut size = 0usize;
     for (key, stored) in items {
         match stored {
             None => cur.missing.push(wire_key(&key)?),
-            Some(b) => {
+            Some((b, redacted)) => {
                 if b.len() > MAX_RESPONSE_BYTES {
                     return Err(Status::resource_exhausted(
                         "object is larger than one response message",
@@ -853,6 +889,7 @@ fn pack(items: Vec<(ObjKey, Option<Bytes>)>) -> Result<Vec<pb::GetObjectsRespons
                 cur.objects.push(pb::Object {
                     key: Some(wire_key(&key)?),
                     data: b,
+                    redacted,
                 });
             }
         }
@@ -937,8 +974,23 @@ impl ObjectsHandler for CacheObjects {
                 let (inner, who, repo, token) =
                     (inner.clone(), who.clone(), repo.clone(), token.clone());
                 async move {
-                    let got = inner.resolve(&who, &repo, token, &window).await?;
-                    pack(window.into_iter().zip(got).collect())
+                    // Changesets are never cached: the upstream redacts them per caller (path
+                    // rules, SPEC §15.5.1), so each is fetched with the caller's credential.
+                    let (changesets, rest): (Vec<ObjKey>, Vec<ObjKey>) = window
+                        .iter()
+                        .partition(|k| matches!(k, ObjKey::Changeset(_)));
+                    let mut by_key: HashMap<ObjKey, Option<(Bytes, bool)>> =
+                        inner.passthrough(&repo, token.clone(), changesets).await?;
+                    let got = inner.resolve(&who, &repo, token, &rest).await?;
+                    for (k, b) in rest.into_iter().zip(got) {
+                        by_key.insert(k, b.map(|b| (b, false)));
+                    }
+                    pack(
+                        window
+                            .into_iter()
+                            .map(|k| (k, by_key.get(&k).cloned().flatten()))
+                            .collect(),
+                    )
                 }
             })
             .buffered(WINDOWS_AHEAD)
@@ -1170,6 +1222,7 @@ mod tests {
                     Some(b) => resp.objects.push(pb::Object {
                         key: Some(k.clone()),
                         data: b.clone(),
+                        redacted: false,
                     }),
                     None => resp.missing.push(k.clone()),
                 }
