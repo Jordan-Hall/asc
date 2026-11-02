@@ -1,5 +1,5 @@
 //! `ci <subcommand>` (SPEC §12): `checkout` is built (U62); `changed`, `affected` and `warm`
-//! (U63) and `cache` and `artifact` (U75) are built.
+//! (U63) and `cache` and `artifact` (U75) are built; `prebuilt` serves the build path level (§15.5.1).
 
 use std::ffi::OsString;
 use std::process::ExitCode;
@@ -12,6 +12,7 @@ mod artifact;
 mod cache;
 mod changed;
 pub mod checkout;
+mod prebuilt;
 mod warm;
 
 #[derive(clap::Parser, Debug)]
@@ -47,9 +48,15 @@ pub const NATIVE: &[NativeSpec] = &[
         flags: artifact::FLAGS,
         placeholders: &[],
     },
+    NativeSpec {
+        cmd: "ci",
+        flags: prebuilt::FLAGS,
+        placeholders: &[],
+    },
 ];
 
-const USAGE: &str = "usage: asc ci <checkout|changed|affected|warm|cache|artifact> [<args>]";
+const USAGE: &str =
+    "usage: asc ci <checkout|changed|affected|warm|cache|artifact|prebuilt> [<args>]";
 
 pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let Some((sub, rest)) = a.rest.split_first() else {
@@ -62,6 +69,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         Some("warm") => warm::run(ctx, rest).await,
         Some("cache") => cache::run(ctx, rest).await,
         Some("artifact") => artifact::run(ctx, rest).await,
+        Some("prebuilt") => prebuilt::run(ctx, rest).await,
         _ => Err(CliError::Usage(USAGE.to_owned())),
     }
 }

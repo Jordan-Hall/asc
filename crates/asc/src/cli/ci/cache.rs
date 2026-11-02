@@ -207,6 +207,10 @@ pub struct HttpApi {
     h3: &'static asc_rpc::h3::Upgrader,
     /// `https://host/actions/v1/<owner>/<repo>`.
     base: String,
+    /// `https://host`.
+    origin: String,
+    /// `<owner>.<repo>`, the turbo cache namespace.
+    slug: String,
     auth: Option<String>,
 }
 
@@ -232,8 +236,28 @@ impl HttpApi {
                 pct(owner),
                 pct(name)
             ),
+            origin: server.trim_end_matches('/').to_owned(),
+            slug: format!("{owner}.{name}"),
             auth,
         })
+    }
+
+    /// Posts `body` as JSON to `path?slug=<owner>.<repo>` at the server's origin and returns
+    /// the JSON answer (the turbo cache routes, SPEC §12.4).
+    pub async fn post_turbo(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value, CiError> {
+        let url = format!("{}{path}?slug={}", self.origin, pct(&self.slug));
+        let bytes = Bytes::from(serde_json::to_vec(body).map_err(api_err)?);
+        let res = self
+            .call(reqwest::Method::POST, url, bytes, MAX_MANIFEST_BYTES)
+            .await?;
+        if !res.status.is_success() {
+            return Err(failure(res));
+        }
+        serde_json::from_slice(&whole(res)?).map_err(api_err)
     }
 
     /// The request as plain HTTP, for h3.
