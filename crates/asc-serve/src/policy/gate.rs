@@ -269,14 +269,7 @@ impl ServerGate {
             };
             let added = self.added(req.entry, old, new, MAX_ADDED).await?;
             for body in &added.bodies {
-                let mut others = Vec::new();
-                for p in body.parents.iter().skip(1) {
-                    let cs = engine
-                        .get_changeset(*p)
-                        .await
-                        .map_err(|e| internal("gate: changeset", &e))?;
-                    others.push(cs.root);
-                }
+                let sides = merge_sides(engine, &body.parents).await?;
                 for (path, change) in body.changes.as_slice() {
                     let p = path.as_bytes();
                     let from = match change {
@@ -288,7 +281,7 @@ impl ServerGate {
                     if scope.can_write(p) && from.is_none_or(|f| scope.can_read(f)) {
                         continue;
                     }
-                    if carried(engine, &others, path, change).await? {
+                    if carried(engine, &sides, path, change).await? {
                         continue;
                     }
                     let shown = scope.restricted_root(p).unwrap_or(p);
@@ -1175,30 +1168,80 @@ impl RefGate for ServerGate {
     }
 }
 
-/// Whether a merge took `change` at `path` unchanged from one of its other parents (`roots`).
+/// One other parent of a merge: its tree, the tree of its merge base with the first parent, and
+/// the first parent's tree.
+struct Side {
+    other: asc_core::id::TreeId,
+    base: asc_core::id::TreeId,
+    first: asc_core::id::TreeId,
+}
+
+/// The sides of a merge with `parents` (none for a changeset with one parent). A parent with no
+/// shared history with the first carries nothing.
+async fn merge_sides(
+    engine: &crate::idmode::Eng,
+    parents: &[asc_core::id::ChangesetId],
+) -> Result<Vec<Side>, Status> {
+    let Some((&first, rest)) = parents.split_first() else {
+        return Ok(Vec::new());
+    };
+    let root = |id| async move {
+        engine
+            .get_changeset(id)
+            .await
+            .map(|cs| cs.root)
+            .map_err(|e| internal("gate: changeset", &e))
+    };
+    use asc_engine::history::HistoryApi as _;
+    let mut sides = Vec::new();
+    for &o in rest {
+        let base = engine
+            .merge_base(first, &[o], false)
+            .await
+            .map_err(|e| internal("gate: merge base", &e))?
+            .into_iter()
+            .next();
+        let Some(base) = base else { continue };
+        sides.push(Side {
+            other: root(o).await?,
+            base: root(base).await?,
+            first: root(first).await?,
+        });
+    }
+    Ok(sides)
+}
+
+/// Whether a merge took `change` at `path` from another parent as a three-way merge would: that
+/// parent has it, and the first parent left the path as their merge base had it. A change the
+/// other side made, already pushed by someone allowed to, is carried; taking an old version from
+/// an ancestor (a revert the first side never made) is not.
 async fn carried(
     engine: &crate::idmode::Eng,
-    roots: &[asc_core::id::TreeId],
+    sides: &[Side],
     path: &asc_core::path::RepoPath,
     change: &asc_core::object::Change,
 ) -> Result<bool, Status> {
     use asc_core::object::Change;
-    for root in roots {
-        let at = engine
-            .lookup(*root, path)
+    let at = |root| async move {
+        engine
+            .lookup(root, path)
             .await
-            .map_err(|e| internal("gate: tree", &e))?;
-        let same = match (change, &at) {
+            .map(|e| e.map(|e| (e.kind, e.id, e.git)))
+            .map_err(|e| internal("gate: tree", &e))
+    };
+    for side in sides {
+        let theirs = at(side.other).await?;
+        let same = match (change, &theirs) {
             (Change::Delete, None) => true,
-            (Change::Write { file, kind, .. }, Some(e)) => {
-                e.kind == *kind && e.id == *file.as_bytes()
+            (Change::Write { file, kind, .. }, Some((k, id, _))) => {
+                k == kind && id == file.as_bytes()
             }
-            (Change::Gitlink { commit }, Some(e)) => {
-                e.kind == asc_core::object::Kind::Gitlink && e.git == *commit
+            (Change::Gitlink { commit }, Some((k, _, git))) => {
+                *k == asc_core::object::Kind::Gitlink && git == commit
             }
             _ => false,
         };
-        if same {
+        if same && theirs != at(side.base).await? && at(side.first).await? == at(side.base).await? {
             return Ok(true);
         }
     }

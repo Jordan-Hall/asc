@@ -246,6 +246,12 @@ impl PathAcl {
         v.repo_level < Level::Read || self.by_dir.keys().any(|d| !self.can_read(v, d))
     }
 
+    /// Whether some path is below the viewer's repository level: unreadable, or (for a viewer
+    /// who may write) not writable. For a reader this is [`Self::restricts`].
+    pub fn limits(&self, v: &Viewer) -> bool {
+        self.restricts(v) || self.by_dir.keys().any(|d| self.level(v, d) < v.repo_level)
+    }
+
     /// Whether the viewer reads `dir` and everything below it (no rule under it withholds read).
     pub fn subtree_readable(&self, v: &Viewer, dir: &[u8]) -> bool {
         self.can_read(v, dir)
@@ -410,6 +416,14 @@ mod tests {
         assert_eq!(a.level(&v, b"open/file"), Level::Write);
         assert_eq!(Level::parse("build"), Some(Level::Build));
         assert!(Level::Build < Level::Read);
+    }
+
+    #[test]
+    fn a_read_rule_limits_a_writer_but_not_a_reader() {
+        let a = PathAcl::new(&[rule("secret", "*", Level::Read)]).unwrap();
+        assert!(a.limits(&user("bob", &[], Level::Write)));
+        assert!(!a.restricts(&user("bob", &[], Level::Write)));
+        assert!(!a.limits(&user("bob", &[], Level::Read)));
     }
 
     #[test]

@@ -27,7 +27,8 @@ pub fn path_policy(path: &[u8]) -> Status {
 impl Scope {
     /// The scope of `principal_id` on `repo` with `repo_level`, or `None` when nothing is
     /// restricted for it: no rules service, no rules on the repository, the host service's own
-    /// work, or rules that leave every path at the repository level.
+    /// work, or rules that leave every path at `repo_level` (so a read scope exists only when a
+    /// path is hidden, and a write scope also when a path is read-only).
     pub async fn of(
         slot: &PathRulesSlot,
         repo: &str,
@@ -58,7 +59,7 @@ impl Scope {
             .viewer(repo, who, repo_level)
             .await
             .map_err(|e| e.status())?;
-        if !acl.restricts(&viewer) {
+        if !acl.limits(&viewer) {
             return Ok(None);
         }
         Ok(Some(Arc::new(Self { acl, viewer })))

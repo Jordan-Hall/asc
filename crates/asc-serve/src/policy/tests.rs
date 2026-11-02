@@ -83,6 +83,8 @@ pub(crate) struct Fx {
     pub scanner: Arc<Scanner>,
     #[allow(dead_code)] // held so the services outlive the gate
     pub signing: Arc<Signing>,
+    /// Empty until a test registers path rules.
+    pub pathrules: Arc<crate::pathrules::PathRulesSlot>,
 }
 
 pub(crate) async fn fx_with(server: Option<Arc<crate::signing::ServerSigner>>) -> Fx {
@@ -98,12 +100,16 @@ pub(crate) async fn fx_with(server: Option<Arc<crate::signing::ServerSigner>>) -
         crate::signing::Config::default(),
         server,
     ));
-    let gate = Arc::new(ServerGate::new(
-        reg.clone(),
-        policies.clone(),
-        scanner.clone(),
-        signing.clone(),
-    ));
+    let pathrules = Arc::new(crate::pathrules::PathRulesSlot::default());
+    let gate = Arc::new(
+        ServerGate::new(
+            reg.clone(),
+            policies.clone(),
+            scanner.clone(),
+            signing.clone(),
+        )
+        .with_pathrules(pathrules.clone()),
+    );
     let hooks = Arc::new(PipelineHooks::default());
     hooks.set_gate(gate.clone()).ok().unwrap();
     Fx {
@@ -115,6 +121,7 @@ pub(crate) async fn fx_with(server: Option<Arc<crate::signing::ServerSigner>>) -
         policies,
         scanner,
         signing,
+        pathrules,
     }
 }
 
@@ -2892,4 +2899,103 @@ async fn an_organisation_that_forbids_force_overrides_a_repository_that_allows_i
     .await
     .unwrap();
     assert_eq!(g.tip().await, c);
+}
+
+#[tokio::test]
+async fn path_rules_bind_every_pushed_path_and_a_merge_carries_only_what_the_other_side_changed() {
+    let f = fx().await;
+    let hub = crate::pathrules::PathRulesHub::new(
+        f.reg.pool().clone(),
+        Arc::new(crate::settings::testkit::Recorder::default()),
+    );
+    let rules = [crate::pathrules::parse_rule("secret", "user:bob", "read").unwrap()];
+    hub.set("o/r", &rules, 0, "pat:alice").await.unwrap();
+    assert!(f.pathrules.set(hub));
+    let force = |who, to| {
+        f.push(
+            who,
+            "refs/heads/master",
+            wire::ref_update::Expect::Any(true),
+            to,
+            wire::UpdateMode::Force,
+        )
+    };
+    let a = commit(
+        &f.e,
+        &[],
+        &[
+            (
+                "secret/k", b"v1
+",
+            ),
+            (
+                "src/x", b"1
+",
+            ),
+        ],
+    )
+    .await;
+    f.set_master(a).await;
+    // Bob may read the secret but not write it.
+    let edit = commit(
+        &f.e,
+        &[a],
+        &[(
+            "secret/k", b"mine
+",
+        )],
+    )
+    .await;
+    let err = force(BOB, edit).await.unwrap_err();
+    assert_eq!(code(&err), "PATH_POLICY");
+    assert!(
+        paths(&err).iter().any(|p| p == "secret/k"),
+        "{:?}",
+        paths(&err)
+    );
+    // Alice changes the secret; Bob works on src from before it.
+    let b = commit(
+        &f.e,
+        &[a],
+        &[(
+            "secret/k", b"v2
+",
+        )],
+    )
+    .await;
+    force(ALICE, b).await.unwrap();
+    let c = commit(
+        &f.e,
+        &[a],
+        &[(
+            "src/x", b"2
+",
+        )],
+    )
+    .await;
+    f.ingest(c).await;
+    // Merging the trunk into his work takes Alice's change: a three-way merge would.
+    let merged = commit(
+        &f.e,
+        &[c, b],
+        &[(
+            "secret/k", b"v2
+",
+        )],
+    )
+    .await;
+    force(BOB, merged).await.unwrap();
+    // Merging an old ancestor back in to revert the secret is a write Bob may not make.
+    let revert = commit(
+        &f.e,
+        &[merged, a],
+        &[(
+            "secret/k", b"v1
+",
+        )],
+    )
+    .await;
+    let err = force(BOB, revert).await.unwrap_err();
+    assert_eq!(code(&err), "PATH_POLICY");
+    assert_eq!(f.tip().await, merged);
 }
