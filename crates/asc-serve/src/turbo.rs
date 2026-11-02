@@ -234,6 +234,11 @@ pub struct Meta {
     pub size: u64,
     /// Last access, unix seconds.
     pub at: i64,
+    /// The project directory the artefact was built from, as trusted CI registered it
+    /// (`POST /v8/asc/artifact-paths`). Under path rules it is served only to callers with at
+    /// least `build` there (SPEC §15.5.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
 }
 
 fn now_secs() -> i64 {
@@ -274,6 +279,7 @@ pub struct TurboState {
     cfg: TurboConfig,
     metrics: Arc<Metrics>,
     scope_source: OnceLock<Arc<dyn ScopeSource>>,
+    path_rules: OnceLock<Arc<crate::pathrules::PathRulesSlot>>,
     /// Hits and misses reported by turbo, by scope kind.
     events: [[AtomicU64; 2]; 3],
 }
@@ -295,6 +301,7 @@ impl TurboState {
             cfg,
             metrics,
             scope_source: OnceLock::new(),
+            path_rules: OnceLock::new(),
             events: Default::default(),
         }
     }
@@ -341,6 +348,11 @@ impl TurboState {
         self.trusted
             .insert(*blake3::hash(token.as_bytes()).as_bytes());
         self
+    }
+
+    /// Installs the path rules that gate registered artefacts, once.
+    pub fn set_path_rules(&self, slot: Arc<crate::pathrules::PathRulesSlot>) {
+        let _ = self.path_rules.set(slot);
     }
 
     /// Installs the Stage 2 scope source, once (U44/U63).
@@ -390,7 +402,18 @@ impl TurboState {
             .authorize_credential(credential.as_ref(), &repo, access)
             .await?;
         let scope = self.caller_scope(token, &principal, &repo).await;
-        Ok(Caller { slug, scope })
+        let rules = match self.path_rules.get() {
+            Some(slot) => crate::pathrules::scope::Scope::of(
+                slot,
+                &repo,
+                &principal.id,
+                asc_core::pathacl::Level::Read,
+            )
+            .await
+            .map_err(|_| TurboError::Auth(AuthError::Forbidden))?,
+            None => None,
+        };
+        Ok(Caller { slug, scope, rules })
     }
 
     async fn caller_scope(
@@ -476,6 +499,10 @@ impl TurboState {
             let Some(mut meta) = self.read_meta(&meta_path).await? else {
                 continue;
             };
+            // An output of a directory the caller may not even build from is not there for it.
+            if !c.may_use(&meta) {
+                continue;
+            }
             let data = self.data_path(&c.slug, &scope, hash);
             match self.store.head(&data).await {
                 Ok(h) if h.size == meta.size => {}
@@ -664,6 +691,17 @@ pub fn load_trusted_tokens(path: &FsPath) -> Result<HashSet<[u8; 32]>, TurboErro
 struct Caller {
     slug: Slug,
     scope: Scope,
+    /// The caller's path rules on the repository, when they restrict something.
+    rules: Option<Arc<crate::pathrules::scope::Scope>>,
+}
+
+impl Caller {
+    fn may_use(&self, meta: &Meta) -> bool {
+        match (&self.rules, &meta.path) {
+            (Some(r), Some(p)) => r.level(p.as_bytes()) >= asc_core::pathacl::Level::Build,
+            _ => true,
+        }
+    }
 }
 
 struct Found {
@@ -767,6 +805,9 @@ async fn put_artifact(
     } else {
         upload(&s, &data, body).await?
     };
+    let meta_path = s.meta_path(&caller.slug, &caller.scope, &hash);
+    // A re-upload of the same hash keeps the directory it was registered under.
+    let path = s.read_meta(&meta_path).await?.and_then(|m| m.path);
     let meta = Meta {
         duration,
         tag,
@@ -774,9 +815,9 @@ async fn put_artifact(
         dirty_hash,
         size,
         at: now_secs(),
+        path,
     };
-    s.write_meta(&s.meta_path(&caller.slug, &caller.scope, &hash), &meta)
-        .await?;
+    s.write_meta(&meta_path, &meta).await?;
     let url = format!("{}/{}", caller.slug.dir(), hash.as_str());
     Ok((
         StatusCode::ACCEPTED,
@@ -950,13 +991,78 @@ pub fn router(state: Arc<TurboState>) -> axum::Router {
                 .options(options_artifact),
         )
         .route("/v8/artifacts", post(query_artifacts))
+        .route("/v8/asc/artifact-paths", post(register_paths))
         .with_state(state);
     // The edge answers 401 with the Basic challenge first, and 400 for a malformed header.
     crate::authn::guard(routes, crate::authn::Surface::Api)
 }
 
+#[derive(Deserialize)]
+struct PathsRequest {
+    artifacts: Vec<ArtifactPath>,
+}
+
+#[derive(Deserialize)]
+struct ArtifactPath {
+    hash: String,
+    path: String,
+}
+
+/// `POST /v8/asc/artifact-paths`: trusted CI names the project directory each of its
+/// artefacts was built from (`asc ci prebuilt register`). Only `trusted` artefacts can be
+/// registered, and a registration never moves an artefact to another directory.
+async fn register_paths(
+    State(s): State<Arc<TurboState>>,
+    Query(q): Query<RepoQuery>,
+    headers: HeaderMap,
+    body: Body,
+) -> Result<Response, TurboError> {
+    let caller = s.gate(&headers, &q, Access::Write).await?;
+    if caller.scope != Scope::Trusted {
+        return Err(TurboError::Auth(AuthError::Forbidden));
+    }
+    let req: PathsRequest = read_json(body).await?;
+    if req.artifacts.len() > MAX_ITEMS {
+        return Err(TurboError::BadRequest("too many artifacts"));
+    }
+    let mut checked = Vec::with_capacity(req.artifacts.len());
+    for a in req.artifacts {
+        let hash = ArtifactHash::parse(&a.hash)?;
+        if !a.path.is_empty() && asc_core::path::RepoPath::new(a.path.as_str()).is_err() {
+            return Err(TurboError::BadRequest("invalid path"));
+        }
+        checked.push((hash, a.path));
+    }
+    let (mut registered, mut missing) = (0u64, Vec::new());
+    for (hash, path) in checked {
+        let p = s.meta_path(&caller.slug, &Scope::Trusted, &hash);
+        let Some(mut meta) = s.read_meta(&p).await? else {
+            missing.push(hash.as_str().to_owned());
+            continue;
+        };
+        match &meta.path {
+            Some(old) if *old == path => {}
+            Some(_) => {
+                return Err(TurboError::BadRequest(
+                    "artifact is registered to another path",
+                ));
+            }
+            None => {
+                meta.path = Some(path);
+                s.write_meta(&p, &meta).await?;
+            }
+        }
+        registered += 1;
+    }
+    Ok(
+        axum::Json(serde_json::json!({ "registered": registered, "missing": missing }))
+            .into_response(),
+    )
+}
+
 /// One registration line in `lib.rs`: mounts the routes on `ext`.
 pub fn register(ext: &Extensions, state: Arc<TurboState>) {
+    state.set_path_rules(ext.pathrules.clone());
     ext.http.register(router(state));
 }
 
@@ -1095,6 +1201,128 @@ mod tests {
             c = c.header("x-asc-pr", n.to_string());
         }
         c.send(s).await.0
+    }
+
+    async fn with_rules(s: &Arc<TurboState>, level: &str) -> Arc<crate::pathrules::PathRulesHub> {
+        let p = crate::migrate::connect("sqlite::memory:", 1).await.unwrap();
+        crate::migrate::migrate(&p).await.unwrap();
+        let hub = crate::pathrules::PathRulesHub::new(
+            p,
+            Arc::new(crate::settings::testkit::Recorder::default()),
+        );
+        let rules = [crate::pathrules::parse_rule("secret", "*", level).unwrap()];
+        hub.set("acme/web", &rules, 0, "pat:admin").await.unwrap();
+        let slot = Arc::new(crate::pathrules::PathRulesSlot::default());
+        assert!(slot.set(hub.clone()));
+        s.set_path_rules(slot);
+        hub
+    }
+
+    async fn register(
+        s: &Arc<TurboState>,
+        token: &'static str,
+        hash: &str,
+        path: &str,
+    ) -> StatusCode {
+        let body = serde_json::json!({ "artifacts": [{ "hash": hash, "path": path }] });
+        call(
+            "POST",
+            &format!("/v8/asc/artifact-paths?slug={SLUG}"),
+            Some(token),
+        )
+        .header("content-type", "application/json")
+        .body(body.to_string())
+        .send(s)
+        .await
+        .0
+    }
+
+    #[tokio::test]
+    async fn a_registered_output_of_a_hidden_directory_is_not_served() {
+        let (s, _) = state();
+        let (hidden, open) = ("a".repeat(16), "b".repeat(16));
+        with_rules(&s, "none").await;
+        assert_eq!(
+            put(&s, "ci-secret", &hidden, b"out", None).await,
+            StatusCode::ACCEPTED
+        );
+        assert_eq!(
+            put(&s, "ci-secret", &open, b"out", None).await,
+            StatusCode::ACCEPTED
+        );
+        // Only trusted CI registers, and an artefact never moves to another directory.
+        assert_eq!(
+            register(&s, "dev-secret", &hidden, "secret/app").await,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            register(&s, "ci-secret", &hidden, "secret/app").await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            register(&s, "ci-secret", &hidden, "secret/app").await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            register(&s, "ci-secret", &hidden, "src").await,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            register(&s, "ci-secret", &open, "../x").await,
+            StatusCode::BAD_REQUEST
+        );
+        // A re-upload keeps the registration.
+        assert_eq!(
+            put(&s, "ci-secret", &hidden, b"out", None).await,
+            StatusCode::ACCEPTED
+        );
+
+        assert_eq!(
+            call("GET", &art(&hidden), Some("dev-secret"))
+                .send(&s)
+                .await
+                .0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            call("GET", &art(&open), Some("dev-secret"))
+                .send(&s)
+                .await
+                .0,
+            StatusCode::OK
+        );
+        let q = call(
+            "POST",
+            &format!("/v8/artifacts?slug={SLUG}"),
+            Some("dev-secret"),
+        )
+        .header("content-type", "application/json")
+        .body(serde_json::json!({ "hashes": [hidden, open] }).to_string())
+        .send(&s)
+        .await;
+        let v: serde_json::Value = serde_json::from_slice(&q.2).unwrap();
+        assert!(
+            v[&hidden].is_null() || v[&hidden].get("error").is_some(),
+            "{v}"
+        );
+        assert!(v[&open].get("size").is_some(), "{v}");
+    }
+
+    #[tokio::test]
+    async fn build_level_serves_the_output_without_the_source() {
+        let (s, _) = state();
+        let hash = "c".repeat(16);
+        with_rules(&s, "build").await;
+        assert_eq!(
+            put(&s, "ci-secret", &hash, b"out", None).await,
+            StatusCode::ACCEPTED
+        );
+        assert_eq!(
+            register(&s, "ci-secret", &hash, "secret/app").await,
+            StatusCode::OK
+        );
+        let (code, _, body) = call("GET", &art(&hash), Some("dev-secret")).send(&s).await;
+        assert_eq!((code, body.as_slice()), (StatusCode::OK, &b"out"[..]));
     }
 
     #[tokio::test]
