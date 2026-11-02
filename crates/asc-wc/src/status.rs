@@ -102,6 +102,9 @@ pub struct Status {
     /// Directories (`""` for the root) whose `.gitignore` differs from the `.ascignore` that
     /// shadows it; print [`crate::ignore::shadow_warning`] for each.
     pub shadowed: Vec<String>,
+    /// Folders shown as restricted placeholders (SPEC §15.5.1): path rules keep their content
+    /// from the caller, and status passes over them.
+    pub restricted: Vec<RepoPath>,
 }
 
 // ---------------------------------------------------------------- probing
@@ -529,6 +532,7 @@ struct Finder<'a> {
     ignore: IgnoreStack,
     untracked: Vec<Untracked>,
     shadowed: Vec<String>,
+    restricted: Vec<RepoPath>,
 }
 
 #[cfg(unix)]
@@ -570,6 +574,7 @@ fn untracked<O: Objects, R: Refs>(wc: &Wc<'_, O, R>, w: &mut Walk) -> Result<()>
         ignore: IgnoreStack::new(wc.root, wc.ignore),
         untracked: Vec::new(),
         shadowed: Vec::new(),
+        restricted: Vec::new(),
     };
     let io_err = |path: &Path| {
         let path = path.to_owned();
@@ -578,6 +583,8 @@ fn untracked<O: Objects, R: Refs>(wc: &Wc<'_, O, R>, w: &mut Walk) -> Result<()>
     f.dir(None, wc.root, true).map_err(io_err(wc.root))?;
     w.status.untracked = f.untracked;
     w.status.shadowed = f.shadowed;
+    f.restricted.sort();
+    w.status.restricted = f.restricted;
     Ok(())
 }
 
@@ -631,10 +638,13 @@ impl Finder<'_> {
                 } else {
                     return Ok(true);
                 }
-            } else if self.tracked_files.contains(key)
-                || crate::compose_plain::is_restricted_projection(&child_abs, &child)
-            {
-                // A gitlink, or a restricted directory: not descended.
+            } else if self.tracked_files.contains(key) {
+                // A gitlink: not descended.
+            } else if crate::compose_plain::is_restricted_projection(&child_abs, &child) {
+                // Not descended: it stands for content the caller may not read.
+                if report {
+                    self.restricted.push(child);
+                }
             } else if self.tracked_dirs.contains(key) {
                 visible |= self.dir(Some(&child), &child_abs, report)?;
                 if visible && !report {
@@ -917,6 +927,28 @@ mod tests {
             let st = compute(&fx.wc(), &db, &ws).await.unwrap();
             assert_eq!(st.shadowed, expect);
         }
+    }
+
+    #[tokio::test]
+    async fn a_restricted_placeholder_is_listed_and_not_untracked() {
+        let fx = Fixture::new();
+        let tree = fx
+            .tree(&[(
+                "a.txt", F, b"a
+",
+            )])
+            .await;
+        checkout(&fx.wc(), fx.empty(), tree, Mode::Safe)
+            .await
+            .unwrap();
+        let gate = crate::SafeRoot::new(&fx.root);
+        let secret = RepoPath::new(b"secret".to_vec()).unwrap();
+        crate::compose_plain::restrict(&gate, &secret, crate::compose_plain::Replace::EmptyOnly)
+            .unwrap();
+        let (db, ws) = workspace(&fx, tree).await;
+        let st = compute(&fx.wc(), &db, &ws).await.unwrap();
+        assert!(st.untracked.is_empty(), "{:?}", st.untracked);
+        assert_eq!(st.restricted, vec![secret]);
     }
 
     #[tokio::test]

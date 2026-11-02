@@ -810,6 +810,9 @@ async fn gather(ctx: &Ctx, ws: &WsCtx, o: &Opts) -> Result<Report> {
     for dir in &status.shadowed {
         eprintln!("{}", shadow_warning(dir));
     }
+    for dir in &status.restricted {
+        eprintln!("{dir}: restricted (path rules keep its content from you)");
+    }
 
     if o.optional_locks {
         let skip: HashSet<Vec<u8>> = status
