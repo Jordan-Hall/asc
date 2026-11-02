@@ -409,4 +409,29 @@ async fn the_guard_refuses_restricted_callers_and_admits_the_host_and_unrestrict
         .authorize(Some(&tok("reader-token")), "acme/other", Access::Read)
         .await
         .unwrap();
+    // The host service for a person is decided for that person; a claim that does not verify
+    // for the repository is refused, never taken as the host's own work.
+    use asc_rpc::auth::Credential;
+    let relayed = |subject: &str| {
+        let r = claim(
+            req((), "host-token", None),
+            &f.k,
+            "7:alice",
+            Role::Admin,
+            subject,
+        );
+        Credential::bearer(tok("host-token")).with_claim_headers(r.metadata())
+    };
+    for subject in ["acme/mono", "acme/other"] {
+        let e = guard
+            .authorize_credential(Some(&relayed(subject)), "acme/mono", Access::Read)
+            .await
+            .unwrap_err();
+        assert!(matches!(e, AuthError::Forbidden), "claim for {subject}");
+    }
+    let host = Credential::bearer(tok("host-token"));
+    guard
+        .authorize_credential(Some(&host), "acme/mono", Access::Read)
+        .await
+        .unwrap();
 }

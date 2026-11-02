@@ -133,15 +133,50 @@ pub struct Credential {
     scheme: Scheme,
     user: Option<String>,
     secret: BearerToken,
+    forwarded: ClaimHeaders,
 }
 
+/// The forwarded-claim entries of the request a credential came with, unverified. They are not
+/// part of the credential's identity (equality ignores them); an authorizer verifies them with
+/// [`AdminProof::forwarded_in`] when it decides for the person a host service vouched for.
+#[derive(Clone, Default)]
+pub struct ClaimHeaders(Option<std::sync::Arc<tonic::metadata::MetadataMap>>);
+
+impl PartialEq for ClaimHeaders {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for ClaimHeaders {}
+
 impl Credential {
+    /// The forwarded-claim entries of the request this credential came with, if it had any.
+    pub fn claim_headers(&self) -> Option<&tonic::metadata::MetadataMap> {
+        self.forwarded.0.as_deref()
+    }
+
+    /// This credential with the forwarded-claim entries of `meta` (none when it has none).
+    #[must_use]
+    pub fn with_claim_headers(mut self, meta: &tonic::metadata::MetadataMap) -> Self {
+        use crate::forwarded::{MAC, ROLE, TS, USER};
+        let mut m = tonic::metadata::MetadataMap::new();
+        for k in [USER, ROLE, TS, MAC] {
+            if let Some(v) = meta.get(k) {
+                m.insert(k, v.clone());
+            }
+        }
+        self.forwarded = ClaimHeaders((!m.is_empty()).then(|| std::sync::Arc::new(m)));
+        self
+    }
+
     /// A `Bearer` credential.
     pub fn bearer(secret: BearerToken) -> Self {
         Self {
             scheme: Scheme::Bearer,
             user: None,
             secret,
+            forwarded: ClaimHeaders::default(),
         }
     }
 
@@ -151,6 +186,7 @@ impl Credential {
             scheme: Scheme::Token,
             user: None,
             secret,
+            forwarded: ClaimHeaders::default(),
         }
     }
 
@@ -163,6 +199,7 @@ impl Credential {
             scheme: Scheme::Basic,
             user: (!user.is_empty()).then(|| user.to_owned()),
             secret: BearerToken::password(secret)?,
+            forwarded: ClaimHeaders::default(),
         })
     }
 
@@ -247,6 +284,7 @@ pub fn parse_authorization<'a>(
             scheme,
             user: None,
             secret,
+            forwarded: ClaimHeaders::default(),
         }));
     }
     let raw = STANDARD
@@ -261,6 +299,7 @@ pub fn parse_authorization<'a>(
             scheme,
             user: None,
             secret: BearerToken::password(user)?,
+            forwarded: ClaimHeaders::default(),
         }));
     }
     Credential::basic(user, password).map(Some)
@@ -637,6 +676,7 @@ impl Interceptor for AuthInterceptor {
             return Ok(req);
         };
         req.metadata_mut().remove("authorization");
+        let credential = credential.with_claim_headers(req.metadata());
         req.extensions_mut().insert(credential);
         Ok(req)
     }

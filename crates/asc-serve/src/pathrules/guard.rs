@@ -3,17 +3,20 @@
 //! The repository service filters every tree, file and history answer by the caller's path scope.
 //! Review, code intelligence, agents, exports and the other services answer with content or
 //! paths of the whole repository, so a caller whose scope restricts any path is refused there:
-//! the guard answers `Forbidden` for it, as if it had no access. Everyone else, and the host
-//! service, is decided by the inner authorizer alone.
+//! the guard answers `Forbidden` for it, as if it had no access. A call the host service makes
+//! for a person (it forwards their claim with the credential) is decided for that person at the
+//! claim's role; a claim that does not verify is refused. Only the host service's own work, with
+//! no claim, is decided by the inner authorizer alone.
 
 use std::sync::Arc;
 
 use asc_core::pathacl::Level;
+use asc_core::policy::{Kind, Who};
 use asc_rpc::auth::{
-    Access, AuthError, Authorizer, BearerToken, Credential, Decision, Principal, SshIdentity,
-    SshKey, Standing,
+    Access, AdminProof, AuthError, Authorizer, BearerToken, Credential, Decision, Principal,
+    SshIdentity, SshKey, Standing,
 };
-use asc_rpc::forwarded::ForwardedVerifier;
+use asc_rpc::forwarded::{ForwardedVerifier, Role};
 use async_trait::async_trait;
 
 use super::PathRulesSlot;
@@ -28,6 +31,38 @@ pub struct PathGuard {
 impl PathGuard {
     pub fn new(inner: Arc<dyn Authorizer>, slot: Arc<PathRulesSlot>) -> Self {
         Self { inner, slot }
+    }
+
+    /// `principal` when no path of `repo` is restricted for the caller: the person a host service
+    /// forwards a claim for in `credential`, else the principal itself.
+    async fn admit_call(
+        &self,
+        principal: Principal,
+        credential: Option<&Credential>,
+        repo: &str,
+        access: Access,
+    ) -> Result<Principal, AuthError> {
+        let meta = credential.and_then(Credential::claim_headers);
+        let Some(meta) = meta.filter(|_| crate::authz::is_host_service(&principal.id)) else {
+            return self.admit(principal, repo, access).await;
+        };
+        let Some(claim) = AdminProof::forwarded_in(&*self.inner, meta, repo) else {
+            return Err(AuthError::Forbidden);
+        };
+        let role = match claim.role {
+            Role::Admin => Level::Admin,
+            Role::Write => Level::Write,
+            _ => Level::Read,
+        };
+        let who = Who::new(Kind::User, claim.login());
+        match Scope::of_who(&self.slot, repo, who, role).await {
+            Ok(None) => Ok(principal),
+            Ok(Some(_)) => Err(AuthError::Forbidden),
+            Err(e) => {
+                tracing::warn!(error = %e, repo, "reading the path rules failed");
+                Err(AuthError::Forbidden)
+            }
+        }
     }
 
     /// `principal` when no path of `repo` is restricted for it.
@@ -76,7 +111,7 @@ impl Authorizer for PathGuard {
             .inner
             .authorize_credential(credential, repo, access)
             .await?;
-        self.admit(p, repo, access).await
+        self.admit_call(p, credential, repo, access).await
     }
 
     async fn authenticate(&self, credential: Option<&Credential>) -> Result<Principal, AuthError> {
