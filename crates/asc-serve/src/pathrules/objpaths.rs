@@ -23,6 +23,8 @@ const TREE: i16 = 0;
 const FILE: i16 = 1;
 /// Rows written per statement.
 const BATCH: usize = 200;
+/// Derived objects computed from the changeset graph alone.
+const GRAPH_ONLY: [&str; 2] = ["gen", "skip"];
 
 /// The per-repository index, with one writer per repository at a time.
 #[derive(Default)]
@@ -67,6 +69,10 @@ impl ObjPaths {
                 | ObjKey::Changeset(_)
                 | ObjKey::ChangeMeta(_)
                 | ObjKey::Tag(_) => {
+                    continue;
+                }
+                // Generation numbers and skip pointers describe only the graph.
+                ObjKey::Derived { name, .. } if GRAPH_ONLY.contains(name) => {
                     continue;
                 }
                 _ => {
@@ -328,6 +334,11 @@ mod tests {
             file(id_at(&e, c1, "secret/docs/d").await),
             // Served redacted by the caller.
             ObjKey::Changeset(c2),
+            ObjKey::Derived {
+                name: "gen",
+                version: 1,
+                id: *c2.as_bytes(),
+            },
         ];
         for k in &ok {
             idx.require(pool, &e, &s, std::slice::from_ref(k))
@@ -339,6 +350,12 @@ mod tests {
             tree(id_at(&e, c2, "secret").await),
             file(id_at(&e, c1, "secret/k").await),
             file(id_at(&e, c2, "secret/k").await),
+            // Names the unredacted tree.
+            ObjKey::Derived {
+                name: "gitcommit",
+                version: 1,
+                id: *c2.as_bytes(),
+            },
         ];
         for k in &refused {
             let err = idx
