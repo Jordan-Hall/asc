@@ -232,6 +232,55 @@ impl Scope {
     }
 }
 
+impl Scope {
+    /// `cs` as a restricted caller may fetch it, or `None` when nothing in it is restricted:
+    /// changes under restricted directories are left out, a copy source there is dropped, and
+    /// a changeset whose every change was restricted shows [`RESTRICTED_MESSAGE`] and no extra
+    /// headers. Parents, root, author and committer stay, so history still connects.
+    pub fn redact_changeset(
+        &self,
+        cs: &asc_core::object::Changeset,
+    ) -> Option<asc_core::object::Changeset> {
+        use asc_core::object::{Change, SortedMap};
+        let red = self.redaction_of(cs);
+        if red.dirs.is_empty() {
+            return None;
+        }
+        let kept: Vec<_> = cs
+            .changes
+            .as_slice()
+            .iter()
+            .filter(|(path, _)| self.restricted_root(path.as_bytes()).is_none())
+            .map(|(path, change)| {
+                let change = match change {
+                    Change::Write {
+                        kind,
+                        file,
+                        size,
+                        git,
+                        copy_from: Some(from),
+                    } if self.restricted_root(from.as_bytes()).is_some() => Change::Write {
+                        kind: *kind,
+                        file: *file,
+                        size: *size,
+                        git: *git,
+                        copy_from: None,
+                    },
+                    c => c.clone(),
+                };
+                (path.clone(), change)
+            })
+            .collect();
+        let mut out = cs.clone();
+        out.changes = SortedMap::new(kept).expect("a subset of sorted, distinct keys");
+        if red.whole {
+            out.message = RESTRICTED_MESSAGE.to_vec();
+            out.extra = SortedMap::default();
+        }
+        Some(out)
+    }
+}
+
 /// Applies `scope` to a history entry of `cs`: an entry with a restricted change is marked and
 /// names the restricted directories, loses its whole-changeset counts, and when every change is
 /// restricted shows [`RESTRICTED_MESSAGE`] and no change metadata.

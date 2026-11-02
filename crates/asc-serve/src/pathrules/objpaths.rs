@@ -61,7 +61,14 @@ impl ObjPaths {
             let (kind, id) = match key {
                 ObjKey::Tree(t) => (TREE, t.as_bytes().to_vec()),
                 ObjKey::File(f) | ObjKey::ChunkList(f) => (FILE, f.as_bytes().to_vec()),
-                ObjKey::Chunk(_) => continue,
+                // Chunk ids are learned only from a chunk list; changesets are served redacted;
+                // a tag or change meta names no path.
+                ObjKey::Chunk(_)
+                | ObjKey::Changeset(_)
+                | ObjKey::ChangeMeta(_)
+                | ObjKey::Tag(_) => {
+                    continue;
+                }
                 _ => {
                     return Err(Status::permission_denied(
                         "PATH_POLICY: this object is not served to a caller with restricted paths",
@@ -319,6 +326,8 @@ mod tests {
             // The same bytes sit under the restricted directory too.
             file(id_at(&e, c2, "secret/dup").await),
             file(id_at(&e, c1, "secret/docs/d").await),
+            // Served redacted by the caller.
+            ObjKey::Changeset(c2),
         ];
         for k in &ok {
             idx.require(pool, &e, &s, std::slice::from_ref(k))
@@ -330,7 +339,6 @@ mod tests {
             tree(id_at(&e, c2, "secret").await),
             file(id_at(&e, c1, "secret/k").await),
             file(id_at(&e, c2, "secret/k").await),
-            ObjKey::Changeset(c2),
         ];
         for k in &refused {
             let err = idx
