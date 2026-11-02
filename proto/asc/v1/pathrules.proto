@@ -20,6 +20,7 @@ service PathRules {
   rpc ListPathRules(ListPathRulesRequest) returns (ListPathRulesResponse);           // repo admin
   rpc SetPathRules(SetPathRulesRequest) returns (SetPathRulesResponse);              // repo admin; mutating
   rpc CheckPathAccess(CheckPathAccessRequest) returns (CheckPathAccessResponse);     // repo admin
+  rpc GetMyPathAccess(GetMyPathAccessRequest) returns (GetMyPathAccessResponse);     // any reader of the repo
   rpc ListTeams(ListTeamsRequest) returns (ListTeamsResponse);                       // org admin
   rpc SetTeamMembers(SetTeamMembersRequest) returns (SetTeamMembersResponse);        // org admin; mutating
 }
@@ -71,6 +72,20 @@ message PathAccess {
 message CheckPathAccessResponse {
   repeated PathAccess access = 1;
   repeated string teams = 2;     // the teams the principal was found in
+}
+
+// The caller's own access, so a client can keep read-only and restricted paths read-only on disk.
+// Only directories where a rule matches the caller are listed, with the level it gives there; for
+// any path the deepest listed ancestor decides, else `repo_level`. Other subjects' rules and the
+// directories they name are never sent. Advertised as Version.features "pathaccess.v1".
+message GetMyPathAccessRequest {
+  string repo = 1;               // owner/name
+}
+
+message GetMyPathAccessResponse {
+  string repo_level = 1;         // read, write or admin
+  repeated PathAccess dirs = 2;  // path = decided_by = the rule directory; sorted by path
+  uint64 revision = 3;           // of the rule set; 0 = never set
 }
 
 message ListTeamsRequest {

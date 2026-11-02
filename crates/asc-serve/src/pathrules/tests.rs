@@ -435,3 +435,77 @@ async fn the_guard_refuses_restricted_callers_and_admits_the_host_and_unrestrict
         .await
         .unwrap();
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_reader_gets_only_its_own_levels_and_no_other_subjects_directories() {
+    let f = fx().await;
+    f.svc
+        .set_path_rules(as_admin(
+            &f,
+            set(
+                "acme/mono",
+                vec![
+                    rule("", "*", "read"),
+                    rule("secret", "*", "none"),
+                    rule("secret", "user:alice", "write"),
+                    rule("ops", "user:bob", "write"),
+                ],
+                0,
+            ),
+            "acme/mono",
+            Role::Admin,
+            1,
+        ))
+        .await
+        .unwrap();
+    let mine = |r: wire::GetMyPathAccessResponse| {
+        let dirs: Vec<_> = r.dirs.into_iter().map(|d| (d.path, d.level)).collect();
+        (r.repo_level, dirs, r.revision)
+    };
+    let s = |p: &str, l: &str| (p.to_owned(), l.to_owned());
+    let get = wire::GetMyPathAccessRequest {
+        repo: "acme/mono".into(),
+    };
+    // A person through the hub, at the claim's role: bob's `ops` rule is never named.
+    let alice = f
+        .svc
+        .get_my_path_access(claim(
+            req(get.clone(), "host-token", None),
+            &f.k,
+            "7:alice",
+            Role::Write,
+            "acme/mono",
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        mine(alice),
+        ("write".into(), vec![s("", "read"), s("secret", "write")], 1)
+    );
+    // A direct reader token: its rules are capped at read.
+    let carol = f
+        .svc
+        .get_my_path_access(req(get.clone(), "reader-token", None))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        mine(carol),
+        ("read".into(), vec![s("", "read"), s("secret", "none")], 1)
+    );
+    // A claim for another repository, or the host's own work, is refused.
+    let other = claim(
+        req(get.clone(), "host-token", None),
+        &f.k,
+        "7:alice",
+        Role::Admin,
+        "acme/other",
+    );
+    for r in [other, req(get, "host-token", None)] {
+        assert_eq!(
+            f.svc.get_my_path_access(r).await.unwrap_err().code(),
+            Code::PermissionDenied
+        );
+    }
+}

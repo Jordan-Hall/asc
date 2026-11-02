@@ -107,6 +107,48 @@ impl PathRulesService {
         ))
     }
 
+    /// The repository and the caller's own viewer identity and level on it, the highest of
+    /// admin, write and read it holds (the hub's claim for a person, else its credential).
+    async fn repo_reader(
+        &self,
+        ext: &tonic::Extensions,
+        meta: &MetadataMap,
+        repo: &str,
+    ) -> Result<(String, asc_core::policy::Who, Level), Status> {
+        use asc_core::policy::{Kind, Who};
+        let subject = Subject::repo(repo)?;
+        let Subject::Repo(name) = subject.clone() else {
+            return Err(Gate::denied());
+        };
+        let caller = self.gate.caller(ext).await?;
+        let levels = [
+            (Role::Admin, Access::Admin, Level::Admin),
+            (Role::Write, Access::Write, Level::Write),
+            (Role::Read, Access::Read, Level::Read),
+        ];
+        if crate::authz::is_host_service(&caller.principal.id) {
+            for (role, _, level) in levels {
+                if let Some(actor) = self.gate.allow(&caller, meta, &subject, role) {
+                    // The host's own work has no person, so no rule can name it.
+                    let handle = actor.handle.ok_or_else(Gate::denied)?;
+                    return Ok((name, Who::new(Kind::User, &handle), level));
+                }
+            }
+            return Err(Gate::denied());
+        }
+        for (_, access, level) in levels {
+            if self
+                .authorizer
+                .authorize_credential(caller.credential.as_ref(), &name, access)
+                .await
+                .is_ok()
+            {
+                return Ok((name, crate::policy::who_of(&caller.principal.id), level));
+            }
+        }
+        Err(Gate::denied())
+    }
+
     /// The organisation and the administrator acting on it (the hub's claim, role admin).
     async fn org_admin(
         &self,
@@ -236,6 +278,38 @@ impl PathRules for PathRulesService {
         Ok(Response::new(wire::CheckPathAccessResponse {
             access,
             teams: viewer.teams,
+        }))
+    }
+
+    async fn get_my_path_access(
+        &self,
+        request: Request<wire::GetMyPathAccessRequest>,
+    ) -> Result<Response<wire::GetMyPathAccessResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        let (repo, who, repo_level) = self.repo_reader(&ext, &meta, &msg.repo).await?;
+        let set = self.hub.get(&repo).await.map_err(fail)?;
+        let acl = self.hub.acl(&repo).await.map_err(fail)?;
+        let viewer = self
+            .hub
+            .viewer(&repo, who, repo_level)
+            .await
+            .map_err(fail)?;
+        let dirs = acl
+            .decided_dirs(&viewer)
+            .into_iter()
+            .map(|(dir, level)| {
+                let dir = String::from_utf8_lossy(&dir).into_owned();
+                wire::PathAccess {
+                    path: dir.clone(),
+                    level: level.as_str().to_owned(),
+                    decided_by: dir,
+                }
+            })
+            .collect();
+        Ok(Response::new(wire::GetMyPathAccessResponse {
+            repo_level: repo_level.as_str().to_owned(),
+            dirs,
+            revision: set.revision,
         }))
     }
 

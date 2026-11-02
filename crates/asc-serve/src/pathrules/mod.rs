@@ -28,6 +28,8 @@ use crate::ai::ops::Ops;
 
 /// What `Version.features` adds for this service.
 pub const FEATURE: &str = "pathrules.v1";
+/// `GetMyPathAccess`: any reader learns its own levels, so a client keeps them on disk.
+pub const ACCESS_FEATURE: &str = "pathaccess.v1";
 /// Most members of one team.
 pub const MAX_MEMBERS: usize = 5000;
 /// Most teams listed for one organisation.

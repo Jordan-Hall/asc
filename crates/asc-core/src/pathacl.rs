@@ -286,6 +286,24 @@ impl PathAcl {
         self.can_read(v, path) || (is_dir && self.reads_below(v, path))
     }
 
+    /// The directories where a rule matches `v`, with the level it gives there (capped at the
+    /// repository level), in path order. With the repository level this is all a client needs
+    /// to compute [`Self::level`] for `v` (the deepest listed ancestor decides), and it names no
+    /// directory whose rules are only about others.
+    pub fn decided_dirs(&self, v: &Viewer) -> Vec<(Vec<u8>, Level)> {
+        self.by_dir
+            .iter()
+            .filter_map(|(dir, rules)| {
+                rules
+                    .iter()
+                    .filter(|(s, _)| s.matches(v))
+                    .map(|(_, l)| *l)
+                    .max()
+                    .map(|best| (dir.clone(), best.min(v.repo_level)))
+            })
+            .collect()
+    }
+
     fn reads_below(&self, v: &Viewer, dir: &[u8]) -> bool {
         let mut prefix = dir.to_vec();
         if !prefix.is_empty() {

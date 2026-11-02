@@ -474,6 +474,7 @@ const TABLE: &[(&str, Class, &[&str])] = &[
             "ListPathRules",
             "SetPathRules",
             "CheckPathAccess",
+            "GetMyPathAccess",
             "ListTeams",
             "SetTeamMembers",
         ],

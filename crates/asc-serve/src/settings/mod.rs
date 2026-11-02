@@ -108,6 +108,7 @@ impl SettingsHubs {
             crate::sessions::FEATURE,
             crate::export::FEATURE,
             crate::pathrules::FEATURE,
+            crate::pathrules::ACCESS_FEATURE,
         ]
         .map(str::to_owned)
         .to_vec()
