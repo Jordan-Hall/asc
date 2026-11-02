@@ -4971,4 +4971,125 @@ mod tests {
         assert_eq!(resolved(&f, &alice, "y").await, theirs_id);
         assert_eq!(resolved(&f, &bob, "y").await, theirs_id);
     }
+
+    #[tokio::test]
+    async fn restricted_paths_are_redacted_from_trees_files_changesets_and_log() {
+        let f = fx().await;
+        let hub = crate::pathrules::PathRulesHub::new(
+            f.reg.pool().clone(),
+            Arc::new(crate::settings::testkit::Recorder::default()),
+        );
+        let rules = [crate::pathrules::parse_rule("g", "*", "none").unwrap()];
+        hub.set("o/r", &rules, 0, "pat:admin").await.unwrap();
+        assert!(f.hooks.pathrules.set(hub));
+        let c1 = mk(
+            &f.entry,
+            &[],
+            &[w("f", b"0"), w("g/secret-name", b"s")],
+            "one
+",
+            1,
+        )
+        .await;
+        let c2 = mk(
+            &f.entry,
+            &[c1],
+            &[w("g/other-name", b"t")],
+            "hidden
+",
+            2,
+        )
+        .await;
+        let rev = c2.to_string();
+
+        // The tree names the directory as restricted and nothing below it.
+        let s = f
+            .reads
+            .read_tree(
+                &ctx(IdMode::Asc),
+                wire::ReadTreeRequest {
+                    repo: repo_ref(IdMode::Asc),
+                    rev: rev.clone(),
+                    recursive: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let tree: Vec<wire::TreeEntryInfo> =
+            all(s).await.into_iter().flat_map(|r| r.entries).collect();
+        let g = tree.iter().find(|e| e.path.as_ref() == b"g").unwrap();
+        assert!(g.restricted && g.size == 0 && g.id.is_empty());
+        assert!(tree.iter().all(|e| !e.path.starts_with(b"g/")));
+        let below = f
+            .reads
+            .read_tree(
+                &ctx(IdMode::Asc),
+                wire::ReadTreeRequest {
+                    repo: repo_ref(IdMode::Asc),
+                    rev: rev.clone(),
+                    path: Bytes::from_static(b"g"),
+                    ..Default::default()
+                },
+            )
+            .await;
+        assert!(below.is_err(), "listing a restricted directory is refused");
+
+        // A file under it cannot be read.
+        let file = f
+            .reads
+            .read_file(
+                &ctx(IdMode::Asc),
+                wire::ReadFileRequest {
+                    repo: repo_ref(IdMode::Asc),
+                    at: Some(rev_path(&format!("{rev}:g/secret-name"))),
+                    ..Default::default()
+                },
+            )
+            .await;
+        match file {
+            Err(_) => {}
+            Ok(s) => drop(all_err(s).await),
+        }
+
+        // The changeset that only touched it keeps its header redacted and names no file.
+        let rc = f
+            .reads
+            .read_changeset(
+                &ctx(IdMode::Asc),
+                wire::ReadChangesetRequest {
+                    repo: repo_ref(IdMode::Asc),
+                    rev: rev.clone(),
+                },
+            )
+            .await
+            .unwrap();
+        let header = rc.header.unwrap();
+        assert!(header.redacted);
+        assert_eq!(header.message.as_ref(), RESTRICTED_MESSAGE);
+        assert!(rc.changes.iter().all(|c| !c.path.starts_with(b"g/")));
+
+        // The log shows both changesets, the hidden one redacted.
+        let log: Vec<wire::LogEntry> = all(f
+            .hist
+            .log(
+                &ctx(IdMode::Asc),
+                wire::LogRequest {
+                    repo: repo_ref(IdMode::Asc),
+                    include: vec![rev],
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap())
+        .await
+        .into_iter()
+        .flat_map(|r| r.entries)
+        .collect();
+        assert_eq!(log.len(), 2);
+        assert!(log[0].redacted && log[0].message.as_ref() == RESTRICTED_MESSAGE);
+        assert_eq!(log[0].restricted_dirs, vec![Bytes::from_static(b"g")]);
+        let debug = format!("{log:?}{rc:?}{tree:?}", rc = rc.changes);
+        assert!(!debug.contains("secret-name") && !debug.contains("other-name"));
+    }
 }
