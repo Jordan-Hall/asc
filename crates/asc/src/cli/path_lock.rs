@@ -84,6 +84,9 @@ impl Access {
         let mut dirs = Vec::new();
         for line in lines {
             let (l, d) = line.strip_prefix("dir ")?.split_once('\t')?;
+            if !safe_rel(d) {
+                return None;
+            }
             dirs.push((d.to_owned(), Level::parse(l)?));
         }
         Some(Self {
@@ -92,6 +95,16 @@ impl Access {
             dirs,
         })
     }
+}
+
+/// Whether `p` is a plain repository-relative path (`""` = the root): `/`-separated names, none
+/// empty, `.`, `..` or `.git`, and no backslash, colon, NUL or line break, so it never leaves the
+/// work tree. Server-sent and stored paths both pass through this.
+fn safe_rel(p: &str) -> bool {
+    p.is_empty()
+        || (!p.contains(['\\', ':', '\0', '\n', '\r'])
+            && p.split('/')
+                .all(|c| !c.is_empty() && c != "." && c != ".." && !c.eq_ignore_ascii_case(".git")))
 }
 
 /// Whether `path` is `dir` or below it (`""` holds everything).
@@ -178,6 +191,12 @@ pub async fn refresh(ctx: &Ctx, ws: &WsCtx, opened: &Opened) -> Result<()> {
             };
             let mut dirs = Vec::with_capacity(r.dirs.len());
             for d in r.dirs {
+                if !safe_rel(&d.path) {
+                    return Err(CliError::Fatal(format!(
+                        "asc: the server sent an invalid path rule directory {:?}",
+                        d.path
+                    )));
+                }
                 dirs.push((d.path, level(&d.level)?));
             }
             dirs.sort();
@@ -253,7 +272,12 @@ pub fn lock(ws: &WsCtx) -> Result<()> {
 
 fn read_locked(ws: &WsCtx) -> BTreeSet<String> {
     fs::read_to_string(locked_path(ws))
-        .map(|t| t.lines().map(str::to_owned).collect())
+        .map(|t| {
+            t.lines()
+                .filter(|l| safe_rel(l))
+                .map(str::to_owned)
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -390,6 +414,26 @@ mod tests {
             "the repository level locks nothing"
         );
         assert!(!reader.writable("docs/a.md"));
+    }
+
+    #[test]
+    fn only_plain_relative_paths_are_accepted() {
+        for good in ["", "docs", "a/b.c/d"] {
+            assert!(safe_rel(good), "{good:?}");
+        }
+        for bad in [
+            "..",
+            "a/../b",
+            "/abs",
+            "a//b",
+            "./a",
+            "a\\b",
+            "C:/x",
+            ".git/hooks",
+            "a\nb",
+        ] {
+            assert!(!safe_rel(bad), "{bad:?}");
+        }
     }
 
     #[test]
