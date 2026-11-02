@@ -10,56 +10,11 @@ use std::task::{Context, Poll};
 use std::thread::JoinHandle;
 
 use asc_rpc::auth::{Access, StaticTokens};
-use asc_rpc::server::{
-    CallCtx, ObjectsHandler, RepoName, RepoService, RpcStream, ServerInfo, wire,
-};
+use asc_rpc::server::{RepoName, RepoService, ServerInfo};
 use asc_serve::registry::{Extensions, NewRepo, Registry};
 use asc_serve::{migrate, read, update};
-use async_trait::async_trait;
-use tonic::Status;
 use tonic::codegen::{Service, http};
 use tonic::server::NamedService;
-
-/// `HasObjects`, `GetObjects` and `PutObjects` for every repository of a registry, through the
-/// repository's own engine backend. (`asc serve` registers no primary object group yet; the
-/// handler lives here so the client side is tested end to end.)
-struct RegistryObjects(Arc<Registry>);
-
-impl RegistryObjects {
-    async fn entry(&self, ctx: &CallCtx) -> Result<Arc<asc_serve::registry::RepoEntry>, Status> {
-        self.0
-            .open(&ctx.repo)
-            .await
-            .map_err(|_| Status::not_found("no such repository"))
-    }
-}
-
-#[async_trait]
-impl ObjectsHandler for RegistryObjects {
-    async fn has_objects(
-        &self,
-        ctx: &CallCtx,
-        req: wire::HasObjectsRequest,
-    ) -> Result<wire::HasObjectsResponse, Status> {
-        self.entry(ctx).await?.backend.has_objects(ctx, req).await
-    }
-
-    async fn put_objects(
-        &self,
-        ctx: &CallCtx,
-        req: wire::PutObjectsRequest,
-    ) -> Result<wire::PutObjectsResponse, Status> {
-        self.entry(ctx).await?.backend.put_objects(ctx, req).await
-    }
-
-    async fn get_objects(
-        &self,
-        ctx: &CallCtx,
-        req: wire::GetObjectsRequest,
-    ) -> Result<RpcStream<wire::GetObjectsResponse>, Status> {
-        self.entry(ctx).await?.backend.get_objects(ctx, req).await
-    }
-}
 
 /// The write token (`alice`, may push) and the read-only token (`bob`).
 pub const WRITE: &str = "w-token";
@@ -102,6 +57,7 @@ pub struct Server {
     calls: Arc<Mutex<Vec<String>>>,
     handle: tokio::runtime::Handle,
     registry: Arc<Registry>,
+    rules: Arc<asc_serve::pathrules::PathRulesHub>,
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
     thread: Option<JoinHandle<()>>,
 }
@@ -140,13 +96,17 @@ impl Server {
                         .expect("create repo");
                 }
                 let ext = Extensions::new();
-                update::register(&ext, &registry);
-                assert!(
-                    ext.handlers
-                        .set_objects(Arc::new(RegistryObjects(registry.clone())))
-                        .is_ok(),
-                    "one objects group"
+                // Path rules are in force; a repository has none until a test sets some.
+                let rules = asc_serve::pathrules::PathRulesHub::new(
+                    registry.pool().clone(),
+                    Arc::new(asc_serve::ai::audit::PoolAudit::new(
+                        registry.pool().clone(),
+                    )),
                 );
+                assert!(ext.pathrules.set(rules.clone()), "one path rules hub");
+                update::register(&ext, &registry);
+                // The server's own objects group, path rules and all.
+                asc_serve::objects::register(&ext, &registry);
                 let hooks = read::register(&ext, &registry);
                 if changes {
                     asc_serve::changes::register(&ext, &registry, &hooks);
@@ -188,6 +148,7 @@ impl Server {
                         listener.local_addr().expect("addr"),
                         tokio::runtime::Handle::current(),
                         registry.clone(),
+                        rules,
                     ))
                     .expect("send");
                 let incoming = futures::stream::unfold(listener, |l| async move {
@@ -204,11 +165,12 @@ impl Server {
                     .await;
             });
         });
-        let (addr, handle, registry) = addr_rx.recv().expect("the server started");
+        let (addr, handle, registry, rules) = addr_rx.recv().expect("the server started");
         Self {
             addr,
             handle,
             registry,
+            rules,
             calls,
             shutdown: Some(stop_tx),
             thread: Some(thread),
@@ -283,6 +245,22 @@ impl Server {
             .await
             .expect("append version");
             tx.commit().await.expect("commit");
+        });
+    }
+
+    /// Replaces the path rules of `repo` with `rules` (`(dir, subject, level)`).
+    pub fn set_path_rules(&self, repo: &str, rules: &[(&str, &str, &str)]) {
+        let parsed: Vec<_> = rules
+            .iter()
+            .map(|(d, s, l)| asc_serve::pathrules::parse_rule(d, s, l).expect("rule"))
+            .collect();
+        let hub = self.rules.clone();
+        let repo = repo.to_owned();
+        self.handle.block_on(async move {
+            let at = hub.get(&repo).await.expect("rules").revision;
+            hub.set(&repo, &parsed, at, "pat:admin")
+                .await
+                .expect("set rules");
         });
     }
 

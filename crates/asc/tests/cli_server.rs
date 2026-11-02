@@ -127,6 +127,56 @@ fn a_clone_on_a_fresh_machine_reads_everything_through_the_server() {
 }
 
 #[test]
+fn a_clone_shows_a_folder_path_rules_keep_from_the_caller_as_restricted() {
+    let server = Server::start(&["acme/mono"]);
+    let url = server.url("acme/mono");
+    let sb = Sandbox::new();
+    let a = first_client(&sb, "a", &url);
+    std::fs::create_dir(a.join("secret")).unwrap();
+    commit_file(
+        &sb,
+        &a,
+        "secret/key.txt",
+        "hidden
+",
+    );
+    ok(&sb, &a, &["push", "origin", "master"]);
+    server.set_path_rules("acme/mono", &[("secret", "*", "none")]);
+
+    let other = Sandbox::new();
+    let root = other.tmp.path().to_owned();
+    server.forget_calls();
+    let out = asc_as(&other, &root, Some(READ), &["clone", "-q", &url, "c"]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let c = root.join("c");
+    assert_eq!(
+        std::fs::read_to_string(c.join("one.txt")).unwrap(),
+        "one
+"
+    );
+    // The folder is there, holding nothing of the content, and its names do not leak.
+    let names: Vec<_> = std::fs::read_dir(c.join("secret"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert_eq!(names, [".asc-composed"]);
+    assert!(!c.join("secret/key.txt").exists());
+
+    let st = asc_as(&other, &c, Some(READ), &["status", "--porcelain"]);
+    assert!(st.status.success(), "{}", text(&st.stderr));
+    assert_eq!(text(&st.stdout), "", "a restricted folder is not a change");
+    assert!(
+        text(&st.stderr).contains("secret: restricted"),
+        "{}",
+        text(&st.stderr)
+    );
+    // History still reads, with the restricted change's message withheld.
+    let log = text(&asc_as(&other, &c, Some(READ), &["log", "--format=%s"]).stdout);
+    assert_eq!(log.lines().count(), 2, "{log}");
+    assert!(!log.contains("secret/key.txt"), "{log}");
+}
+
+#[test]
 fn a_plain_push_while_behind_is_git_s_rejection() {
     let server = Server::start(&["acme/app"]);
     let url = server.url("acme/app");
