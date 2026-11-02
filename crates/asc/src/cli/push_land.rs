@@ -46,6 +46,7 @@ pub fn intent(land: bool, force: bool, options: Vec<String>) -> PushIntent {
         land,
         no_content_merge: false,
         options,
+        linked: Vec::new(),
     }
 }
 

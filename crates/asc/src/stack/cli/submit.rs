@@ -762,6 +762,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
             auto_merge: a.auto_merge,
             force: a.force,
         }),
+        linked: Vec::new(),
     });
     let pushed = ws
         .engine

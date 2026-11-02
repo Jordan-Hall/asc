@@ -638,6 +638,16 @@ pub struct PushIntent {
     pub no_content_merge: bool,
     /// `-o <option>` values other than `land`, passed to the server's hooks (AGit topics).
     pub options: Vec<String>,
+    /// Other repositories of the same server whose refs move all or nothing with this push
+    /// (writable mounts, SPEC §10.6).
+    pub linked: Vec<LinkedRefs>,
+}
+
+/// The ref updates of one linked repository: `repo` is its `owner/name` on the server.
+#[derive(Clone, Debug, Default)]
+pub struct LinkedRefs {
+    pub repo: String,
+    pub updates: Vec<RefUpdate>,
 }
 
 /// What the server answered to an `UpdateRefs` that carried options or LAND.
@@ -888,21 +898,15 @@ impl ServerRemote {
         updates: &[RefUpdate],
         intent: &PushIntent,
     ) -> sync::Result<UpdateOutcome> {
-        let mut wire_updates = Vec::with_capacity(updates.len());
-        for u in updates {
-            let name = String::from_utf8(u.name.as_bytes().to_vec())
-                .map_err(|_| sync::Error::Remote("ref name is not UTF-8".into()))?;
-            wire_updates.push(wire::RefUpdate {
-                name,
-                expect: Some(match &u.expect {
-                    asc_store::refs::Expect::Any => wire::ref_update::Expect::Any(true),
-                    asc_store::refs::Expect::Absent => wire::ref_update::Expect::Absent(true),
-                    asc_store::refs::Expect::Value(t) => {
-                        wire::ref_update::Expect::Value(wire::RefTarget::from(t))
-                    }
+        let main = wire_updates(updates)?;
+        let mut linked = Vec::with_capacity(intent.linked.len());
+        for l in &intent.linked {
+            linked.push(wire::LinkedUpdate {
+                repo: Some(wire::RepoRef {
+                    name: l.repo.clone(),
+                    id_mode: asc_rpc::IdMode::Asc.to_wire(),
                 }),
-                new: u.new.as_ref().map(wire::RefTarget::from),
-                delete: u.new.is_none(),
+                updates: wire_updates(&l.updates)?,
             });
         }
         let mode = if intent.land {
@@ -914,10 +918,11 @@ impl ServerRemote {
         };
         let req = wire::UpdateRefsRequest {
             repo: session.wire.repo_ref(),
-            updates: wire_updates,
+            updates: main,
             mode: mode as i32,
             push_options: intent.options.clone(),
             no_content_merge: intent.no_content_merge,
+            linked,
             ..wire::UpdateRefsRequest::default()
         };
         let response = session
@@ -1046,7 +1051,7 @@ impl Remote for ServerRemote {
         self.with_auth(|s| {
             let intent = intent.clone();
             async move {
-                if intent.land || !intent.options.is_empty() {
+                if intent.land || !intent.options.is_empty() || !intent.linked.is_empty() {
                     self.update_armed(&s, updates, &intent).await.map(|o| {
                         if let Ok(mut slot) = self.outcome.lock() {
                             *slot = Some(o);
@@ -1076,6 +1081,27 @@ impl Remote for ServerRemote {
     fn history(&self) -> Option<Arc<dyn HistoryApi>> {
         Some(Arc::new(self.client()))
     }
+}
+
+fn wire_updates(updates: &[RefUpdate]) -> sync::Result<Vec<wire::RefUpdate>> {
+    let mut out = Vec::with_capacity(updates.len());
+    for u in updates {
+        let name = String::from_utf8(u.name.as_bytes().to_vec())
+            .map_err(|_| sync::Error::Remote("ref name is not UTF-8".into()))?;
+        out.push(wire::RefUpdate {
+            name,
+            expect: Some(match &u.expect {
+                asc_store::refs::Expect::Any => wire::ref_update::Expect::Any(true),
+                asc_store::refs::Expect::Absent => wire::ref_update::Expect::Absent(true),
+                asc_store::refs::Expect::Value(t) => {
+                    wire::ref_update::Expect::Value(wire::RefTarget::from(t))
+                }
+            }),
+            new: u.new.as_ref().map(wire::RefTarget::from),
+            delete: u.new.is_none(),
+        });
+    }
+    Ok(out)
 }
 
 /// `GetObjects` for `keys`, the result of each item told to the credential helpers. A

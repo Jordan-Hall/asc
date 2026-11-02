@@ -582,3 +582,98 @@ fn diff_remote_needs_no_workspace() {
     assert!(out.status.success(), "{}", text(&out.stderr));
     assert_eq!(text(&out.stdout), "one.txt\ntwo.txt\n");
 }
+
+/// A parent `mono` whose `sdk` gitlink pins the head of the `sdk` repository, both on `server`
+/// and cloned side by side; `sdk` is then a writable mount of `mono`.
+fn mono_with_mount(sb: &Sandbox, server: &Server) -> (std::path::PathBuf, std::path::PathBuf) {
+    let sdk = first_client(sb, "sdk", &server.url("acme/sdk"));
+    let pin = head(sb, &sdk, "HEAD");
+    let mono = first_client(sb, "mono", &server.url("acme/mono"));
+    let link = format!("160000,{pin},sdk");
+    ok(sb, &mono, &["update-index", "--add", "--cacheinfo", &link]);
+    ok(sb, &mono, &["commit", "-q", "-m", "link sdk"]);
+    ok(sb, &mono, &["push", "-q", "origin", "master"]);
+    // `init` names a repository after its directory.
+    ok(sb, &mono, &["config", "asc.submodule.sdk.repo", "sdk"]);
+    ok(sb, &mono, &["config", "asc.submodule.sdk.branch", "master"]);
+    let out = ok(sb, &mono, &["submodule", "edit", "sdk"]);
+    assert!(
+        text(&out.stdout).contains("writable mount"),
+        "{}",
+        text(&out.stdout)
+    );
+    (mono, sdk)
+}
+
+#[test]
+fn a_push_through_a_writable_mount_moves_both_repositories_together() {
+    let server = Server::start(&["acme/mono", "acme/sdk"]);
+    let sb = Sandbox::new();
+    let (mono, sdk) = mono_with_mount(&sb, &server);
+    let sdk_before = head(&sb, &sdk, "origin/master");
+
+    std::fs::write(mono.join("sdk/one.txt"), "changed\n").unwrap();
+    std::fs::write(mono.join("one.txt"), "parent\n").unwrap();
+    ok(&sb, &mono, &["commit", "-q", "-a", "-m", "both sides"]);
+    let out = ok(&sb, &mono, &["push", "origin", "master"]);
+    assert!(
+        text(&out.stdout).contains("sdk: pushed master (linked: true)"),
+        "{}",
+        text(&out.stdout)
+    );
+    assert!(
+        server
+            .calls()
+            .iter()
+            .filter(|c| c.contains("UpdateRefs"))
+            .count()
+            >= 1
+    );
+
+    // A clone of the child on another machine sees the commit made in the mount.
+    let fresh = Sandbox::new();
+    let root = fresh.tmp.path().to_owned();
+    ok(
+        &fresh,
+        &root,
+        &["clone", "-q", &server.url("acme/sdk"), "sdk2"],
+    );
+    let sdk2 = root.join("sdk2");
+    assert_ne!(head(&fresh, &sdk2, "HEAD"), sdk_before);
+    assert_eq!(
+        std::fs::read_to_string(sdk2.join("one.txt")).unwrap(),
+        "changed\n"
+    );
+    let log = text(&ok(&fresh, &sdk2, &["log", "-1", "--format=%s"]).stdout);
+    assert_eq!(log, "both sides\n");
+}
+
+#[test]
+fn a_refused_child_update_leaves_the_parent_unmoved() {
+    let server = Server::start(&["acme/mono", "acme/sdk"]);
+    let sb = Sandbox::new();
+    let (mono, _sdk) = mono_with_mount(&sb, &server);
+    let parent_before = text(&ok(&sb, &mono, &["ls-remote", "origin", "master"]).stdout);
+
+    // The child's branch moves under the mount, so the linked update's expectation fails.
+    let racer = Sandbox::new();
+    let root = racer.tmp.path().to_owned();
+    ok(
+        &racer,
+        &root,
+        &["clone", "-q", &server.url("acme/sdk"), "r"],
+    );
+    let r = root.join("r");
+    commit_file(&racer, &r, "race.txt", "race\n");
+    ok(&racer, &r, &["push", "-q", "origin", "master"]);
+
+    std::fs::write(mono.join("sdk/one.txt"), "changed\n").unwrap();
+    std::fs::write(mono.join("one.txt"), "parent\n").unwrap();
+    ok(&sb, &mono, &["commit", "-q", "-a", "-m", "both sides"]);
+    let out = asc(&sb, &mono, &["push", "origin", "master"]);
+    assert!(!out.status.success(), "{}", text(&out.stdout));
+    assert_eq!(
+        text(&ok(&sb, &mono, &["ls-remote", "origin", "master"]).stdout),
+        parent_before
+    );
+}

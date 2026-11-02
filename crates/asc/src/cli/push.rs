@@ -755,6 +755,16 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let mut mapped = false;
     let mut refusal: Option<String> = None;
     let mut outcome: Option<crate::remote::server::UpdateOutcome> = None;
+    let (linked, mounted) = if to_send.is_empty() {
+        (Vec::new(), Vec::new())
+    } else {
+        super::push_mounts::prepare(ctx, ws, server.as_ref(), o.dry_run).await?
+    };
+    if o.dry_run {
+        for p in &mounted {
+            println!("{}: would push {} (linked: {})", p.path, p.branch, p.linked);
+        }
+    }
     if !to_send.is_empty() && !o.dry_run {
         remote::claim_local_refs(ws, &opened).await?;
         let mut updates: Vec<PushUpdate> = to_send
@@ -810,7 +820,9 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
                 || to_send
                     .iter()
                     .any(|p| p.spec.force || p.new.is_none() || p.kind == Kind::Forced);
-            s.arm(push_land::intent(land, forcing, options.clone()));
+            let mut intent = push_land::intent(land, forcing, options.clone());
+            intent.linked = linked.clone();
+            s.arm(intent);
         }
         match ws
             .engine
@@ -824,6 +836,10 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         {
             Ok(report) => {
                 outcome = server.as_ref().and_then(|s| s.take_outcome());
+                for p in mounted.iter().filter(|p| p.linked) {
+                    p.track().await?;
+                    println!("{}: pushed {} (linked: true)", p.path, p.branch);
+                }
                 if land {
                     // The fetch after the land moves the remote-tracking refs to the landed tips.
                 } else if opened.configured {
