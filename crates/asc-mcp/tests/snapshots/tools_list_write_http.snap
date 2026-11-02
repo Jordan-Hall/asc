@@ -287,6 +287,12 @@ expression: tools_list_json(ctx)
       "name": "submit",
       "outputSchema": {
         "properties": {
+          "linked": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
           "message": {
             "type": "string"
           },
@@ -775,6 +781,12 @@ expression: tools_list_json(ctx)
           "dry_run": {
             "description": "Whether this was a preview.",
             "type": "boolean"
+          },
+          "linked": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
           },
           "message": {
             "type": "string"
