@@ -150,6 +150,7 @@ impl RefsHandler for Refs {
         Ok(wire::UpdateRefsResponse {
             results,
             rewritten: Vec::new(),
+            linked: Vec::new(),
             message: self.st.message.lock().unwrap().clone(),
         })
     }

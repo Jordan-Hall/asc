@@ -149,6 +149,7 @@ impl RefsHandler for Refs {
         Ok(wire::UpdateRefsResponse {
             results,
             rewritten: Vec::new(),
+            linked: Vec::new(),
             message: String::new(),
         })
     }
