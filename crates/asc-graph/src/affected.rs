@@ -821,10 +821,7 @@ mod tests {
         assert_eq!(reasons(&a, "node:@asc/dsl-compiler"), ["dep:rust:dsl-core"]);
         // The wrapper's own sources do not reach the native crates.
         let a = run(&t, &edited(&t, "packages/dsl/compiler/index.ts", "x"));
-        assert_eq!(
-            ids(&a),
-            ["node:@asc/dsl-compiler", "node:pipeline-svc-api"]
-        );
+        assert_eq!(ids(&a), ["node:@asc/dsl-compiler", "node:pipeline-svc-api"]);
     }
 
     #[test]

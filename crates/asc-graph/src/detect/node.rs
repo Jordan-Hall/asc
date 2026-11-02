@@ -725,8 +725,8 @@ mod tests {
             [
                 "node:@asc/dsl-compiler",
                 "node:@asc/dsl-compiler-linux-x64-gnu",
-                "node:@asc/private",
                 "node:@asc/nova",
+                "node:@asc/private",
                 "node:@asc/ui",
                 "node:pipeline-svc-api",
                 "node:web",

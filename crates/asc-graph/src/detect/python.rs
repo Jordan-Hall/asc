@@ -1120,8 +1120,8 @@ mod tests {
             edges(&g, "pyproject.toml"),
             [
                 e(NOVA, DepKind::Member),
-                e(SHARED, DepKind::Member),
                 e(NOVA_LIB, DepKind::Member),
+                e(SHARED, DepKind::Member),
             ]
         );
         // The excluded directory is still a Package, just no member.

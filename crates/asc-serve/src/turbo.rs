@@ -520,9 +520,7 @@ impl TurboState {
                 && scope != c.scope
             {
                 let dir = self.read_dir(&self.dir_path(&c.slug, hash)).await?;
-                if !dir
-                    .is_some_and(|d| rules.level(d.as_bytes()) >= asc_core::pathacl::Level::Build)
-                {
+                if dir.is_none_or(|d| rules.level(d.as_bytes()) < asc_core::pathacl::Level::Build) {
                     continue;
                 }
             }

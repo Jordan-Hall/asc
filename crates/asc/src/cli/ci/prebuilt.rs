@@ -136,7 +136,7 @@ fn load(ctx: &Ctx, c: &Common) -> Result<Vec<Task>> {
 
 /// The tasks that would fail for this person: built from a directory they may not read and
 /// not served from the cache.
-pub(super) fn unbuilt<'t>(tasks: &'t [Task], level: impl Fn(&str) -> Level) -> Vec<&'t Task> {
+pub(super) fn unbuilt(tasks: &[Task], level: impl Fn(&str) -> Level) -> Vec<&Task> {
     tasks
         .iter()
         .filter(|t| level(&t.dir()) < Level::Read && !t.hit())

@@ -72,6 +72,9 @@ pub enum VfsError {
 
 pub type Result<T, E = VfsError> = std::result::Result<T, E>;
 
+/// Says whether the path rules keep a path read-only.
+pub type LockedFn = Arc<dyn Fn(&RepoPath) -> bool + Send + Sync>;
+
 /// Composes the tree of a gitlink (filled by U60). Returns `None` when the submodule is not
 /// configured; the gitlink is then an empty directory.
 pub trait Compose: Send + Sync {
@@ -93,7 +96,7 @@ pub struct Options {
     pub compose: Option<Arc<dyn Compose>>,
     /// Paths the path rules keep read-only for this person (SPEC §15.5.1): writes to them are
     /// refused like those to a read-only mount.
-    pub locked: Option<Arc<dyn Fn(&RepoPath) -> bool + Send + Sync>>,
+    pub locked: Option<LockedFn>,
 }
 
 impl Default for Options {
