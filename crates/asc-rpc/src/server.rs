@@ -1390,6 +1390,7 @@ impl<O: Objects + 'static, R: Refs + 'static> ObjectsHandler for EngineBackend<O
                     resp.objects.push(pb::Object {
                         key: Some(wire(&k)?),
                         data: b,
+                        redacted: false,
                     });
                 }
                 loop {
@@ -1413,6 +1414,7 @@ impl<O: Objects + 'static, R: Refs + 'static> ObjectsHandler for EngineBackend<O
                             resp.objects.push(pb::Object {
                                 key: Some(wire(&k)?),
                                 data: b,
+                                redacted: false,
                             });
                         }
                     }

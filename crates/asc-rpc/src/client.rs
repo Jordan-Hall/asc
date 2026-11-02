@@ -447,7 +447,7 @@ impl RpcClient {
     fn lane(
         &self,
         batches: Vec<Vec<ObjKey>>,
-    ) -> BoxStream<'static, Result<Vec<(ObjKey, Bytes)>, CallError>> {
+    ) -> BoxStream<'static, Result<Vec<Fetched>, CallError>> {
         enum Lane {
             Pending(RpcClient, Vec<Vec<ObjKey>>),
             Open(Box<Streaming<pb::GetObjectsResponse>>, HashSet<ObjKey>),
@@ -486,7 +486,16 @@ impl RpcClient {
                     )));
                 }
                 check_codec(&o.data).map_err(|e| CallError::Protocol(format!("{key}: {e}")))?;
-                out.push((key, o.data));
+                if o.redacted && !matches!(key, ObjKey::Changeset(_)) {
+                    return Err(CallError::Protocol(format!(
+                        "{key}: only a changeset is redacted"
+                    )));
+                }
+                out.push(Fetched {
+                    key,
+                    data: o.data,
+                    redacted: o.redacted,
+                });
             }
             for m in &resp.missing {
                 if !wanted.remove(&ObjKey::try_from(m)?) {
@@ -500,11 +509,31 @@ impl RpcClient {
         .boxed()
     }
 
-    /// Stored bytes of the keys that exist, over up to eight pipelined streams.
+    /// Stored bytes of the keys that exist, over up to eight pipelined streams. A redacted
+    /// changeset (path rules, SPEC §15.5.1) fails here: it does not hash to its key, so only
+    /// [`Self::fetch_marked`] callers, which keep it apart, take one.
     pub fn fetch(
         &self,
         keys: Vec<ObjKey>,
     ) -> BoxStream<'static, Result<(ObjKey, Bytes), CallError>> {
+        self.fetch_marked(keys)
+            .and_then(|f| async move {
+                if f.redacted {
+                    return Err(CallError::Protocol(format!(
+                        "{}: the server sent a redacted changeset (path rules restrict this repository for you)",
+                        f.key
+                    )));
+                }
+                Ok((f.key, f.data))
+            })
+            .boxed()
+    }
+
+    /// Like [`Self::fetch`], with each object's `redacted` mark.
+    pub fn fetch_marked(
+        &self,
+        keys: Vec<ObjKey>,
+    ) -> BoxStream<'static, Result<Fetched, CallError>> {
         let streams = GET_STREAMS.min(keys.len().div_ceil(GET_BATCH));
         let mut lanes: Vec<Vec<Vec<ObjKey>>> = vec![Vec::new(); streams];
         for (i, batch) in keys.chunks(GET_BATCH).enumerate() {
@@ -596,6 +625,7 @@ impl RpcClient {
             current.push(pb::Object {
                 key: Some(pb::ObjKey::try_from(key)?),
                 data: data.clone(),
+                redacted: false,
             });
             bytes += data.len();
         }
@@ -1190,6 +1220,17 @@ impl BlameApi for RpcClient {
     }
 }
 
+/// One object of a `GetObjects` answer.
+#[derive(Clone, Debug)]
+pub struct Fetched {
+    pub key: ObjKey,
+    /// Stored bytes (codec ‖ data).
+    pub data: Bytes,
+    /// A changeset with the caller's restricted changes left out (SPEC §15.5.1): it no longer
+    /// hashes to `key`, and is never stored as that key's verified object or uploaded.
+    pub redacted: bool,
+}
+
 // ------------------------------------------------------------------------------ RemoteObjects
 
 /// `Objects` over `GetObjects`/`PutObjects`/`HasObjects` (SPEC §3.3).
@@ -1692,6 +1733,7 @@ mod tests {
             objects: vec![pb::Object {
                 key: Some(pb::ObjKey::try_from(&fresh).unwrap()),
                 data: encode_stored(b"not fresh"),
+                redacted: false,
             }],
         };
         let err = rpc

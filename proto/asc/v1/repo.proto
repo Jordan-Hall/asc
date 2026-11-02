@@ -9,7 +9,8 @@ enum ObjKind { OBJ_KIND_UNSPECIFIED = 0; OBJ_KIND_FILE = 1; OBJ_KIND_CHUNK_LIST 
                OBJ_KIND_TREE = 4; OBJ_KIND_CHANGESET = 5; OBJ_KIND_TAG = 6; OBJ_KIND_GIT_TREE_OVERRIDE = 7;
                reserved 8; OBJ_KIND_CHANGE_META = 9; }   // 8 was SHA256_ALIAS (removed with LFS); 9 = ChangeMeta (§20.2)
 message ObjKey { ObjKind kind = 1; bytes id = 2 [(asc.v1.json) = JSON_KIND_HEX]; }          // 32 bytes (20 for GIT_TREE_OVERRIDE)
-message Object { ObjKey key = 1; bytes data = 2 [(asc.v1.json) = JSON_KIND_DATA]; }          // stored bytes: codec ‖ data
+message Object { ObjKey key = 1; bytes data = 2 [(asc.v1.json) = JSON_KIND_DATA];          // stored bytes: codec ‖ data
+  bool redacted = 3; }   // path rules (SPEC §15.5.1): a changeset with restricted changes left out; it no longer hashes to its id
 
 message RefTarget { oneof t { bytes changeset = 1 [(asc.v1.json) = JSON_KIND_HEX]; bytes tag = 2 [(asc.v1.json) = JSON_KIND_HEX]; } }
 message Ref { string name = 1; RefTarget target = 2; uint64 version = 3; int64 expires_at = 4; }
