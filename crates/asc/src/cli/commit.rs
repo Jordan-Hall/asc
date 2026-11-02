@@ -35,12 +35,14 @@ use super::common::{CliEngine, CliError, Ctx, Result, StagingAfterMove, WsCtx};
 use super::format::date::Mode as DateMode;
 use super::seqstate::{self, Sequence};
 use super::status;
+use super::submodule;
+use super::worktree::open_at;
 use crate::ext::{self, OpId};
 use crate::hooks_runner::{Gate, Hook, HookEnv, MsgSource, RewriteKind, Runner};
 use crate::native::NativeSpec;
 
 /// `git commit` arguments.
-#[derive(clap::Parser, Debug)]
+#[derive(clap::Parser, Debug, Clone)]
 #[command(name = "commit", disable_help_flag = true, disable_version_flag = true)]
 pub struct Args {
     #[arg(short = 'm', long = "message")]
@@ -178,6 +180,36 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
         Flow::Committed => ExitCode::SUCCESS,
         Flow::Abort(code) => ExitCode::from(code),
     })
+}
+
+/// Writable mounts (SPEC §10.6) commit first, in their own repositories, with the same message
+/// and options; the parent then stages each mount's new head as its gitlink pin. An amend only
+/// re-pins: the children keep their history.
+async fn commit_mounts(ctx: &Ctx, ws: &WsCtx, a: &Args) -> Result<()> {
+    let mounts = submodule::mount::mounts_here(ctx, ws).await?;
+    if mounts.is_empty() {
+        return Ok(());
+    }
+    if !a.amend {
+        for m in &mounts {
+            if !submodule::mount::has_work(&m.root(), a.all)? {
+                continue;
+            }
+            let child = open_at(ctx, m.root()).await?;
+            let mut ca = a.clone();
+            ca.paths.clear();
+            ca.only = false;
+            ca.include = false;
+            let code = Box::pin(run(&child, ca)).await?;
+            if code != ExitCode::SUCCESS {
+                return Err(fatal(format!(
+                    "the commit in the writable mount '{}' failed; the parent was not committed",
+                    m.path
+                )));
+            }
+        }
+    }
+    submodule::mount::stage_pins(ctx, ws, &mounts).await
 }
 
 /// The commits named by `MERGE_HEAD`, oldest line first.
@@ -443,6 +475,7 @@ async fn flow(
     if !paths.is_empty() && !merge.is_empty() {
         return Err(fatal("cannot do a partial commit during a merge."));
     }
+    commit_mounts(ctx, ws, a).await?;
     let scope = match (paths.is_empty(), a.include) {
         (true, _) => Scope::Staged,
         (false, true) => Scope::Include,
