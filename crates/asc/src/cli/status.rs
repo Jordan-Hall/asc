@@ -811,7 +811,11 @@ async fn gather(ctx: &Ctx, ws: &WsCtx, o: &Opts) -> Result<Report> {
         eprintln!("{}", shadow_warning(dir));
     }
     for dir in &status.restricted {
-        eprintln!("{dir}: restricted (path rules keep its content from you)");
+        // Quoted like every other path, so a control byte in a name cannot reach the terminal.
+        eprintln!(
+            "{}: restricted (path rules keep its content from you)",
+            String::from_utf8_lossy(&quote(dir.as_bytes(), false, o.quote_high))
+        );
     }
 
     if o.optional_locks {
