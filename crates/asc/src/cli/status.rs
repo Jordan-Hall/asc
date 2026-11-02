@@ -807,6 +807,8 @@ async fn gather(ctx: &Ctx, ws: &WsCtx, o: &Opts) -> Result<Report> {
         ignored.sort();
     }
 
+    mount_rows(ctx, &g, o, &mut out, &mut untracked).await?;
+
     for dir in &status.shadowed {
         eprintln!("{}", shadow_warning(dir));
     }
@@ -840,6 +842,78 @@ async fn gather(ctx: &Ctx, ws: &WsCtx, o: &Opts) -> Result<Report> {
         ignored,
         state,
     })
+}
+
+/// The options a writable mount's own report is gathered with: no pathspec (the parent filters
+/// the prefixed paths) and no ignored walk.
+fn mount_opts(o: &Opts) -> Opts {
+    Opts {
+        format: o.format,
+        branch: false,
+        z: o.z,
+        untracked: o.untracked,
+        ignored: false,
+        ahead_behind: false,
+        renames: o.renames,
+        hints: false,
+        u_hint: false,
+        relative: false,
+        quote_high: o.quote_high,
+        optional_locks: o.optional_locks,
+        template: false,
+        from_commit: false,
+        prog: o.prog,
+        prefix: Vec::new(),
+        spec: None,
+    }
+}
+
+/// Writable mounts (SPEC §10.6): the child's changes under the mount prefix, and the gitlink as
+/// modified when the child's HEAD is not the pin the parent stages.
+async fn mount_rows(
+    ctx: &Ctx,
+    g: &Gather<'_>,
+    o: &Opts,
+    out: &mut BTreeMap<Vec<u8>, Row>,
+    untracked: &mut Vec<Vec<u8>>,
+) -> Result<()> {
+    for m in super::submodule::mount::mounts_here(ctx, g.ws).await? {
+        let pre = |p: &[u8]| [m.path.as_bytes(), b"/", p].concat();
+        let child = super::worktree::open_at(ctx, m.root()).await?;
+        let sub = Box::pin(gather(&child, child.ws()?, &mount_opts(o))).await?;
+        for mut r in sub.rows {
+            r.path = pre(&r.path);
+            r.orig = r.orig.map(|(p, score)| (pre(&p), score));
+            if selected(&o.spec, &r.path, false) {
+                out.insert(r.path.clone(), r);
+            }
+        }
+        for u in sub.untracked {
+            let p = pre(&u);
+            if selected(&o.spec, &p, p.ends_with(b"/")) {
+                untracked.push(p);
+            }
+        }
+        let staged = g.index_side(&m.path).await?;
+        let head = super::submodule::mount::head_pin(ctx, &m).await?;
+        if head.is_some()
+            && staged.map(|s| s.oid) != head
+            && selected(&o.spec, m.path.as_bytes(), false)
+        {
+            let key = m.path.as_bytes().to_vec();
+            let head_side = g.head_entry(&m.path).await?.as_ref().map(side_of);
+            let row = out.entry(key.clone()).or_insert_with(|| {
+                let mut r = Row::new(key);
+                r.head = head_side;
+                r.index = staged;
+                r
+            });
+            row.y = b'M';
+            row.work = 0o160000;
+        }
+    }
+    untracked.sort();
+    Ok(())
 }
 
 /// Paths of the tracked files and the directories above them.

@@ -510,8 +510,12 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
             )
         }
     };
-    c.opts.sides = sides;
     let mut built = built;
+    if revs.is_empty() {
+        let mounted = mount_changes(ctx, ws, &mut local, cached, spec.as_ref(), &c.opts).await?;
+        built.changes.extend(mounted);
+    }
+    c.opts.sides = sides;
     if sides.1 == SideKind::Worktree {
         warn_lf_to_crlf(ctx, ws, &built).await;
         built.changes = sides::detect_renames(built.changes, &local, &c.opts).await?;
@@ -530,6 +534,46 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
         },
     )
     .await
+}
+
+/// The changes inside the writable mounts (SPEC §10.6), against their own index or HEAD, under
+/// the mount's path: the parent's `diff` shows the whole work tree it holds.
+async fn mount_changes(
+    ctx: &Ctx,
+    ws: &WsCtx,
+    local: &mut LocalFiles<'_>,
+    cached: bool,
+    spec: Option<&Pathspec>,
+    opts: &asc_engine::diff::DiffOptions,
+) -> Result<Vec<asc_engine::diff::TreeChange>> {
+    let mut out = Vec::new();
+    for m in super::submodule::mount::mounts_here(ctx, ws).await? {
+        if spec.is_some_and(|s| !s.may_contain_dir(&m.path) && !s.matches(&m.path)) {
+            continue;
+        }
+        let child = super::worktree::open_at(ctx, m.root()).await?;
+        let cws = child.ws()?;
+        let built = if cached {
+            let base = sides::head_root(cws).await?;
+            sides::cached(cws, base, None, opts).await?
+        } else {
+            sides::worktree(&child, cws, local, None, None).await?
+        };
+        let under = |p: &RepoPath| -> Result<RepoPath> {
+            let mut bytes = m.path.as_bytes().to_vec();
+            bytes.push(b'/');
+            bytes.extend_from_slice(p.as_bytes());
+            RepoPath::new(bytes).map_err(|e| CliError::Fatal(e.to_string()))
+        };
+        for mut change in built.changes {
+            change.path = under(&change.path)?;
+            change.old_path = under(&change.old_path)?;
+            if spec.is_none_or(|s| s.matches(&change.path)) {
+                out.push(change);
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// git converts a changed work tree file as it reads it, and warns when `core.autocrlf=true` would
