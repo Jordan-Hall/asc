@@ -686,6 +686,9 @@ fn unauthenticated(e: &sync::Error) -> bool {
 
 /// A failed `GetObjects` as the engine's error (an unreachable server is the §6.4 offline error).
 fn fetch_error(remote: &str, e: CallError) -> sync::Error {
+    if e.is_path_policy() {
+        return sync::Error::PathPolicy(e.to_string());
+    }
     if e.is_unavailable() {
         return sync::Error::Graph(graph::Error::Offline {
             remote: remote.to_owned(),
@@ -985,6 +988,9 @@ pub fn land_message(e: &RpcError) -> String {
 
 #[async_trait]
 impl Remote for ServerRemote {
+    fn serves_redacted(&self) -> bool {
+        true
+    }
     fn name(&self) -> &str {
         &self.name
     }
@@ -1072,7 +1078,8 @@ impl Remote for ServerRemote {
     }
 }
 
-/// `GetObjects` for `keys`, the result of each item told to the credential helpers.
+/// `GetObjects` for `keys`, the result of each item told to the credential helpers. A
+/// changeset the server redacted comes back under its redacted key (SPEC §15.5.1).
 fn fetch_stream(
     s: Arc<Session>,
     name: &str,
@@ -1080,11 +1087,16 @@ fn fetch_stream(
 ) -> BoxStream<'static, sync::Result<(ObjKey, Bytes)>> {
     let name = name.to_owned();
     s.client
-        .fetch(keys)
+        .fetch_marked(keys)
         .map(move |item| match item {
             Ok(found) => {
                 credential::report_result(&s.resolved, true);
-                Ok(found)
+                Ok(match found.key {
+                    ObjKey::Changeset(id) if found.redacted => {
+                        (asc_store::objects::redacted_key(id), found.data)
+                    }
+                    key => (key, found.data),
+                })
             }
             Err(e) => {
                 let e = fetch_error(&name, e);
@@ -1102,6 +1114,9 @@ pub struct Shared(pub Arc<ServerRemote>);
 
 #[async_trait]
 impl Remote for Shared {
+    fn serves_redacted(&self) -> bool {
+        self.0.serves_redacted()
+    }
     fn name(&self) -> &str {
         self.0.name()
     }
