@@ -153,6 +153,12 @@ impl ServerMutations {
         req: wire::RebaseRequest,
     ) -> Result<wire::RebaseResponse, Status> {
         let o = self.open(ctx).await?;
+        if o.scope.is_some() {
+            // A rebase reads and rewrites the whole tree, and its conflicts name paths.
+            return Err(Status::permission_denied(
+                "PATH_POLICY: path rules restrict part of this repository for you; rebase locally with asc",
+            ));
+        }
         check_update_ref(&req.update_ref)?;
         if req.head.is_empty() || req.head.len() > MAX_STRING || req.base.len() > MAX_STRING {
             return Err(invalid("a rebase names a base and a head"));

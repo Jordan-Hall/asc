@@ -140,6 +140,12 @@ impl ServerMutations {
         req: wire::MergeRequest,
     ) -> Result<wire::MergeResponse, Status> {
         let o = self.open(ctx).await?;
+        if o.scope.is_some() {
+            // A merge reads and rewrites the whole tree, and its conflicts name paths.
+            return Err(Status::permission_denied(
+                "PATH_POLICY: path rules restrict part of this repository for you; merge locally with asc",
+            ));
+        }
         let style =
             wire::MergeStyle::try_from(req.style).map_err(|_| invalid("unknown merge style"))?;
         check_update_ref(&req.update_ref)?;
@@ -961,6 +967,65 @@ mod tests {
             let e = f.m.merge_inner(&ctx(), q).await.unwrap_err();
             assert_eq!(e.code(), tonic::Code::FailedPrecondition);
         }
+    }
+
+    #[tokio::test]
+    async fn a_caller_with_a_restricted_path_merges_and_rebases_locally_only() {
+        let f = fx().await;
+        let r = root(&f).await;
+        let ours = make(
+            &f,
+            &[r],
+            "ours",
+            &[(
+                "a.txt",
+                Some(
+                    "a
+",
+                ),
+            )],
+        )
+        .await;
+        let theirs = make(
+            &f,
+            &[r],
+            "theirs",
+            &[(
+                "b.txt",
+                Some(
+                    "b
+",
+                ),
+            )],
+        )
+        .await;
+        let hub = crate::pathrules::PathRulesHub::new(
+            f.registry.pool().clone(),
+            Arc::new(crate::settings::testkit::Recorder::default()),
+        );
+        let rules = [crate::pathrules::parse_rule("g", "*", "none").unwrap()];
+        hub.set("o/r", &rules, 0, "pat:admin").await.unwrap();
+        assert!(f.hooks.pathrules.set(hub));
+        let e =
+            f.m.merge_inner(&ctx(), req(ours, theirs, wire::MergeStyle::Merge))
+                .await
+                .unwrap_err();
+        assert_eq!(e.code(), tonic::Code::PermissionDenied);
+        assert!(e.message().starts_with("PATH_POLICY:"), "{e:?}");
+        let e =
+            f.m.rebase_inner(
+                &ctx(),
+                wire::RebaseRequest {
+                    repo: repo_ref(),
+                    base: ours.to_string(),
+                    head: theirs.to_string(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), tonic::Code::PermissionDenied);
+        assert!(e.message().starts_with("PATH_POLICY:"), "{e:?}");
     }
 
     #[tokio::test]
