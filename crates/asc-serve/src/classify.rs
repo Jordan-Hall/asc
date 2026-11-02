@@ -377,6 +377,7 @@ impl ClassifyHandler for ServerClassify {
             .open(&ctx.repo)
             .await
             .map_err(registry_status)?;
+        let scope = crate::pathrules::scope::Scope::read(&self.hooks.pathrules, ctx).await?;
         let ids = IdCodec::new(ctx.id_mode, &self.registry, &entry).for_viewer(&ctx.principal);
         let engine = entry.backend.engine().clone();
         let mut base = Self::rev(&ids, &entry, &req.base).await?;
@@ -408,16 +409,29 @@ impl ClassifyHandler for ServerClassify {
             .classify_trees(base_root, head_root, &rules, &gate)
             .await
             .map_err(classify_status)?;
+        // A restricted file is left out, and so is its class from the overall one.
+        let shown: Vec<_> = got
+            .files
+            .iter()
+            .filter(|f| scope.as_ref().is_none_or(|s| s.can_read(f.path.as_bytes())))
+            .collect();
+        let overall = if scope.is_some() {
+            shown
+                .iter()
+                .map(|f| f.class)
+                .fold(asc_engine::classify::ChangeClass::RenameOnly, Ord::max)
+        } else {
+            got.overall
+        };
         Ok(wire::ClassifyResponse {
-            files: got
-                .files
+            files: shown
                 .iter()
                 .map(|f| wire::FileClass {
                     path: bytes::Bytes::copy_from_slice(f.path.as_bytes()),
                     class: f.class as i32,
                 })
                 .collect(),
-            overall: got.overall as i32,
+            overall: overall as i32,
         })
     }
 }
@@ -447,6 +461,7 @@ mod tests {
         handler: ServerClassify,
         hooks: Arc<ReadHooks>,
         entry: Arc<RepoEntry>,
+        reg: Arc<Registry>,
     }
 
     async fn fx() -> Fx {
@@ -454,9 +469,10 @@ mod tests {
         let entry = repo(&reg).await;
         let hooks = Arc::new(ReadHooks::default());
         Fx {
-            handler: ServerClassify::new(reg, hooks.clone()),
+            handler: ServerClassify::new(reg.clone(), hooks.clone()),
             hooks,
             entry,
+            reg,
         }
     }
 
@@ -567,6 +583,42 @@ mod tests {
         assert_eq!(
             v,
             vec![("<overall>".to_owned(), ChangeClass::RenameOnly as i32)]
+        );
+    }
+
+    #[tokio::test]
+    async fn restricted_files_are_left_out_and_do_not_raise_the_overall_class() {
+        let f = fx().await;
+        let a = commit(
+            &f.entry,
+            &[],
+            &[("README.md", b"one"), ("g/x.rs", b"fn a() {}")],
+        )
+        .await;
+        let b = commit(
+            &f.entry,
+            &[a],
+            &[("README.md", b"two"), ("g/x.rs", b"fn b() {}")],
+        )
+        .await;
+        assert_eq!(
+            class_of(&classify(&f, a, b, false).await.unwrap(), "<overall>"),
+            LOGIC
+        );
+        let hub = crate::pathrules::PathRulesHub::new(
+            f.reg.pool().clone(),
+            Arc::new(crate::settings::testkit::Recorder::default()),
+        );
+        let rules = [crate::pathrules::parse_rule("g", "*", "none").unwrap()];
+        hub.set("o/r", &rules, 0, "pat:admin").await.unwrap();
+        assert!(f.hooks.pathrules.set(hub));
+        let v = classify(&f, a, b, false).await.unwrap();
+        assert_eq!(
+            v,
+            vec![
+                ("README.md".to_owned(), DOCS),
+                ("<overall>".to_owned(), DOCS)
+            ]
         );
     }
 
