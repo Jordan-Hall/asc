@@ -151,9 +151,10 @@ impl Compose for Composition {
     }
 }
 
-/// A write below a composed gitlink was refused (`EACCES` / `ERROR_ACCESS_DENIED`).
+/// A write below a composed gitlink or a restricted folder was refused (`EACCES` /
+/// `ERROR_ACCESS_DENIED`).
 #[derive(Debug, thiserror::Error)]
-#[error("access denied: {0} is part of a read-only composed submodule")]
+#[error("access denied: {0} is in a composed submodule or a restricted folder (read-only)")]
 pub struct WriteDenied(pub RepoPath);
 
 /// Failures of [`check_write`].

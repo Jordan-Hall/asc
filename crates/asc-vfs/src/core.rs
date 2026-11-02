@@ -127,7 +127,7 @@ pub struct Node {
     pub id: [u8; 32],
     pub size: u64,
     pub git: GitOid,
-    /// Below (or at) a composed gitlink: writes fail with access denied.
+    /// Below (or at) a composed gitlink or a restricted folder: writes fail with access denied.
     pub read_only: bool,
 }
 
@@ -172,6 +172,8 @@ struct Dir {
     unrepresentable: Vec<u32>,
     /// Case-folded name to index, for case-insensitive lookups.
     fold: HashMap<Vec<u8>, u32>,
+    /// Refused by the remote's path rules: empty and read-only.
+    restricted: bool,
 }
 
 #[derive(Clone)]
@@ -246,8 +248,21 @@ impl CoreFs {
             })?,
             None => {
                 let empty = Tree::new(Vec::new(), true).map_err(|_| VfsError::MissingTree(id))?;
+                // A tree the remote's path rules refused is noted locally (SPEC §15.5.1): it
+                // projects as an empty read-only directory.
                 if empty.id() != id {
-                    return Err(VfsError::MissingTree(id));
+                    let noted = self
+                        .objects
+                        .get(&asc_store::objects::restricted_tree_key(id))
+                        .await?;
+                    if noted.is_none() {
+                        return Err(VfsError::MissingTree(id));
+                    }
+                    let mut dir = self.project(empty);
+                    dir.restricted = true;
+                    let dir = Arc::new(dir);
+                    self.dirs.insert(id, dir.clone());
+                    return Ok(dir);
                 }
                 empty
             }
@@ -296,6 +311,7 @@ impl CoreFs {
             visible,
             unrepresentable: unrep,
             fold,
+            restricted: false,
         }
     }
 
@@ -356,15 +372,16 @@ impl CoreFs {
             }
             canon.extend_from_slice(e.name.as_bytes());
             let here = RepoPath::new(canon.clone()).map_err(|_| VfsError::BadPath)?;
-            let node = self.node(here, &e, read_only);
+            let mut node = self.node(here, &e, read_only);
+            let Some(t) = node.tree_id() else {
+                return Ok((i + 1 == total).then_some(node));
+            };
+            dir = self.load_dir(t).await?;
+            node.read_only |= dir.restricted;
             if i + 1 == total {
                 return Ok(Some(node));
             }
             read_only = node.read_only;
-            match node.tree_id() {
-                Some(t) => dir = self.load_dir(t).await?,
-                None => return Ok(None),
-            }
         }
         Ok(None)
     }
@@ -1185,6 +1202,48 @@ mod tests {
                 .await
                 .is_ok()
         );
+    }
+
+    #[tokio::test]
+    async fn a_noted_restricted_tree_is_an_empty_read_only_dir_and_an_unnoted_one_is_missing() {
+        let fx = Fx::new();
+        let refused = TreeId::from_bytes([7; 32]);
+        let lost = TreeId::from_bytes([8; 32]);
+        let open = fx.dir_entry("open", vec![]).await;
+        let root = fx
+            .tree(vec![
+                entry("lost", Kind::Dir, *lost.as_bytes(), 0),
+                open,
+                entry("secret", Kind::Dir, *refused.as_bytes(), 0),
+            ])
+            .await;
+        fx.put(asc_store::objects::restricted_tree_key(refused), &[])
+            .await;
+        let fs = fx.fs(root, Options::default());
+
+        let n = fs.resolve(&rp("secret")).await.unwrap().unwrap();
+        assert!(n.is_dir() && n.read_only);
+        assert!(
+            fs.read_dir(Some(&rp("secret")))
+                .await
+                .unwrap()
+                .unwrap()
+                .entries
+                .is_empty()
+        );
+        assert!(fs.resolve(&rp("secret/x")).await.unwrap().is_none());
+        assert!(!fs.resolve(&rp("open")).await.unwrap().unwrap().read_only);
+        assert!(matches!(
+            crate::compose::check_write(&fs, &rp("secret/new.txt")).await,
+            Err(crate::compose::WriteError::Denied(_))
+        ));
+        crate::compose::check_write(&fs, &rp("open/new.txt"))
+            .await
+            .unwrap();
+        assert!(matches!(
+            fs.resolve(&rp("lost")).await,
+            Err(VfsError::MissingTree(t)) if t == lost
+        ));
     }
 
     struct Fixed(TreeId);
