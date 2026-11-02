@@ -196,6 +196,7 @@ pub struct ServerCommitGraph {
     compare: Option<ServerCompare>,
     /// The `RepoConfig` method (PLAN C30d); `UNIMPLEMENTED` until set.
     repo_config: Option<ServerRepoConfig>,
+    pathrules: Arc<crate::pathrules::PathRulesSlot>,
 }
 
 impl ServerCommitGraph {
@@ -205,7 +206,14 @@ impl ServerCommitGraph {
             line_history: None,
             compare: None,
             repo_config: None,
+            pathrules: Arc::default(),
         }
+    }
+
+    /// Redacts rows by the path rules in `slot`.
+    pub fn with_pathrules(mut self, slot: Arc<crate::pathrules::PathRulesSlot>) -> Self {
+        self.pathrules = slot;
+        self
     }
 
     /// Serves `LineHistory` through `handler`.
@@ -373,6 +381,8 @@ struct Build {
     /// Derivations the call may still start, shared by the messages of one response.
     derive_left: AtomicUsize,
     labels: HashMap<ChangesetId, Vec<String>>,
+    /// The caller's path scope: rows of restricted changes are redacted.
+    scope: Option<Arc<crate::pathrules::scope::Scope>>,
 }
 
 /// What a row's stats come from.
@@ -403,7 +413,7 @@ impl Build {
                 Some(stat_wire(&s))
             }
         };
-        let entry = wire::LogEntry {
+        let mut entry = wire::LogEntry {
             id: self.ids.changeset_out(row.id).await?,
             git: Bytes::copy_from_slice(git.as_bytes()),
             parents: self.ids.changesets_out(&cs.parents).await?,
@@ -414,6 +424,7 @@ impl Build {
             stats,
             ..wire::LogEntry::default()
         };
+        crate::pathrules::scope::redact_entry(self.scope.as_deref(), &cs, &mut entry);
         let mut edges = Vec::new();
         if self.lanes {
             for e in &row.edges {
@@ -524,6 +535,7 @@ impl InsightsHandler for ServerCommitGraph {
             .open(&ctx.repo)
             .await
             .map_err(registry_status)?;
+        let scope = crate::pathrules::scope::Scope::read(&self.pathrules, ctx).await?;
         let ids = IdCodec::new(ctx.id_mode, &self.registry, &entry).for_viewer(&ctx.principal);
         let engine = entry.backend.engine().clone();
         let limit = match req.limit as usize {
@@ -567,6 +579,7 @@ impl InsightsHandler for ServerCommitGraph {
             lanes: req.lanes,
             stats: req.stats,
             derive_left: AtomicUsize::new(MAX_STATS_DERIVE_PER_PAGE),
+            scope,
         });
         let next = page.next.map(|t| URL_SAFE_NO_PAD.encode(t));
         let rows = Arc::new(page.rows);
@@ -601,6 +614,7 @@ pub fn register(ext: &Extensions, registry: &Arc<Registry>, hooks: &Arc<ReadHook
     ext.handlers
         .set_insights(Arc::new(
             ServerCommitGraph::new(registry.clone())
+                .with_pathrules(hooks.pathrules.clone())
                 .with_line_history(ServerLineHistory::new(registry.clone(), hooks.clone()))
                 .with_compare(
                     ServerCompare::new(registry.clone()).with_pathrules(hooks.pathrules.clone()),
@@ -972,5 +986,46 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(entries[1], before);
+    }
+
+    #[tokio::test]
+    async fn rows_of_restricted_changes_are_redacted() {
+        let f = fx().await;
+        let hub = crate::pathrules::PathRulesHub::new(
+            f.reg.pool().clone(),
+            Arc::new(crate::settings::testkit::Recorder::default()),
+        );
+        let rules = [crate::pathrules::parse_rule("g", "*", "none").unwrap()];
+        hub.set("o/r", &rules, 0, "pat:admin").await.unwrap();
+        let slot = Arc::new(crate::pathrules::PathRulesSlot::default());
+        assert!(slot.set(hub));
+        let f = Fx {
+            handler: ServerCommitGraph::new(f.reg.clone()).with_pathrules(slot),
+            ..f
+        };
+        let [_, b, c, _] = history(&f).await;
+        let mut r = req(IdMode::Asc);
+        r.stats = true;
+        let got = call(&f, IdMode::Asc, r).await.unwrap();
+        let rows = rows(&got);
+        let entry = |id: ChangesetId| {
+            rows.iter()
+                .map(|r| r.entry.as_ref().unwrap())
+                .find(|e| e.id.as_ref() == id.as_bytes())
+                .unwrap()
+        };
+        let hidden = entry(c);
+        assert!(hidden.redacted);
+        assert_eq!(
+            hidden.message.as_ref(),
+            crate::pathrules::scope::RESTRICTED_MESSAGE
+        );
+        assert_eq!(
+            hidden.restricted_dirs,
+            vec![bytes::Bytes::from_static(b"g")]
+        );
+        assert!(hidden.stats.is_none());
+        let shown = entry(b);
+        assert!(!shown.redacted && shown.stats.is_some());
     }
 }
