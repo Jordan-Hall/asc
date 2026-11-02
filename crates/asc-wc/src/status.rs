@@ -631,8 +631,10 @@ impl Finder<'_> {
                 } else {
                     return Ok(true);
                 }
-            } else if self.tracked_files.contains(key) {
-                // A gitlink: not descended.
+            } else if self.tracked_files.contains(key)
+                || crate::compose_plain::is_restricted_projection(&child_abs, &child)
+            {
+                // A gitlink, or a restricted directory: not descended.
             } else if self.tracked_dirs.contains(key) {
                 visible |= self.dir(Some(&child), &child_abs, report)?;
                 if visible && !report {

@@ -26,6 +26,7 @@ use asc_store::refs::Actor;
 use asc_store::sqlrefs::SqlRefs;
 use asc_store::storeset::StoreSet;
 use asc_wc::SafeRoot;
+use asc_wc::compose_plain::{Replace, is_restricted_projection, restrict};
 use asc_wc::ignore::IgnoreSources;
 use asc_wc::plain::{self, Mode, Sparse, Wc};
 use asc_wc::redirect::Redirections;
@@ -464,6 +465,9 @@ pub(crate) async fn sync_worktree(
     paths: &[RepoPath],
     real_index: bool,
 ) -> Result<()> {
+    if real_index {
+        project_restricted(ctx.ws()?, target).await?;
+    }
     if paths.is_empty() {
         return Ok(());
     }
@@ -518,6 +522,29 @@ pub(crate) async fn sync_worktree(
         plain::checkout(&wc, from, to, Mode::Force)
             .await
             .map_err(fatal)?;
+    }
+    Ok(())
+}
+
+/// SPEC §15.5.1: shows each directory of `target` that path rules keep from the caller as an
+/// empty, read-only placeholder. A directory already shown so is left alone; one holding files
+/// is kept and named in a warning, since nothing of it can be checked out.
+async fn project_restricted(ws: &WsCtx, target: TreeId) -> Result<()> {
+    let dirs = ws.engine.restricted_dirs(target).await?;
+    if dirs.is_empty() {
+        return Ok(());
+    }
+    let gate = SafeRoot::new(ws.projection.toplevel());
+    for dir in &dirs {
+        if gate
+            .resolve(dir)
+            .is_some_and(|abs| is_restricted_projection(&abs, dir))
+        {
+            continue;
+        }
+        if let Err(e) = restrict(&gate, dir, Replace::EmptyOnly) {
+            eprintln!("warning: asc: {dir}: restricted, and the folder was not replaced: {e}");
+        }
     }
     Ok(())
 }

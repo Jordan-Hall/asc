@@ -383,6 +383,14 @@ pub fn looks_composed(gate: &SafeRoot, at: &RepoPath) -> bool {
     check_composed(gate, at).is_ok()
 }
 
+/// Whether `dir` (repository path `at`) is an intact projection made by [`restrict`]: a locked
+/// directory holding only its marker, made for this path. Status walks pass over such a
+/// directory, since it stands for content the caller may not read.
+pub fn is_restricted_projection(dir: &Path, at: &RepoPath) -> bool {
+    read_marker(dir).is_ok_and(|m| m.tree == RESTRICTED && m.entries == 0)
+        && verify_composed(dir, at, 0).is_ok()
+}
+
 /// [`looks_composed`] with the reason for a refusal ([`Error::NotComposed`]).
 pub fn check_composed(gate: &SafeRoot, at: &RepoPath) -> Result<()> {
     let dir = gate.resolve(at).ok_or_else(|| Error::Unsafe(at.clone()))?;
@@ -1201,6 +1209,21 @@ mod tests {
         assert!(matches!(
             restrict(&gate, &p("evil/sdk"), Replace::EmptyOnly),
             Err(Error::Unsafe(_))
+        ));
+    }
+
+    #[test]
+    fn a_restricted_projection_is_known_only_at_its_own_path() {
+        let fx = Fixture::new();
+        let gate = SafeRoot::new(&fx.root);
+        restrict(&gate, &p("secret"), Replace::EmptyOnly).unwrap();
+        let dir = fx.root.join("secret");
+        assert!(is_restricted_projection(&dir, &p("secret")));
+        assert!(!is_restricted_projection(&dir, &p("other")));
+        fs::create_dir(fx.root.join("plain")).unwrap();
+        assert!(!is_restricted_projection(
+            &fx.root.join("plain"),
+            &p("plain")
         ));
     }
 
