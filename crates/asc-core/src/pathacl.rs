@@ -289,19 +289,29 @@ impl PathAcl {
     /// The directories where a rule matches `v`, with the level it gives there (capped at the
     /// repository level), in path order. With the repository level this is all a client needs
     /// to compute [`Self::level`] for `v` (the deepest listed ancestor decides), and it names no
-    /// directory whose rules are only about others.
+    /// directory whose rules are only about others. A hidden directory inside a hidden one is
+    /// left out: it changes no level, and its name is one no listing shows.
     pub fn decided_dirs(&self, v: &Viewer) -> Vec<(Vec<u8>, Level)> {
-        self.by_dir
-            .iter()
-            .filter_map(|(dir, rules)| {
-                rules
-                    .iter()
-                    .filter(|(s, _)| s.matches(v))
-                    .map(|(_, l)| *l)
-                    .max()
-                    .map(|best| (dir.clone(), best.min(v.repo_level)))
-            })
-            .collect()
+        let mut out: Vec<(Vec<u8>, Level)> = Vec::new();
+        for (dir, rules) in &self.by_dir {
+            let Some(best) = rules.iter().filter(|(s, _)| s.matches(v)).map(|(_, l)| *l).max()
+            else {
+                continue;
+            };
+            let level = best.min(v.repo_level);
+            let inherited = out
+                .iter()
+                .filter(|(d, _)| {
+                    d.is_empty() || (dir.starts_with(d) && dir.get(d.len()) == Some(&b'/'))
+                })
+                .max_by_key(|(d, _)| d.len())
+                .map(|(_, l)| *l);
+            if level == Level::None && inherited == Some(Level::None) {
+                continue;
+            }
+            out.push((dir.clone(), level));
+        }
+        out
     }
 
     fn reads_below(&self, v: &Viewer, dir: &[u8]) -> bool {
@@ -346,6 +356,36 @@ mod tests {
             rule("infra", "team:ops", Level::Admin),
         ])
         .unwrap()
+    }
+
+    #[test]
+    fn decided_dirs_name_only_the_viewers_directories_and_no_hidden_one_inside_another() {
+        let acl = PathAcl::new(&[
+            rule("", "*", Level::Read),
+            rule("secret", "*", Level::None),
+            rule("secret/plans", "*", Level::None),
+            rule("secret/docs", "user:bob", Level::Write),
+            rule("ops", "user:carol", Level::Write),
+        ])
+        .unwrap();
+        let bob = user("bob", &[], Level::Write);
+        assert_eq!(
+            acl.decided_dirs(&bob),
+            [
+                (b"".to_vec(), Level::Read),
+                (b"secret".to_vec(), Level::None),
+                (b"secret/docs".to_vec(), Level::Write),
+            ]
+        );
+        for p in [&b"secret/plans/x"[..], b"secret/docs/a", b"ops/y", b"src"] {
+            let deepest = acl
+                .decided_dirs(&bob)
+                .into_iter()
+                .filter(|(d, _)| d.is_empty() || p.starts_with(&[&d[..], b"/"].concat()))
+                .max_by_key(|(d, _)| d.len())
+                .map(|(_, l)| l);
+            assert_eq!(deepest, Some(acl.level(&bob, p)), "{p:?}");
+        }
     }
 
     #[test]
