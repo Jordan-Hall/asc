@@ -633,6 +633,7 @@ pub(crate) async fn run(
                 })
                 .collect(),
             message,
+            linked: Vec::new(),
         };
         let txn = RefTxn {
             updates: vec![RefUpdate {

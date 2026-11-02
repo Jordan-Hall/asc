@@ -76,11 +76,15 @@ enum UpdateMode { UPDATE_MODE_FAST_FORWARD = 0; UPDATE_MODE_FORCE = 1; UPDATE_MO
 enum HookMode { HOOK_MODE_RUN = 0; HOOK_MODE_SKIP_PRE = 1; }                        // SKIP_PRE: internal token only
 message UpdateRefsRequest { RepoRef repo = 1; repeated RefUpdate updates = 2; UpdateMode mode = 3;
   repeated string push_options = 4; HookMode hooks = 5; int64 ttl_seconds = 6;
-  bool no_content_merge = 7; }   // no_content_merge: LAND only (§20.5)
+  bool no_content_merge = 7;     // no_content_merge: LAND only (§20.5)
+  repeated LinkedUpdate linked = 8; }   // other repositories of this server moved all or nothing with this one (writable mounts, SPEC §10.6)
+message LinkedUpdate { RepoRef repo = 1; repeated RefUpdate updates = 2; }
+message LinkedResult { string repo = 1; repeated RefResult results = 2; }
 message Rewrite { bytes old = 1 [(asc.v1.json) = JSON_KIND_HEX]; bytes new = 2 [(asc.v1.json) = JSON_KIND_HEX]; }
 message RefResult { string name = 1; RefTarget old = 2; RefTarget new = 3;
   bool user = 4; }   // user: stored as the pusher's user ref (SPEC §21.5.1), under `refs/users/`
-message UpdateRefsResponse { repeated RefResult results = 1; repeated Rewrite rewritten = 2; string message = 3; }
+message UpdateRefsResponse { repeated RefResult results = 1; repeated Rewrite rewritten = 2; string message = 3;
+  repeated LinkedResult linked = 4; }   // one per LinkedUpdate, in request order
 
 message ResolveRequest { RepoRef repo = 1; repeated string revspecs = 2; }
 message ResolveResponse { repeated bytes ids = 1 [(asc.v1.json) = JSON_KIND_HEX]; }                                  // empty bytes = not found

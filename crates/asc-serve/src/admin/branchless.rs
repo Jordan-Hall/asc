@@ -484,6 +484,7 @@ pub async fn enable(
             results,
             rewritten: Vec::new(),
             message: String::new(),
+            linked: Vec::new(),
         };
         let outbox = serde_json::to_vec(&OutboxEffects {
             effects: &["post_receive"],

@@ -443,6 +443,27 @@ handler_group! {
         fn update_refs(UpdateRefsRequest) -> UpdateRefsResponse;
     }
 }
+/// The most other repositories one `UpdateRefs` links (SPEC §10.6).
+pub const MAX_LINKED_REPOS: usize = 8;
+
+/// `UpdateRefs` with a `linked` group (SPEC §10.6, writable mounts): the refs of this repository
+/// and of each member move in one transaction or not at all. `members` are the contexts of the
+/// other repositories, in request order, each authorised for write with the caller's credential
+/// before the handler is called. A server without the group refuses linked updates.
+#[async_trait]
+pub trait LinkedRefsHandler: Send + Sync {
+    async fn update_refs_linked(
+        &self,
+        _ctx: &CallCtx,
+        _members: &[CallCtx],
+        _req: pb::UpdateRefsRequest,
+    ) -> Result<pb::UpdateRefsResponse, Status> {
+        Err(unimplemented_rpc("linked UpdateRefs"))
+    }
+}
+
+impl LinkedRefsHandler for Unset {}
+
 handler_group! {
     /// `Resolve`, `GitMap`, `Log`, `MergeBase`, `IsAncestor`, `Diff`.
     HistoryHandler {
@@ -569,6 +590,7 @@ macro_rules! registry {
 registry! {
     objects, set_objects: ObjectsHandler;
     refs, set_refs: RefsHandler;
+    linked_refs, set_linked_refs: LinkedRefsHandler;
     history, set_history: HistoryHandler;
     reads, set_reads: ReadsHandler;
     mutations, set_mutations: MutationsHandler;
@@ -833,6 +855,50 @@ repo_impl! {
             .map(Response::new)
     }
 
+    async fn update_refs(
+        &self,
+        request: Request<pb::UpdateRefsRequest>,
+    ) -> Result<Response<pb::UpdateRefsResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        let ctx = self
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Write, true)
+            .await?;
+        if msg.linked.is_empty() {
+            return self
+                .handlers
+                .refs()
+                .update_refs(&ctx, msg)
+                .await
+                .map(Response::new);
+        }
+        // Every member needs write with the same credential before the handler looks at it.
+        if msg.linked.len() > MAX_LINKED_REPOS {
+            return Err(Status::invalid_argument("too many linked repositories"));
+        }
+        let mut members: Vec<CallCtx> = Vec::with_capacity(msg.linked.len());
+        for l in &msg.linked {
+            let member = self
+                .context(&meta, &ext, l.repo.as_ref(), Access::Write, true)
+                .await?;
+            if member.repo == ctx.repo || members.iter().any(|m| m.repo == member.repo) {
+                return Err(Status::invalid_argument(
+                    "a repository is linked twice in one update",
+                ));
+            }
+            if member.id_mode != ctx.id_mode {
+                return Err(Status::invalid_argument(
+                    "linked repositories use one id mode",
+                ));
+            }
+            members.push(member);
+        }
+        self.handlers
+            .linked_refs()
+            .update_refs_linked(&ctx, &members, msg)
+            .await
+            .map(Response::new)
+    }
+
     type WatchRefsStream = RpcStream<pb::RefEvent>;
 
     async fn watch_refs(
@@ -1033,7 +1099,6 @@ repo_impl! {
     }
     unary {
         list_refs(ListRefsRequest) -> ListRefsResponse, refs, Access::Read, false;
-        update_refs(UpdateRefsRequest) -> UpdateRefsResponse, refs, Access::Write, true;
         resolve(ResolveRequest) -> ResolveResponse, history, Access::Read, false;
         git_map(GitMapRequest) -> GitMapResponse, history, Access::Read, false;
         merge_base(MergeBaseRequest) -> MergeBaseResponse, history, Access::Read, false;
@@ -1609,6 +1674,7 @@ impl<O: Objects + 'static, R: Refs + 'static> RefsHandler for EngineBackend<O, R
             results,
             rewritten: Vec::new(),
             message: String::new(),
+            linked: Vec::new(),
         })
     }
 }
@@ -2142,6 +2208,94 @@ mod tests {
             .unwrap();
         Repo::rebase(&svc, call("o/a", None, "main")).await.unwrap();
         assert_eq!(reached(), 2);
+    }
+
+    /// Allows `o/a` and `o/b`, nothing else.
+    struct OnlyAB;
+
+    #[async_trait]
+    impl Authorizer for OnlyAB {
+        async fn authorize(
+            &self,
+            _: Option<&crate::auth::BearerToken>,
+            repo: &str,
+            _: Access,
+        ) -> Result<Principal, crate::auth::AuthError> {
+            if repo == "o/a" || repo == "o/b" {
+                Ok(Principal { id: "alice".into() })
+            } else {
+                Err(crate::auth::AuthError::Forbidden)
+            }
+        }
+    }
+
+    /// Counts the linked groups that reach the handler, with their member count.
+    #[derive(Default)]
+    struct SpyLinked(std::sync::atomic::AtomicUsize);
+
+    #[async_trait]
+    impl LinkedRefsHandler for SpyLinked {
+        async fn update_refs_linked(
+            &self,
+            _: &CallCtx,
+            members: &[CallCtx],
+            _: pb::UpdateRefsRequest,
+        ) -> Result<pb::UpdateRefsResponse, Status> {
+            self.0
+                .fetch_add(members.len(), std::sync::atomic::Ordering::SeqCst);
+            Ok(pb::UpdateRefsResponse::default())
+        }
+    }
+
+    #[tokio::test]
+    async fn every_linked_repository_needs_write_and_appears_once() {
+        let spy = Arc::new(SpyLinked::default());
+        let handlers = Arc::new(RepoHandlers::new());
+        handlers.set_linked_refs(spy.clone()).unwrap();
+        let svc = RepoService::new(handlers, Arc::new(OnlyAB), ServerInfo::default());
+        let call = |repo: &str, linked: &[&str]| {
+            let at = |n: &str| {
+                Some(pb::RepoRef {
+                    name: n.into(),
+                    id_mode: 0,
+                })
+            };
+            let mut r = Request::new(pb::UpdateRefsRequest {
+                repo: at(repo),
+                linked: linked
+                    .iter()
+                    .map(|n| pb::LinkedUpdate {
+                        repo: at(n),
+                        updates: Vec::new(),
+                    })
+                    .collect(),
+                ..pb::UpdateRefsRequest::default()
+            });
+            r.metadata_mut()
+                .insert("x-asc-op-id", Uuid::new_v4().to_string().parse().unwrap());
+            r
+        };
+        let reached = || spy.0.load(std::sync::atomic::Ordering::SeqCst);
+        let denied = Repo::update_refs(&svc, call("o/a", &["o/secret"]))
+            .await
+            .unwrap_err();
+        assert_eq!(denied.code(), tonic::Code::PermissionDenied);
+        for linked in [&["o/a"][..], &["o/b", "o/b"]] {
+            let e = Repo::update_refs(&svc, call("o/a", linked))
+                .await
+                .unwrap_err();
+            assert_eq!(e.code(), tonic::Code::InvalidArgument);
+        }
+        let many = ["o/b"; MAX_LINKED_REPOS + 1];
+        let e = Repo::update_refs(&svc, call("o/a", &many))
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), tonic::Code::InvalidArgument);
+        assert_eq!(reached(), 0);
+        Repo::update_refs(&svc, call("o/a", &["o/b"]))
+            .await
+            .unwrap();
+        assert_eq!(reached(), 1);
     }
 
     #[tokio::test]
