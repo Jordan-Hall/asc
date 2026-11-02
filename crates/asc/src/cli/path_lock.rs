@@ -104,7 +104,14 @@ fn safe_rel(p: &str) -> bool {
     p.is_empty()
         || (!p.contains(['\\', ':', '\0', '\n', '\r'])
             && p.split('/')
-                .all(|c| !c.is_empty() && c != "." && c != ".." && !c.eq_ignore_ascii_case(".git")))
+                // Windows drops trailing dots and spaces and expands `~` short names, so
+                // `.git.` or `GIT~1` would reach the git dir.
+                .all(|c| {
+                    !c.is_empty()
+                        && !c.ends_with(['.', ' '])
+                        && !c.contains('~')
+                        && !c.eq_ignore_ascii_case(".git")
+                }))
 }
 
 /// Whether `path` is `dir` or below it (`""` holds everything).
@@ -431,6 +438,9 @@ mod tests {
             "C:/x",
             ".git/hooks",
             "a\nb",
+            ".git./x",
+            "GIT~1/x",
+            "a /b",
         ] {
             assert!(!safe_rel(bad), "{bad:?}");
         }
