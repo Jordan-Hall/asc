@@ -20,6 +20,9 @@ use ssh_key::{Algorithm, EcdsaCurve, HashAlg, LineEnding, PrivateKey, SshSig};
 pub const NAMESPACE: &str = "asc-changeset";
 /// The first line of the signed message.
 pub const MESSAGE_HEADER: &str = "asc-changeset-v1";
+/// The SSHSIG namespace of a signed audit export: the export file itself is the message, so
+/// `ssh-keygen -Y verify -n asc-audit-export` checks it.
+pub const AUDIT_EXPORT_NAMESPACE: &str = "asc-audit-export";
 /// Largest armored signature accepted, in bytes.
 pub const MAX_SIGNATURE_BYTES: usize = 8 * 1024;
 /// Longest public key line accepted, in bytes.
@@ -264,6 +267,16 @@ impl KeyFileSigner {
             .map_err(|_| Error::Key("the key cannot sign".into()))?;
         Signature::from_sig(sig)
     }
+
+    /// Signs a file in the namespace [`AUDIT_EXPORT_NAMESPACE`] from the SHA-512 of its bytes, so
+    /// a file too large to hold is signed while it streams. The armored block is what
+    /// `ssh-keygen -Y sign -n asc-audit-export` makes for the same file.
+    pub fn sign_audit_export(&self, sha512: &[u8; 64]) -> Result<String, Error> {
+        let sig = SshSig::sign_prehash(&self.key, AUDIT_EXPORT_NAMESPACE, HashAlg::Sha512, sha512)
+            .map_err(|_| Error::Key("the key cannot sign".into()))?;
+        sig.to_pem(LineEnding::LF)
+            .map_err(|_| Error::Unsupported("the signature cannot be encoded".into()))
+    }
 }
 
 /// What a signer outside this process (an SSH agent) needs: the bytes to sign, and then the way
@@ -479,6 +492,41 @@ mod tests {
             Err(Error::Bad)
         );
         assert!(assemble(signer.public_key(), &[1, 2, 3], &message(HEX)).is_err());
+    }
+
+    #[test]
+    fn an_audit_export_is_signed_over_the_file_from_its_hash() {
+        let mut rng = ssh_key::rand_core::UnwrapErr(ssh_key::getrandom::SysRng);
+        let private = PrivateKey::random(&mut rng, Algorithm::Ed25519).unwrap();
+        let signer =
+            KeyFileSigner::from_openssh(&private.to_openssh(LineEnding::LF).unwrap()).unwrap();
+        let file = b"{\"seq\":1}
+{\"seq\":2}
+";
+        let sha: [u8; 64] = HashAlg::Sha512.digest(file).as_slice().try_into().unwrap();
+        let armored = signer.sign_audit_export(&sha).unwrap();
+        let sig = SshSig::from_pem(armored.as_bytes()).unwrap();
+        // What `ssh-keygen -Y verify -n asc-audit-export` does: the whole file against the key.
+        private
+            .public_key()
+            .verify(AUDIT_EXPORT_NAMESPACE, file, &sig)
+            .unwrap();
+        assert!(
+            private
+                .public_key()
+                .verify(AUDIT_EXPORT_NAMESPACE, b"other", &sig)
+                .is_err()
+        );
+        // It is not a changeset signature, and a changeset signature is not an export signature.
+        assert!(Signature::parse(&armored).is_err());
+        let changeset = signer.sign(&message(HEX)).unwrap().armored().unwrap();
+        let changeset = SshSig::from_pem(changeset.as_bytes()).unwrap();
+        assert!(
+            private
+                .public_key()
+                .verify(AUDIT_EXPORT_NAMESPACE, &message(HEX), &changeset)
+                .is_err()
+        );
     }
 
     #[test]
