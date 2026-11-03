@@ -23,7 +23,8 @@ use crate::authz::identity::HOST_SERVICE_PRINCIPAL;
 use crate::ingest::testutil::commit;
 use crate::policy::tests::{ALICE, BOB, Fx, code, fx_with, paths, policy_text};
 
-const ALICE_BODY: &str = "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+pub(crate) const ALICE_BODY: &str =
+    "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
 QyNTUxOQAAACCRkhzaJp495y3mienZIIjlMtZ+HDFEaMv5asll5INH8QAAAJgydzP/Mncz
 /wAAAAtzc2gtZWQyNTUxOQAAACCRkhzaJp495y3mienZIIjlMtZ+HDFEaMv5asll5INH8Q
 AAAECpoW5XdhH47VXvdSeyliHgbAaC7LpHrnBPd3PuxHjogZGSHNomnj3nLeaJ6dkgiOUy
@@ -182,7 +183,11 @@ impl Svc {
     }
 }
 
-fn server_signer(dir: &tempfile::TempDir, name: &str, key_body: &str) -> Arc<ServerSigner> {
+pub(crate) fn server_signer(
+    dir: &tempfile::TempDir,
+    name: &str,
+    key_body: &str,
+) -> Arc<ServerSigner> {
     use std::io::Write as _;
     let path = dir.path().join(name);
     let mut file = crate::authz::key_file::create_private(&path).unwrap();

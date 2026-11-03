@@ -1407,6 +1407,53 @@ async fn an_export_made_for_a_person_names_the_person_and_the_relay() {
     assert_eq!(relay.kind, "host");
 }
 
+/// The export of acme/app as alice: the bytes and the last message.
+async fn export_all(svc: &AuditService) -> (Vec<u8>, wire::ExportAuditResponse) {
+    use futures::StreamExt;
+    let mut stream = svc
+        .export(req(
+            wire::ExportAuditRequest {
+                scope: scope(wire::OwnerKind::Repo, "acme/app"),
+                ..Default::default()
+            },
+            Some(ALICE_ADMIN),
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    let mut data = Vec::new();
+    let mut last = None;
+    while let Some(m) = stream.next().await {
+        let m = m.unwrap();
+        data.extend_from_slice(&m.data);
+        if m.last {
+            last = Some(m);
+        }
+    }
+    (data, last.expect("a last message"))
+}
+
+#[tokio::test]
+async fn an_export_ends_with_the_server_signature_over_the_file() {
+    use sha2::{Digest as _, Sha512};
+    let (plain, p) = service().await;
+    store::record(&p, &push("acme/app", 1)).await.unwrap();
+    // Without a server key the export is not signed.
+    let (_, last) = export_all(&plain).await;
+    assert!(last.signature.is_empty() && last.signer_key.is_empty());
+
+    let dir = tempfile::tempdir().unwrap();
+    let key =
+        crate::signing::tests::server_signer(&dir, "server_key", crate::signing::tests::ALICE_BODY);
+    let signed = plain.with_signer(Some(key.clone()));
+    let (data, last) = export_all(&signed).await;
+    assert_eq!(last.signer_key, key.public_key().line());
+    assert!(last.signature.starts_with("-----BEGIN SSH SIGNATURE-----"));
+    // Ed25519 signs the same message the same way: the signature is over exactly the bytes sent.
+    let sha: [u8; 64] = Sha512::digest(&data).into();
+    assert_eq!(last.signature, key.sign_audit_export(&sha).unwrap());
+}
+
 // ------------------------------------------------------------------------------ Append (the host service only)
 
 fn host_append(action: &str, actor: &str) -> wire::AppendAuditRequest {

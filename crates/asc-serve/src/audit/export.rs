@@ -1,7 +1,9 @@
 //! Audit export: JSON lines or CSV, in chunks of at most 1 MiB cut at a row end, with the BLAKE3
-//! digest of the whole export (docs/BUILDOUT.md section 3).
+//! digest of the whole export (docs/BUILDOUT.md section 3) and its SHA-512, which the server key
+//! signs when the server has one.
 
 use serde_json::{Value, json};
+use sha2::{Digest as _, Sha512};
 use sqlx::AnyPool;
 
 use super::chain::{Event, hex};
@@ -130,6 +132,8 @@ pub fn csv_row(scope: &Scope, e: &Event) -> Vec<u8> {
 pub struct Summary {
     pub events: u64,
     pub digest: [u8; 32],
+    /// The SHA-512 of the whole export, what an SSHSIG over the file signs.
+    pub sha512: [u8; 64],
     /// More events matched than the export holds.
     pub truncated: bool,
 }
@@ -138,6 +142,7 @@ pub struct Summary {
 pub struct Chunker {
     buf: Vec<u8>,
     hasher: blake3::Hasher,
+    sha512: Sha512,
 }
 
 impl Default for Chunker {
@@ -151,12 +156,14 @@ impl Chunker {
         Self {
             buf: Vec::new(),
             hasher: blake3::Hasher::new(),
+            sha512: Sha512::new(),
         }
     }
 
     /// Adds a row; returns the chunk that was full when the row did not fit into it.
     pub fn push(&mut self, row: &[u8]) -> Option<Vec<u8>> {
         self.hasher.update(row);
+        self.sha512.update(row);
         let flushed = if !self.buf.is_empty() && self.buf.len() + row.len() > CHUNK_BYTES {
             Some(std::mem::take(&mut self.buf))
         } else {
@@ -166,9 +173,13 @@ impl Chunker {
         flushed
     }
 
-    /// The last chunk and the digest of everything pushed.
-    pub fn finish(self) -> (Vec<u8>, [u8; 32]) {
-        (self.buf, *self.hasher.finalize().as_bytes())
+    /// The last chunk, and the BLAKE3 and SHA-512 of everything pushed.
+    pub fn finish(self) -> (Vec<u8>, [u8; 32], [u8; 64]) {
+        (
+            self.buf,
+            *self.hasher.finalize().as_bytes(),
+            self.sha512.finalize().into(),
+        )
     }
 }
 
@@ -222,13 +233,14 @@ where
             None => break,
         }
     }
-    let (last, digest) = chunker.finish();
+    let (last, digest, sha512) = chunker.finish();
     if !last.is_empty() && !sink(last).await {
         return Ok(None);
     }
     Ok(Some(Summary {
         events,
         digest,
+        sha512,
         truncated,
     }))
 }
@@ -291,10 +303,11 @@ mod tests {
         assert!(c.push(&row).is_none());
         let first = c.push(&row).expect("the second row does not fit");
         assert_eq!(first.len(), row.len());
-        let (last, digest) = c.finish();
+        let (last, digest, sha512) = c.finish();
         assert_eq!(last.len(), row.len());
         let mut all = first;
         all.extend_from_slice(&last);
         assert_eq!(digest, *blake3::hash(&all).as_bytes());
+        assert_eq!(sha512, <[u8; 64]>::from(Sha512::digest(&all)));
     }
 }

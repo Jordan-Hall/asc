@@ -115,6 +115,7 @@ pub struct AuditService {
     audit: Arc<Audit>,
     authorizer: Arc<dyn Authorizer>,
     admins: HashSet<String>,
+    signer: Option<Arc<crate::signing::ServerSigner>>,
 }
 
 impl AuditService {
@@ -124,7 +125,15 @@ impl AuditService {
             audit,
             authorizer,
             admins,
+            signer: None,
         }
+    }
+
+    /// Signs each export with the server key, so a download can be checked with
+    /// `ssh-keygen -Y verify -n asc-audit-export`. Without a key exports are unsigned.
+    pub fn with_signer(mut self, signer: Option<Arc<crate::signing::ServerSigner>>) -> Self {
+        self.signer = signer;
+        self
     }
 
     /// The tonic service with message limits and [`AuthInterceptor`].
@@ -367,6 +376,25 @@ fn wire_event(e: &Event) -> wire::AuditEvent {
     }
 }
 
+/// The signature of an export and the key line that checks it, or two empty strings without a
+/// server key. A key that cannot sign fails the export: an export the server should have signed is
+/// not sent unsigned.
+fn signed(
+    signer: Option<&crate::signing::ServerSigner>,
+    sha512: &[u8; 64],
+) -> Result<(String, String), Status> {
+    let Some(signer) = signer else {
+        return Ok((String::new(), String::new()));
+    };
+    match signer.sign_audit_export(sha512) {
+        Ok(sig) => Ok((sig, signer.public_key().line().to_owned())),
+        Err(e) => {
+            tracing::error!(error = %e, "the audit export could not be signed");
+            Err(Status::internal("the export could not be signed"))
+        }
+    }
+}
+
 /// A short, secret-free text of a filter for the export event.
 fn filter_summary(f: &Filter) -> String {
     let mut parts = Vec::new();
@@ -465,6 +493,7 @@ impl AuditApi for AuditService {
         let pool = self.audit.registry.pool().clone();
         let max = self.audit.cfg.export_max_events;
         let (mut tx, rx) = mpsc::channel::<Result<wire::ExportAuditResponse, Status>>(2);
+        let signer = self.signer.clone();
         tokio::spawn(async move {
             let chunks = tx.clone();
             let result = export::run(&pool, &scope, &filter, format, max, move |data| {
@@ -481,13 +510,19 @@ impl AuditApi for AuditService {
             })
             .await;
             let last = match result {
-                Ok(Some(s)) => Ok(wire::ExportAuditResponse {
-                    last: true,
-                    digest: Bytes::copy_from_slice(&s.digest),
-                    events: s.events,
-                    truncated: s.truncated,
-                    ..Default::default()
-                }),
+                Ok(Some(s)) => {
+                    signed(signer.as_deref(), &s.sha512).map(|(signature, signer_key)| {
+                        wire::ExportAuditResponse {
+                            last: true,
+                            digest: Bytes::copy_from_slice(&s.digest),
+                            events: s.events,
+                            truncated: s.truncated,
+                            signature,
+                            signer_key,
+                            ..Default::default()
+                        }
+                    })
+                }
                 // The reader went away.
                 Ok(None) => return,
                 Err(e) => Err(db(e)),

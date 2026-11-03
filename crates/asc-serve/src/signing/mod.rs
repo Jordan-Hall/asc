@@ -130,7 +130,13 @@ impl ServerSigner {
         let message = sshsig::message(&changeset.to_string());
         self.signer.sign(&message)?.armored()
     }
+
+    /// The armored signature of an audit export whose SHA-512 is `sha512`, in the namespace
+    /// [`sshsig::AUDIT_EXPORT_NAMESPACE`].
+    pub fn sign_audit_export(&self, sha512: &[u8; 64]) -> Result<String, sshsig::Error> {
+        self.signer.sign_audit_export(sha512)
+    }
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

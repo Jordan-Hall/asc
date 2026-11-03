@@ -395,6 +395,11 @@ pub fn build_grpc(ext: &Extensions, authorizer: Arc<dyn Authorizer>, info: Serve
         grpc = grpc
             .add_service(
                 audit::rpc::AuditService::new(a.clone(), authorizer.clone(), info.clone())
+                    .with_signer(
+                        ext.security
+                            .get()
+                            .and_then(|s| s.signing.verifier().server().cloned()),
+                    )
                     .into_service(),
             )
             .add_service(
