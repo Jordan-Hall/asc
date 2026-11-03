@@ -1676,6 +1676,25 @@ Delete the comment-only `.gitattributes`. Replace `"env": ["*"]` on `build` with
 
 ---
 
+### 12.10 Every job of an asc repository is set up for the shared cache [built 2026-11-03]
+
+- **The hub adds the environment.** Before it parses a workflow of an asc repository (a push or pull request, a schedule, or a manual dispatch), the hub adds these keys to the workflow's top-level `env:`, so every job and step sees them:
+
+  | Key | Value |
+  |---|---|
+  | `TURBO_API` | the asc public URL (`[asc] PUBLIC_URL`, else `SERVER_URL`); asc serve answers `/v8` (§12.4) |
+  | `TURBO_TOKEN` | `${{ github.token }}`, the task token |
+  | `TURBO_TEAM` | the asc repository name with `/` written as `.` |
+  | `TURBO_CACHE` | `local:rw,remote:r` for `pull_request*` events, else `local:rw,remote:rw` |
+  | `ASC_REMOTE` | `asc+<public URL>/<owner>/<repo>`, so the CLI dials asc without discovery |
+  | `ASC_TOKEN` | `${{ github.token }}` |
+
+  `turbo run` then reads and writes the repository's remote cache, and `asc ci cache|artifact|status|log` work in a `run:` step, with no setup step.
+- **The workflow wins.** A key the workflow already sets in its top-level `env:` is kept as it is. When `env:` is an expression, or when the file is not a YAML mapping, nothing is added: the job parser reports a broken file the same way as before. Job-level and step-level `env:` override these values as usual.
+- **Writes stay scoped.** A pull-request job reads the remote cache and does not write it. asc serve also keeps any write a pull request makes out of the `trusted` scope (§12.4), so the hint is not the control.
+- **The asc actions use it.** `cache`, `cache/save`, `upload-artifact` and `download-artifact` take their remote from their `server` input, else the job's `ASC_REMOTE`, else the forge URL. `asc/turbo-cache` takes `server`, else the job's `TURBO_API`, else the forge URL. The `server` input defaults to empty, so on the hub these actions use asc directly. On another forge they work as before. `actions/test/check_actions.py` checks the fallback.
+- **Off when asc is off.** A repository not stored in asc, or a hub with `[asc]` disabled or no public URL, gets nothing added. If the hub cannot work out the repository, it logs a warning and parses the workflow unchanged.
+
 ## 12A. Polyglot project graph and affected (crate `asc-graph`) [audit: projgraph-section-and-model]
 
 asc finds projects and their dependencies itself for four ecosystems: Rust (Cargo), Python (uv, pyproject, requirements), .NET (sln, slnx, csproj, fsproj, vbproj) and Node (package.json workspaces, Bun). It never runs cargo, uv, dotnet, bun, turbo or nx. Detection is a pure parse of manifest and lockfile bytes read from the object store. The graph is therefore derived data per changeset: it needs no checkout and no hydration, and it runs the same way in local-only mode, on a bucket remote and on the server. Turbo and nx stay optional consumers of the output (§12A.9).

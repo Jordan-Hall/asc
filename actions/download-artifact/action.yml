@@ -11,8 +11,8 @@ inputs:
     description: Task token.
     default: ${{ github.token }}
   server:
-    description: asc server URL.
-    default: ${{ github.server_url }}
+    description: asc server URL. Empty uses the job's ASC_REMOTE (set by the hub for an asc repository), else the forge.
+    default: ''
 outputs:
   download-path:
     description: Destination directory.
@@ -24,7 +24,7 @@ runs:
       env:
         IN_NAME: ${{ inputs.name }}
         IN_PATH: ${{ inputs.path }}
-        ASC_REMOTE: ${{ inputs.server }}/${{ github.repository }}
+        ASC_REMOTE: ${{ inputs.server && format('{0}/{1}', inputs.server, github.repository) || env.ASC_REMOTE || format('{0}/{1}', github.server_url, github.repository) }}
         ASC_TOKEN: ${{ inputs.token }}
       run: |
         set -euo pipefail

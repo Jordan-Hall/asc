@@ -5,8 +5,8 @@ inputs:
     description: Task token.
     default: ${{ github.token }}
   server:
-    description: asc serve public URL.
-    default: ${{ github.server_url }}
+    description: asc serve public URL. Empty uses the job's TURBO_API (set by the hub for an asc repository), else the forge.
+    default: ''
   repo:
     description: owner/repo.
     default: ${{ github.repository }}
@@ -15,7 +15,7 @@ runs:
   steps:
     - shell: bash
       env:
-        IN_SERVER: ${{ inputs.server }}
+        IN_SERVER: ${{ inputs.server || env.TURBO_API || github.server_url }}
         IN_REPO: ${{ inputs.repo }}
         IN_TOKEN: ${{ inputs.token }}
         IN_EVENT: ${{ github.event_name }}

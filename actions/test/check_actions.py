@@ -27,6 +27,15 @@ REQUIRED_OUTPUTS = {
     "cache": {"cache-hit"},
     "asc/affected": {"rust", "matrix", "turbo_filter", "count"},
 }
+# The hub sets these for every job of an asc repository (SPEC 12.10); an action must not shadow them with the
+# forge's URL when its `server` input is left empty.
+JOB_ENV_FALLBACK = {
+    "cache": "env.ASC_REMOTE",
+    "cache/save": "env.ASC_REMOTE",
+    "upload-artifact": "env.ASC_REMOTE",
+    "download-artifact": "env.ASC_REMOTE",
+    "asc/turbo-cache": "env.TURBO_API",
+}
 errors: list[str] = []
 
 
@@ -73,6 +82,14 @@ for name, want in REQUIRED_INPUTS.items():
             fail(f"{name}: banned text {banned!r}")
     if re.search(r"\|\s*(sh|bash)", text):
         fail(f"{name}: pipes into a shell")
+
+for name, ref in JOB_ENV_FALLBACK.items():
+    doc = yaml.safe_load((ROOT / name / "action.yml").read_text(encoding="utf-8"))
+    if ((doc.get("inputs") or {}).get("server") or {}).get("default") != "":
+        fail(f"{name}: server must default to empty so the job's environment is used")
+    uses = [v for step in doc["runs"]["steps"] for v in (step.get("env") or {}).values() if "inputs.server" in str(v)]
+    if not uses or not all(ref in v for v in uses):
+        fail(f"{name}: every use of inputs.server must fall back to {ref}")
 
 for rel in ("docs/ci/asc-projects.toml",):
     p = ROOT.parent / rel
