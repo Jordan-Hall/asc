@@ -1650,6 +1650,30 @@ Delete the comment-only `.gitattributes`. Replace `"env": ["*"]` on `build` with
   - A job that matches nothing gets `if: false` and is skipped. The run page shows warning code 3 (`asc_not_affected_warning`) with the job and its entries.
   - The hub runs every job when there is no base (a new branch), when the repository is not on asc, or when the call fails or takes more than 20 s. A skip is only ever an optimisation.
 
+### 12.9 CI runs recorded against a change: the hub reports, `asc ci status` reads [built 2026-11-03]
+
+- **One record.** The `Ci` service (`proto/asc/v1/ci.proto`) holds every run, whichever runner or forge did the work. A reporter names a run by (`source`, `external_id`). A run with a `change` belongs to that change. A run with no change belongs to the default branch, and `CompareWithMain` compares against it.
+- **The hub reports Actions runs.** Each time a job of an asc repository changes state, the hub queues its run on the unique queue `actions_asc_report`. Many changes made while the run waits are sent once, as the run looks then. The report is `ReportRun`, sent as the system with `source = "asc-hub-actions"` and `external_id` = the run id.
+  - A pull-request run is recorded against the change of the pull request's stack link.
+  - A push to the default branch is recorded against no change.
+  - Other runs are not sent: a push to another branch, a schedule or a manual dispatch.
+  - The name is the run title, else the workflow file.
+  - Job statuses map one to one. Waiting, blocked and unknown jobs are reported as queued.
+  - At most 200 jobs are sent, and text is cleaned and cut to 255 bytes. Two jobs with one name get ` (2)`, ` (3)` and so on, because the service matches jobs by name.
+  - Links are sent only when they are https.
+  - A failed report is logged. The next change of the run sends it again.
+- **`asc ci status [<change>] [--all] [-w] [--limit N] [--json]`** shows the newest run of each workflow, newest first, with its jobs, their numbers and durations, and the run link.
+  - The change is the one named (a revision or a 32-letter id), else the change of `HEAD`. Outside a workspace, when `HEAD` is no change, or with `--all`, it shows the runs of every change.
+  - A run reported again (a re-run) replaces the older one with the same source and name. A run for an older version of the change is marked `stale` and does not count.
+  - Exit codes:
+    - 0 when the current runs passed or were skipped, or when there are none.
+    - 1 when one failed or was cancelled.
+    - 8 while one is queued or running.
+  - `-w` asks again every 5 s, writes each run or job that changes state to stderr, and ends when nothing is pending. It waits up to 120 s for a first run.
+  - `--json` writes one `asc.v1.CiRun` per line.
+- **`asc ci log <run> <job> [-f] [--bytes N]`** prints the tail of a job's log (`JobLog`; 64 KiB by default, at most 1 MiB) and says when earlier bytes are not shown. `-f` follows from `next_offset` every 2 s until the job has ended and its last bytes are read.
+- **Server text is untrusted.** CSI sequences (colours, cursor moves) are removed from logs. Every other control character, in logs and in names, is escaped before it reaches the terminal.
+
 ---
 
 ## 12A. Polyglot project graph and affected (crate `asc-graph`) [audit: projgraph-section-and-model]
