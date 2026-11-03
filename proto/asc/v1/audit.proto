@@ -79,12 +79,17 @@ message ExportAuditRequest {
   AuditExportFormat format = 3;
 }
 // Chunks of at most 1 MiB, cut at a row end. The last message has `last` set and the BLAKE3 of the whole export.
+// When the server has a signing key (`[signing] server_key_file`), the last message also carries an SSHSIG over
+// the whole export file in the namespace "asc-audit-export" and the public key that made it, so
+// `ssh-keygen -Y verify -n asc-audit-export -I asc-server` checks the file.
 message ExportAuditResponse {
   bytes data = 1 [(asc.v1.json) = JSON_KIND_DATA];
   bool last = 2;
   bytes digest = 3 [(asc.v1.json) = JSON_KIND_HEX];
   uint64 events = 4;               // on the last message: how many events the export holds
   bool truncated = 5;            // on the last message: more events matched than `[audit] export_max_events`
+  string signature = 6;          // on the last message: the armored SSHSIG, or empty when the server has no key
+  string signer_key = 7;         // on the last message: the public key line ("ssh-ed25519 AAAA...") of the signature
 }
 
 // `to_seq` 0 means the newest.
