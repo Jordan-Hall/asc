@@ -155,7 +155,7 @@ fn origin_repo(ctx: &Ctx) -> Option<String> {
     crate::remote::server::repo_of(&url)
 }
 
-async fn change_id(ctx: &Ctx, word: Option<&str>) -> Result<ChangeId> {
+pub(crate) async fn change_id(ctx: &Ctx, word: Option<&str>) -> Result<ChangeId> {
     if let Some(w) = word
         && let Ok(id) = w.parse::<ChangeId>()
     {
