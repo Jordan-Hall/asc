@@ -88,6 +88,7 @@ fn usage(changes: u32, tokens: u64, cost: u64) -> Option<wire::AgentBudgetUsage>
         tokens,
         cost_micro_usd: cost,
         requests: 3,
+        tool_calls: 38,
         ..Default::default()
     })
 }
@@ -1217,6 +1218,7 @@ fn runs_are_listed_shown_cancelled_and_answered() {
     assert!(
         so.contains("state     succeeded")
             && so.contains("limits    5 changes, $2.5")
+            && so.contains("3 requests, 38 tool calls, ")
             && so.contains("(never written by the agent)"),
         "{so}"
     );

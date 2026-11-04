@@ -197,11 +197,12 @@ fn limits_line(l: &wire::AgentBudgetLimits) -> String {
 
 fn usage_line(u: &wire::AgentBudgetUsage) -> String {
     format!(
-        "{} changes, {} tokens, {}, {} requests, {}s",
+        "{} changes, {} tokens, {}, {} requests, {} tool calls, {}s",
         u.changes,
         u.tokens,
         dollars(u.cost_micro_usd),
         u.requests,
+        u.tool_calls,
         u.runtime_seconds
     )
 }
