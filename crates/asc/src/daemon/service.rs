@@ -34,6 +34,7 @@ use tonic::{Request, Response, Status};
 use super::codeintel_overlay::{CodeIntel, ServerAnswer};
 use super::metrics::{Collected, EventLog, Metrics, Source};
 use super::plugin_api::{self, PluginStream};
+use super::plugin_api_inputs;
 use super::plugin_api_read;
 use super::plugin_api_stack;
 
@@ -635,6 +636,16 @@ impl WorkspaceRpc for Service {
     ) -> Result<Response<wire::WsAffectedResponse>, Status> {
         let state = self.state()?;
         plugin_api::affected(state, req.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn inputs(
+        &self,
+        req: Request<wire::WsInputsRequest>,
+    ) -> Result<Response<wire::WsInputsResponse>, Status> {
+        let state = self.state()?;
+        plugin_api_inputs::inputs(state, req.into_inner())
             .await
             .map(Response::new)
     }

@@ -18,6 +18,7 @@ pub mod lifecycle;
 pub mod live;
 pub mod metrics;
 pub mod plugin_api;
+pub mod plugin_api_inputs;
 pub mod plugin_api_read;
 pub mod plugin_api_stack;
 #[cfg(all(windows, feature = "vfs-projfs"))]

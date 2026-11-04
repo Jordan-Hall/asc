@@ -34,6 +34,7 @@ service Workspace {
   rpc Conflicts(WsConflictsRequest) returns (WsConflictsResponse);              // SPEC 20.6 (C31): staging stages 1-3
   rpc CommitGraph(WsCommitGraphRequest) returns (stream CommitGraphResponse);   // SPEC 20.6 (C31): with a WIP row per worktree
   rpc ReadFile(WsReadFileRequest) returns (stream ReadFileResponse);            // SPEC 7 (P02): a file at rev:path, a FileId or a stage (0-3) from the local store; offline; never the work tree
+  rpc Inputs(WsInputsRequest) returns (WsInputsResponse);                       // build cache (docs/designs/build-cache.md §1): = asc inputs --json
 }
 
 // Plugin messages [audit: plugin-api-undefined]. Ids are 20-byte git SHA-1s (§11.1). workspace.proto imports
@@ -113,4 +114,9 @@ message WsReadFileRequest { string ws_id = 1; oneof at { WsRevPath rev_path = 2;
 message WsRevPath { string rev = 1; /* empty = HEAD */ bytes path = 2 [(asc.v1.json) = JSON_KIND_PATH]; }
 message WsStagePath { uint32 stage = 1; /* 0..3 */ bytes path = 2 [(asc.v1.json) = JSON_KIND_PATH]; }
 // ReadFileResponse is repo.proto's; the stream chunks the content (total_size is the whole file). A missing object is hydrated through the tiers; the work tree is never read.
+message WsInputsRequest { string ws_id = 1; repeated bytes paths = 2 [(asc.v1.json) = JSON_KIND_PATH]; /* empty = the whole tree */
+  bool allow_missing = 3; bool digest_only = 4; }
+message WsInputEntry { enum Kind { KIND_TREE = 0; KIND_FILE = 1; KIND_EXEC = 2; KIND_LINK = 3; } Kind kind = 1;
+  bytes id = 2 [(asc.v1.json) = JSON_KIND_HEX]; /* TreeId or FileId */ bytes path = 3 [(asc.v1.json) = JSON_KIND_PATH]; /* empty = the root */ }
+message WsInputsResponse { bytes digest = 1 [(asc.v1.json) = JSON_KIND_HEX]; repeated WsInputEntry entries = 2; /* none with digest_only */ }
 message WsCommitGraphRequest { string ws_id = 1; CommitGraphRequest query = 2; bool wip_rows = 3; }

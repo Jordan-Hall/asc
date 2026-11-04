@@ -718,6 +718,13 @@ mod tests {
             not_served()
         }
 
+        async fn inputs(
+            &self,
+            _: Request<wire::WsInputsRequest>,
+        ) -> Result<Response<wire::WsInputsResponse>, Status> {
+            not_served()
+        }
+
         type WatchStream = Never<wire::WatchEvent>;
         async fn watch(
             &self,
