@@ -1,5 +1,5 @@
 //! The machine-wide build cache (docs/designs/build-cache.md §2): one content-addressed store
-//! under `<ASC_HOME>/cache/build/`, shared by every repository, worktree and workflow of the user.
+//! under `<ASC_HOME>/buildcache/`, shared by every repository, worktree and workflow of the user.
 //!
 //! ```text
 //! cas/<2 hex>/<FileId>     output bytes as they are, written once, read-only

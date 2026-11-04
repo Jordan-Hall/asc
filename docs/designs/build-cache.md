@@ -43,29 +43,42 @@ plus a hash of each changed file. No hydration.
 
 ## 2. The store
 
-`<ASC_HOME>/cache/build/` on the machine, shared by every repository, worktree and workflow of the user:
+`<ASC_HOME>/buildcache/` on the machine (crate `asc-buildcache`), shared by every repository, worktree and workflow
+of the user. It sits beside the object cache, not in it, so `asc gc` of objects never walks it. `asc.buildcache.dir`
+moves it.
 
 ```
-cas/<2 hex>/<blake3>            output bytes, zstd, written once (temp file + rename)
-ac/<2 hex>/<action key>         action entry: the outputs (relative path, mode, size, blob) and metadata
-index.redb                      size, last use and origin of each entry, for eviction
+cas/<2 hex>/<FileId>            output bytes as they are, read-only, written once (temp file + rename)
+ac/<2 hex>/<action key>         action entry (JSON): the outputs (relative path, kind, size, blob), exit code,
+                                captured stdout and stderr blobs, label, creation time and origin
+events/<yyyy-mm-dd>.jsonl       one line per hit, miss and write (tool, key, worktree, workflow, bytes), kept 14 days
+tmp/                            files being written
 ```
 
-- **Action key** = blake3 over the tool name, the tool's own key material (version, flags, environment it reads) and
-  the input digest of §1. Keys never contain absolute paths. Each adapter (§4) decides its key material and documents
-  it.
-- **Writes** are atomic and idempotent: a blob is content-named, an action entry is written after its blobs.
-- **Eviction**: least recently used down to `cache.build.max_size` (default 20 GiB), run by the daemon's scheduler and
-  by `asc cache gc`. Entries in use by a running restore are pinned.
-- **Restore** hard-links (or clones, on file systems with reflinks) blobs into place when the output directory is on
-  the same volume, and copies otherwise. Restored files are never writable links into the store.
+- **Everything is a file.** `cargo -j` starts one wrapper process per crate and they all use the store at once, so
+  there is no database to lock (a single-writer store such as redb would serialise them). The last use of an entry is
+  the modification time of its file, touched on every hit. Each event is one append of one line.
+- **Blob ids are the asc `FileId`** (blake3, key `asc v1 file`), the same id the work tree has for the same bytes.
+  Blobs are stored uncompressed so a restore can clone them.
+- **Action key** = blake3 (key `asc build action v1`) over the tool name, the tool's own key material (version, flags,
+  environment it reads; each part length-prefixed) and the input digest of §1. Keys never contain absolute paths.
+  Each adapter (§4) decides its key material and documents it.
+- **Writes** are atomic and idempotent: a blob is content-named, an action entry is written after its blobs and
+  refused if one is missing.
+- **Eviction**: least recently used down to `asc.buildcache.maxSize` (default 20 GiB); a blob goes when no entry
+  refers to it. Runs on `asc cache gc` and, at most once an hour, after a write that leaves the store over the limit.
+  A blob or temporary file no entry refers to may belong to a write in progress, so it is kept for an hour.
+- **Restore** clones each blob into place where the file system can (reflink on Btrfs, XFS, APFS, ReFS) and copies it
+  otherwise, then renames it over the target. Restored files are the caller's own and never links into the store. A
+  blob that was evicted between the lookup and the restore makes the restore report a miss, and the tool runs.
+- Output paths in an entry are relative with normal components only; anything else is refused on write and restore.
 
 ## 3. The server tier
 
 Misses fall through to `asc serve`, reusing the turbo artefact store (`/v8/artifacts`, SPEC §12.4) with its scopes:
 reads try the caller's scope and then `trusted`; writes go only to the caller's scope (`trusted` from CI on the
 default branch, `pr-<n>`, `dev-<user>`). An action entry and its blobs travel as one artefact (tar, zstd) named by the
-action key. Uploads run in the background after the local write. `cache.build.remote = off | read | read-write`
+action key. Uploads run in the background after the local write. `asc.buildcache.remote = off | read | read-write`
 (default `read` for people, `read-write` in trusted CI).
 
 ## 4. Adapters

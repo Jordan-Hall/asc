@@ -232,6 +232,20 @@ impl Store {
         Ok(report)
     }
 
+    /// Runs [`Store::gc`] when the store is over `max`, at most once per [`GRACE`] across every
+    /// process (`gc.stamp` records the last check). Adapters call it after a write.
+    pub fn maybe_gc(&self, max: u64) -> io::Result<Option<GcReport>> {
+        let stamp = self.root().join("gc.stamp");
+        if fs::metadata(&stamp).is_ok_and(|m| mtime(&m) + GRACE > now()) {
+            return Ok(None);
+        }
+        fs::write(&stamp, now().to_string())?;
+        if self.usage()?.bytes <= max {
+            return Ok(None);
+        }
+        self.gc(max).map(Some)
+    }
+
     /// Removes blobs no entry refers to that are older than `grace` seconds.
     fn sweep(&self, report: &mut GcReport, grace: u64) -> io::Result<()> {
         let live: HashSet<[u8; 32]> = self.list()?.iter().flat_map(|e| e.action.blobs()).collect();
@@ -348,5 +362,19 @@ mod tests {
         assert_eq!(s.find(&text[..8]).unwrap().unwrap().key, k);
         assert!(s.find("zz").unwrap().is_none());
         assert!(s.find(&text[..3]).unwrap().is_none(), "too short");
+    }
+
+    #[test]
+    fn maybe_gc_runs_once_per_period() {
+        let d = tempfile::tempdir().unwrap();
+        let s = Store::open(d.path()).unwrap();
+        let k = entry(&s, "t", 1, &[7u8; 1000]);
+        let r = s.maybe_gc(0).unwrap().expect("over the limit: runs");
+        assert_eq!(r.entries, 1);
+        entry(&s, "t", 2, &[8u8; 1000]);
+        assert_eq!(s.maybe_gc(0).unwrap(), None, "checked within the hour");
+        age(&s.root().join("gc.stamp"), GRACE + 1);
+        assert_eq!(s.maybe_gc(u64::MAX).unwrap(), None, "under the limit");
+        assert!(s.get_action(&k).unwrap().is_none());
     }
 }

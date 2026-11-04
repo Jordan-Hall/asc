@@ -123,7 +123,7 @@ fn sharded(dir: &Path, name: &str) -> PathBuf {
 }
 
 impl Store {
-    /// Opens (creating) the store at `root`, normally `<ASC_HOME>/cache/build`.
+    /// Opens (creating) the store at `root`, normally `<ASC_HOME>/buildcache`.
     pub fn open(root: impl Into<PathBuf>) -> io::Result<Self> {
         let root = root.into();
         for d in ["cas", "ac", "events", "tmp"] {
