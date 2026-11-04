@@ -550,6 +550,8 @@ impl AuditApi for AuditService {
             first_bad_seq: v.first_bad_seq,
             reason: v.reason,
             head_hash: Bytes::copy_from_slice(&v.head_hash),
+            first_seq: v.first_seq,
+            head_seq: v.head_seq,
         }))
     }
 

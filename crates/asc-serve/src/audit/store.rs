@@ -508,6 +508,10 @@ pub struct Verification {
     pub first_bad_seq: u64,
     pub reason: String,
     pub head_hash: [u8; 32],
+    /// The first event kept: 1, or the first event left after retention.
+    pub first_seq: u64,
+    /// The newest event of the scope; 0 when it has none.
+    pub head_seq: u64,
 }
 
 /// Checks the chain of `scope` from `from_seq` (0 or 1: the start; after retention, the first
@@ -519,17 +523,20 @@ pub async fn verify_chain(
     from_seq: u64,
     to_seq: u64,
 ) -> Result<Verification, AuditError> {
+    let head = head(pool, scope).await?;
+    let (base_seq, base_prev) = match segment(pool, scope).await? {
+        Some((to, hash)) => (to + 1, hash),
+        None => (1, GENESIS),
+    };
+    let head_seq = head.map_or(0, |(seq, _)| seq);
     let bad = |seq: u64, reason: &str, head_hash: [u8; 32], checked: u64| Verification {
         ok: false,
         checked,
         first_bad_seq: seq,
         reason: reason.to_owned(),
         head_hash,
-    };
-    let head = head(pool, scope).await?;
-    let (base_seq, base_prev) = match segment(pool, scope).await? {
-        Some((to, hash)) => (to + 1, hash),
-        None => (1, GENESIS),
+        first_seq: base_seq,
+        head_seq,
     };
     let start = from_seq.max(base_seq);
     let mut anchor = if start == base_seq {
@@ -654,6 +661,8 @@ pub async fn verify_chain(
         first_bad_seq: 0,
         reason: String::new(),
         head_hash: anchor.prev,
+        first_seq: base_seq,
+        head_seq,
     })
 }
 

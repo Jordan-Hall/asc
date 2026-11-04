@@ -600,12 +600,20 @@ async fn an_untouched_chain_reports_its_head() {
     assert!(v.ok);
     assert_eq!(v.checked, 12);
     assert_eq!(v.head_hash, store::head(&p, &s).await.unwrap().unwrap().1);
+    assert_eq!((v.first_seq, v.head_seq), (1, 12));
+    // Slices that meet cover the chain once, and only the last one checks the head.
+    let first = store::verify_chain(&p, &s, 0, 5).await.unwrap();
+    let rest = store::verify_chain(&p, &s, 6, 0).await.unwrap();
+    assert!(first.ok && rest.ok);
+    assert_eq!(first.checked + rest.checked, 12);
+    assert_eq!((first.first_seq, first.head_seq), (1, 12));
     // A scope that was never written verifies as empty.
     let none = store::verify_chain(&p, &Scope::repo("no/such"), 0, 0)
         .await
         .unwrap();
     assert!(none.ok && none.checked == 0);
     assert_eq!(none.head_hash, GENESIS);
+    assert_eq!((none.first_seq, none.head_seq), (1, 0));
 }
 
 #[tokio::test]
@@ -629,6 +637,11 @@ async fn retention_drops_old_events_and_the_chain_still_verifies() {
     let v = store::verify_chain(&p, &s, 0, 0).await.unwrap();
     assert!(v.ok, "{}", v.reason);
     assert_eq!(v.checked, 6);
+    assert_eq!((v.first_seq, v.head_seq), (7, 12));
+    // A slice that starts before the first event kept starts at it.
+    let early = store::verify_chain(&p, &s, 0, 9).await.unwrap();
+    assert!(early.ok, "{}", early.reason);
+    assert_eq!(early.checked, 3);
     for scope in [Scope::owner("acme"), Scope::instance()] {
         assert!(store::verify_chain(&p, &scope, 0, 0).await.unwrap().ok);
     }
