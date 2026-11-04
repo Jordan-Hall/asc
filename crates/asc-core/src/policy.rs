@@ -443,6 +443,16 @@ impl PathGlob {
         &self.text
     }
 
+    /// Whether some path inside the top-level directory `dir` can match: the pattern starts with
+    /// `**`, or its first segment matches `dir` and more segments follow it.
+    pub fn may_match_inside(&self, dir: &[u8]) -> bool {
+        match self.segments.first() {
+            Some(Seg::Deep) => true,
+            Some(Seg::One(p)) => self.segments.len() > 1 && wild(p, &dir.to_ascii_lowercase()),
+            None => false,
+        }
+    }
+
     /// Whether `path` (repository-relative, `/` separated) matches, ignoring ASCII case.
     pub fn matches(&self, path: &[u8]) -> bool {
         let lower: Vec<u8> = path.to_ascii_lowercase();
@@ -1780,6 +1790,21 @@ author_can_approve = true
         assert!(!g("a?c").matches(b"ac"));
         assert!(g("**").matches(b"anything/at/all"));
         assert!(!g("exact").matches(b"exact/child"));
+    }
+
+    #[test]
+    fn a_path_glob_says_which_top_level_directories_it_can_reach_into() {
+        let g = |p: &str| PathGlob::parse(p).unwrap();
+        assert!(g("src/**").may_match_inside(b"src"));
+        assert!(g("SRC/*.rs").may_match_inside(b"src"));
+        assert!(!g("src/**").may_match_inside(b"infra"));
+        assert!(g("**/x").may_match_inside(b"infra"));
+        assert!(g("*/x").may_match_inside(b"infra"));
+        assert!(g("in*/x").may_match_inside(b"infra"));
+        assert!(
+            !g("infra").may_match_inside(b"infra"),
+            "the directory itself, nothing inside"
+        );
     }
 
     #[test]
