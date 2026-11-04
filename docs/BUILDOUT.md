@@ -343,7 +343,7 @@ the `MergeQueue` service: its methods answer `UNIMPLEMENTED` from the router unt
 ## 10. Bring your own AI keys
 
 - **RPCs** (`aiproviders.proto`, `ai-keys.v1`): `AiProviders.CreateKey`, `ListKeys`, `GetKey`, `UpdateKey`, `DeleteKey`, `TestKey`,
-  `Usage`, `ListModels`.
+  `Usage`, `ListModels`, `ReplaceKey`, `ListFeatures`, `SetFeature`.
 - **Providers:** Anthropic, OpenAI, Google and OpenAI-compatible endpoints; the client is a small trait in `asc-serve/src/aikeys/provider.rs`
   with one implementation per provider, built on the network guard. A key is `UNTESTED` until `TestKey` succeeds (one minimal request) and
   unusable until `ACTIVE`; a 401 or 403 later marks it `FAILED`. Monthly cap: the sum of recorded cost for the calendar month (UTC)
@@ -916,6 +916,9 @@ Every method of the build-out services (98). A test keeps this list equal to the
 - `asc.v1.AiProviders/TestKey` — owner admin; one tiny request to the provider; rate limited
 - `asc.v1.AiProviders/Usage` — owner admin
 - `asc.v1.AiProviders/ListModels` — owner admin; the models a tested key can use
+- `asc.v1.AiProviders/ReplaceKey` — owner admin; mutating; the new key is tried first and replaces the old only when the provider accepts it
+- `asc.v1.AiProviders/ListFeatures` — owner admin; every feature that uses AI, with the setting that applies to the owner
+- `asc.v1.AiProviders/SetFeature` — owner admin; mutating
 
 **Agents** (`agents.proto`)
 
