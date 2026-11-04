@@ -100,9 +100,7 @@ impl Store {
         z.read_exact(&mut body)?;
         let action: Action =
             serde_json::from_slice(&body).map_err(|e| bad(format!("bad entry: {e}")))?;
-        for o in &action.outputs {
-            crate::store::check_rel(&o.path)?;
-        }
+        crate::store::check_paths(&action)?;
         let mut want: BTreeSet<[u8; 32]> = action.blobs().collect();
         let declared = action
             .outputs

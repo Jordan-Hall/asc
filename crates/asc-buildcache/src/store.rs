@@ -118,6 +118,52 @@ pub(crate) fn check_rel(path: &str) -> io::Result<()> {
     }
 }
 
+/// A link target that stays inside the output root: relative, `/`-separated, and never climbing
+/// above the root when resolved from the link's own directory.
+pub(crate) fn check_link(path: &str, target: &str) -> io::Result<()> {
+    let refuse = || {
+        bad(format!(
+            "link '{path}' points outside the outputs ('{target}')"
+        ))
+    };
+    if target.is_empty()
+        || target.starts_with('/')
+        || target.contains('\\')
+        || target.contains(':')
+        || target.contains('\0')
+    {
+        return Err(refuse());
+    }
+    let mut depth = path.split('/').count() - 1;
+    for c in target.split('/') {
+        match c {
+            "" | "." => {}
+            ".." => depth = depth.checked_sub(1).ok_or_else(refuse)?,
+            _ => depth += 1,
+        }
+    }
+    Ok(())
+}
+
+/// Output paths that can be written one by one without one writing through another: each is a
+/// relative path, none repeats, and none lies below another output (a link would carry it out).
+pub(crate) fn check_paths(action: &Action) -> io::Result<()> {
+    let mut paths: Vec<&str> = action.outputs.iter().map(|o| o.path.as_str()).collect();
+    for p in &paths {
+        check_rel(p)?;
+    }
+    paths.sort_unstable();
+    for w in paths.windows(2) {
+        if w[1] == w[0] || w[1].strip_prefix(w[0]).is_some_and(|r| r.starts_with('/')) {
+            return Err(bad(format!(
+                "output '{}' lies below output '{}'",
+                w[1], w[0]
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn sharded(dir: &Path, name: &str) -> PathBuf {
     dir.join(&name[..2]).join(name)
 }
@@ -269,9 +315,7 @@ impl Store {
 
     /// Writes the entry after its blobs exist.
     pub fn put_action(&self, key: &ActionKey, action: &Action) -> io::Result<()> {
-        for o in &action.outputs {
-            check_rel(&o.path)?;
-        }
+        check_paths(action)?;
         for blob in action
             .outputs
             .iter()
@@ -283,6 +327,9 @@ impl Store {
             if !self.has_blob(&id) {
                 return Err(bad(format!("blob {blob} is not in the store")));
             }
+        }
+        for o in action.outputs.iter().filter(|o| o.kind == OutputKind::Link) {
+            check_link(&o.path, &self.link_target(&o.blob)?)?;
         }
         let tmp = self.tmp_file();
         let body = serde_json::to_vec(action).map_err(|e| bad(e.to_string()))?;
@@ -339,16 +386,37 @@ impl Store {
     /// meanwhile): the caller runs the tool as on a miss. Each file is a copy (a clone where the
     /// file system has them), never a link into the store.
     pub fn restore(&self, action: &Action, base: &Path) -> io::Result<bool> {
+        check_paths(action)?;
         for o in &action.outputs {
-            check_rel(&o.path)?;
             let id = unhex(&o.blob).ok_or_else(|| bad("a blob id is not 64 hex digits"))?;
             if !self.has_blob(&id) {
                 return Ok(false);
+            }
+            if o.kind == OutputKind::Link {
+                check_link(&o.path, &self.link_target(&o.blob)?)?;
             }
         }
         for o in &action.outputs {
             let id = unhex(&o.blob).expect("checked above");
             let dest = base.join(&o.path);
+            // A directory on the way that is a link (left in the tree, or made by an earlier
+            // output) would carry the write outside `base`.
+            let mut dir = base.to_path_buf();
+            for c in o
+                .path
+                .split('/')
+                .collect::<Vec<_>>()
+                .split_last()
+                .map_or(&[][..], |x| x.1)
+            {
+                dir.push(c);
+                match fs::symlink_metadata(&dir) {
+                    Ok(m) if m.file_type().is_symlink() => {
+                        return Err(bad(format!("'{}' is below a link", o.path)));
+                    }
+                    _ => {}
+                }
+            }
             if let Some(parent) = dest.parent() {
                 fs::create_dir_all(parent)?;
             }
@@ -359,8 +427,7 @@ impl Store {
             let tmp = dest.with_file_name(format!(".{name}.asc-{}", uuid::Uuid::new_v4().simple()));
             let result = (|| -> io::Result<()> {
                 if o.kind == OutputKind::Link {
-                    let target = String::from_utf8(self.read_blob(&id)?)
-                        .map_err(|_| bad("a link target is not UTF-8"))?;
+                    let target = self.link_target(&o.blob)?;
                     make_link(&target, &tmp)?;
                 } else {
                     match reflink_copy::reflink_or_copy(self.blob_path(&id), &tmp) {
@@ -384,6 +451,20 @@ impl Store {
             }
         }
         Ok(true)
+    }
+
+    /// The target text of a link output; a link blob is at most 4 KiB of UTF-8.
+    fn link_target(&self, blob: &str) -> io::Result<String> {
+        let id = unhex(blob).ok_or_else(|| bad("a blob id is not 64 hex digits"))?;
+        let mut text = String::new();
+        fs::File::open(self.blob_path(&id))?
+            .take(4097)
+            .read_to_string(&mut text)
+            .map_err(|_| bad("a link target is not UTF-8"))?;
+        if text.len() > 4096 {
+            return Err(bad("a link target is longer than 4 KiB"));
+        }
+        Ok(text)
     }
 
     /// Writes a blob to `w` (replayed stdout or stderr).
@@ -588,5 +669,86 @@ mod tests {
         });
         assert!(s.restore(&a, &d.path().join("base")).is_err());
         assert!(!d.path().join("escape").exists());
+    }
+
+    #[test]
+    fn link_targets_stay_inside_the_outputs() {
+        for (path, ok) in [
+            ("a", "b"),
+            ("d/a", "../b"),
+            ("d/e/a", "../../b"),
+            ("a", "./x/../y"),
+        ] {
+            check_link(path, ok).unwrap();
+        }
+        for (path, bad) in [
+            ("a", ".."),
+            ("d/a", "../.."),
+            ("a", "/etc"),
+            ("a", "C:/x"),
+            ("a", r"..\x"),
+            ("a", ""),
+            ("a", "x/../../y"),
+        ] {
+            assert!(check_link(path, bad).is_err(), "{path} -> {bad}");
+        }
+    }
+
+    fn with_outputs(s: &Store, outs: &[(&str, OutputKind, &[u8])]) -> Action {
+        let mut a = Action::new("t", "", Origin::default());
+        for (path, kind, body) in outs {
+            let (id, size) = s.put_blob(body).unwrap();
+            a.outputs.push(Output {
+                path: (*path).into(),
+                kind: *kind,
+                size,
+                blob: hex(&id),
+            });
+        }
+        a
+    }
+
+    #[test]
+    fn entries_cannot_write_through_links() {
+        let (d, s) = store();
+        let key = ActionKey::builder("t").finish();
+        let escaping = with_outputs(&s, &[("out/a", OutputKind::Link, b"../../..")]);
+        assert!(s.put_action(&key, &escaping).is_err());
+        assert!(s.restore(&escaping, &d.path().join("w")).is_err());
+
+        let nested = with_outputs(
+            &s,
+            &[
+                ("out/a", OutputKind::Link, b"b"),
+                ("out/a/evil", OutputKind::File, b"x"),
+            ],
+        );
+        assert!(s.put_action(&key, &nested).is_err());
+        assert!(s.restore(&nested, &d.path().join("w")).is_err());
+        let twice = with_outputs(
+            &s,
+            &[("x", OutputKind::File, b"1"), ("x", OutputKind::File, b"2")],
+        );
+        assert!(s.put_action(&key, &twice).is_err());
+        assert!(!d.path().join("w").exists(), "nothing was written");
+    }
+
+    #[test]
+    fn restore_refuses_a_linked_directory_on_the_way() {
+        let (d, s) = store();
+        let w = d.path().join("w");
+        let outside = d.path().join("outside");
+        fs::create_dir_all(&w).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(&outside, w.join("dist"));
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_dir(&outside, w.join("dist"));
+        if made.is_err() {
+            return; // no symlink privilege on this host
+        }
+        let a = with_outputs(&s, &[("dist/app.js", OutputKind::File, b"x")]);
+        assert!(s.restore(&a, &w).is_err());
+        assert!(!outside.join("app.js").exists());
     }
 }
