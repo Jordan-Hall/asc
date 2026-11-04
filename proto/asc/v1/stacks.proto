@@ -119,6 +119,9 @@ message RefLogEntry {
 message ListRefLogResponse {
   repeated RefLogEntry entries = 1;
   string next_page_token = 2;
+  // How long after an operation on a protected ref a maintainer may still undo it, in seconds (`[audit]
+  // undo_window_secs`); 0 when undo of protected refs is off. An operation on a user's own ref has no window.
+  uint64 undo_window_seconds = 3;
 }
 
 // Puts `ref` back to the value it had before entry `seq`, with the ref's current value as the compare-and-swap guard (so

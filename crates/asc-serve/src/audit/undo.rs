@@ -365,6 +365,7 @@ impl RefLog {
         Ok(wire::ListRefLogResponse {
             entries,
             next_page_token,
+            undo_window_seconds: u64::try_from(self.window_secs).unwrap_or(0),
         })
     }
 

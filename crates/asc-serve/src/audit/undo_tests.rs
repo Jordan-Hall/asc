@@ -636,6 +636,10 @@ async fn the_list_filters_and_pages() {
     .await;
     assert_eq!(first.entries.len(), 2);
     assert!(!first.next_page_token.is_empty());
+    assert_eq!(
+        first.undo_window_seconds, 600,
+        "the list says how long a protected ref can be undone"
+    );
     let second = page(wire::ListRefLogRequest {
         limit: 2,
         page_token: first.next_page_token.clone(),
@@ -788,4 +792,20 @@ async fn a_dry_run_says_which_changes_go_back_and_which_approvals_are_kept() {
         .await
         .unwrap();
     assert!(done.applied && done.changes_back == 0);
+}
+
+#[tokio::test]
+async fn the_list_says_when_undo_of_protected_refs_is_off() {
+    let f = fx_with(0).await;
+    f.mv(SHARED, None, Some(0), ALICE).await;
+    let list = f
+        .log
+        .list(
+            &ctx(ALICE),
+            &caller(ALICE, true),
+            wire::ListRefLogRequest::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(list.undo_window_seconds, 0);
 }
