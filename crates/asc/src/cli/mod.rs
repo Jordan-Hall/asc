@@ -41,6 +41,7 @@ pub mod backup;
 pub mod bisect;
 pub mod blame;
 pub mod branch;
+pub mod cache;
 pub mod check_attr;
 pub mod check_ignore;
 pub mod checkout;
@@ -275,6 +276,7 @@ pub static COMMANDS: &[Command] = &[
     entry!("semantic", semantic),
     entry!("affected", affected),
     entry!("inputs", inputs),
+    entry!("cache", cache),
     entry!("projects", projects),
     entry!("graph", graph),
     entry!("landed", landed),

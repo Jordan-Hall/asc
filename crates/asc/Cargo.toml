@@ -27,6 +27,7 @@ vfs-fuse = ["dep:asc-vfs", "asc-vfs/fuse"]
 
 [dependencies]
 asc-core = { workspace = true }
+asc-buildcache = { workspace = true }
 asc-store = { workspace = true }
 asc-engine = { workspace = true }
 asc-graph = { workspace = true }
