@@ -33,6 +33,8 @@ mod tests_gaps;
 mod tests_gate;
 #[cfg(test)]
 mod tests_hunk;
+#[cfg(test)]
+mod tests_summary;
 
 use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
