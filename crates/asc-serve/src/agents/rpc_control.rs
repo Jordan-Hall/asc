@@ -901,6 +901,26 @@ impl AgentService {
                 requests: u(r.try_get("r").map_err(|e| db(&e))?),
             });
         }
+        // An agent with a cap and nothing spent yet is listed too, so its cap shows before its first call.
+        let capped = sqlx::query(
+            "SELECT agent, cap FROM agent_monthly_budget WHERE repo = $1 AND agent <> '' ORDER BY agent",
+        )
+        .bind(repo.clone())
+        .fetch_all(&self.hub.core.pool)
+        .await
+        .map_err(|e| db(&e))?;
+        for r in &capped {
+            let agent: String = r.try_get("agent").map_err(|e| db(&e))?;
+            if out_agents.iter().any(|a| a.agent == agent) {
+                continue;
+            }
+            out_agents.push(wire::AgentSpend {
+                agent,
+                monthly_cap_micro_usd: u(r.try_get("cap").map_err(|e| db(&e))?),
+                ..Default::default()
+            });
+        }
+        out_agents.sort_by(|a, b| a.agent.cmp(&b.agent));
         let (cost, toks, _) = self.hub.month_spend(&repo, &month, "").await?;
         Ok(Response::new(wire::GetAgentSpendResponse {
             month,

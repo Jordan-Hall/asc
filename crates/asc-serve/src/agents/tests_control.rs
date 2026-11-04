@@ -879,6 +879,24 @@ async fn the_boards_report_estimates_recent_tasks_logs_agents_and_spend() {
     assert_eq!(e.code(), Code::ResourceExhausted, "{e:?}");
     let s = spend("bob-token", "").await.unwrap();
     assert_eq!(s.agents[0].monthly_cap_micro_usd, 1_000);
+    // A capped agent that has spent nothing this month is listed with its cap, in name order.
+    cap("alice-token", "auditor", 50_000).await.unwrap();
+    let s = spend("bob-token", "").await.unwrap();
+    let names: Vec<_> = s.agents.iter().map(|a| a.agent.as_str()).collect();
+    assert_eq!(names, ["auditor", "fixer"]);
+    assert_eq!(
+        (
+            s.agents[0].cost_micro_usd,
+            s.agents[0].monthly_cap_micro_usd
+        ),
+        (0, 50_000)
+    );
+    cap("alice-token", "auditor", 0).await.unwrap();
+    assert_eq!(
+        spend("bob-token", "").await.unwrap().agents.len(),
+        1,
+        "a removed cap leaves no row"
+    );
     cap("alice-token", "fixer", 0).await.unwrap();
     assert_eq!(
         spend("bob-token", "").await.unwrap().agents[0].monthly_cap_micro_usd,

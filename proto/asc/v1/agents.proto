@@ -528,7 +528,7 @@ message GetAgentSpendResponse {
   uint64 tokens = 3;
   uint64 monthly_cap_micro_usd = 4;      // the cap of the whole repository, 0 = none
   repeated SpendDay days = 5;            // every day with spend, ascending
-  repeated AgentSpend agents = 6;
+  repeated AgentSpend agents = 6;        // every agent with spend in the month or a monthly cap, by name
 }
 // `agent` empty sets the cap of the repository; otherwise the cap of one agent. 0 removes the cap. A run that would start, or a
 // model call that would be made, after the spend of the month reached a cap is refused with BUDGET_EXCEEDED (paths[0] = "monthly").
