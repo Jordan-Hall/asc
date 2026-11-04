@@ -1675,14 +1675,15 @@ impl AdminService {
     ) -> Result<Result<(), &'static str>, Status> {
         const COMMIT: i64 = 3;
         let ns = entry.ns.as_bytes().to_vec();
-        let mapped: Option<Vec<u8>> =
-            sqlx::query_scalar("SELECT git FROM git_map WHERE ns = $1 AND kind = $2 AND asc = $3")
-                .bind(ns.clone())
-                .bind(COMMIT)
-                .bind(id.as_bytes().to_vec())
-                .fetch_optional(self.pool())
-                .await
-                .map_err(|e| sql("git_map", e))?;
+        let mapped: Option<Vec<u8>> = sqlx::query_scalar(
+            "SELECT git FROM git_map WHERE ns = $1 AND kind = $2 AND \"asc\" = $3",
+        )
+        .bind(ns.clone())
+        .bind(COMMIT)
+        .bind(id.as_bytes().to_vec())
+        .fetch_optional(self.pool())
+        .await
+        .map_err(|e| sql("git_map", e))?;
         let Some(mapped) = mapped else {
             return Ok(Err("no row for this changeset"));
         };
@@ -1693,14 +1694,15 @@ impl AdminService {
         if derived.as_bytes().as_slice() != mapped.as_slice() {
             return Ok(Err("the mapped commit is not the derived one"));
         }
-        let back: Option<Vec<u8>> =
-            sqlx::query_scalar("SELECT asc FROM git_map WHERE ns = $1 AND kind = $2 AND git = $3")
-                .bind(ns)
-                .bind(COMMIT)
-                .bind(mapped)
-                .fetch_optional(self.pool())
-                .await
-                .map_err(|e| sql("git_map", e))?;
+        let back: Option<Vec<u8>> = sqlx::query_scalar(
+            "SELECT \"asc\" FROM git_map WHERE ns = $1 AND kind = $2 AND git = $3",
+        )
+        .bind(ns)
+        .bind(COMMIT)
+        .bind(mapped)
+        .fetch_optional(self.pool())
+        .await
+        .map_err(|e| sql("git_map", e))?;
         Ok(if back.as_deref() == Some(id.as_bytes().as_slice()) {
             Ok(())
         } else {
@@ -2002,7 +2004,7 @@ async fn copy_rows(
     }
     for chunk in ids.chunks(ROW_BATCH) {
         let q = format!(
-            "SELECT git, kind, asc FROM git_map WHERE ns = $1 AND asc IN ({})",
+            "SELECT git, kind, \"asc\" FROM git_map WHERE ns = $1 AND \"asc\" IN ({})",
             placeholders(chunk.len(), 2)
         );
         let mut query = sqlx::query(sqlx::AssertSqlSafe(q)).bind(s.clone());
@@ -2015,7 +2017,7 @@ async fn copy_rows(
             .map_err(|e| sql("git_map", e))?
         {
             sqlx::query(
-                "INSERT INTO git_map (ns, git, kind, asc) VALUES ($1, $2, $3, $4) \
+                "INSERT INTO git_map (ns, git, kind, \"asc\") VALUES ($1, $2, $3, $4) \
                  ON CONFLICT (ns, git, kind) DO NOTHING",
             )
             .bind(d.clone())
@@ -4136,7 +4138,7 @@ mod tests {
     async fn verify_catches_a_git_map_that_points_elsewhere() {
         let f = fx().await;
         let s = source(&f).await;
-        sqlx::query("UPDATE git_map SET git = $1 WHERE ns = $2 AND kind = 3 AND asc = $3")
+        sqlx::query("UPDATE git_map SET git = $1 WHERE ns = $2 AND kind = 3 AND \"asc\" = $3")
             .bind(vec![7u8; 20])
             .bind(s.entry.ns.as_bytes().to_vec())
             .bind(s.b.as_bytes().to_vec())

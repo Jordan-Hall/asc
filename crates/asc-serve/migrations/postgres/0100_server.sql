@@ -24,10 +24,10 @@ CREATE TABLE git_map (
     ns   BYTEA     NOT NULL,
     git  BYTEA     NOT NULL,
     kind SMALLINT NOT NULL,
-    asc   BYTEA     NOT NULL,
+    "asc" BYTEA     NOT NULL,
     PRIMARY KEY (ns, git, kind)
 );
-CREATE INDEX git_map_asc ON git_map (ns, asc);
+CREATE INDEX git_map_asc ON git_map (ns, "asc");
 
 CREATE TABLE file_meta (
     ns   BYTEA   NOT NULL,

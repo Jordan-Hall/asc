@@ -912,20 +912,21 @@ impl ImportMap for SqlImportMap {
             ObjectKind::Tag => 4,
         };
         let sink = |e: sqlx::Error| derive::Error::Sink(e.to_string());
-        let row = sqlx::query("SELECT asc FROM git_map WHERE ns = $1 AND git = $2 AND kind = $3")
-            .bind(self.ns.as_bytes().to_vec())
-            .bind(git.as_bytes().to_vec())
-            .bind(code)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(sink)?;
+        let row =
+            sqlx::query("SELECT \"asc\" FROM git_map WHERE ns = $1 AND git = $2 AND kind = $3")
+                .bind(self.ns.as_bytes().to_vec())
+                .bind(git.as_bytes().to_vec())
+                .bind(code)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(sink)?;
         let Some(row) = row else {
             return Ok(None);
         };
         let asc: Vec<u8> = row.try_get("asc").map_err(sink)?;
-        <[u8; 32]>::try_from(asc.as_slice())
-            .map(Some)
-            .map_err(|_| derive::Error::Sink("git_map holds an asc id that is not 32 bytes".into()))
+        <[u8; 32]>::try_from(asc.as_slice()).map(Some).map_err(|_| {
+            derive::Error::Sink("git_map holds an \"asc\" id that is not 32 bytes".into())
+        })
     }
 }
 

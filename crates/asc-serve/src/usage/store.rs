@@ -72,7 +72,7 @@ fn key_owner(s: &Subject) -> (i64, String) {
 }
 
 /// The person filter of run queries, a closed set of fragments.
-const BY_PREFIX: &str = "SUBSTR(r.repo, 1, $2) = $1";
+const BY_PREFIX: &str = "SUBSTR(r.repo, 1, CAST($2 AS INTEGER)) = $1";
 const BY_PERSON: &str = "(LOWER(r.starter) = $1 OR (r.starter = '' AND LOWER(r.created_by) = $1))";
 
 #[derive(Clone)]
@@ -187,7 +187,7 @@ impl Store {
         // shows nothing about another owner's repositories.
         for r in sqlx::query(
             "SELECT c.repo, c.storage_bytes, c.byo_storage FROM usage_counters c \
-             WHERE SUBSTR(c.repo, 1, $2) = $1 AND c.day = \
+             WHERE SUBSTR(c.repo, 1, CAST($2 AS INTEGER)) = $1 AND c.day = \
              (SELECT MAX(d.day) FROM usage_counters d WHERE d.repo = c.repo AND d.day <= $3)",
         )
         .bind(pre.clone())
@@ -210,7 +210,7 @@ impl Store {
         // rows would overflow the database's integer.
         for r in sqlx::query(
             "SELECT repo, bandwidth_bytes AS b FROM usage_counters \
-             WHERE SUBSTR(repo, 1, $2) = $1 AND day >= $3 AND day <= $4",
+             WHERE SUBSTR(repo, 1, CAST($2 AS INTEGER)) = $1 AND day >= $3 AND day <= $4",
         )
         .bind(pre.clone())
         .bind(len)
@@ -280,7 +280,7 @@ impl Store {
             _ => {
                 for r in sqlx::query(
                     "SELECT repo, CAST(COALESCE(SUM(cost), 0) AS BIGINT) AS cost FROM agent_spend \
-                     WHERE SUBSTR(repo, 1, $2) = $1 AND day >= $3 AND day <= $4 GROUP BY repo",
+                     WHERE SUBSTR(repo, 1, CAST($2 AS INTEGER)) = $1 AND day >= $3 AND day <= $4 GROUP BY repo",
                 )
                 .bind(pre.clone())
                 .bind(len)
@@ -378,7 +378,7 @@ impl Store {
         };
         let q = format!(
             "SELECT {expr} AS g, CAST(SUM(requests) AS BIGINT) AS req, CAST(SUM(cost) AS BIGINT) AS cost \
-             FROM agent_spend WHERE SUBSTR(repo, 1, $2) = $1 AND day >= $3 AND day <= $4 \
+             FROM agent_spend WHERE SUBSTR(repo, 1, CAST($2 AS INTEGER)) = $1 AND day >= $3 AND day <= $4 \
              GROUP BY {expr} ORDER BY {expr} LIMIT 2000"
         );
         let rows = sqlx::query(sqlx::AssertSqlSafe(q))

@@ -552,7 +552,7 @@ impl GitMapSink for SqlGitMap {
         let mut tx = self.pool.begin().await.map_err(sink)?;
         // One statement per chunk: a round trip per row dominates a large import.
         for chunk in rows.chunks(GIT_MAP_BATCH) {
-            let mut sql = String::from("INSERT INTO git_map (ns, git, kind, asc) VALUES ");
+            let mut sql = String::from("INSERT INTO git_map (ns, git, kind, \"asc\") VALUES ");
             for i in 0..chunk.len() {
                 if i > 0 {
                     sql.push_str(", ");

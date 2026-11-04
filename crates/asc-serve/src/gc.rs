@@ -471,7 +471,7 @@ impl SweepObserver for SqlSweepObserver {
                     _ => continue,
                 };
                 let git_map = (!matches!(key, ObjKey::ChangeMeta(_)))
-                    .then_some("DELETE FROM git_map WHERE ns = $1 AND asc = $2");
+                    .then_some("DELETE FROM git_map WHERE ns = $1 AND \"asc\" = $2");
                 for stmt in own.iter().copied().chain(git_map) {
                     sqlx::query(stmt)
                         .bind(self.ns.clone())

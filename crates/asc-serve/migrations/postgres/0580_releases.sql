@@ -1,13 +1,13 @@
 -- Releases (docs/BUILDOUT.md section 26): the record of a tagged release with its notes, its provenance and the
 -- checksums of its assets. The asset bytes live where `url` says (the host, object storage); asc keeps the metadata.
 CREATE TABLE releases (
-    ns             BLOB   NOT NULL,
+    ns             BYTEA   NOT NULL,
     id             BIGINT NOT NULL,
     tag            TEXT   NOT NULL,
     title          TEXT   NOT NULL,
     notes          TEXT   NOT NULL,
     channel        BIGINT NOT NULL,
-    target         BLOB   NOT NULL,
+    target         BYTEA   NOT NULL,
     previous_tag   TEXT   NOT NULL DEFAULT '',
     changes        BIGINT NOT NULL DEFAULT 0,
     created        BIGINT NOT NULL,
@@ -28,7 +28,7 @@ CREATE TABLE releases (
 CREATE UNIQUE INDEX releases_by_tag ON releases (ns, tag);
 
 CREATE TABLE release_assets (
-    ns           BLOB   NOT NULL,
+    ns           BYTEA   NOT NULL,
     release_id   BIGINT NOT NULL,
     name         TEXT   NOT NULL,
     size         BIGINT NOT NULL,

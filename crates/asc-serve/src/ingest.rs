@@ -1198,7 +1198,7 @@ mod tests {
         );
         // git ids are derived eagerly.
         let git = e.backend.engine().git_commit_of(c).await.unwrap();
-        let row = sqlx::query("SELECT asc FROM git_map WHERE git = $1 AND kind = 3")
+        let row = sqlx::query("SELECT \"asc\" FROM git_map WHERE git = $1 AND kind = 3")
             .bind(git.as_bytes().to_vec())
             .fetch_one(r.pool())
             .await

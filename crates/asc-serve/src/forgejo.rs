@@ -1722,12 +1722,13 @@ impl GitIds {
             RefTarget::Changeset(_) => KIND_COMMIT,
             RefTarget::Tag(_) => KIND_TAG,
         };
-        let row = sqlx::query("SELECT git FROM git_map WHERE ns = $1 AND asc = $2 AND kind = $3")
-            .bind(ns.as_bytes().to_vec())
-            .bind(bytes[1..].to_vec())
-            .bind(kind)
-            .fetch_optional(&self.pool)
-            .await?;
+        let row =
+            sqlx::query("SELECT git FROM git_map WHERE ns = $1 AND \"asc\" = $2 AND kind = $3")
+                .bind(ns.as_bytes().to_vec())
+                .bind(bytes[1..].to_vec())
+                .bind(kind)
+                .fetch_optional(&self.pool)
+                .await?;
         let git: Vec<u8> = row
             .ok_or_else(|| ForgejoError::Invalid("a pushed object has no git id".into()))?
             .try_get("git")?;

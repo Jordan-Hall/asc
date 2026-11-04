@@ -1,7 +1,7 @@
 -- Notification events for the hub (docs/BUILDOUT.md section 21): what asc serve tells the hub's people about,
 -- with the retry state of the delivery. A row is delivered at least once.
 CREATE TABLE notify_events (
-    ns           BLOB   NOT NULL,
+    ns           BYTEA   NOT NULL,
     id           BIGINT NOT NULL,
     event        TEXT   NOT NULL,
     users_json   TEXT   NOT NULL,

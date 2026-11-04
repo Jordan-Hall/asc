@@ -414,7 +414,7 @@ impl AdminCli {
         };
         for oid in &commits {
             let mapped: Option<Vec<u8>> = sqlx::query_scalar(
-                "SELECT asc FROM git_map WHERE ns = $1 AND kind = $2 AND git = $3",
+                "SELECT \"asc\" FROM git_map WHERE ns = $1 AND kind = $2 AND git = $3",
             )
             .bind(ns.clone())
             .bind(KIND_COMMIT)
@@ -957,14 +957,14 @@ mod tests {
         history(&f.up);
         f.imported().await;
         // Point one commit's map row at the other commit's changeset.
-        let rows = sqlx::query("SELECT git, asc FROM git_map WHERE kind = 3 ORDER BY git")
+        let rows = sqlx::query("SELECT git, \"asc\" FROM git_map WHERE kind = 3 ORDER BY git")
             .fetch_all(f.cli.registry.pool())
             .await
             .unwrap();
         assert_eq!(rows.len(), 2);
         let other: Vec<u8> = rows[1].try_get("asc").unwrap();
         let victim: Vec<u8> = rows[0].try_get("git").unwrap();
-        sqlx::query("UPDATE git_map SET asc = $1 WHERE kind = 3 AND git = $2")
+        sqlx::query("UPDATE git_map SET \"asc\" = $1 WHERE kind = 3 AND git = $2")
             .bind(other)
             .bind(victim)
             .execute(f.cli.registry.pool())

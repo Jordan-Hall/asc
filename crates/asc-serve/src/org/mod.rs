@@ -409,7 +409,7 @@ impl OrgHub {
         let prefix = format!("{}/", org.to_ascii_lowercase());
         let first = clock::day(clock::month_start(clock::now()));
         let n: i64 = sqlx::query_scalar(
-            "SELECT CAST(COALESCE(SUM(cost), 0) AS BIGINT) FROM agent_spend WHERE SUBSTR(repo, 1, $2) = $1 AND day >= $3",
+            "SELECT CAST(COALESCE(SUM(cost), 0) AS BIGINT) FROM agent_spend WHERE SUBSTR(repo, 1, CAST($2 AS INTEGER)) = $1 AND day >= $3",
         )
         .bind(prefix.clone())
         .bind(i64::try_from(prefix.len()).unwrap_or(0))

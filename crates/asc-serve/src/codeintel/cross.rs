@@ -260,7 +260,7 @@ impl CrossSearchService {
                     }
                     let prefix = format!("{}/", scope.name);
                     sqlx::query_scalar(
-                        "SELECT name FROM repos WHERE substr(name, 1, $1) = $2 AND name >= $3 \
+                        "SELECT name FROM repos WHERE substr(name, 1, CAST($1 AS INTEGER)) = $2 AND name >= $3 \
                          ORDER BY name LIMIT $4",
                     )
                     .bind(prefix.len() as i64)

@@ -237,7 +237,7 @@ impl IdCodec {
                 .collect::<Vec<_>>()
                 .join(",");
             let sql = format!(
-                "SELECT git, asc FROM git_map WHERE ns = $1 AND kind = $2 AND git IN ({marks})"
+                "SELECT git, \"asc\" FROM git_map WHERE ns = $1 AND kind = $2 AND git IN ({marks})"
             );
             let mut q = sqlx::query(sqlx::AssertSqlSafe(sql))
                 .bind(self.ns.as_bytes().to_vec())

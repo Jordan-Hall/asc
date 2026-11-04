@@ -32,7 +32,7 @@ CREATE TABLE agent_run_ctl (
     plan_first  BIGINT NOT NULL DEFAULT 0,
     plan_ok     BIGINT NOT NULL DEFAULT 0,
     steps_done  BIGINT NOT NULL DEFAULT 0,
-    for_change  BLOB   NOT NULL,
+    for_change  BYTEA   NOT NULL,
     continues   BIGINT NOT NULL DEFAULT 0,
     rollback_to BIGINT NOT NULL DEFAULT 0
 );
@@ -44,7 +44,7 @@ CREATE TABLE agent_checkpoints (
     at              BIGINT NOT NULL,
     label           TEXT   NOT NULL,
     changes_json    TEXT   NOT NULL,
-    tip             BLOB   NOT NULL,
+    tip             BYTEA   NOT NULL,
     rolled_back_at  BIGINT NOT NULL DEFAULT 0,
     rolled_back_by  TEXT   NOT NULL DEFAULT '',
     rollback_reason TEXT   NOT NULL DEFAULT ''

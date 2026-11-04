@@ -1,7 +1,7 @@
 -- The review brief, approvals per version and suggested changes (docs/BUILDOUT.md section 19).
 CREATE TABLE review_briefs (
-    ns            BLOB   NOT NULL,
-    change        BLOB   NOT NULL,
+    ns            BYTEA   NOT NULL,
+    change        BYTEA   NOT NULL,
     what          TEXT   NOT NULL DEFAULT '',
     why           TEXT   NOT NULL DEFAULT '',
     how           TEXT   NOT NULL DEFAULT '',
@@ -13,8 +13,8 @@ CREATE TABLE review_briefs (
 );
 
 CREATE TABLE review_approvals (
-    ns       BLOB   NOT NULL,
-    change   BLOB   NOT NULL,
+    ns       BYTEA   NOT NULL,
+    change   BYTEA   NOT NULL,
     reviewer TEXT   NOT NULL,
     version  BIGINT NOT NULL,
     state    BIGINT NOT NULL,
