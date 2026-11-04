@@ -244,6 +244,8 @@ pub struct BackupsHub {
     pub(crate) audit: Arc<dyn Audit>,
     pub(crate) ops: Ops,
     start: tokio::sync::Mutex<()>,
+    /// One prune at a time: the one after a run and the scheduled one would otherwise remove the same backups.
+    pruning: tokio::sync::Mutex<()>,
     key: OnceLock<Option<[u8; 32]>>,
     stopping: AtomicBool,
     /// The maintenance flag of the ref gate, set when a restore is staged.
@@ -280,6 +282,7 @@ impl BackupsHub {
             audit,
             ops: Ops::new(pool),
             start: tokio::sync::Mutex::new(()),
+            pruning: tokio::sync::Mutex::new(()),
             key: OnceLock::new(),
             stopping: AtomicBool::new(false),
             read_only: OnceLock::new(),
@@ -853,6 +856,7 @@ impl BackupsHub {
 
     /// Removes the backups retention no longer keeps from their targets.
     pub async fn prune(&self) {
+        let _one = self.pruning.lock().await;
         let Ok(sched) = self.store.schedule().await else {
             return;
         };
@@ -877,8 +881,7 @@ impl BackupsHub {
                 // The target left the configuration: nothing to remove, the record is closed.
                 Err(_) => true,
             };
-            if removed {
-                let _ = self.store.mark_purged(&id).await;
+            if removed && matches!(self.store.mark_purged(&id).await, Ok(true)) {
                 self.record(Entry {
                     target: &id,
                     details: &[("target", run.target.clone())],

@@ -606,6 +606,41 @@ async fn retention_removes_expired_backups_from_their_targets() {
     assert_eq!(f.audit.of("backup.purged").len(), 1);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn prunes_at_the_same_time_purge_and_audit_a_backup_once() {
+    let f = fx().await;
+    f.hub
+        .set_schedule(Schedule {
+            enabled: false,
+            keep_days: 1,
+            keep_weeks: 0,
+            ..Schedule::default()
+        })
+        .await
+        .unwrap();
+    let old = run_now(&f, "local-disk", 1).await;
+    run_now(&f, "local-disk", 2).await;
+    sqlx::query("UPDATE backup_runs SET finished = $2 WHERE id = $1")
+        .bind(old.id.clone())
+        .bind(crate::ai::clock::now() - 10 * 86_400)
+        .execute(&f.k.pool)
+        .await
+        .unwrap();
+    let prunes: Vec<_> = (0..4)
+        .map(|_| {
+            let hub = f.hub.clone();
+            tokio::spawn(async move { hub.prune().await })
+        })
+        .collect();
+    for p in prunes {
+        p.await.unwrap();
+    }
+    assert!(f.hub.run(&old.id).await.unwrap().purged);
+    assert_eq!(f.audit.of("backup.purged").len(), 1);
+    // A record purged already is not purged again.
+    assert!(!f.hub.store.mark_purged(&old.id).await.unwrap());
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn targets_are_listed_without_credentials_and_a_run_left_running_is_closed_on_start() {
     let f = fx().await;

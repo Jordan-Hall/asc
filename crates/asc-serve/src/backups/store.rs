@@ -261,12 +261,13 @@ impl Store {
         Ok(())
     }
 
-    pub async fn mark_purged(&self, id: &str) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE backup_runs SET purged = 1 WHERE id = $1")
+    /// `false` when the backup was purged already (by another prune, here or in another process).
+    pub async fn mark_purged(&self, id: &str) -> Result<bool, sqlx::Error> {
+        let r = sqlx::query("UPDATE backup_runs SET purged = 1 WHERE id = $1 AND purged = 0")
             .bind(id.to_owned())
             .execute(&self.pool)
             .await?;
-        Ok(())
+        Ok(r.rows_affected() == 1)
     }
 
     /// Forgets the records of purged backups that finished before `before`.
