@@ -77,7 +77,7 @@ impl AgentService {
         }
     }
 
-    /// The wire form of a run with the control fields (task, progress, pause, requests).
+    /// The wire form of a run with the control fields (task, progress, pause, requests) and its tool calls.
     pub(super) async fn wire_run_full(&self, r: &RunRow) -> wire::AgentRun {
         let mut w = self.wire_run(r).await;
         if let Ok(ctl) = self.hub.ctl(r.id).await {
@@ -87,6 +87,10 @@ impl AgentService {
             w.for_change = bytes::Bytes::from(ctl.for_change);
         }
         w.pending_requests = self.hub.pending_requests(r.id).await;
+        if let (Some(usage), Ok(n)) = (w.usage.as_mut(), self.hub.core.runs.tool_calls(r.id).await)
+        {
+            usage.tool_calls = n;
+        }
         w
     }
 

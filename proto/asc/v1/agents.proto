@@ -32,6 +32,7 @@ message AgentBudgetUsage {
   uint32 paths = 4;
   uint32 runtime_seconds = 5;
   uint64 requests = 6;
+  uint64 tool_calls = 7;                 // the tool calls of a run (GetRun); 0 in limits, remaining budgets and events
 }
 
 // ---------------------------------------------------------------------------------------------------- runs

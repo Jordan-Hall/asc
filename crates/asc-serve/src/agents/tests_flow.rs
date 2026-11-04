@@ -1425,6 +1425,33 @@ async fn a_watch_streams_every_event_in_order_ends_with_the_run_and_resumes_afte
         }))
         .await;
     assert_eq!(anon.err().map(|e| e.code()), Some(Code::Unauthenticated));
+    // The run counts its tool calls, and the count stays when the events are pruned.
+    let tool_calls = || async {
+        w.svc
+            .get_run(w.request(
+                wire::GetAgentRunRequest {
+                    repo: repo_ref(),
+                    id: run.id,
+                },
+                "carol-token",
+                None,
+            ))
+            .await
+            .unwrap()
+            .into_inner()
+            .run
+            .unwrap()
+            .usage
+            .unwrap()
+            .tool_calls
+    };
+    let calls = seen
+        .iter()
+        .filter(|e| e.kind == wire::AgentRunEventKind::ToolCall as i32)
+        .count() as u64;
+    assert_eq!(tool_calls().await, calls);
+    w.hub.core.runs.prune_events(i64::MAX).await.unwrap();
+    assert_eq!(tool_calls().await, calls);
 }
 
 // ------------------------------------------------------------------------------ secrets and untrusted text

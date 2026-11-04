@@ -642,7 +642,17 @@ impl RunStore {
             .execute(&self.pool)
             .await;
             match r {
-                Ok(_) => return Ok(u(max + 1)),
+                Ok(_) => {
+                    if kind == EventKind::ToolCall {
+                        sqlx::query(
+                            "UPDATE agent_runs SET tool_calls = tool_calls + 1 WHERE id = $1",
+                        )
+                        .bind(rid)
+                        .execute(&self.pool)
+                        .await?;
+                    }
+                    return Ok(u(max + 1));
+                }
                 Err(sqlx::Error::Database(d)) if d.is_unique_violation() => {
                     last = Some(sqlx::Error::Database(d))
                 }
@@ -732,6 +742,29 @@ impl RunStore {
             }
         }
         Ok(out)
+    }
+
+    /// The tool calls the run made; the count outlives the pruned events. A run from before the count was kept
+    /// has 0, and its tool-call events still kept are counted instead.
+    pub async fn tool_calls(&self, run_id: u64) -> Result<u64, sqlx::Error> {
+        let rid = i64::try_from(run_id).unwrap_or(0);
+        let n: i64 =
+            sqlx::query_scalar("SELECT CAST(tool_calls AS BIGINT) FROM agent_runs WHERE id = $1")
+                .bind(rid)
+                .fetch_optional(&self.pool)
+                .await?
+                .unwrap_or(0);
+        if n > 0 {
+            return Ok(u(n));
+        }
+        let kept: i64 = sqlx::query_scalar(
+            "SELECT CAST(COUNT(*) AS BIGINT) FROM agent_run_events WHERE run_id = $1 AND kind = $2",
+        )
+        .bind(rid)
+        .bind(EventKind::ToolCall as i64)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(u(kept))
     }
 
     pub async fn pending_inputs(&self, run_id: u64) -> Result<i64, sqlx::Error> {

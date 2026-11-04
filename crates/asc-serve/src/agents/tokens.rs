@@ -106,6 +106,7 @@ impl Spent {
             paths: u32::try_from(self.paths).unwrap_or(u32::MAX),
             runtime_seconds,
             requests: self.requests,
+            tool_calls: 0,
         }
     }
 
@@ -125,6 +126,7 @@ impl Spent {
             paths: u32::try_from(left(limit.paths, spent.paths)).unwrap_or(u32::MAX),
             runtime_seconds: runtime_left,
             requests: 0,
+            tool_calls: 0,
         }
     }
 }

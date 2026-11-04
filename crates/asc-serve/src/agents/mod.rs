@@ -282,6 +282,7 @@ pub fn event_to_wire(e: &EventRow) -> wire::AgentRunEvent {
                     paths: u32::try_from(n("paths")).unwrap_or(u32::MAX),
                     runtime_seconds: u32::try_from(n("runtime")).unwrap_or(u32::MAX),
                     requests: n("requests"),
+                    tool_calls: 0,
                 }
             });
     wire::AgentRunEvent {
