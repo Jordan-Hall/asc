@@ -1224,6 +1224,37 @@ async fn an_approval_waits_for_a_named_person_and_rejection_ends_the_run() {
         StepState::Pending,
         "nothing after the gate runs yet"
     );
+    // Each step carries its kind and, for an approval, who may decide, from the run's own definition.
+    let got = svc(&w)
+        .get_run(w.request(
+            wire::GetWorkflowRunRequest {
+                repo: repo_ref(),
+                id: run.id,
+            },
+            "carol-token",
+            None,
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .run
+        .unwrap();
+    let kinds: Vec<(&str, i32, Vec<String>)> = got
+        .steps
+        .iter()
+        .map(|s| (s.id.as_str(), s.kind, s.approvers.clone()))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            (
+                "gate",
+                wire::WorkflowStepKind::Approval as i32,
+                vec!["user:alice".to_owned()]
+            ),
+            ("after", wire::WorkflowStepKind::Command as i32, vec![]),
+        ]
+    );
     let decide = |who: &str, approve: bool, comment: &str| {
         let op = uuid::Uuid::new_v4().to_string();
         svc(&w).decide_approval(w.request(

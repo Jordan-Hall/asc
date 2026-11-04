@@ -354,9 +354,13 @@ pub(crate) fn usage_of(json: &str) -> wire::AgentBudgetUsage {
 /// event stream leaves it out; `GetRun` has it).
 pub fn run_to_wire(r: &RunRow, steps: &[StepRow], with_output: bool) -> wire::WorkflowRun {
     let mut usage = wire::AgentBudgetUsage::default();
+    let def = workflow_of(r).ok();
     let steps_wire: Vec<wire::WorkflowStepRun> = steps
         .iter()
         .map(|s| {
+            let step = def
+                .as_ref()
+                .and_then(|w| w.steps.iter().find(|d| d.id == s.step));
             let u = usage_of(&s.usage_json);
             usage.changes = usage.changes.saturating_add(u.changes);
             usage.tokens = usage.tokens.saturating_add(u.tokens);
@@ -382,6 +386,10 @@ pub fn run_to_wire(r: &RunRow, steps: &[StepRow], with_output: bool) -> wire::Wo
                 },
                 ci_run_id: s.ci_run_id,
                 usage: (s.agent_run_id > 0).then_some(u),
+                kind: step.map_or(0, |d| step_kind_to_wire(d.kind) as i32),
+                approvers: step.map_or_else(Vec::new, |d| {
+                    d.approvers.iter().map(core::Approver::render).collect()
+                }),
             }
         })
         .collect();

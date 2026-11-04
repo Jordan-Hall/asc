@@ -170,6 +170,8 @@ message WorkflowStepRun {
   string output = 11;                // COMMAND: the end of the output, secrets masked; only in GetRun
   uint64 ci_run_id = 12;             // COMMAND: the check (ci.proto run) that carries the result
   AgentBudgetUsage usage = 13;       // AGENT: what the step's run used
+  WorkflowStepKind kind = 14;        // from the definition the run was made from; UNSPECIFIED if it no longer parses
+  repeated string approvers = 15;    // APPROVAL: who may decide, as `user:<name>` or `role:<name>`
 }
 message WorkflowRun {
   uint64 id = 1;
