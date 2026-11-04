@@ -1,5 +1,5 @@
-//! `asc agent key add | list | show | test | update | rm | models | usage`: the AI provider keys
-//! an owner brings (`AiProviders`).
+//! `asc agent key add | list | show | test | update | replace | rm | models | usage`: the AI
+//! provider keys an owner brings (`AiProviders`).
 //!
 //! A key is read from a file, an environment variable or standard input and sent once; the server
 //! seals it and never returns it, so nothing here can print one. A key is scoped to an owner: a
@@ -42,6 +42,9 @@ enum KeySub {
     Test(IdArgs),
     /// Changes a key's label, value, address, model, cap or whether it is disabled.
     Update(UpdateArgs),
+    /// Replaces the value of a key: the provider is asked first, and the old value is kept when
+    /// it refuses the new one.
+    Replace(ReplaceArgs),
     /// Removes a key.
     Rm(IdArgs),
     /// Lists the models a tested key can use.
@@ -121,6 +124,21 @@ struct UpdateArgs {
     disable: bool,
     #[arg(long)]
     enable: bool,
+    #[arg(long)]
+    remote: Option<String>,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(clap::Args, Debug)]
+struct ReplaceArgs {
+    id: String,
+    /// Read the new key from this file.
+    #[arg(long = "key-file")]
+    key_file: Option<String>,
+    /// Read the new key from this environment variable.
+    #[arg(long = "key-env")]
+    key_env: Option<String>,
     #[arg(long)]
     remote: Option<String>,
     #[arg(long)]
@@ -213,7 +231,7 @@ pub(crate) fn owner_of(spec: Option<&str>, conn: &Conn) -> Result<wire::OwnerRef
     })
 }
 
-fn cap_micro(s: &Option<String>) -> Result<Option<u64>> {
+pub(super) fn cap_micro(s: &Option<String>) -> Result<Option<u64>> {
     s.as_deref()
         .map(|v| {
             parse_dollars(v)
@@ -293,6 +311,7 @@ pub async fn run(ctx: &crate::cli::common::Ctx, a: KeyArgs) -> Result<ExitCode> 
         KeySub::Show(x) => show(ctx, x).await,
         KeySub::Test(x) => test(ctx, x).await,
         KeySub::Update(x) => update(ctx, x).await,
+        KeySub::Replace(x) => replace(ctx, x).await,
         KeySub::Rm(x) => rm(ctx, x).await,
         KeySub::Models(x) => models(ctx, x).await,
         KeySub::Usage(x) => usage(ctx, x).await,
@@ -372,7 +391,7 @@ async fn list(ctx: &crate::cli::common::Ctx, a: ListArgs) -> Result<ExitCode> {
     })
 }
 
-fn id_ok(id: &str) -> Result<()> {
+pub(super) fn id_ok(id: &str) -> Result<()> {
     if id.is_empty() || id.len() > 64 || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
     {
         return Err(bad(
@@ -493,6 +512,46 @@ async fn update(ctx: &crate::cli::common::Ctx, a: UpdateArgs) -> Result<ExitCode
         })
         .await?;
     print_key(a.json, &key)
+}
+
+async fn replace(ctx: &crate::cli::common::Ctx, a: ReplaceArgs) -> Result<ExitCode> {
+    id_ok(&a.id)?;
+    let api_key = super::read_secret(a.key_file.as_deref(), a.key_env.as_deref(), "API key")?;
+    let conn = Conn::open(ctx, a.remote.as_deref()).await?;
+    let msg = wire::ReplaceAiKeyRequest {
+        id: a.id.clone(),
+        api_key,
+    };
+    let r = conn
+        .call(true, |s, op| {
+            let m = msg.clone();
+            async move {
+                Ok(client(&s)
+                    .replace_key(s.wire.request(m, op))
+                    .await?
+                    .into_inner())
+            }
+        })
+        .await?;
+    with_stdout(|out| {
+        if a.json {
+            emit_json(&mut lines(out), "asc.v1.ReplaceAiKeyResponse", &r)?;
+        } else {
+            writeln!(
+                out,
+                "{}	{}	{}ms	{}",
+                if r.replaced { "replaced" } else { "kept" },
+                clean_str(&r.provider_status),
+                r.latency_ms,
+                clean_str(&r.message)
+            )?;
+        }
+        Ok(if r.replaced {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::from(1)
+        })
+    })
 }
 
 async fn rm(ctx: &crate::cli::common::Ctx, a: IdArgs) -> Result<ExitCode> {

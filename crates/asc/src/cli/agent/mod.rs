@@ -5,7 +5,8 @@
 //! asc agent run [--agent NAME] [--path GLOB]... [--max-cost USD] [--watch] <task...>
 //! asc agent list | show <id> | watch <id> | cancel <id> | say <id> <text...>
 //! asc agent token create|list|show|revoke|budget
-//! asc agent key add|list|show|test|update|rm|models|usage
+//! asc agent key add|list|show|test|update|replace|rm|models|usage
+//! asc agent feature list | set <feature> [--key ID] [--monthly-cap USD] | clear <feature>
 //! ```
 //!
 //! Every command works against a server (`--remote`, default `origin`) and needs no workspace.
@@ -14,6 +15,7 @@
 //! input, never from an argument, and is shown once at most.
 
 pub(crate) mod conn;
+mod feature;
 mod key;
 mod runs;
 mod token;
@@ -53,6 +55,8 @@ pub enum Sub {
     Token(token::TokenArgs),
     /// AI provider keys.
     Key(key::KeyArgs),
+    /// The AI key and monthly cap of each AI feature.
+    Feature(feature::FeatureArgs),
 }
 
 pub const NATIVE: &[NativeSpec] = &[NativeSpec {
@@ -111,6 +115,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         Sub::Say(x) => runs::say(ctx, x).await,
         Sub::Token(x) => token::run(ctx, x).await,
         Sub::Key(x) => key::run(ctx, x).await,
+        Sub::Feature(x) => feature::run(ctx, x).await,
     }
 }
 
