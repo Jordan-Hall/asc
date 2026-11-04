@@ -206,6 +206,7 @@ All take `--json` and `--remote <name\|url>`. The scope is `--rev <rev>`, `--cha
 | Command | What it does | Example |
 |---|---|---|
 | `affected` | The projects a change touches. `--base`, `--head`, `--uncommitted`, `--format`, `--json`. | `asc affected --base master --json` |
+| `inputs` | The content identity of work-tree paths for build caches: a clean directory is one tree id, changed and untracked files are hashed. `--digest`, `--json`, `--allow-missing`, `-z`. | `asc inputs --digest app Cargo.lock` |
 | `projects` | Lists projects of a revision, or the owners of paths (`--owner <path>`). | `asc projects --format json` |
 | `graph` | The project graph as JSON (`--format json`) or Graphviz (`--format dot`). | `asc graph --format dot` |
 | `ci checkout` | The checkout step of a CI job from the host cache. The token comes from `ASC_TOKEN`. | `asc ci checkout --repo acme/payments --rev "$HEAD" --base "$BASE" --dir .` |

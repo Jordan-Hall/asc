@@ -73,6 +73,7 @@ pub mod grep;
 pub mod grep_index;
 pub mod help_git;
 pub mod import;
+pub mod inputs;
 pub mod install_shim;
 pub mod interpret_trailers;
 pub mod landed;
@@ -273,6 +274,7 @@ pub static COMMANDS: &[Command] = &[
     entry!("sym", sym),
     entry!("semantic", semantic),
     entry!("affected", affected),
+    entry!("inputs", inputs),
     entry!("projects", projects),
     entry!("graph", graph),
     entry!("landed", landed),

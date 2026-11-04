@@ -233,6 +233,7 @@ pub const ASC_ONLY_VERBS: &[&str] = &[
     "release",
     "deps",
     "affected",
+    "inputs",
     "projects",
     "graph",
     "landed",

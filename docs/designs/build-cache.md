@@ -21,16 +21,20 @@ shared by every worktree and workflow, and the server tier the turbo cache alrea
 
 ## 1. Inputs: `asc inputs`
 
-`asc inputs [--json] [--digest] [--] <pathspec>...` prints the content identity of work-tree paths:
+`asc inputs [--json] [--digest] [--allow-missing] [-z] [--] <path>...` prints the content identity of work-tree paths
+(relative to the current directory; none means the current directory):
 
 - a directory with no change under it (no modified, added, deleted or untracked path that the ignore rules keep) is
   one entry: `tree <TreeId> <path>`. Nothing below it is read or listed;
 - any other file is `file <FileId> <path>`: a clean tracked file takes the id from the tree; a changed or untracked
   file is hashed from its local bytes, which exist because it was written;
-- a symlink is hashed as its target text, never followed; ignored paths are left out; a pathspec that matches nothing
-  is an error unless `--allow-missing`.
+- a symlink is hashed as its target text, never followed; ignored and deleted paths are left out; submodules and
+  nested repositories are not followed (they are their own repository's inputs); a path that matches nothing is an
+  error (exit 1) unless `--allow-missing`;
+- the executable bit is the work tree's on Unix and the tree's on Windows, which records none.
 
-`--digest` prints one blake3 (`derive_key("asc build inputs v1")`) over the sorted entries. Paths are relative to the
+`--digest` prints one blake3 (`derive_key("asc build inputs v1")`) over the sorted entries (kind, space, path, NUL,
+id). Paths are relative to the
 repository root with `/`, so the digest is the same in every worktree that holds the same content. The daemon serves
 the same answer over the plugin API (`Inputs` RPC) so editor and build plugins need no child process per call.
 
