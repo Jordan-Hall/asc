@@ -18,8 +18,8 @@ mod forgejo {
     use asc_serve::config::CompositionGrant;
     use asc_serve::forgejo::{
         AuthzCacheConfig, BridgeHold, BridgeSlot, ForgejoClient, ForgejoHooks, HookClient,
-        HookOptions, InternalAuthz, InternalToken, PostReceiveEffect, PublicApiAuthz,
-        RepoIdBinding, RunFinishedEffect,
+        HookEventEffect, HookOptions, InternalAuthz, InternalToken, PostReceiveEffect,
+        PublicApiAuthz, RepoIdBinding, RunFinishedEffect,
     };
     use asc_serve::outbox::{Effect, Job};
     use asc_serve::registry::{NewRepo, Registry, SqlGitMap};
@@ -205,6 +205,7 @@ mod forgejo {
             .and_then(|v| String::from_utf8(v).ok());
         let op_id = headers
             .get("x-asc-op-id")
+            .or_else(|| headers.get("x-asc-event-id"))
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned);
         let json: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
@@ -263,6 +264,31 @@ mod forgejo {
                 return match strict_fields(&json, &known) {
                     Some(f) if f.len() == 4 => reply(200, json!({"opened": 0})),
                     _ => reply(400, json!({"user_msg": "invalid request body"})),
+                };
+            }
+            if path == "/api/internal/asc/hook-event" {
+                // `decodeAscStrict` and the hub's checks: an event of a kind it knows, its fields
+                // and no other.
+                let known: [KnownField<'_>; 9] = [
+                    ("event", is_str),
+                    ("repo", is_str),
+                    ("run", is_int),
+                    ("state", is_str),
+                    ("changes", is_int),
+                    ("before", is_str),
+                    ("after", is_str),
+                    ("summary", is_str),
+                    ("sender", is_str),
+                ];
+                let ok = strict_fields(&json, &known).is_some()
+                    && matches!(
+                        json["event"].as_str(),
+                        Some("agent_run.started" | "agent_run.finished" | "policy.changed")
+                    );
+                return if ok {
+                    reply(200, json!({}))
+                } else {
+                    reply(400, json!({"user_msg": "invalid request"}))
                 };
             }
             if path == "/api/internal/asc/ssh-key" {
@@ -2008,6 +2034,65 @@ mod forgejo {
         gone.repo_id = entry.key.0 + 1000;
         effect.run(&gone).await.unwrap_err();
         assert_eq!(fake.calls("/api/internal/asc/agent-run-finished").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn hook_events_are_told_to_the_forge_under_their_event_id() {
+        let (fake, url) = start().await;
+        let (registry, _dir) = registry().await;
+        let entry = registry
+            .open(&RepoName::parse("o/r").unwrap())
+            .await
+            .unwrap();
+        let effect =
+            HookEventEffect::new(HookClient::new(client(&url, true)), registry.pool().clone());
+        assert_eq!(effect.kind(), "hook_event");
+        let op = Uuid::new_v4();
+        let job = |doc: Value| Job {
+            id: 1,
+            repo_id: entry.key.0,
+            op_id: op.as_bytes().to_vec(),
+            doc,
+        };
+        effect
+            .run(&job(
+                json!({"effects": ["hook_event"], "event": "agent_run.started", "run": 7}),
+            ))
+            .await
+            .unwrap();
+        effect
+            .run(&job(
+                json!({"effects": ["hook_event"], "event": "policy.changed", "before": "ab",
+                "after": "cd", "summary": "A policy was added.", "sender": "priya"}),
+            ))
+            .await
+            .unwrap();
+        let calls = fake.calls("/api/internal/asc/hook-event");
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].auth.as_deref(), Some(INTERNAL));
+        assert_eq!(calls[0].op_id.as_deref(), Some(op.to_string().as_str()));
+        assert_eq!(
+            calls[0].body,
+            json!({"event": "agent_run.started", "repo": "o/r", "run": 7})
+        );
+        assert_eq!(
+            calls[1].body,
+            json!({"event": "policy.changed", "repo": "o/r", "before": "ab", "after": "cd",
+                "summary": "A policy was added.", "sender": "priya"})
+        );
+
+        // A row without an event, or of a repository that is gone, is done: nothing can deliver it.
+        effect
+            .run(&job(
+                json!({"effects": ["hook_event"], "event": "agent_run.started"}),
+            ))
+            .await
+            .unwrap();
+        let mut gone =
+            job(json!({"effects": ["hook_event"], "event": "agent_run.started", "run": 7}));
+        gone.repo_id = entry.key.0 + 1000;
+        effect.run(&gone).await.unwrap();
+        assert_eq!(fake.calls("/api/internal/asc/hook-event").len(), 2);
     }
 
     #[tokio::test]

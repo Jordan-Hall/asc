@@ -1589,6 +1589,40 @@ impl HookClient {
         }
     }
 
+    /// Tells the forge's webhooks about an event of `repo` (an agent run started or finished, the
+    /// policy changed). `id` names the event: the forge queues it once. `Ok(false)` when the forge
+    /// refused it for good (it does not know the event, or ASC is off on it): redelivery cannot help.
+    pub async fn hook_event(
+        &self,
+        repo: &RepoName,
+        event: &crate::hook_events::HookEvent,
+        id: Uuid,
+    ) -> Result<bool, ForgejoError> {
+        let mut body = event.body();
+        body.insert("repo".into(), serde_json::json!(repo.as_str()));
+        let req = self
+            .client
+            .internal_request(&["api", "internal", "asc", "hook-event"])?
+            .header("x-asc-event-id", id.to_string())
+            .json_body(&serde_json::Value::Object(body))?;
+        let (status, body) = ForgejoClient::send(req).await?;
+        match status {
+            StatusCode::OK => Ok(true),
+            StatusCode::BAD_REQUEST | StatusCode::NOT_FOUND => {
+                tracing::warn!(
+                    event = event.name(),
+                    message = %failure_message("hook-event", status, &body),
+                    "hook event dropped"
+                );
+                Ok(false)
+            }
+            _ => Err(ForgejoError::Status {
+                status: status.as_u16(),
+                message: failure_message("hook-event", status, &body),
+            }),
+        }
+    }
+
     /// Proc-receive (AGit `refs/for/*`): the PR refs Forgejo created or updated.
     pub async fn proc_receive(
         &self,
@@ -2235,6 +2269,51 @@ impl Effect for RunFinishedEffect {
     }
 }
 
+/// The `hook_event` outbox effect: tells the forge's webhooks about an event asc saw
+/// ([`crate::hook_events`]). The row's op id names the event, so a redelivery queues nothing new.
+pub struct HookEventEffect {
+    client: HookClient,
+    pool: AnyPool,
+}
+
+impl HookEventEffect {
+    pub fn new(client: HookClient, pool: AnyPool) -> Self {
+        Self { client, pool }
+    }
+
+    async fn deliver(&self, job: &Job) -> Result<(), ForgejoError> {
+        let bad = |m: &str| ForgejoError::Invalid(m.to_owned());
+        let op_id = Uuid::from_slice(&job.op_id).map_err(|_| bad("outbox op id"))?;
+        let Some(event) = crate::hook_events::HookEvent::from_doc(&job.doc) else {
+            tracing::warn!(row = job.id, "outbox row holds no hook event");
+            return Ok(());
+        };
+        let Some(row) = sqlx::query("SELECT name FROM repos WHERE id = $1")
+            .bind(job.repo_id)
+            .fetch_optional(&self.pool)
+            .await?
+        else {
+            return Ok(()); // the repository is gone, and with it its hooks
+        };
+        let name: String = row.try_get("name")?;
+        let repo = RepoName::parse(&name).map_err(|_| bad("repository name"))?;
+        self.client.hook_event(&repo, &event, op_id).await.map(drop)
+    }
+}
+
+#[async_trait]
+impl Effect for HookEventEffect {
+    fn kind(&self) -> &'static str {
+        crate::hook_events::EFFECT
+    }
+
+    async fn run(&self, job: &Job) -> Result<(), EffectError> {
+        self.deliver(job)
+            .await
+            .map_err(|e| EffectError(e.to_string()))
+    }
+}
+
 // ------------------------------------------------------------------------------ startup
 
 fn client_of(cfg: &ForgejoConfig) -> Result<(Arc<ForgejoClient>, bool), ForgejoError> {
@@ -2322,6 +2401,10 @@ pub fn register(
         .set_push_hooks(forge_hooks.clone())
         .map_err(|_| ForgejoError::Config("push hooks are already set".into()))?;
     outbox.effects().register(Arc::new(RunFinishedEffect::new(
+        hooks.clone(),
+        registry.pool().clone(),
+    )));
+    outbox.effects().register(Arc::new(HookEventEffect::new(
         hooks.clone(),
         registry.pool().clone(),
     )));
