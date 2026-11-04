@@ -234,6 +234,9 @@ All take `--json` and `--remote <name\|url>`. The scope is `--rev <rev>`, `--cha
 | `agent token list`, `show`, `revoke`, `budget` | Lists, shows, stops or limits tokens. | `asc agent token revoke tok_1 --reason rotated` |
 | `agent key add` | Stores an AI provider key; the key comes from a file, a variable or standard input. | `asc agent key add --provider anthropic --label team --key-env ANTHROPIC_API_KEY` |
 | `agent key list`, `show`, `test`, `update`, `rm`, `models`, `usage` | Manages and checks keys. | `asc agent key test key_1` |
+| `agent key replace` | Replaces the value of a key; the provider checks the new value first and the old one is kept when it is refused. | `asc agent key replace key_1 --key-env ANTHROPIC_API_KEY` |
+| `agent feature list` | Lists each AI feature with its key, cap and this month's spending. | `asc agent feature list --owner org:acme` |
+| `agent feature set`, `clear` | Chooses the key and monthly cap of a feature for an owner, or removes the setting so a less specific owner's applies. | `asc agent feature set review-summaries --key key_1 --monthly-cap 20` |
 | `workflow list` | Lists the workflows on trunk. | `asc workflow list` |
 | `workflow show` | Shows one workflow and its file. | `asc workflow show build` |
 | `workflow validate` | Checks a workflow file. | `asc workflow validate build -F .asc/workflows/build.toml` |
