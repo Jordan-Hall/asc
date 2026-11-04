@@ -1,5 +1,6 @@
 //! Blobs, action entries, storing outputs and restoring them.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -118,9 +119,10 @@ pub(crate) fn check_rel(path: &str) -> io::Result<()> {
     }
 }
 
-/// A link target that stays inside the output root: relative, `/`-separated, and never climbing
-/// above the root when resolved from the link's own directory.
-pub(crate) fn check_link(path: &str, target: &str) -> io::Result<()> {
+/// A link target that stays inside the output root: relative, `/`-separated, never climbing
+/// above the root when resolved from the link's own directory, and never passing through another
+/// link of the same entry (`up -> .` then `m -> up/..` would climb out unseen).
+pub(crate) fn check_link(path: &str, target: &str, links: &BTreeSet<&str>) -> io::Result<()> {
     let refuse = || {
         bad(format!(
             "link '{path}' points outside the outputs ('{target}')"
@@ -134,15 +136,34 @@ pub(crate) fn check_link(path: &str, target: &str) -> io::Result<()> {
     {
         return Err(refuse());
     }
-    let mut depth = path.split('/').count() - 1;
-    for c in target.split('/') {
-        match c {
+    let mut at: Vec<&str> = path.split('/').collect();
+    at.pop();
+    let parts: Vec<&str> = target.split('/').collect();
+    for (i, c) in parts.iter().enumerate() {
+        match *c {
             "" | "." => {}
-            ".." => depth = depth.checked_sub(1).ok_or_else(refuse)?,
-            _ => depth += 1,
+            ".." => {
+                at.pop().ok_or_else(refuse)?;
+            }
+            _ => {
+                at.push(c);
+                if i + 1 < parts.len() && links.contains(at.join("/").as_str()) {
+                    return Err(refuse());
+                }
+            }
         }
     }
     Ok(())
+}
+
+/// The paths of an entry's link outputs.
+pub(crate) fn link_paths(action: &Action) -> BTreeSet<&str> {
+    action
+        .outputs
+        .iter()
+        .filter(|o| o.kind == OutputKind::Link)
+        .map(|o| o.path.as_str())
+        .collect()
 }
 
 /// Output paths that can be written one by one without one writing through another: each is a
@@ -328,8 +349,9 @@ impl Store {
                 return Err(bad(format!("blob {blob} is not in the store")));
             }
         }
+        let links = link_paths(action);
         for o in action.outputs.iter().filter(|o| o.kind == OutputKind::Link) {
-            check_link(&o.path, &self.link_target(&o.blob)?)?;
+            check_link(&o.path, &self.link_target(&o.blob)?, &links)?;
         }
         let tmp = self.tmp_file();
         let body = serde_json::to_vec(action).map_err(|e| bad(e.to_string()))?;
@@ -387,13 +409,14 @@ impl Store {
     /// file system has them), never a link into the store.
     pub fn restore(&self, action: &Action, base: &Path) -> io::Result<bool> {
         check_paths(action)?;
+        let links = link_paths(action);
         for o in &action.outputs {
             let id = unhex(&o.blob).ok_or_else(|| bad("a blob id is not 64 hex digits"))?;
             if !self.has_blob(&id) {
                 return Ok(false);
             }
             if o.kind == OutputKind::Link {
-                check_link(&o.path, &self.link_target(&o.blob)?)?;
+                check_link(&o.path, &self.link_target(&o.blob)?, &links)?;
             }
         }
         for o in &action.outputs {
@@ -679,7 +702,7 @@ mod tests {
             ("d/e/a", "../../b"),
             ("a", "./x/../y"),
         ] {
-            check_link(path, ok).unwrap();
+            check_link(path, ok, &BTreeSet::new()).unwrap();
         }
         for (path, bad) in [
             ("a", ".."),
@@ -690,8 +713,17 @@ mod tests {
             ("a", ""),
             ("a", "x/../../y"),
         ] {
-            assert!(check_link(path, bad).is_err(), "{path} -> {bad}");
+            assert!(
+                check_link(path, bad, &BTreeSet::new()).is_err(),
+                "{path} -> {bad}"
+            );
         }
+        let links = BTreeSet::from(["up", "d/l"]);
+        for (path, bad) in [("m", "up/.."), ("m", "./up/x"), ("d/m", "l/../..")] {
+            assert!(check_link(path, bad, &links).is_err(), "{path} -> {bad}");
+        }
+        check_link("m", "up", &links).unwrap();
+        check_link("d/m", "l", &links).unwrap();
     }
 
     fn with_outputs(s: &Store, outs: &[(&str, OutputKind, &[u8])]) -> Action {
