@@ -28,6 +28,7 @@ pub mod mergeable;
 pub mod overlaps;
 pub mod request_merge;
 pub mod restack;
+mod revert_landed;
 pub mod rpc;
 pub mod stacks;
 pub mod staged;

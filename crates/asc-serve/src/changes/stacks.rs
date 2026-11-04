@@ -11,6 +11,9 @@
 //!
 //! The changes must be the caller's own, or the forge's on behalf of their authors, as for
 //! `RestackChanges`.
+//!
+//! `RevertLanded` is [`super::revert_landed`]. Both are advertised as [`FEATURE`] once
+//! registered.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -28,6 +31,16 @@ use super::rpc::{ChangesRpc, Reader, change_of, stack_walk};
 use crate::audit::stacks_rpc::StackOps;
 use crate::commit_graph_rpc::internal;
 use crate::registry::Extensions;
+
+/// What `Version.features` adds once `Restack` and `RevertLanded` are served.
+pub const FEATURE: &str = "stacks.v1";
+
+/// Whether the whole-stack operations are registered: what [`FEATURE`] promises.
+pub fn served(ext: &Extensions) -> bool {
+    ext.audit
+        .get()
+        .is_some_and(|audit| audit.stack_ops.get().is_some())
+}
 
 /// The [`StackOps`] of the server.
 pub struct StackRestacker {
@@ -244,10 +257,16 @@ impl StackOps for StackRestacker {
 
     async fn revert_landed(
         &self,
-        _ctx: &CallCtx,
-        _req: wire::RevertLandedRequest,
+        ctx: &CallCtx,
+        req: wire::RevertLandedRequest,
     ) -> Result<wire::RevertLandedResponse, Status> {
-        Err(Status::unimplemented("Stacks.RevertLanded"))
+        let restacker = self
+            .changes
+            .restack
+            .get()
+            .ok_or_else(|| Status::unimplemented("Stacks.RevertLanded"))?
+            .clone();
+        super::revert_landed::revert_landed(&self.changes, &restacker, ctx, req).await
     }
 }
 
@@ -503,5 +522,23 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(e.code(), tonic::Code::NotFound);
+    }
+
+    #[tokio::test]
+    async fn the_feature_is_advertised_only_when_both_operations_are_served() {
+        let f = fx().await;
+        let ext = Extensions::new();
+        ext.pipeline
+            .set_push_hooks(Arc::new(super::super::restack::tests::Internal))
+            .ok()
+            .unwrap();
+        assert!(!served(&ext));
+        crate::audit::register(&ext, &f.reg, &crate::audit::AuditConfig::default());
+        register(&ext);
+        assert!(!served(&ext), "no RestackChanges, no stack operations");
+        let hooks = Arc::new(crate::read::ReadHooks::default());
+        super::super::register(&ext, &f.reg, &hooks);
+        register(&ext);
+        assert!(served(&ext));
     }
 }

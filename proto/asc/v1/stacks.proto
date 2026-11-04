@@ -88,7 +88,7 @@ message RevertedChange {
   repeated Conflict conflicts = 5;
 }
 message RevertLandedResponse {
-  repeated RevertedChange reverts = 1;        // top of the landed stack first
+  repeated RevertedChange reverts = 1;        // one per revert, top of the landed stack first; one with `squash`
   bytes stack_top = 2 [(asc.v1.json) = JSON_KIND_CHANGE];   // the topmost new change; empty on a dry run
   string ref = 3;                             // where the reverts are stored
   bool applied = 4;

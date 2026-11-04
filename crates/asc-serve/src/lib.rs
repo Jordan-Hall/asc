@@ -784,6 +784,9 @@ pub async fn serve(
     }
     features.push(audit::FEATURE.to_owned());
     features.push(audit::STACKS_FEATURE.to_owned());
+    if changes::stacks::served(&ext) {
+        features.push(changes::stacks::FEATURE.to_owned());
+    }
     features.push(audit::APPEND_FEATURE.to_owned());
     features.push(ci::insights::FEATURE.to_owned());
     features.extend(codeintel::features::features(&ext.codeintel));
