@@ -347,6 +347,7 @@ pub fn build_grpc(ext: &Extensions, authorizer: Arc<dyn Authorizer>, info: Serve
         grpc = grpc
             .add_service(
                 review::rpc::ReviewService::new(h.clone(), guarded.clone(), info.clone())
+                    .with_summaries(ext.ai.get().cloned(), ext.pathrules.clone())
                     .into_service(),
             )
             .add_service(

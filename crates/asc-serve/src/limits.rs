@@ -290,6 +290,7 @@ const TABLE: &[(&str, Class, &[&str])] = &[
             "HunkContext",
             "GetConflicts",
             "DraftContext",
+            "SummarizeChange",
         ],
     ),
     ("Ci", Class::Cheap, &["ListRuns", "JobLog"]),

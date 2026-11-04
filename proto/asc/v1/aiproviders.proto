@@ -174,6 +174,7 @@ message ReplaceAiKeyResponse {
 enum AiFeature {
   AI_FEATURE_UNSPECIFIED = 0;
   AI_FEATURE_AGENT_RUNS = 1;           // the model turns of agent runs
+  AI_FEATURE_REVIEW_SUMMARIES = 2;     // the draft of a review brief (Review.SummarizeChange)
 }
 
 // The setting of one feature for an owner. The most specific owner of the chain (repository, its

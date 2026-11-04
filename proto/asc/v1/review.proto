@@ -31,6 +31,7 @@ service Review {
   rpc HunkContext(HunkContextRequest) returns (HunkContextResponse);              // repo read; the definitions around the lines a hunk starts at
   rpc GetConflicts(GetChangeConflictsRequest) returns (GetChangeConflictsResponse);   // repo read; expensive; the conflict hunks of a change with its target, both sides
   rpc DraftContext(DraftContextRequest) returns (DraftContextResponse);           // repo read; what a draft of a new change is written from: messages, files, size, risk
+  rpc SummarizeChange(SummarizeChangeRequest) returns (SummarizeChangeResponse);  // repo write; mutating, x-asc-op-id; a draft brief written by a model with the key of review summaries
 }
 
 enum ThreadStatus {
@@ -502,6 +503,27 @@ message DraftContextResponse {
   ChangeRisk risk = 6;
   bool nothing_to_compare = 7;           // head holds nothing that base does not
   bool truncated = 8;
+}
+
+// A draft of the brief written from the patch by a model, with the key the repository's setting of review summaries chooses
+// (else the first usable key of the repository, its owner or the caller) and under every cap of that setting. The patch holds
+// only paths the caller may read; a path the caller may not read is not named to the model or in the draft. The draft is
+// never stored: the person edits it and saves it with SetBrief. With `change` set the newest version of that change is
+// summarised and `base` and `head` are ignored; otherwise `base..head` as for DraftContext.
+// FAILED_PRECONDITION: no usable key. RESOURCE_EXHAUSTED: a cap is reached. UNAVAILABLE: the provider failed.
+message SummarizeChangeRequest {
+  RepoRef repo = 1;
+  string base = 2;
+  string head = 3;
+  bytes change = 4 [(asc.v1.json) = JSON_KIND_CHANGE];
+}
+message SummarizeChangeResponse {
+  ReviewBrief brief = 1;                 // what, why, how, risk_note and at most 5 pointers into changed files; updated_by and updated are empty
+  string model = 2;
+  string key_id = 3;
+  uint64 cost_micro_usd = 4;             // 0 when the model has no price
+  bool truncated = 5;                    // the patch was cut to fit; the draft covers the part sent
+  bool nothing_to_compare = 6;           // no change to summarise; brief is empty and nothing was spent
 }
 
 message HunkContextResponse {

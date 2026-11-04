@@ -516,8 +516,12 @@ async fn the_service_sets_features_and_replaces_keys_for_the_owner_only() {
         tonic::Code::NotFound
     );
     let features = list("alice-token").await.unwrap().into_inner().features;
-    assert_eq!(features.len(), 1);
+    assert_eq!(features.len(), Feature::ALL.len());
     assert_eq!(features[0].monthly_cap_micro_usd, 5_000_000);
+    assert_eq!(
+        features[1].monthly_cap_micro_usd, 0,
+        "only agent runs has a cap"
+    );
 
     // Replacing: Bob cannot, Alice can once the provider accepts the key.
     let fresh = "sk-fresh-key-123456789";

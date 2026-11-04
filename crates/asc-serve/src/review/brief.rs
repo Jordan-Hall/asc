@@ -193,7 +193,7 @@ impl Eligibility {
 }
 
 impl Reviews {
-    async fn known(&self, entry: &RepoEntry, change: ChangeId) -> Result<(), Status> {
+    pub(super) async fn known(&self, entry: &RepoEntry, change: ChangeId) -> Result<(), Status> {
         let mut conn = self.registry.pool().acquire().await.map_err(sql)?;
         if store::change_known(&mut conn, entry.ns, change).await? {
             Ok(())
@@ -202,7 +202,7 @@ impl Reviews {
         }
     }
 
-    async fn all_versions(
+    pub(super) async fn all_versions(
         &self,
         entry: &RepoEntry,
         change: ChangeId,

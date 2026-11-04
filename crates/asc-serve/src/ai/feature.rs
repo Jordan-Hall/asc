@@ -19,15 +19,17 @@ use super::{AiError, AiHub, clock, wire_key};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Feature {
     AgentRuns,
+    ReviewSummaries,
 }
 
 impl Feature {
-    pub const ALL: [Self; 1] = [Self::AgentRuns];
+    pub const ALL: [Self; 2] = [Self::AgentRuns, Self::ReviewSummaries];
 
     /// The name stored in `ai_features` and used in the spending scope.
     pub fn name(self) -> &'static str {
         match self {
             Self::AgentRuns => "agent_runs",
+            Self::ReviewSummaries => "review_summaries",
         }
     }
 
@@ -38,6 +40,7 @@ impl Feature {
     pub fn from_wire(n: i32) -> Result<Self, AiError> {
         match wire::AiFeature::try_from(n) {
             Ok(wire::AiFeature::AgentRuns) => Ok(Self::AgentRuns),
+            Ok(wire::AiFeature::ReviewSummaries) => Ok(Self::ReviewSummaries),
             _ => Err(AiError::Invalid("unknown feature".into())),
         }
     }
@@ -45,6 +48,7 @@ impl Feature {
     pub fn to_wire(self) -> wire::AiFeature {
         match self {
             Self::AgentRuns => wire::AiFeature::AgentRuns,
+            Self::ReviewSummaries => wire::AiFeature::ReviewSummaries,
         }
     }
 }

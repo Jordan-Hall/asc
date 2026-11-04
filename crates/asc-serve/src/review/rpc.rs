@@ -549,6 +549,9 @@ impl Reviews {
 pub struct ReviewService {
     hub: Arc<Reviews>,
     env: Env,
+    /// The AI hub that writes review summaries; without it `SummarizeChange` is `UNIMPLEMENTED`.
+    ai: Option<Arc<crate::ai::AiHub>>,
+    pathrules: Arc<crate::pathrules::PathRulesSlot>,
 }
 
 impl ReviewService {
@@ -556,7 +559,20 @@ impl ReviewService {
         Self {
             hub,
             env: Env { authorizer, info },
+            ai: None,
+            pathrules: Arc::default(),
         }
+    }
+
+    /// Serves `SummarizeChange` with `ai`, limited to the paths `pathrules` lets the caller read.
+    pub fn with_summaries(
+        mut self,
+        ai: Option<Arc<crate::ai::AiHub>>,
+        pathrules: Arc<crate::pathrules::PathRulesSlot>,
+    ) -> Self {
+        self.ai = ai;
+        self.pathrules = pathrules;
+        self
     }
 
     /// The tonic service with message limits, zstd request decoding and [`AuthInterceptor`].
@@ -844,5 +860,36 @@ impl Review for ReviewService {
             .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
             .await?;
         self.hub.draft_context(&ctx, msg).await.map(Response::new)
+    }
+
+    async fn summarize_change(
+        &self,
+        request: Request<wire::SummarizeChangeRequest>,
+    ) -> Result<Response<wire::SummarizeChangeResponse>, Status> {
+        let Some(ai) = self.ai.clone() else {
+            return Err(Status::unimplemented("this server has no AI features"));
+        };
+        let (meta, ext, msg) = request.into_parts();
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Write, true)
+            .await?;
+        // A summary spends a person's keys: an agent token cannot ask for one.
+        require_handle(&ctx)?;
+        let op = ctx
+            .op_id
+            .ok_or_else(|| Status::invalid_argument("mutating calls need x-asc-op-id"))?;
+        let (hub, slot) = (self.hub.clone(), self.pathrules.clone());
+        let principal = ctx.principal.id.clone();
+        crate::ai::caller::once(
+            &ai.ops.clone(),
+            op,
+            &principal,
+            "Review/SummarizeChange",
+            true,
+            || async move { hub.summarize_change(&ctx, &ai, &slot, msg).await },
+        )
+        .await
+        .map(Response::new)
     }
 }

@@ -19,6 +19,7 @@ pub mod gate;
 pub mod hunk;
 pub mod rpc;
 pub mod store;
+pub mod summary;
 
 #[cfg(test)]
 pub(crate) mod tests;
