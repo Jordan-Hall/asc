@@ -685,6 +685,7 @@ pub async fn serve(
     .map_err(ConfigError::Invalid)?;
     // The audit log, the ref log and ref undo (docs/BUILDOUT.md sections 3 and 6).
     audit::register(&ext, &registry, &cfg.audit);
+    changes::stacks::register(&ext);
     ci::insights::register(&ext, &registry, &cfg.ci_insights);
     let warmer = projects::register(&ext, &registry);
     #[cfg(feature = "forgejo")]
