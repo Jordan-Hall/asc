@@ -33,16 +33,23 @@
 //!   `parent_change` is kept when the parent change is part of the call, else cleared: the item
 //!   now sits on `onto`.
 //!
+//! * **Resolutions** (`Stacks.Restack` only, through [`Restacker::run`]). A conflict of an item
+//!   whose every path has a resolution, keyed by the item's old head and the path, is settled:
+//!   the merged tree takes the resolved content (or loses the file) and the item is rewritten. A
+//!   resolution nothing used is refused when no conflict is left, so a stale one never goes
+//!   unnoticed.
+//!
 //! Bounds: at most [`MAX_ITEMS`] items, [`MAX_CONFLICTS`] reported conflicts, and the merge text
 //! budget is reserved before any file is read. The service has checked write access.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use asc_core::change::{ChangeId, RewriteOp};
 use asc_core::id::{ChangesetId, RefTarget};
 use asc_core::object::{Change, Changeset, Entry, Kind};
+use asc_core::path::RepoPath;
 use asc_core::sig::Signature;
 use asc_engine::commit::{NewChangeset, PathPolicy};
 use asc_engine::merge::{self, Conflict, ConflictKind};
@@ -250,8 +257,119 @@ struct Amend {
 /// What one item's head is.
 struct Head {
     cs: ChangesetId,
+    version: u32,
     parent: Option<ChangeId>,
 }
+
+/// Conflicts the caller settled, by the old head of the item and the path. `None` deletes the
+/// path; the replay removes the resolutions it uses.
+#[derive(Default)]
+pub(super) struct Resolved {
+    ops: BTreeMap<(ChangesetId, RepoPath), Option<Bytes>>,
+}
+
+impl Resolved {
+    /// Checks `Resolution`s: a path that is safe to check out, content or a delete, the mode kept.
+    pub(super) fn parse(list: &[wire::Resolution]) -> Result<Self, Status> {
+        use crate::mutations::rebase::{MAX_RESOLUTION_BYTES, MAX_RESOLUTIONS};
+        use wire::file_op::Op;
+        if list.len() > MAX_RESOLUTIONS {
+            return Err(invalid("too many resolutions"));
+        }
+        let mut bytes = 0usize;
+        let mut ops = BTreeMap::new();
+        for r in list {
+            let changeset =
+                ChangesetId::from_slice(&r.changeset).map_err(|e| invalid(e.to_string()))?;
+            let path = crate::mutations::op_path(&r.path)?;
+            let op =
+                r.op.as_ref()
+                    .ok_or_else(|| invalid("a resolution needs an operation"))?;
+            if !op.path.is_empty() && op.path != r.path {
+                return Err(invalid("a resolution operation names another path"));
+            }
+            if op.mode != 0 {
+                return Err(invalid("a restack resolution keeps the mode of the file"));
+            }
+            let put = match &op.op {
+                Some(Op::PutContent(data)) => {
+                    if data.len() > MAX_AMEND_BYTES {
+                        return Err(invalid(format!("the resolution of {path} is too large")));
+                    }
+                    bytes = bytes.saturating_add(data.len());
+                    if bytes > MAX_RESOLUTION_BYTES {
+                        return Err(invalid("resolutions carry too much inline content"));
+                    }
+                    Some(data.clone())
+                }
+                Some(Op::Delete(true)) => None,
+                _ => {
+                    return Err(invalid(
+                        "a restack resolution puts content or deletes the file",
+                    ));
+                }
+            };
+            if ops.insert((changeset, path.clone()), put).is_some() {
+                return Err(invalid(format!("{path} is resolved twice")));
+            }
+        }
+        Ok(Self { ops })
+    }
+
+    fn has(&self, changeset: ChangesetId, path: &RepoPath) -> bool {
+        self.ops.contains_key(&(changeset, path.clone()))
+    }
+
+    /// Removes and returns every resolution of `changeset`.
+    fn take(&mut self, changeset: ChangesetId) -> Vec<(RepoPath, Option<Bytes>)> {
+        let keys: Vec<_> = self
+            .ops
+            .keys()
+            .filter(|(c, _)| *c == changeset)
+            .cloned()
+            .collect();
+        keys.into_iter()
+            .filter_map(|k| self.ops.remove(&k).map(|put| (k.1, put)))
+            .collect()
+    }
+
+    /// The first resolution nothing used, if any.
+    pub(super) fn unused(&self) -> Option<(ChangesetId, &RepoPath)> {
+        self.ops.keys().next().map(|(c, p)| (*c, p))
+    }
+}
+
+/// How one item of a restack ended.
+pub(super) enum Outcome {
+    /// It already sits on its base: nothing to rewrite.
+    OnBase,
+    /// A parent change in the call conflicted or was blocked.
+    Blocked,
+    /// It conflicts; the conflicts no resolution settled (bounded by [`MAX_CONFLICTS`]).
+    Conflict(Vec<wire::Conflict>),
+    /// Rewritten to `new`; `same_patch` when its own changes are identical.
+    Rewritten { new: ChangesetId, same_patch: bool },
+}
+
+/// One item: the head it started from, that head's version, and how it ended.
+pub(super) struct ItemResult {
+    pub(super) change: ChangeId,
+    pub(super) old: ChangesetId,
+    pub(super) version: u32,
+    pub(super) outcome: Outcome,
+}
+
+/// A finished call: the answer, every item in request order, and the changeset `onto` named.
+/// `items` is empty and `onto` `None` for the replay of an earlier call with the same op id.
+pub(super) struct Run {
+    pub(super) response: wire::RestackChangesResponse,
+    pub(super) items: Vec<ItemResult>,
+    pub(super) onto: Option<ChangesetId>,
+}
+
+/// What a replay made: the rewrites, the conflicts reported, the changes that conflicted, and
+/// how every item ended.
+type Replay = (Vec<Step>, Vec<wire::Conflict>, Vec<ChangeId>, Vec<Outcome>);
 
 /// One rewritten item.
 struct Step {
@@ -394,6 +512,18 @@ impl Restacker {
         ctx: &CallCtx,
         req: wire::RestackChangesRequest,
     ) -> Result<wire::RestackChangesResponse, Status> {
+        self.run(ctx, req, &mut Resolved::default())
+            .await
+            .map(|r| r.response)
+    }
+
+    /// `RestackChanges` with the caller's resolutions, answering per item too.
+    pub(super) async fn run(
+        &self,
+        ctx: &CallCtx,
+        req: wire::RestackChangesRequest,
+        resolved: &mut Resolved,
+    ) -> Result<Run, Status> {
         let parsed = self.parse(ctx, &req)?;
         if ctx.id_mode != IdMode::Asc {
             return Err(Status::unimplemented(
@@ -420,7 +550,12 @@ impl Restacker {
         {
             return self
                 .answer_replay(&entry, &engine, ctx, &pairs, committer.time())
-                .await;
+                .await
+                .map(|response| Run {
+                    response,
+                    items: Vec::new(),
+                    onto: None,
+                });
         }
         // Two instances on one database must not restack the same repository at once: the second
         // is told to retry. The lease frees itself when this call ends.
@@ -449,6 +584,7 @@ impl Restacker {
                 &committer,
                 writes,
                 lease.as_ref(),
+                resolved,
             )
             .await;
         // Freed now, not at drop, so the caller's next call is not refused.
@@ -470,7 +606,8 @@ impl Restacker {
         committer: &Signature,
         writes: bool,
         lease: Option<&crate::lease::Lease>,
-    ) -> Result<wire::RestackChangesResponse, Status> {
+        resolved: &mut Resolved,
+    ) -> Result<Run, Status> {
         let ids = IdCodec::new(ctx.id_mode, &self.registry, entry).for_viewer(&ctx.principal);
         let onto = self.onto(&ids, entry, &req.onto).await?;
         let heads = self.heads(entry, &parsed.items).await?;
@@ -516,12 +653,77 @@ impl Restacker {
             })?;
         let windows_safe = self.refs.windows_safe(entry).await?;
 
-        let (steps, conflicts, conflicted) = self
-            .replay(engine, parsed, &heads, &pos, onto, committer, windows_safe)
+        let (steps, conflicts, conflicted, outcomes) = self
+            .replay(
+                engine,
+                entry,
+                parsed,
+                &heads,
+                &pos,
+                onto,
+                committer,
+                windows_safe,
+                resolved,
+            )
             .await?;
+        if conflicts.is_empty()
+            && let Some((changeset, path)) = resolved.unused()
+        {
+            return Err(invalid(format!(
+                "the resolution of {path} in {changeset} settles no conflict of this restack"
+            )));
+        }
         if writes {
             self.tell_conflicts(ctx, entry, &conflicted).await;
         }
+        let items = parsed
+            .items
+            .iter()
+            .zip(&heads)
+            .zip(outcomes)
+            .map(|((item, head), outcome)| ItemResult {
+                change: item.change,
+                old: head.cs,
+                version: head.version,
+                outcome,
+            })
+            .collect();
+        let response = self
+            .publish(
+                ctx,
+                req,
+                parsed,
+                entry,
+                &steps,
+                conflicts,
+                writes,
+                lease,
+                committer,
+                windows_safe,
+            )
+            .await?;
+        Ok(Run {
+            response,
+            items,
+            onto: Some(onto),
+        })
+    }
+
+    /// Publishes the rewrites of a replay, unless it conflicted under `atomic` or writes nothing.
+    #[allow(clippy::too_many_arguments)] // the pieces `restack_held` has made
+    async fn publish(
+        &self,
+        ctx: &CallCtx,
+        req: &wire::RestackChangesRequest,
+        parsed: &Parsed,
+        entry: &Arc<RepoEntry>,
+        steps: &[Step],
+        conflicts: Vec<wire::Conflict>,
+        writes: bool,
+        lease: Option<&crate::lease::Lease>,
+        committer: &Signature,
+        windows_safe: bool,
+    ) -> Result<wire::RestackChangesResponse, Status> {
         if req.atomic && !conflicts.is_empty() {
             return Ok(wire::RestackChangesResponse {
                 conflicts,
@@ -557,7 +759,7 @@ impl Restacker {
                 entry,
                 ctx,
                 parsed,
-                &steps,
+                steps,
                 &pairs,
                 committer.time(),
                 Rewriting::Restack,
@@ -662,6 +864,7 @@ impl Restacker {
                 })?;
             out.push(Head {
                 cs: latest.cs,
+                version: latest.v,
                 parent: latest.parent_change,
             });
         }
@@ -673,13 +876,16 @@ impl Restacker {
     async fn replay(
         &self,
         engine: &Arc<Eng>,
+        entry: &RepoEntry,
         parsed: &Parsed,
         heads: &[Head],
         pos: &HashMap<ChangeId, usize>,
         onto: ChangesetId,
         committer: &Signature,
         windows_safe: bool,
-    ) -> Result<(Vec<Step>, Vec<wire::Conflict>, Vec<ChangeId>), Status> {
+        resolved: &mut Resolved,
+    ) -> Result<Replay, Status> {
+        let mut outcomes = Vec::with_capacity(heads.len());
         let mut steps = Vec::new();
         let mut conflicts = Vec::new();
         let mut conflicted = Vec::new();
@@ -689,6 +895,7 @@ impl Restacker {
             let base = match head.parent.filter(|p| pos.contains_key(p)) {
                 Some(p) if blocked.contains(&p) => {
                     blocked.insert(item.change);
+                    outcomes.push(Outcome::Blocked);
                     continue;
                 }
                 Some(p) => *new_head
@@ -704,6 +911,7 @@ impl Restacker {
             };
             if *parent == base {
                 new_head.insert(item.change, head.cs);
+                outcomes.push(Outcome::OnBase);
                 continue;
             }
             let (engine2, from, opts) = (engine.clone(), head.cs, agent_merge_options());
@@ -714,11 +922,25 @@ impl Restacker {
             .map_err(merge_status)?;
             let stored = match rebased {
                 Rebased::Done { id, .. } => id,
+                Rebased::Conflicts(found)
+                    if found.iter().all(|c| resolved.has(head.cs, &c.path)) =>
+                {
+                    let ops = resolved.take(head.cs);
+                    self.resolve(engine, entry, &old, base, committer, windows_safe, ops)
+                        .await?
+                }
                 Rebased::Conflicts(found) => {
                     blocked.insert(item.change);
                     conflicted.push(item.change);
                     let room = MAX_CONFLICTS.saturating_sub(conflicts.len());
-                    conflicts.extend(found.iter().take(room).map(|c| conflict_wire(head.cs, c)));
+                    let open: Vec<wire::Conflict> = found
+                        .iter()
+                        .filter(|c| !resolved.has(head.cs, &c.path))
+                        .take(room)
+                        .map(|c| conflict_wire(head.cs, c))
+                        .collect();
+                    conflicts.extend(open.iter().cloned());
+                    outcomes.push(Outcome::Conflict(open));
                     continue;
                 }
             };
@@ -726,16 +948,99 @@ impl Restacker {
                 .with_committer(engine, stored, committer, windows_safe)
                 .await?;
             let rewritten = engine.get_changeset(new).await.map_err(commit_status)?;
+            let unchanged = same_patch(&old, &rewritten);
             steps.push(Step {
                 item: i,
                 change: item.change,
                 old: head.cs,
                 new,
-                unchanged: same_patch(&old, &rewritten),
+                unchanged,
+            });
+            outcomes.push(Outcome::Rewritten {
+                new,
+                same_patch: unchanged,
             });
             new_head.insert(item.change, new);
         }
-        Ok((steps, conflicts, conflicted))
+        Ok((steps, conflicts, conflicted, outcomes))
+    }
+
+    /// `old` rebased onto `base` with the merged tree corrected by the caller's resolutions:
+    /// each path takes the resolved content, keeping the kind of a file the merge left there,
+    /// or is removed.
+    #[allow(clippy::too_many_arguments)]
+    async fn resolve(
+        &self,
+        engine: &Arc<Eng>,
+        entry: &RepoEntry,
+        old: &Changeset,
+        base: ChangesetId,
+        committer: &Signature,
+        windows_safe: bool,
+        ops: Vec<(RepoPath, Option<Bytes>)>,
+    ) -> Result<ChangesetId, Status> {
+        let [parent] = old.parents.as_slice() else {
+            return Err(Status::failed_precondition(
+                "only a change with one parent can be restacked",
+            ));
+        };
+        let parent_root = engine
+            .get_changeset(*parent)
+            .await
+            .map_err(commit_status)?
+            .root;
+        let base_root = engine
+            .get_changeset(base)
+            .await
+            .map_err(commit_status)?
+            .root;
+        let (engine2, theirs, opts) = (engine.clone(), old.root, agent_merge_options());
+        let merged = on_blocking_thread(move || async move {
+            engine2
+                .merge_trees(parent_root, base_root, theirs, &opts)
+                .await
+        })
+        .await?
+        .map_err(merge_status)?;
+        let mut changes = Vec::with_capacity(ops.len());
+        for (path, put) in ops {
+            let found = engine
+                .lookup(merged.root, &path)
+                .await
+                .map_err(|e| internal("tree", &e))?;
+            match put {
+                Some(data) => {
+                    let kind = match found.map(|e| e.kind) {
+                        Some(Kind::Exec) => Kind::Exec,
+                        _ => Kind::File,
+                    };
+                    let stored = crate::mutations::store_file(entry, &data).await?;
+                    changes.push((path, crate::mutations::write_stored(kind, &stored)?));
+                }
+                None if found.is_some() => changes.push((path, Change::Delete)),
+                None => {}
+            }
+        }
+        changes.sort_by(|a, b| a.0.cmp(&b.0));
+        let root = {
+            let (engine, from) = (engine.clone(), merged.root);
+            on_blocking_thread(move || async move { engine.apply(from, &changes).await })
+                .await?
+                .map_err(|e| internal("tree", &e))?
+        };
+        let new = NewChangeset {
+            parents: vec![base],
+            author: old.author.clone(),
+            committer: committer.clone(),
+            message: old.message.clone(),
+            extra: crate::mutations::rebase::kept_extra(old.extra.as_slice()),
+            root,
+            copies: Vec::new(),
+        };
+        let (engine, policy) = (engine.clone(), PathPolicy::Native { windows_safe });
+        on_blocking_thread(move || async move { engine.create_changeset(new, policy).await })
+            .await?
+            .map_err(commit_status)
     }
 
     /// The hub's `restack_conflict`: the people who made a change whose rebase hit a conflict are told
@@ -1355,7 +1660,7 @@ impl Restacker {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use asc_core::change::ChangeMeta;
     use asc_rpc::auth::{Access, BearerToken, Credential, StaticTokens};
     use asc_rpc::server::{RepoName, ServerInfo};
@@ -1381,11 +1686,11 @@ mod tests {
         }
     }
 
-    fn cid(n: u8) -> ChangeId {
+    pub(crate) fn cid(n: u8) -> ChangeId {
         ChangeId::from_bytes([n; 16])
     }
 
-    fn cbytes(n: u8) -> Bytes {
+    pub(crate) fn cbytes(n: u8) -> Bytes {
         Bytes::copy_from_slice(cid(n).as_bytes())
     }
 
@@ -1393,21 +1698,23 @@ mod tests {
         b.iter().map(|b| format!("{b:02x}")).collect()
     }
 
-    struct Fx {
-        reg: Arc<Registry>,
-        e: Arc<RepoEntry>,
+    pub(crate) struct Fx {
+        pub(crate) reg: Arc<Registry>,
+        pub(crate) e: Arc<RepoEntry>,
         svc: ChangesService,
+        /// The handler behind `svc`.
+        pub(crate) rpc: Arc<super::super::rpc::ChangesRpc>,
         /// The base commit.
-        a: ChangesetId,
+        pub(crate) a: ChangesetId,
         /// Heads of changes 1, 2 and 3: 1 and 2 are a stack on `a`, 3 stands alone on `a`.
-        c: [ChangesetId; 3],
+        pub(crate) c: [ChangesetId; 3],
         /// A trunk move that touches none of their paths.
-        t: ChangesetId,
+        pub(crate) t: ChangesetId,
         /// A trunk move that adds `one` with other content: it conflicts with change 1.
-        x: ChangesetId,
+        pub(crate) x: ChangesetId,
     }
 
-    async fn publish(
+    pub(crate) async fn publish(
         f: &(Arc<Registry>, Arc<RepoEntry>),
         n: u8,
         cs: ChangesetId,
@@ -1450,7 +1757,7 @@ mod tests {
         tx.commit().await.unwrap();
     }
 
-    async fn fx() -> Fx {
+    pub(crate) async fn fx() -> Fx {
         let reg = registry().await;
         let e = repo(&reg).await;
         let a = commit(&e, &[], &[("a", b"a\n")]).await;
@@ -1472,11 +1779,8 @@ mod tests {
             .with_token(MALLORY, "mallory", Access::Write)
             .with_token(BOB, "7:bob", Access::Write)
             .with_token(FORGE, crate::authz::HOST_SERVICE_PRINCIPAL, Access::Admin);
-        let svc = ChangesService::new(
-            ext.changes.get().unwrap().clone(),
-            Arc::new(auth),
-            ServerInfo::default(),
-        );
+        let rpc = ext.changes.get().unwrap().clone();
+        let svc = ChangesService::new(rpc.clone(), Arc::new(auth), ServerInfo::default());
         let pair = (reg.clone(), e.clone());
         publish(&pair, 1, c1, None).await;
         publish(&pair, 2, c2, Some(1)).await;
@@ -1485,6 +1789,7 @@ mod tests {
             reg,
             e,
             svc,
+            rpc,
             a,
             c: [c1, c2, c3],
             t,
@@ -1555,7 +1860,7 @@ mod tests {
                 .map(tonic::Response::into_inner)
         }
 
-        async fn cs(&self, id: ChangesetId) -> Arc<Changeset> {
+        pub(crate) async fn cs(&self, id: ChangesetId) -> Arc<Changeset> {
             self.e.backend.engine().get_changeset(id).await.unwrap()
         }
 
@@ -1566,7 +1871,7 @@ mod tests {
                 .unwrap()
         }
 
-        async fn latest(&self, n: u8) -> versions::Version {
+        pub(crate) async fn latest(&self, n: u8) -> versions::Version {
             let mut c = self.reg.pool().acquire().await.unwrap();
             versions::latest(&mut c, self.e.ns, cid(n))
                 .await

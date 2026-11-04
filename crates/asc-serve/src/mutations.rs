@@ -517,7 +517,7 @@ fn check_message(m: &[u8]) -> Result<(), Status> {
 }
 
 /// A path from the request: a valid repository path that passes `checkout_safe`.
-fn op_path(bytes: &[u8]) -> Result<RepoPath, Status> {
+pub(crate) fn op_path(bytes: &[u8]) -> Result<RepoPath, Status> {
     if bytes.len() > MAX_WALK_PATH_BYTES {
         return Err(invalid("path is too long"));
     }

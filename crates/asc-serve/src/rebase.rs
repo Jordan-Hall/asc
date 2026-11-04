@@ -138,7 +138,7 @@ fn hide_missing(e: Status) -> Status {
     }
 }
 
-fn kept_extra(extra: &[(Vec<u8>, Vec<u8>)]) -> Vec<(Vec<u8>, Vec<u8>)> {
+pub(crate) fn kept_extra(extra: &[(Vec<u8>, Vec<u8>)]) -> Vec<(Vec<u8>, Vec<u8>)> {
     extra
         .iter()
         .filter(|(k, _)| !DROPPED_EXTRA.contains(&k.as_slice()))
