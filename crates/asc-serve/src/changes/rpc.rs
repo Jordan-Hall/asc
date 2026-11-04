@@ -79,7 +79,7 @@ fn sql_status(e: sqlx::Error) -> Status {
     internal("database", &e)
 }
 
-fn change_of(b: &[u8]) -> Result<ChangeId, Status> {
+pub(super) fn change_of(b: &[u8]) -> Result<ChangeId, Status> {
     <[u8; 16]>::try_from(b)
         .map(ChangeId::from_bytes)
         .map_err(|_| Status::invalid_argument("a change id is 16 bytes"))
@@ -138,7 +138,7 @@ pub(super) struct Head {
 
 /// The handler behind [`ChangesService`].
 pub struct ChangesRpc {
-    registry: Arc<Registry>,
+    pub(super) registry: Arc<Registry>,
     pipeline: Arc<PipelineHooks>,
     /// `InterDiff` (C20), set by [`super::interdiff::register`].
     pub(super) interdiff: OnceLock<Arc<super::interdiff::InterDiffer>>,
@@ -347,8 +347,57 @@ impl Reader<'_> {
     }
 }
 
+/// The stack `anchor` is in, whose head must be known: its bottom unlanded ancestor, and the
+/// changes from there up through every descendant, parents before children and siblings by id.
+pub(super) async fn stack_walk(
+    reader: &mut Reader<'_>,
+    anchor: ChangeId,
+) -> Result<(ChangeId, Vec<ChangeId>), Status> {
+    // Down to the bottom unlanded ancestor.
+    let mut seen = HashSet::from([anchor]);
+    let mut root = anchor;
+    loop {
+        let head = reader.head(root).await?.expect("read above");
+        let Some(parent) = head.parent else { break };
+        if !seen.insert(parent) {
+            return Err(Status::data_loss("the parent chain of a change loops"));
+        }
+        if seen.len() > MAX_STACK {
+            return Err(Status::resource_exhausted(format!(
+                "a stack has at most {MAX_STACK} changes"
+            )));
+        }
+        if reader.head(parent).await?.is_none() || reader.landed(parent).await?.is_some() {
+            break;
+        }
+        root = parent;
+    }
+    // Up through every descendant: parents before children, siblings by id.
+    let mut order = Vec::new();
+    let mut visited = HashSet::new();
+    let mut todo = vec![root];
+    while let Some(c) = todo.pop() {
+        if !visited.insert(c) {
+            continue;
+        }
+        if order.len() >= MAX_STACK {
+            return Err(Status::resource_exhausted(format!(
+                "a stack has at most {MAX_STACK} changes"
+            )));
+        }
+        order.push(c);
+        let mut kids = reader.children(c).await?;
+        kids.reverse();
+        todo.extend(kids);
+    }
+    Ok((root, order))
+}
+
 impl ChangesRpc {
-    async fn open(&self, ctx: &CallCtx) -> Result<(Arc<RepoEntry>, IdCodec, Arc<Eng>), Status> {
+    pub(super) async fn open(
+        &self,
+        ctx: &CallCtx,
+    ) -> Result<(Arc<RepoEntry>, IdCodec, Arc<Eng>), Status> {
         let entry = self
             .registry
             .open(&ctx.repo)
@@ -360,7 +409,7 @@ impl ChangesRpc {
     }
 
     /// `refs/heads/<trunk>` for `target` (the default branch when empty).
-    fn land_ref(entry: &RepoEntry, target: &str) -> Result<(String, String), Status> {
+    pub(super) fn land_ref(entry: &RepoEntry, target: &str) -> Result<(String, String), Status> {
         let name = if target.is_empty() {
             entry.default_branch.as_str()
         } else {
@@ -474,43 +523,7 @@ impl ChangesRpc {
         if reader.head(anchor).await?.is_none() {
             return Err(Status::not_found("unknown change"));
         }
-        // Down to the bottom unlanded ancestor.
-        let mut seen = HashSet::from([anchor]);
-        let mut root = anchor;
-        loop {
-            let head = reader.head(root).await?.expect("read above");
-            let Some(parent) = head.parent else { break };
-            if !seen.insert(parent) {
-                return Err(Status::data_loss("the parent chain of a change loops"));
-            }
-            if seen.len() > MAX_STACK {
-                return Err(Status::resource_exhausted(format!(
-                    "a stack has at most {MAX_STACK} changes"
-                )));
-            }
-            if reader.head(parent).await?.is_none() || reader.landed(parent).await?.is_some() {
-                break;
-            }
-            root = parent;
-        }
-        // Up through every descendant: parents before children, siblings by id.
-        let mut order = Vec::new();
-        let mut visited = HashSet::new();
-        let mut todo = vec![root];
-        while let Some(c) = todo.pop() {
-            if !visited.insert(c) {
-                continue;
-            }
-            if order.len() >= MAX_STACK {
-                return Err(Status::resource_exhausted(format!(
-                    "a stack has at most {MAX_STACK} changes"
-                )));
-            }
-            order.push(c);
-            let mut kids = reader.children(c).await?;
-            kids.reverse();
-            todo.extend(kids);
-        }
+        let (root, order) = stack_walk(&mut reader, anchor).await?;
         let mut changes = Vec::with_capacity(order.len());
         for c in &order {
             if let Some(info) = reader.info(*c).await? {
