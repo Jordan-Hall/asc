@@ -146,10 +146,12 @@ message ListAgentRunsRequest {
   string created_by = 4;
   uint32 limit = 5;
   string page_token = 6;
+  uint32 offset = 7;                     // skip this many runs (a numbered page); at most 100000
 }
 message ListAgentRunsResponse {
   repeated AgentRun runs = 1;
   string next_page_token = 2;
+  uint64 total = 3;                      // the runs that match the filters, on every page
 }
 
 message GetAgentRunRequest {
