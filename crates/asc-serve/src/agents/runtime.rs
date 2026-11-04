@@ -294,11 +294,33 @@ impl AgentsHub {
             limits.runtime = 3600;
         }
 
-        // The model and its key.
+        // The model and its key: the one the request names, else the one the repository's setting
+        // of agent runs chose, else the first usable one.
+        let feature = crate::ai::feature::Feature::AgentRuns;
+        if self
+            .ai
+            .feature_paused(&req.repo, feature)
+            .await
+            .map_err(|e| e.status())?
+        {
+            return Err(AiError::CapReached("feature").status());
+        }
+        let chosen = self
+            .ai
+            .setting_for_repo(&req.repo, feature)
+            .await
+            .map_err(|e| e.status())?
+            .map(|s| s.key_id)
+            .filter(|k| !k.is_empty());
+        let named = if req.ai_key_id.is_empty() {
+            chosen.as_deref()
+        } else {
+            Some(req.ai_key_id.as_str())
+        };
         let chain = Owner::chain(&req.repo, who.handle.as_deref());
         let key = self
             .ai
-            .resolve(&chain, (!req.ai_key_id.is_empty()).then_some(req.ai_key_id.as_str()))
+            .resolve(&chain, named)
             .await
             .map_err(|e| match e {
                 AiError::NotFound => Status::failed_precondition(
@@ -1158,6 +1180,7 @@ impl AgentsHub {
         let who = CallInfo {
             repo: &run.repo,
             agent: &run.agent,
+            feature: Some(crate::ai::feature::Feature::AgentRuns),
         };
         let max_command = Duration::from_secs(core.cfg.sandbox.max_command_seconds);
         let mut retries = 0u32;
@@ -1305,7 +1328,11 @@ impl AgentsHub {
                         AiError::CapReached(which) => {
                             return Ended::failed(
                                 "AI_CAP_REACHED",
-                                &format!("the monthly cap of the AI key ({which}) is reached"),
+                                &if which == "feature" {
+                                    "the monthly cap of agent runs is reached".to_owned()
+                                } else {
+                                    format!("the monthly cap of the AI key ({which}) is reached")
+                                },
                             );
                         }
                         AiError::NoPrice(m) => {

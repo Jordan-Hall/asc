@@ -16,6 +16,7 @@ use zeroize::Zeroizing;
 
 use super::audit::Entry;
 use super::caller::{Caller, authenticate, once, op_id};
+use super::feature::{Feature, wire_feature};
 use super::owner::Owner;
 use super::store::{GroupBy, Provider};
 use super::{AiError, AiHub, KeyPatch, NewKey, clock, wire_key};
@@ -177,6 +178,7 @@ impl AiProviders for AiService {
             base_url: msg.base_url,
             default_model: msg.default_model,
             monthly_cap: msg.monthly_cap_micro_usd,
+            created_by: caller.principal.id.clone(),
         };
         let hub = self.hub.clone();
         let actor = caller.principal.id.clone();
@@ -417,5 +419,125 @@ impl AiProviders for AiService {
                 })
                 .collect(),
         }))
+    }
+    async fn replace_key(
+        &self,
+        request: Request<wire::ReplaceAiKeyRequest>,
+    ) -> Result<Response<wire::ReplaceAiKeyResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        let api_key = secret(msg.api_key);
+        let (caller, _) = self.key_admin(&ext, &meta, &msg.id).await?;
+        let op = op_id(&meta)?;
+        let hub = self.hub.clone();
+        let id = msg.id;
+        let actor = caller.principal.id.clone();
+        let relay = caller.relay.clone();
+        once(
+            &hub.ops,
+            op,
+            &caller.replay_key,
+            "AiProviders/ReplaceKey",
+            true,
+            || async {
+                let t = hub
+                    .replace_key(&id, api_key)
+                    .await
+                    .map_err(|e| e.status())?;
+                if t.replaced {
+                    audit_key(&hub, "ai.key.replaced", &actor, relay.as_deref(), &t.key).await;
+                }
+                Ok(wire::ReplaceAiKeyResponse {
+                    replaced: t.replaced,
+                    latency_ms: t.latency_ms,
+                    provider_status: t.provider_status.to_owned(),
+                    message: t.message,
+                    key: Some(wire_key(&hub, &t.key).await),
+                })
+            },
+        )
+        .await
+        .map(Response::new)
+    }
+
+    async fn list_features(
+        &self,
+        request: Request<wire::ListAiFeaturesRequest>,
+    ) -> Result<Response<wire::ListAiFeaturesResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        let owner = Owner::from_wire(msg.owner.as_ref())?;
+        self.admin_of(&ext, &meta, &owner).await?;
+        let views = self.hub.features(&owner).await.map_err(|e| e.status())?;
+        let mut features = Vec::with_capacity(views.len());
+        for v in &views {
+            features.push(wire_feature(&self.hub, v).await);
+        }
+        Ok(Response::new(wire::ListAiFeaturesResponse { features }))
+    }
+
+    async fn set_feature(
+        &self,
+        request: Request<wire::SetAiFeatureRequest>,
+    ) -> Result<Response<wire::SetAiFeatureResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        let owner = Owner::from_wire(msg.owner.as_ref())?;
+        let caller = self.admin_of(&ext, &meta, &owner).await?;
+        let op = op_id(&meta)?;
+        let feature = Feature::from_wire(msg.feature).map_err(|e| e.status())?;
+        let hub = self.hub.clone();
+        let actor = caller.principal.id.clone();
+        let relay = caller.relay.clone();
+        once(
+            &hub.ops,
+            op,
+            &caller.replay_key,
+            "AiProviders/SetFeature",
+            true,
+            || async {
+                let action = if msg.clear {
+                    hub.clear_feature(&owner, feature)
+                        .await
+                        .map_err(|e| e.status())?;
+                    "ai.feature.cleared"
+                } else {
+                    hub.set_feature(
+                        &owner,
+                        feature,
+                        &msg.key_id,
+                        msg.monthly_cap_micro_usd,
+                        &actor,
+                    )
+                    .await
+                    .map_err(|e| e.status())?;
+                    "ai.feature.set"
+                };
+                hub.audit(Entry {
+                    action,
+                    target: feature.name(),
+                    owner: &audit_owner(&owner),
+                    repo: audit_repo(&owner),
+                    details: &[
+                        ("scope", owner.label()),
+                        ("key_id", msg.key_id.clone()),
+                        (
+                            "monthly_cap_micro_usd",
+                            msg.monthly_cap_micro_usd.to_string(),
+                        ),
+                    ],
+                    on_behalf: relay.as_deref(),
+                    ..Entry::new(action, &actor)
+                })
+                .await;
+                let views = hub.features(&owner).await.map_err(|e| e.status())?;
+                let v = views
+                    .iter()
+                    .find(|v| v.feature == feature)
+                    .ok_or_else(|| Status::internal("internal error"))?;
+                Ok(wire::SetAiFeatureResponse {
+                    feature: Some(wire_feature(&hub, v).await),
+                })
+            },
+        )
+        .await
+        .map(Response::new)
     }
 }

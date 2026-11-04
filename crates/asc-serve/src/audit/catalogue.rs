@@ -257,7 +257,7 @@ pub const CATALOGUE: &[ActionInfo] = &[
     ),
     a(
         "ai.key.updated",
-        "An AI provider key was replaced.",
+        "An AI provider key was changed.",
         &["provider", "key_hint", "scope"],
     ),
     a(
@@ -269,6 +269,21 @@ pub const CATALOGUE: &[ActionInfo] = &[
         "ai.key.deleted",
         "An AI provider key was deleted.",
         &["provider", "scope"],
+    ),
+    a(
+        "ai.key.replaced",
+        "An AI provider key was replaced by one the provider accepted.",
+        &["provider", "key_hint", "scope"],
+    ),
+    a(
+        "ai.feature.set",
+        "The key or monthly cap of a feature that uses AI was set.",
+        &["scope", "key_id", "monthly_cap_micro_usd"],
+    ),
+    a(
+        "ai.feature.cleared",
+        "The setting of a feature that uses AI was removed.",
+        &["scope", "key_id", "monthly_cap_micro_usd"],
     ),
     a(
         "backup.started",
@@ -832,6 +847,9 @@ mod tests {
             "ai.key.updated",
             "ai.key.tested",
             "ai.key.deleted",
+            "ai.key.replaced",
+            "ai.feature.set",
+            "ai.feature.cleared",
             "vault.rotated",
             "agent.token.created",
             "agent.token.revoked",

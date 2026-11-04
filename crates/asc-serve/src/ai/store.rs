@@ -111,6 +111,8 @@ pub struct KeyRow {
     pub updated: i64,
     pub tested_at: i64,
     pub last_error: String,
+    /// The person who added the key; empty for keys added before it was kept.
+    pub created_by: String,
 }
 
 impl fmt::Debug for KeyRow {
@@ -161,6 +163,7 @@ impl KeyRow {
             tested_at: self.tested_at,
             last_error: self.last_error.clone(),
             key_version: self.key_version,
+            created_by: self.created_by.clone(),
         }
     }
 }
@@ -174,7 +177,7 @@ fn i64_of(v: u64) -> i64 {
 }
 
 const COLS: &str = "id, owner_kind, owner_name, label, provider, base_url, default_model, sealed_key, \
-     key_gen, key_hint, key_version, rev, state, disabled, monthly_cap, created, updated, tested_at, last_error";
+     key_gen, key_hint, key_version, rev, state, disabled, monthly_cap, created, updated, tested_at, last_error, created_by";
 
 fn row_of(r: &AnyRow) -> Result<KeyRow, sqlx::Error> {
     let provider = match r.try_get::<i64, _>("provider")? {
@@ -207,6 +210,7 @@ fn row_of(r: &AnyRow) -> Result<KeyRow, sqlx::Error> {
         updated: r.try_get("updated")?,
         tested_at: r.try_get("tested_at")?,
         last_error: r.try_get("last_error")?,
+        created_by: r.try_get("created_by")?,
     })
 }
 
@@ -268,6 +272,8 @@ pub enum ReserveError {
     KeyCap,
     /// The instance cap would be passed.
     InstanceCap,
+    /// The cap of the feature the call is made for would be passed.
+    FeatureCap,
     Sql(String),
 }
 
@@ -309,7 +315,7 @@ impl AiStore {
     pub async fn insert(&self, k: &KeyRow) -> Result<bool, sqlx::Error> {
         let (kind, name) = k.owner.columns();
         let q = format!(
-            "INSERT INTO ai_keys ({COLS}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)"
+            "INSERT INTO ai_keys ({COLS}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)"
         );
         let r = sqlx::query(sqlx::AssertSqlSafe(q))
             .bind(k.id.clone())
@@ -331,6 +337,7 @@ impl AiStore {
             .bind(k.updated)
             .bind(k.tested_at)
             .bind(k.last_error.clone())
+            .bind(k.created_by.clone())
             .execute(&self.pool)
             .await;
         match r {
@@ -543,21 +550,25 @@ impl AiStore {
         Ok(u64_of(v.unwrap_or(0)))
     }
 
-    /// Reserves `amount` against the key's cap and the instance cap (0 means no cap). All or none.
+    /// Reserves `amount` against the key's cap, the instance cap and the cap of the feature scope
+    /// named (0 means no cap). All or none.
     pub async fn reserve(
         &self,
         key_id: &str,
         key_cap: u64,
         instance_cap: u64,
+        feature: Option<(&str, u64)>,
         amount: u64,
         at: i64,
     ) -> Result<Reservation, ReserveError> {
         let month = clock::month(at);
         let mut tx = self.pool.begin().await?;
         let mut ids = Vec::new();
-        for (scope, cap, refusal) in [
-            (key_id, key_cap, ReserveError::KeyCap),
-            (INSTANCE_SCOPE, instance_cap, ReserveError::InstanceCap),
+        let (feature_scope, feature_cap) = feature.unwrap_or(("", 0));
+        for (scope, cap, which) in [
+            (key_id, key_cap, 0),
+            (INSTANCE_SCOPE, instance_cap, 1),
+            (feature_scope, feature_cap, 2),
         ] {
             if cap == 0 {
                 continue;
@@ -579,7 +590,11 @@ impl AiStore {
             .await?;
             if r.rows_affected() != 1 {
                 tx.rollback().await?;
-                return Err(refusal);
+                return Err(match which {
+                    0 => ReserveError::KeyCap,
+                    1 => ReserveError::InstanceCap,
+                    _ => ReserveError::FeatureCap,
+                });
             }
             let id = crate::ai::rand_id("rv_", 20);
             sqlx::query("INSERT INTO ai_reservations (id, scope, month, amount, at) VALUES ($1, $2, $3, $4, $5)")
@@ -597,11 +612,12 @@ impl AiStore {
     }
 
     /// Replaces a reservation by what the call really cost. The real cost counts even when the
-    /// reservation was swept in the meantime.
+    /// reservation was swept in the meantime, and in every scope of `always` (the key's, the
+    /// feature's) whether it had a cap or not.
     pub async fn settle(
         &self,
         r: Reservation,
-        key_id: &str,
+        always: &[&str],
         actual: u64,
         at: i64,
     ) -> Result<(), sqlx::Error> {
@@ -634,15 +650,18 @@ impl AiStore {
         }
         // Spending counts against the key's month even when it has no cap (the report shows it),
         // and against the instance's when that has one.
-        if !scopes_done.iter().any(|s| s == key_id) {
+        for scope in always {
+            if scope.is_empty() || scopes_done.iter().any(|s| s == scope) {
+                continue;
+            }
             sqlx::query("INSERT INTO ai_month (scope, month) VALUES ($1, $2) ON CONFLICT (scope, month) DO NOTHING")
-                .bind(key_id.to_owned())
+                .bind((*scope).to_owned())
                 .bind(month.clone())
                 .execute(&mut *tx)
                 .await?;
             sqlx::query("UPDATE ai_month SET spent = spent + $3 WHERE scope = $1 AND month = $2")
-                .bind(key_id.to_owned())
-                .bind(month)
+                .bind((*scope).to_owned())
+                .bind(month.clone())
                 .bind(i64_of(actual))
                 .execute(&mut *tx)
                 .await?;

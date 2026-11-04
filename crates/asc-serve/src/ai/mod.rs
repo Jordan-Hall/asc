@@ -18,6 +18,7 @@ pub mod audit;
 pub mod caller;
 pub mod clock;
 pub mod config;
+pub mod feature;
 pub mod model;
 pub mod ops;
 pub mod owner;
@@ -30,6 +31,8 @@ pub mod store;
 
 #[cfg(test)]
 pub(crate) mod fake;
+#[cfg(test)]
+mod feature_tests;
 #[cfg(test)]
 pub(crate) mod share_tests;
 #[cfg(test)]
@@ -185,6 +188,8 @@ pub struct NewKey {
     pub base_url: String,
     pub default_model: String,
     pub monthly_cap: u64,
+    /// The person adding the key.
+    pub created_by: String,
 }
 
 /// A patch of a key; `None` leaves the field.
@@ -204,6 +209,9 @@ pub struct CallInfo<'a> {
     /// `owner/name`, or empty.
     pub repo: &'a str,
     pub agent: &'a str,
+    /// The feature the call is made for: its setting for `repo` adds a cap and counts the
+    /// spending.
+    pub feature: Option<feature::Feature>,
 }
 
 /// A finished call.
@@ -221,6 +229,18 @@ pub struct TestOutcome {
     pub latency_ms: u32,
     pub provider_status: &'static str,
     pub message: String,
+    pub key: KeyRow,
+}
+
+/// The outcome of a key replacement.
+#[derive(Clone, Debug)]
+pub struct ReplaceOutcome {
+    /// False: the provider refused the new key and the old one is kept.
+    pub replaced: bool,
+    pub latency_ms: u32,
+    pub provider_status: &'static str,
+    pub message: String,
+    /// The key as stored afterwards.
     pub key: KeyRow,
 }
 
@@ -382,6 +402,7 @@ impl AiHub {
             updated: now,
             tested_at: 0,
             last_error: String::new(),
+            created_by: new.created_by,
         };
         if !self.store.insert(&row).await? {
             return Err(AiError::Exists);
@@ -489,6 +510,7 @@ impl AiHub {
             return Err(AiError::InUse);
         }
         if self.store.delete(id).await? {
+            self.forget_key_in_features(id).await?;
             Ok(())
         } else {
             Err(AiError::NotFound)
@@ -662,7 +684,13 @@ impl AiHub {
             Ok(Some(c)) if !c.stop_at_cap => 0,
             _ => key.monthly_cap,
         };
-        let capped = key_cap > 0 || self.cfg.instance_monthly_cap_micro_usd > 0;
+        let setting = match who.feature {
+            Some(f) => self.setting_for_repo(who.repo, f).await?,
+            None => None,
+        };
+        let feature_scope = setting.as_ref().map(feature::Setting::scope);
+        let feature_cap = setting.as_ref().map_or(0, |s| s.monthly_cap);
+        let capped = key_cap > 0 || feature_cap > 0 || self.cfg.instance_monthly_cap_micro_usd > 0;
         let priced = self.priced(&req.model);
         if (capped || cost_limited) && !priced {
             return Err(AiError::NoPrice(req.model.clone()));
@@ -679,6 +707,7 @@ impl AiHub {
                     &key.id,
                     key_cap,
                     self.cfg.instance_monthly_cap_micro_usd,
+                    feature_scope.as_deref().map(|s| (s, feature_cap)),
                     worst,
                     now,
                 )
@@ -687,6 +716,7 @@ impl AiHub {
                 Ok(r) => Some(r),
                 Err(ReserveError::KeyCap) => return Err(AiError::CapReached("key")),
                 Err(ReserveError::InstanceCap) => return Err(AiError::CapReached("instance")),
+                Err(ReserveError::FeatureCap) => return Err(AiError::CapReached("feature")),
                 Err(ReserveError::Sql(c)) => return Err(AiError::Sql(c)),
             }
         } else {
@@ -707,7 +737,15 @@ impl AiHub {
             Err(_) => (0, None),
         };
         if let Some(res) = reservation
-            && let Err(e) = self.store.settle(res, &key.id, actual, at).await
+            && let Err(e) = self
+                .store
+                .settle(
+                    res,
+                    &[key.id.as_str(), feature_scope.as_deref().unwrap_or("")],
+                    actual,
+                    at,
+                )
+                .await
         {
             tracing::error!(class = %store::class(&e), "ai cap settle failed");
         }
@@ -726,8 +764,11 @@ impl AiHub {
                 tracing::error!(class = %store::class(&e), "ai usage record failed");
             }
             if !capped {
-                // The key's month is shown in the report even when no cap is set.
+                // The key's month and the feature's are shown even when no cap is set.
                 self.add_spent(&key.id, actual, at).await;
+                if let Some(s) = &feature_scope {
+                    self.add_spent(s, actual, at).await;
+                }
             }
             self.check_warn(key, at).await;
         }
@@ -753,16 +794,16 @@ impl AiHub {
         }
     }
 
-    async fn add_spent(&self, key_id: &str, amount: u64, at: i64) {
+    async fn add_spent(&self, scope: &str, amount: u64, at: i64) {
         let month = clock::month(at);
         let r = async {
             sqlx::query("INSERT INTO ai_month (scope, month) VALUES ($1, $2) ON CONFLICT (scope, month) DO NOTHING")
-                .bind(key_id.to_owned())
+                .bind(scope.to_owned())
                 .bind(month.clone())
                 .execute(self.store.pool())
                 .await?;
             sqlx::query("UPDATE ai_month SET spent = spent + $3 WHERE scope = $1 AND month = $2")
-                .bind(key_id.to_owned())
+                .bind(scope.to_owned())
                 .bind(month)
                 .bind(i64::try_from(amount).unwrap_or(i64::MAX))
                 .execute(self.store.pool())
@@ -801,44 +842,9 @@ impl AiHub {
         if !self.test_allowed(id, now) {
             return Err(AiError::CapReached("test_rate"));
         }
-        let cancel = CancellationToken::new();
         let result: Result<(), AiError> = async {
             let secret = self.open_secret(&key)?;
-            let client = self.client(&key, secret).await?;
-            if key.default_model.is_empty() {
-                client
-                    .list_models(&cancel)
-                    .await
-                    .map(drop)
-                    .map_err(AiError::Model)
-            } else {
-                let req = ModelRequest {
-                    model: key.default_model.clone(),
-                    system: String::new(),
-                    messages: vec![Message::User("ping".into())],
-                    tools: Vec::new(),
-                    max_output_tokens: 1,
-                };
-                let r = client
-                    .complete(&req, &cancel)
-                    .await
-                    .map_err(AiError::Model)?;
-                let cost = self.prices.cost(&req.model, r.usage);
-                let rec = UsageRecord {
-                    key_id: &key.id,
-                    owner: &key.owner,
-                    repo: "",
-                    agent: "test",
-                    model: &req.model,
-                    input_tokens: r.usage.input_tokens,
-                    output_tokens: r.usage.output_tokens,
-                    cost_micro_usd: cost,
-                };
-                let at = clock::now();
-                let _ = self.store.record(&rec, at).await;
-                self.add_spent(&key.id, cost.unwrap_or(0), at).await;
-                Ok(())
-            }
+            self.probe(&key, secret).await
         }
         .await;
         let latency_ms = u32::try_from(started.elapsed().as_millis()).unwrap_or(u32::MAX);
@@ -913,6 +919,115 @@ impl AiHub {
             provider_status: status,
             message,
             key,
+        })
+    }
+
+    /// One minimal request to the provider of `key` with `secret`: a one-token completion when the
+    /// key has a default model, else a model listing. The completion's cost is recorded on the key.
+    async fn probe(&self, key: &KeyRow, secret: Zeroizing<String>) -> Result<(), AiError> {
+        let cancel = CancellationToken::new();
+        let client = self.client(key, secret).await?;
+        if key.default_model.is_empty() {
+            return client
+                .list_models(&cancel)
+                .await
+                .map(drop)
+                .map_err(AiError::Model);
+        }
+        let req = ModelRequest {
+            model: key.default_model.clone(),
+            system: String::new(),
+            messages: vec![Message::User("ping".into())],
+            tools: Vec::new(),
+            max_output_tokens: 1,
+        };
+        let r = client
+            .complete(&req, &cancel)
+            .await
+            .map_err(AiError::Model)?;
+        let cost = self.prices.cost(&req.model, r.usage);
+        let rec = UsageRecord {
+            key_id: &key.id,
+            owner: &key.owner,
+            repo: "",
+            agent: "test",
+            model: &req.model,
+            input_tokens: r.usage.input_tokens,
+            output_tokens: r.usage.output_tokens,
+            cost_micro_usd: cost,
+        };
+        let at = clock::now();
+        let _ = self.store.record(&rec, at).await;
+        self.add_spent(&key.id, cost.unwrap_or(0), at).await;
+        Ok(())
+    }
+
+    /// Tries `secret` with the provider of key `id` and, only when the provider accepts it, seals
+    /// it in place of the old one and marks the key active. A refused secret changes nothing, so
+    /// the old key keeps working. Rate limited with [`Self::test_key`].
+    pub async fn replace_key(
+        &self,
+        id: &str,
+        secret: Zeroizing<String>,
+    ) -> Result<ReplaceOutcome, AiError> {
+        if !printable_key(&secret) {
+            return Err(AiError::Invalid(
+                "an api_key is 8 to 512 printable ASCII characters".into(),
+            ));
+        }
+        let mut k = self.get_key(id).await?;
+        if !self.test_allowed(id, clock::now()) {
+            return Err(AiError::CapReached("test_rate"));
+        }
+        let started = std::time::Instant::now();
+        let tried = self.probe(&k, Zeroizing::new(secret.to_string())).await;
+        let latency_ms = u32::try_from(started.elapsed().as_millis()).unwrap_or(u32::MAX);
+        let refused = |status: &'static str, message: String, key: KeyRow| ReplaceOutcome {
+            replaced: false,
+            latency_ms,
+            provider_status: status,
+            message,
+            key,
+        };
+        match tried {
+            Ok(()) => {}
+            Err(AiError::Model(e)) => return Ok(refused(e.slug(), e.to_string(), k)),
+            Err(AiError::Blocked(slug)) => {
+                return Ok(refused(
+                    "blocked_address",
+                    format!("the endpoint is not allowed: {slug}"),
+                    k,
+                ));
+            }
+            Err(e) => return Err(e),
+        }
+        // The probe recorded its cost; read the row again so the swap does not lose a concurrent
+        // change.
+        k = self.get_key(id).await?;
+        let label = k.owner.label();
+        let (g, sealed) = self
+            .vault
+            .seal(&self.ctx(&label, &k.id), secret.as_bytes())?;
+        let now = clock::now();
+        k.sealed_key = sealed;
+        k.key_gen = g;
+        k.key_hint = hint(&secret);
+        k.key_version += 1;
+        k.state = KeyState::Active;
+        k.last_error.clear();
+        k.tested_at = now;
+        k.updated = now;
+        let expect = k.rev;
+        if !self.store.replace(&k).await? {
+            return Err(AiError::Conflict);
+        }
+        k.rev = expect + 1;
+        Ok(ReplaceOutcome {
+            replaced: true,
+            latency_ms,
+            provider_status: "ok",
+            message: "the provider accepted the key".into(),
+            key: k,
         })
     }
 

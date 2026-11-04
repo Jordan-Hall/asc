@@ -19,6 +19,9 @@ service AiProviders {
   rpc TestKey(TestAiKeyRequest) returns (TestAiKeyResponse);         // owner admin; one tiny request to the provider; rate limited
   rpc Usage(AiUsageRequest) returns (AiUsageResponse);               // owner admin
   rpc ListModels(ListAiModelsRequest) returns (ListAiModelsResponse);   // owner admin; the models a tested key can use
+  rpc ReplaceKey(ReplaceAiKeyRequest) returns (ReplaceAiKeyResponse);   // owner admin; mutating, x-asc-op-id; the new key is tried first and replaces the old only when the provider accepts it; rate limited with TestKey
+  rpc ListFeatures(ListAiFeaturesRequest) returns (ListAiFeaturesResponse);   // owner admin; every feature that uses AI, with the setting that applies to the owner
+  rpc SetFeature(SetAiFeatureRequest) returns (SetAiFeatureResponse);   // owner admin; mutating, x-asc-op-id
 }
 
 enum AiProvider {
@@ -55,6 +58,7 @@ message AiKey {
   int64 tested_at = 14;
   string last_error = 15;              // sanitised: provider error code and a short message, no body
   uint32 key_version = 16;
+  string created_by = 17;              // the person who added the key; empty for keys added before it was kept
 }
 
 // `api_key` is write-only, 8 to 512 bytes of printable ASCII. At most 32 keys per owner.
@@ -152,4 +156,53 @@ message AiUsageRow {
 message AiUsageResponse {
   repeated AiUsageRow rows = 1;
   AiUsageRow total = 2;
+}
+
+message ReplaceAiKeyRequest {
+  string id = 1;
+  string api_key = 2;                  // 8 to 512 printable ASCII characters
+}
+message ReplaceAiKeyResponse {
+  bool replaced = 1;                   // false: the provider refused the new key and the old one is kept
+  uint32 latency_ms = 2;
+  string provider_status = 3;          // as TestAiKeyResponse
+  string message = 4;                  // sanitised
+  AiKey key = 5;                       // the key as stored afterwards
+}
+
+// A feature that calls a model with a key of its owner.
+enum AiFeature {
+  AI_FEATURE_UNSPECIFIED = 0;
+  AI_FEATURE_AGENT_RUNS = 1;           // the model turns of agent runs
+}
+
+// The setting of one feature for an owner. The most specific owner of the chain (repository, its
+// organisation or user, the instance) with a setting decides.
+message AiFeatureSetting {
+  AiFeature feature = 1;
+  OwnerRef set_by = 2;                 // the owner whose setting applies; unset when none is set
+  string key_id = 3;                   // the key chosen; empty: the first usable key of the chain
+  uint64 monthly_cap_micro_usd = 4;    // 0 = no cap
+  uint64 month_spent_micro_usd = 5;    // this month, under the setting that applies
+  bool paused = 6;                     // the month's spending reached the cap
+  int64 resumes_at = 7;                // when paused: the start of the next month (UTC)
+  AiKey key = 8;                       // the key the feature uses now; unset when there is none
+  int64 updated = 9;
+  string updated_by = 10;
+}
+message ListAiFeaturesRequest {
+  OwnerRef owner = 1;
+}
+message ListAiFeaturesResponse {
+  repeated AiFeatureSetting features = 1;
+}
+message SetAiFeatureRequest {
+  OwnerRef owner = 1;
+  AiFeature feature = 2;
+  string key_id = 3;                   // a key the owner can use, or empty for the first usable key
+  uint64 monthly_cap_micro_usd = 4;    // 0 = no cap
+  bool clear = 5;                      // remove the owner's setting, so a less specific owner's applies
+}
+message SetAiFeatureResponse {
+  AiFeatureSetting feature = 1;
 }
