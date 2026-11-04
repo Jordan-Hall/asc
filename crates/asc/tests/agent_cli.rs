@@ -40,6 +40,9 @@ struct Seen {
     update_key: Vec<wire::UpdateAiKeyRequest>,
     usage: Vec<wire::AiUsageRequest>,
     deleted_keys: Vec<String>,
+    replace_key: Vec<wire::ReplaceAiKeyRequest>,
+    list_features: Vec<wire::ListAiFeaturesRequest>,
+    set_feature: Vec<wire::SetAiFeatureRequest>,
     validate: Vec<wire::ValidateWorkflowRequest>,
     enabled: Vec<wire::SetWorkflowEnabledRequest>,
     trigger: Vec<wire::TriggerWorkflowRequest>,
@@ -552,23 +555,82 @@ impl AiProviders for Fake {
 
     async fn replace_key(
         &self,
-        _: Request<wire::ReplaceAiKeyRequest>,
+        r: Request<wire::ReplaceAiKeyRequest>,
     ) -> Result<Response<wire::ReplaceAiKeyResponse>, Status> {
-        Err(Status::unimplemented("not used by these tests"))
+        self.note(&r);
+        let m = r.into_inner();
+        let refused = m.api_key.ends_with("bad");
+        self.seen.lock().unwrap().replace_key.push(m);
+        Ok(Response::new(wire::ReplaceAiKeyResponse {
+            replaced: !refused,
+            latency_ms: 80,
+            provider_status: if refused { "unauthorized" } else { "ok" }.into(),
+            message: if refused {
+                "the provider refused the new key\u{1b}[0m".into()
+            } else {
+                String::new()
+            },
+            key: Some(key_of()),
+        }))
     }
 
     async fn list_features(
         &self,
-        _: Request<wire::ListAiFeaturesRequest>,
+        r: Request<wire::ListAiFeaturesRequest>,
     ) -> Result<Response<wire::ListAiFeaturesResponse>, Status> {
-        Err(Status::unimplemented("not used by these tests"))
+        self.note(&r);
+        self.seen.lock().unwrap().list_features.push(r.into_inner());
+        if self.empty {
+            return Ok(Response::new(wire::ListAiFeaturesResponse::default()));
+        }
+        Ok(Response::new(wire::ListAiFeaturesResponse {
+            features: vec![
+                feature_of(wire::AiFeature::AgentRuns, false),
+                feature_of(wire::AiFeature::ReviewSummaries, true),
+            ],
+        }))
     }
 
     async fn set_feature(
         &self,
-        _: Request<wire::SetAiFeatureRequest>,
+        r: Request<wire::SetAiFeatureRequest>,
     ) -> Result<Response<wire::SetAiFeatureResponse>, Status> {
-        Err(Status::unimplemented("not used by these tests"))
+        self.note(&r);
+        let m = r.into_inner();
+        let f = wire::AiFeature::try_from(m.feature).unwrap_or(wire::AiFeature::Unspecified);
+        let mut setting = feature_of(f, false);
+        if m.clear {
+            setting.set_by = None;
+            setting.key_id = String::new();
+            setting.monthly_cap_micro_usd = 0;
+        } else {
+            setting.key_id = m.key_id.clone();
+            setting.monthly_cap_micro_usd = m.monthly_cap_micro_usd;
+        }
+        self.seen.lock().unwrap().set_feature.push(m);
+        Ok(Response::new(wire::SetAiFeatureResponse {
+            feature: Some(setting),
+        }))
+    }
+}
+
+fn feature_of(feature: wire::AiFeature, paused: bool) -> wire::AiFeatureSetting {
+    let acme = || wire::OwnerRef {
+        kind: wire::OwnerKind::Org as i32,
+        name: "acme".into(),
+    };
+    wire::AiFeatureSetting {
+        feature: feature as i32,
+        set_by: Some(acme()),
+        key_id: "ak_abcdefghij0123456789".into(),
+        monthly_cap_micro_usd: 20_000_000,
+        month_spent_micro_usd: if paused { 20_000_000 } else { 2_500_000 },
+        paused,
+        resumes_at: if paused { 1_793_491_200 } else { 0 },
+        key: Some(key_of()),
+        updated: 1_790_812_800,
+        updated_by: "alice\u{7}".into(),
+        paused_by: paused.then(acme),
     }
 }
 
@@ -1400,6 +1462,158 @@ fn keys_are_listed_tested_updated_modelled_counted_and_removed() {
     assert_eq!(seen.usage[0].since, 1_790_812_800);
     assert_eq!(seen.usage[0].key_id, "ak_abc");
     assert_eq!(seen.deleted_keys, ["ak_abc"]);
+}
+
+#[test]
+fn a_key_is_replaced_from_a_file_and_a_refused_value_keeps_the_old_one() {
+    let (server, sb, cwd) = setup(Fake::default());
+    let file = cwd.join("new-key");
+    std::fs::write(&file, format!("{API_KEY}\n")).unwrap();
+    let file = file.to_str().unwrap().to_owned();
+    let out = run(
+        &sb,
+        &cwd,
+        &server,
+        &["agent", "key", "replace", "ak_abc", "--key-file", &file],
+    );
+    let so = text(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert!(so.starts_with("replaced\tok\t80ms"), "{so}");
+    clean_of_secrets(&out);
+    let out = run_with(
+        &sb,
+        &cwd,
+        &server,
+        &["agent", "key", "replace", "ak_abc", "--key-env", "NEW_KEY"],
+        &[("NEW_KEY", "sk-test-bad")],
+    );
+    let so = text(&out.stdout);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "a refused value fails the command"
+    );
+    assert!(
+        so.contains("kept\tunauthorized\t80ms\tthe provider refused the new key"),
+        "{so}"
+    );
+    no_controls(&so);
+    let seen = server.fake.seen.lock().unwrap();
+    assert_eq!(seen.replace_key.len(), 2);
+    assert_eq!(seen.replace_key[0].api_key, API_KEY);
+    assert_eq!(seen.replace_key[0].id, "ak_abc");
+    let ops: Vec<_> = seen.op_ids.iter().flatten().collect();
+    assert_eq!(ops.len(), 2, "each replace carries an op id");
+    assert_ne!(ops[0], ops[1]);
+}
+
+#[test]
+fn features_are_listed_set_and_cleared_for_an_owner() {
+    let (server, sb, cwd) = setup(Fake::default());
+    let out = run(
+        &sb,
+        &cwd,
+        &server,
+        &["agent", "feature", "list", "--owner", "org:acme"],
+    );
+    let so = text(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert!(
+        so.contains("agent-runs\torg:acme\tak_abcdefghij0123456789\t$2.5 of $20\ton"),
+        "{so}"
+    );
+    assert!(
+        so.contains(
+            "review-summaries\torg:acme\tak_abcdefghij0123456789\t$20 of $20\tpaused until "
+        ),
+        "{so}"
+    );
+    let out = run(
+        &sb,
+        &cwd,
+        &server,
+        &[
+            "agent",
+            "feature",
+            "set",
+            "review-summaries",
+            "--key",
+            "ak_abc",
+            "--monthly-cap",
+            "12.5",
+        ],
+    );
+    let so = text(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert!(
+        so.contains("feature    review-summaries") && so.contains("month      $2.5 of $12.5"),
+        "{so}"
+    );
+    no_controls(&so);
+    let out = run(
+        &sb,
+        &cwd,
+        &server,
+        &[
+            "agent",
+            "feature",
+            "clear",
+            "agent-runs",
+            "--owner",
+            "instance",
+            "--json",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert!(
+        text(&out.stdout).contains("\"feature\":\"agent_runs\""),
+        "{}",
+        text(&out.stdout)
+    );
+    let out = run(
+        &sb,
+        &cwd,
+        &server,
+        &["agent", "feature", "set", "meaning-search"],
+    );
+    assert!(!out.status.success(), "an unknown feature is a usage error");
+    let seen = server.fake.seen.lock().unwrap();
+    assert_eq!(seen.list_features[0].owner.as_ref().unwrap().name, "acme");
+    let set = &seen.set_feature[0];
+    assert_eq!(
+        (
+            set.feature,
+            set.key_id.as_str(),
+            set.monthly_cap_micro_usd,
+            set.clear,
+            set.owner.as_ref().unwrap().kind
+        ),
+        (
+            wire::AiFeature::ReviewSummaries as i32,
+            "ak_abc",
+            12_500_000,
+            false,
+            wire::OwnerKind::Repo as i32
+        )
+    );
+    let clear = &seen.set_feature[1];
+    assert!(clear.clear);
+    assert_eq!(
+        clear.owner.as_ref().unwrap().kind,
+        wire::OwnerKind::Instance as i32
+    );
+    assert_eq!(seen.set_feature.len(), 2);
+}
+
+#[test]
+fn no_feature_listed_fails_the_list() {
+    let (server, sb, cwd) = setup(Fake {
+        empty: true,
+        ..Fake::default()
+    });
+    let out = run(&sb, &cwd, &server, &["agent", "feature", "list"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(text(&out.stdout).is_empty());
 }
 
 // ------------------------------------------------------------------------------ tokens
