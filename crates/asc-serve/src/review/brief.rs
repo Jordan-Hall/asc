@@ -19,6 +19,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use asc_core::change::ChangeId;
 use asc_core::id::ChangesetId;
+use asc_core::object::Kind;
+use asc_core::policy::PathGlob;
 use asc_rpc::server::{CallCtx, wire};
 use bytes::Bytes;
 use sqlx::Row;
@@ -27,6 +29,7 @@ use tonic::Status;
 use super::{Reviews, change_of, handle_of, now, sql, store};
 use crate::agents::repo::RepoView;
 use crate::changes::versions;
+use crate::pathrules::scope::Scope;
 use crate::registry::RepoEntry;
 
 /// Longest text of the brief, and most pointers.
@@ -89,6 +92,59 @@ fn path_risk(path: &str) -> Option<&'static str> {
         return Some("changes a dependency lock file");
     }
     None
+}
+
+/// Most sensitive top-level directories a provenance names as out of the run's reach.
+const MAX_UNTOUCHED: usize = 8;
+/// Most `run_command` calls of a run looked at for test runs.
+const MAX_COMMAND_CALLS: i64 = 2000;
+
+/// Test runners that are called by their own name.
+const TEST_RUNNERS: [&str; 8] = [
+    "pytest",
+    "jest",
+    "vitest",
+    "rspec",
+    "phpunit",
+    "ctest",
+    "tox",
+    "cargo-nextest",
+];
+/// Build tools whose `test` command runs the tests (`cargo test`, `npm run test`, `make test`).
+const TEST_TOOLS: [&str; 15] = [
+    "cargo", "go", "npm", "pnpm", "yarn", "bun", "deno", "make", "mvn", "gradle", "gradlew",
+    "dotnet", "mix", "swift", "zig",
+];
+
+/// Whether the input of a `run_command` call (`{"argv": [...]}`) runs tests: a test runner, `python -m pytest`, or a
+/// build tool whose first command (after options and `run`) is `test`.
+fn runs_tests(input: &str) -> bool {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(input) else {
+        return false;
+    };
+    let argv: Vec<&str> = v
+        .get("argv")
+        .and_then(serde_json::Value::as_array)
+        .map(|a| a.iter().filter_map(serde_json::Value::as_str).collect())
+        .unwrap_or_default();
+    let Some((prog, rest)) = argv.split_first() else {
+        return false;
+    };
+    let prog = prog.rsplit('/').next().unwrap_or(prog);
+    let prog = prog.strip_suffix(".exe").unwrap_or(prog);
+    if TEST_RUNNERS.contains(&prog) {
+        return true;
+    }
+    if matches!(prog, "python" | "python3") {
+        return rest
+            .windows(2)
+            .any(|w| w[0] == "-m" && matches!(w[1], "pytest" | "unittest"));
+    }
+    TEST_TOOLS.contains(&prog)
+        && rest
+            .iter()
+            .find(|a| !a.starts_with('-') && !a.starts_with('+') && **a != "run")
+            .is_some_and(|a| *a == "test")
 }
 
 /// Level and reasons for a change of `files`.
@@ -408,10 +464,11 @@ impl Reviews {
         &self,
         entry: &RepoEntry,
         ctx: &CallCtx,
+        scope: Option<&Scope>,
         change: ChangeId,
+        head: Option<ChangesetId>,
         versions: u32,
     ) -> Result<wire::ChangeProvenance, Status> {
-        let _ = entry;
         let row = sqlx::query(
             "SELECT id, agent, title, task, created_by, starter, state, started, finished, paths_json FROM agent_runs \
              WHERE repo = $1 AND changes_json LIKE $2 ORDER BY id DESC LIMIT 1",
@@ -445,11 +502,25 @@ impl Reviews {
             }
         };
         let (calls, reads) = (count(None).await, count(Some("read_file")).await);
+        let commands: Vec<String> = sqlx::query_scalar(
+            "SELECT text FROM agent_run_events WHERE run_id = $1 AND kind = 4 AND tool = 'run_command' \
+             ORDER BY seq LIMIT $2",
+        )
+        .bind(id)
+        .bind(MAX_COMMAND_CALLS)
+        .fetch_all(self.registry.pool())
+        .await
+        .map_err(sql)?;
+        let test_runs = commands.iter().filter(|c| runs_tests(c)).count();
         let starter: String = r.try_get("starter").map_err(sql)?;
         let created_by: String = r.try_get("created_by").map_err(sql)?;
         let paths: Vec<String> =
             serde_json::from_str(&r.try_get::<String, _>("paths_json").map_err(sql)?)
                 .unwrap_or_default();
+        let untouched = match head {
+            Some(cs) => self.untouched(entry, cs, &paths, scope).await?,
+            None => Vec::new(),
+        };
         Ok(wire::ChangeProvenance {
             run_id: u64::try_from(id).unwrap_or(0),
             agent: r.try_get("agent").map_err(sql)?,
@@ -469,7 +540,59 @@ impl Reviews {
             paths,
             started: r.try_get("started").map_err(sql)?,
             finished: r.try_get("finished").map_err(sql)?,
+            test_runs: u32_of(test_runs),
+            untouched,
         })
+    }
+
+    /// The sensitive top-level directories at `cs` (build, deploy, infrastructure, authentication, migrations) that a
+    /// run limited to the write scope `paths` could not write, as `name/`, leaving out those the caller may not read.
+    /// None when the run could write anywhere, since then nothing kept it out.
+    async fn untouched(
+        &self,
+        entry: &RepoEntry,
+        cs: ChangesetId,
+        paths: &[String],
+        scope: Option<&Scope>,
+    ) -> Result<Vec<String>, Status> {
+        let Ok(globs) = paths
+            .iter()
+            .map(|p| PathGlob::parse(p))
+            .collect::<Result<Vec<_>, _>>()
+        else {
+            return Ok(Vec::new());
+        };
+        if globs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let engine = entry.backend.engine();
+        let root = engine
+            .get_changeset(cs)
+            .await
+            .map_err(|e| engine_status("changeset", &e))?
+            .root;
+        let tree = engine
+            .get_tree(root)
+            .await
+            .map_err(|e| engine_status("tree", &e))?;
+        let mut out = Vec::new();
+        for e in tree.entries() {
+            let Ok(name) = std::str::from_utf8(e.name.as_bytes()) else {
+                continue;
+            };
+            if e.kind != Kind::Dir
+                || path_risk(&format!("{name}/")).is_none()
+                || globs.iter().any(|g| g.may_match_inside(name.as_bytes()))
+                || scope.is_some_and(|s| !s.can_read(name.as_bytes()))
+            {
+                continue;
+            }
+            out.push(format!("{name}/"));
+            if out.len() == MAX_UNTOUCHED {
+                break;
+            }
+        }
+        Ok(out)
     }
 
     async fn brief_row(
@@ -514,6 +637,7 @@ impl Reviews {
     pub async fn get_brief(
         &self,
         ctx: &CallCtx,
+        scope: Option<&Scope>,
         req: wire::GetBriefRequest,
     ) -> Result<wire::GetBriefResponse, Status> {
         let change = change_of(&req.change)?;
@@ -563,7 +687,7 @@ impl Reviews {
         };
         Ok(wire::GetBriefResponse {
             brief: Some(self.brief_row(&entry, change).await?),
-            latest_version: latest.map_or(0, |v| v.v),
+            latest_version: latest.as_ref().map_or(0, |v| v.v),
             files: u32_of(files.len()),
             added,
             removed,
@@ -571,8 +695,15 @@ impl Reviews {
             file_stats: files,
             stats_truncated: truncated,
             provenance: Some(
-                self.provenance(&entry, ctx, change, u32_of(vs.len()))
-                    .await?,
+                self.provenance(
+                    &entry,
+                    ctx,
+                    scope,
+                    change,
+                    latest.as_ref().map(|v| v.cs),
+                    u32_of(vs.len()),
+                )
+                .await?,
             ),
             approvals,
             gate: Some(gate),

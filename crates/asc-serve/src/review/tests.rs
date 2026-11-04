@@ -34,6 +34,7 @@ pub(crate) struct Fx {
     pub inbox: InboxService,
     pub ci: CiService,
     pub css: Vec<ChangesetId>,
+    pub hub: Arc<Reviews>,
 }
 
 pub(crate) fn cid(n: u8) -> ChangeId {
@@ -117,6 +118,7 @@ pub(crate) async fn fx() -> Fx {
     Fx {
         reg,
         e,
+        hub: hub.clone(),
         review: ReviewService::new(hub.clone(), auth.clone(), ServerInfo::default()),
         inbox: InboxService::new(hub.clone(), auth.clone(), ServerInfo::default()),
         ci: CiService::new(hub, auth, ServerInfo::default()),

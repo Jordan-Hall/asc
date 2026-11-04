@@ -198,6 +198,8 @@ message ChangeProvenance {
   repeated string paths = 10;            // the write scope of the run
   int64 started = 11;
   int64 finished = 12;
+  uint32 test_runs = 13;                 // run_command calls of the run that ran tests
+  repeated string untouched = 14;        // sensitive top-level directories ("infra/") the write scope kept the run out of
 }
 enum ApprovalState {
   APPROVAL_STATE_UNSPECIFIED = 0;

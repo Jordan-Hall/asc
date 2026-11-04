@@ -2,9 +2,15 @@
 //! changes and reviewer suggestions. Each call is tried with the right caller, a caller without
 //! the right, an unknown change and another repository's claim.
 
+use std::sync::Arc;
+
 use asc_core::id::ChangesetId;
+use asc_core::pathacl::{Level, PathAcl, Rule, Subject, Viewer};
+use asc_core::policy::{Kind, Who};
+use asc_rpc::IdMode;
+use asc_rpc::auth::Principal;
 use asc_rpc::forwarded::Role;
-use asc_rpc::server::wire;
+use asc_rpc::server::{CallCtx, RepoName, wire};
 use asc_rpc::services::review_server::Review;
 use bytes::Bytes;
 use tonic::Code;
@@ -13,6 +19,7 @@ use super::brief::classify;
 use super::tests::{ALICE, BOB, CAROL, DAVE, Fx, cbytes, fx, repo_ref, req};
 use super::tests_acting::claimkit::{self, host};
 use crate::ingest::testutil::commit;
+use crate::pathrules::scope::Scope;
 
 fn fstat(path: &str, added: u32, removed: u32) -> wire::ChangeFileStat {
     wire::ChangeFileStat {
@@ -416,10 +423,112 @@ async fn the_agent_run_that_made_a_change_is_its_provenance() {
     assert_eq!((p.tool_calls, p.files_read, p.versions), (3, 2, 2));
     assert_eq!(p.run_state, "succeeded");
     assert_eq!(p.paths, ["src/**"]);
+    assert_eq!(p.test_runs, 0);
+    assert!(
+        p.untouched.is_empty(),
+        "the head holds no sensitive directory"
+    );
     assert_eq!(
         brief(&f, DAVE, 2).await.unwrap().provenance.unwrap().run_id,
         0,
         "another change has none"
+    );
+
+    for (seq, input) in [
+        (4, r#"{"argv":["cargo","test","-p","x"]}"#),
+        (5, r#"{"argv":["npm","run","test"]}"#),
+        (6, r#"{"argv":["/usr/bin/python3","-m","pytest"]}"#),
+        (7, r#"{"argv":["ls","tests"]}"#),
+        (8, r#"{"argv":["cargo","build"]}"#),
+        (9, "not json"),
+    ] {
+        sqlx::query(
+            "INSERT INTO agent_run_events (run_id, seq, kind, time_ms, state, text, tool, change) VALUES (5, $1, 4, 1, 2, $2, 'run_command', $3)",
+        )
+        .bind(seq)
+        .bind(input)
+        .bind(vec![0u8; 0])
+        .execute(f.reg.pool())
+        .await
+        .unwrap();
+    }
+    let tree = commit(
+        &f.e,
+        &[],
+        &[
+            ("src/a.rs", &[1]),
+            ("infra/main.tf", &[1]),
+            ("deploy/app.yml", &[1]),
+            ("auth/keys.rs", &[1]),
+            (".github/ci.yml", &[1]),
+            ("docs/x.md", &[1]),
+        ],
+    )
+    .await;
+    add_version(&f, 1, 3, tree, "42:alice").await;
+    let p = brief(&f, DAVE, 1).await.unwrap().provenance.unwrap();
+    assert_eq!(
+        p.test_runs, 3,
+        "cargo test, npm run test and python -m pytest"
+    );
+    assert_eq!(
+        p.untouched,
+        [".github/", "auth/", "deploy/", "infra/"],
+        "src/ is in its scope and docs/ is not sensitive"
+    );
+
+    let acl = PathAcl::new(&[Rule {
+        dir: "infra".into(),
+        subject: Subject::parse("*").unwrap(),
+        level: Level::None,
+    }])
+    .unwrap();
+    let scope = Scope::new(
+        Arc::new(acl),
+        Viewer {
+            who: Who::new(Kind::User, "dave"),
+            teams: Default::default(),
+            repo_level: Level::Read,
+        },
+    );
+    let ctx = CallCtx {
+        repo: RepoName::parse("o/r").unwrap(),
+        id_mode: IdMode::Asc,
+        principal: Principal {
+            id: "46:dave".into(),
+        },
+        op_id: None,
+        client: None,
+        admin: Default::default(),
+    };
+    let hidden = f
+        .hub
+        .get_brief(
+            &ctx,
+            Some(&scope),
+            wire::GetBriefRequest {
+                repo: repo_ref(),
+                change: cbytes(1),
+            },
+        )
+        .await
+        .unwrap()
+        .provenance
+        .unwrap();
+    assert_eq!(
+        hidden.untouched,
+        [".github/", "auth/", "deploy/"],
+        "a directory the caller may not read is not named"
+    );
+
+    sqlx::query("UPDATE agent_runs SET paths_json = '[]' WHERE id = 5")
+        .execute(f.reg.pool())
+        .await
+        .unwrap();
+    let p = brief(&f, DAVE, 1).await.unwrap().provenance.unwrap();
+    assert!(
+        p.untouched.is_empty(),
+        "a run that could write anywhere was kept out of nothing"
     );
 }
 

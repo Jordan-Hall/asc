@@ -658,7 +658,11 @@ impl Review for ReviewService {
             .env
             .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
             .await?;
-        self.hub.get_brief(&ctx, msg).await.map(Response::new)
+        let scope = Scope::read(&self.pathrules, &ctx).await?;
+        self.hub
+            .get_brief(&ctx, scope.as_deref(), msg)
+            .await
+            .map(Response::new)
     }
 
     async fn set_brief(
