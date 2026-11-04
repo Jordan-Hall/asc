@@ -40,6 +40,7 @@ use super::{AgentsHub, Live, MAX_ACTIVE_PER_REPO};
 use crate::ai::model::{Message, ModelError, ModelRequest, ToolResult};
 use crate::ai::owner::Owner;
 use crate::ai::{AiError, AiHub, CallInfo, clock};
+use crate::hook_events::HookEvent;
 
 /// Longest run title.
 pub const MAX_TITLE: usize = 200;
@@ -443,6 +444,7 @@ impl AgentsHub {
                 .unwrap_or(row);
             self.event(&fresh, EventKind::State, "cancelled", "", &[], "")
                 .await;
+            self.queue_finished(id, RunState::Cancelled).await;
             return Ok(fresh);
         }
         self.core
@@ -614,26 +616,30 @@ impl AgentsHub {
     /// run with no change has nothing to review. A failure to queue is logged and never fails the run.
     async fn queue_finished(&self, id: u64, state: RunState) {
         let run = match self.core.runs.get(id).await {
-            Ok(Some(run)) if !run.changes.is_empty() => run,
-            Ok(_) => return,
+            Ok(Some(run)) => run,
+            Ok(None) => return,
             Err(e) => {
                 tracing::warn!(class = %crate::ai::store::class(&e), "run finished: run not read");
                 return;
             }
         };
-        let Ok(name) = RepoName::parse(&run.repo) else {
+        let Some(repo_id) = self.repo_key(&run.repo, "run finished").await else {
             return;
         };
-        let entry = match self.registry.open(&name).await {
-            Ok(entry) => entry,
-            Err(e) => {
-                tracing::warn!(error = %e, "run finished: repository not opened");
-                return;
-            }
+        let event = HookEvent::RunFinished {
+            run: run.id,
+            state: state.name(),
+            changes: u64::try_from(run.changes.len()).unwrap_or(u64::MAX),
         };
+        if let Err(e) = crate::hook_events::enqueue(&self.core.pool, repo_id, &event).await {
+            tracing::warn!(class = %crate::ai::store::class(&e), "run finished: hook event not queued");
+        }
+        if run.changes.is_empty() {
+            return;
+        }
         if let Err(e) = super::runs::enqueue_finished(
             &self.core.pool,
-            entry.key.0,
+            repo_id,
             run.id,
             state,
             run.changes.len(),
@@ -641,6 +647,29 @@ impl AgentsHub {
         .await
         {
             tracing::warn!(class = %crate::ai::store::class(&e), "run finished: not queued");
+        }
+    }
+
+    /// Tells the forge's webhooks that the run started.
+    async fn queue_started(&self, run: &RunRow) {
+        let Some(repo_id) = self.repo_key(&run.repo, "run started").await else {
+            return;
+        };
+        let event = HookEvent::RunStarted { run: run.id };
+        if let Err(e) = crate::hook_events::enqueue(&self.core.pool, repo_id, &event).await {
+            tracing::warn!(class = %crate::ai::store::class(&e), "run started: hook event not queued");
+        }
+    }
+
+    /// The registry key (`repos` row) of the repository `repo`, `None` when it cannot be opened.
+    async fn repo_key(&self, repo: &str, what: &'static str) -> Option<i64> {
+        let name = RepoName::parse(repo).ok()?;
+        match self.registry.open(&name).await {
+            Ok(entry) => Some(entry.key.0),
+            Err(e) => {
+                tracing::warn!(error = %e, "{what}: repository not opened");
+                None
+            }
         }
     }
 
@@ -684,6 +713,7 @@ impl AgentsHub {
                     .await;
                     self.event(&fresh, EventKind::State, "failed", "", &[], "")
                         .await;
+                    self.queue_finished(run.id, RunState::Failed).await;
                     self.audit(
                         "agent.run.finished",
                         "system:agents",
@@ -753,6 +783,7 @@ impl AgentsHub {
         };
         self.event(&running, EventKind::State, "running", "", &[], "")
             .await;
+        self.queue_started(&running).await;
 
         let watchdog = self.clone().watch(run.clone(), live.clone());
         let ended = self.drive(&run, &live).await;

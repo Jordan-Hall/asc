@@ -780,7 +780,7 @@ async fn denied_paths_win_over_the_default_scope_and_a_narrowed_run_cannot_widen
 
     // A run that made no change queues nothing for the forge: there is nothing to open for review.
     let queued: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM outbox WHERE repo_id = $1 AND CAST(effects AS TEXT) LIKE '%agent_run_finished%'",
+        "SELECT COUNT(*) FROM outbox WHERE repo_id = $1 AND CAST(effects AS TEXT) LIKE '%[\"agent_run_finished\"]%'",
     )
     .bind(w.entry.key.0)
         .fetch_one(&w.pool)
@@ -1933,18 +1933,35 @@ async fn a_run_that_ends_with_changes_queues_one_finished_effect_for_the_forge()
         .fetch_all(&w.pool)
         .await
         .unwrap();
-    let docs: Vec<serde_json::Value> = rows
+    let all: Vec<serde_json::Value> = rows
         .iter()
         .map(|r| {
             let raw: Vec<u8> = sqlx::Row::try_get(r, "effects").unwrap();
             serde_json::from_slice(&raw).unwrap()
         })
-        .filter(|d: &serde_json::Value| d["effects"] == json!(["agent_run_finished"]))
+        .collect();
+    let docs: Vec<&serde_json::Value> = all
+        .iter()
+        .filter(|d| d["effects"] == json!(["agent_run_finished"]))
         .collect();
     assert_eq!(docs.len(), 1, "{docs:?}");
     assert_eq!(docs[0]["run"], json!(run.id));
     assert_eq!(docs[0]["state"], json!("succeeded"));
     assert_eq!(docs[0]["changes"], json!(1));
+
+    // The forge's webhooks are told the run started and finished, before the changes are opened.
+    let hooks: Vec<&serde_json::Value> = all
+        .iter()
+        .filter(|d| d["effects"] == json!(["hook_event"]))
+        .collect();
+    assert_eq!(
+        hooks,
+        [
+            &json!({"effects": ["hook_event"], "event": "agent_run.started", "run": run.id}),
+            &json!({"effects": ["hook_event"], "event": "agent_run.finished", "run": run.id,
+                "state": "succeeded", "changes": 1}),
+        ]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
