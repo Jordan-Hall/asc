@@ -104,6 +104,8 @@ message VerifyAuditChainResponse {
   uint64 first_bad_seq = 3;        // 0 when ok
   string reason = 4;
   bytes head_hash = 5 [(asc.v1.json) = JSON_KIND_HEX];
+  uint64 first_seq = 6; // the first event kept (after retention), so a caller can verify in slices
+  uint64 head_seq = 7;  // the newest event; 0 when the scope has none
 }
 
 message AuditActionInfo {
