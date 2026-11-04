@@ -177,18 +177,22 @@ enum AiFeature {
 }
 
 // The setting of one feature for an owner. The most specific owner of the chain (repository, its
-// organisation or user, the instance) with a setting decides.
+// organisation or user, the instance) with a setting chooses the key; the cap of every setting of
+// the chain holds, so a repository cannot lift the cap of its owner.
 message AiFeatureSetting {
   AiFeature feature = 1;
   OwnerRef set_by = 2;                 // the owner whose setting applies; unset when none is set
   string key_id = 3;                   // the key chosen; empty: the first usable key of the chain
   uint64 monthly_cap_micro_usd = 4;    // 0 = no cap
   uint64 month_spent_micro_usd = 5;    // this month, under the setting that applies
-  bool paused = 6;                     // the month's spending reached the cap
+  bool paused = 6;                     // the month's spending reached a cap of the chain
   int64 resumes_at = 7;                // when paused: the start of the next month (UTC)
-  AiKey key = 8;                       // the key the feature uses now; unset when there is none
+  // The key the feature uses now; unset when there is none. A key of another owner (up the chain, or shared) is only
+  // a reference: id, owner, label, provider and state.
+  AiKey key = 8;
   int64 updated = 9;
   string updated_by = 10;
+  OwnerRef paused_by = 11;             // when paused: the owner whose cap was reached
 }
 message ListAiFeaturesRequest {
   OwnerRef owner = 1;

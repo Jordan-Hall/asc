@@ -247,7 +247,7 @@ async fn a_feature_cap_pauses_the_feature_until_it_is_raised() {
     );
     let v = &f.hub.features(&repo()).await.unwrap()[0];
     assert!(v.paused());
-    let w = super::feature::wire_feature(&f.hub, v).await;
+    let w = super::feature::wire_feature(&f.hub, v, &repo()).await;
     assert!(w.paused);
     let now = super::clock::now();
     assert_eq!(
@@ -273,6 +273,130 @@ async fn a_feature_cap_pauses_the_feature_until_it_is_raised() {
         .complete(&k, &APP, &request("model-x"), false, &c)
         .await
         .unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_repository_setting_cannot_lift_the_cap_of_its_owner() {
+    let f = fx().await;
+    let k = active_key(&f, &org(), "work").await;
+    f.hub
+        .set_feature(&org(), Feature::AgentRuns, "", 1_000_000, "pat:owner")
+        .await
+        .unwrap();
+    // The repository's own setting has no cap and chooses the organisation's key.
+    f.hub
+        .set_feature(&repo(), Feature::AgentRuns, &k.id, 0, "pat:repo-admin")
+        .await
+        .unwrap();
+    f.fake.set_default(Reply::Text {
+        text: "x".into(),
+        input: 1000,
+        output: 600,
+    }); // 2200 micro-USD
+    let c = CancellationToken::new();
+    f.hub
+        .complete(&k, &APP, &request("model-x"), false, &c)
+        .await
+        .unwrap();
+    // Both settings counted the call.
+    assert_eq!(f.hub.features(&org()).await.unwrap()[0].spent, 2200);
+    assert_eq!(f.hub.features(&repo()).await.unwrap()[0].spent, 2200);
+
+    // The organisation lowers its cap to what was spent: the repository is paused by it.
+    f.hub
+        .set_feature(&org(), Feature::AgentRuns, "", 2200, "pat:owner")
+        .await
+        .unwrap();
+    assert!(
+        f.hub
+            .feature_paused("acme/app", Feature::AgentRuns)
+            .await
+            .unwrap()
+    );
+    let v = &f.hub.features(&repo()).await.unwrap()[0];
+    assert_eq!(v.paused_by, Some(org()));
+    assert_eq!(
+        v.applying.as_ref().unwrap().owner,
+        repo(),
+        "the repository's setting still chooses the key"
+    );
+    let w = super::feature::wire_feature(&f.hub, v, &repo()).await;
+    assert!(w.paused);
+    assert_eq!(w.paused_by, Some(org().to_wire()));
+    assert_eq!(w.set_by, Some(repo().to_wire()));
+    let err = f
+        .hub
+        .complete(&k, &APP, &request("model-x"), false, &c)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AiError::CapReached("feature")), "{err:?}");
+    assert_eq!(f.fake.completions().len(), 1);
+
+    // A cap of the repository holds under a larger one of its organisation.
+    f.hub
+        .set_feature(&org(), Feature::AgentRuns, "", 1_000_000, "pat:owner")
+        .await
+        .unwrap();
+    f.hub
+        .set_feature(&repo(), Feature::AgentRuns, &k.id, 2200, "pat:repo-admin")
+        .await
+        .unwrap();
+    let v = &f.hub.features(&repo()).await.unwrap()[0];
+    assert_eq!(v.paused_by, Some(repo()));
+    assert!(matches!(
+        f.hub
+            .complete(&k, &APP, &request("model-x"), false, &c)
+            .await,
+        Err(AiError::CapReached("feature"))
+    ));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_key_of_another_owner_is_only_a_reference() {
+    let f = fx().await;
+    let k = active_key(&f, &org(), "work").await;
+    f.hub
+        .set_feature(&repo(), Feature::AgentRuns, &k.id, 0, "pat:repo-admin")
+        .await
+        .unwrap();
+    f.hub
+        .store
+        .mark(
+            &k.id,
+            k.key_version,
+            KeyState::Active,
+            "slow: 503 from provider",
+            true,
+        )
+        .await
+        .unwrap();
+
+    // The repository may use the organisation's key, but sees only what names it.
+    let v = &f.hub.features(&repo()).await.unwrap()[0];
+    let w = super::feature::wire_feature(&f.hub, v, &repo()).await;
+    let key = w.key.unwrap();
+    assert_eq!(key.id, k.id);
+    assert_eq!(key.label, "work");
+    assert_eq!(key.owner, Some(org().to_wire()));
+    assert_eq!(key.provider, k.provider.to_wire());
+    assert!(key.has_key);
+    assert_ne!(key.state, wire::AiKeyState::Unspecified as i32);
+    assert!(key.base_url.is_empty());
+    assert!(key.default_model.is_empty());
+    assert!(key.key_hint.is_empty());
+    assert!(key.last_error.is_empty());
+    assert!(key.created_by.is_empty());
+    assert_eq!(key.monthly_cap_micro_usd, 0);
+    assert_eq!(key.month_spent_micro_usd, 0);
+    assert_eq!(key.created, 0);
+
+    // Its owner sees all of it.
+    let v = &f.hub.features(&org()).await.unwrap()[0];
+    let w = super::feature::wire_feature(&f.hub, v, &org()).await;
+    let key = w.key.unwrap();
+    assert_eq!(key.base_url, k.base_url);
+    assert!(!key.last_error.is_empty());
+    assert!(key.created > 0);
 }
 
 #[tokio::test(flavor = "current_thread")]

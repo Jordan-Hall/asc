@@ -1064,7 +1064,7 @@ async fn a_failed_call_releases_its_reservation_and_a_sweep_returns_stale_ones()
     let r = f
         .hub
         .store
-        .reserve(&k.id, 1_000_000, 0, None, 500, now - 3 * 3600)
+        .reserve(&k.id, 1_000_000, 0, &[], 500, now - 3 * 3600)
         .await
         .unwrap();
     std::mem::forget(r);

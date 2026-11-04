@@ -469,7 +469,7 @@ impl AiProviders for AiService {
         let views = self.hub.features(&owner).await.map_err(|e| e.status())?;
         let mut features = Vec::with_capacity(views.len());
         for v in &views {
-            features.push(wire_feature(&self.hub, v).await);
+            features.push(wire_feature(&self.hub, v, &owner).await);
         }
         Ok(Response::new(wire::ListAiFeaturesResponse { features }))
     }
@@ -533,7 +533,7 @@ impl AiProviders for AiService {
                     .find(|v| v.feature == feature)
                     .ok_or_else(|| Status::internal("internal error"))?;
                 Ok(wire::SetAiFeatureResponse {
-                    feature: Some(wire_feature(&hub, v).await),
+                    feature: Some(wire_feature(&hub, v, &owner).await),
                 })
             },
         )

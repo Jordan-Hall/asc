@@ -550,26 +550,24 @@ impl AiStore {
         Ok(u64_of(v.unwrap_or(0)))
     }
 
-    /// Reserves `amount` against the key's cap, the instance cap and the cap of the feature scope
-    /// named (0 means no cap). All or none.
+    /// Reserves `amount` against the key's cap, the instance cap and the cap of every feature
+    /// scope named (0 means no cap). All or none.
     pub async fn reserve(
         &self,
         key_id: &str,
         key_cap: u64,
         instance_cap: u64,
-        feature: Option<(&str, u64)>,
+        features: &[(&str, u64)],
         amount: u64,
         at: i64,
     ) -> Result<Reservation, ReserveError> {
         let month = clock::month(at);
         let mut tx = self.pool.begin().await?;
         let mut ids = Vec::new();
-        let (feature_scope, feature_cap) = feature.unwrap_or(("", 0));
-        for (scope, cap, which) in [
-            (key_id, key_cap, 0),
-            (INSTANCE_SCOPE, instance_cap, 1),
-            (feature_scope, feature_cap, 2),
-        ] {
+        let scopes = [(key_id, key_cap, 0), (INSTANCE_SCOPE, instance_cap, 1)]
+            .into_iter()
+            .chain(features.iter().map(|&(s, c)| (s, c, 2)));
+        for (scope, cap, which) in scopes {
             if cap == 0 {
                 continue;
             }

@@ -684,13 +684,22 @@ impl AiHub {
             Ok(Some(c)) if !c.stop_at_cap => 0,
             _ => key.monthly_cap,
         };
-        let setting = match who.feature {
-            Some(f) => self.setting_for_repo(who.repo, f).await?,
-            None => None,
+        // Every feature setting of the chain counts the call and holds its cap.
+        let settings = match who.feature {
+            Some(f) => self.settings_for_repo(who.repo, f).await?,
+            None => Vec::new(),
         };
-        let feature_scope = setting.as_ref().map(feature::Setting::scope);
-        let feature_cap = setting.as_ref().map_or(0, |s| s.monthly_cap);
-        let capped = key_cap > 0 || feature_cap > 0 || self.cfg.instance_monthly_cap_micro_usd > 0;
+        let feature_scopes: Vec<(String, u64)> = settings
+            .iter()
+            .map(|s| (s.scope(), s.monthly_cap))
+            .collect();
+        let feature_caps: Vec<(&str, u64)> = feature_scopes
+            .iter()
+            .map(|(s, c)| (s.as_str(), *c))
+            .collect();
+        let capped = key_cap > 0
+            || feature_caps.iter().any(|&(_, c)| c > 0)
+            || self.cfg.instance_monthly_cap_micro_usd > 0;
         let priced = self.priced(&req.model);
         if (capped || cost_limited) && !priced {
             return Err(AiError::NoPrice(req.model.clone()));
@@ -707,7 +716,7 @@ impl AiHub {
                     &key.id,
                     key_cap,
                     self.cfg.instance_monthly_cap_micro_usd,
-                    feature_scope.as_deref().map(|s| (s, feature_cap)),
+                    &feature_caps,
                     worst,
                     now,
                 )
@@ -736,16 +745,11 @@ impl AiHub {
             }
             Err(_) => (0, None),
         };
+        let always: Vec<&str> = std::iter::once(key.id.as_str())
+            .chain(feature_caps.iter().map(|&(s, _)| s))
+            .collect();
         if let Some(res) = reservation
-            && let Err(e) = self
-                .store
-                .settle(
-                    res,
-                    &[key.id.as_str(), feature_scope.as_deref().unwrap_or("")],
-                    actual,
-                    at,
-                )
-                .await
+            && let Err(e) = self.store.settle(res, &always, actual, at).await
         {
             tracing::error!(class = %store::class(&e), "ai cap settle failed");
         }
@@ -766,7 +770,7 @@ impl AiHub {
             if !capped {
                 // The key's month and the feature's are shown even when no cap is set.
                 self.add_spent(&key.id, actual, at).await;
-                if let Some(s) = &feature_scope {
+                for &(s, _) in &feature_caps {
                     self.add_spent(s, actual, at).await;
                 }
             }

@@ -1,11 +1,12 @@
 //! Feature routing of AI keys (`aiproviders.proto` ListFeatures and SetFeature): per owner and
 //! feature, the key the feature uses and its monthly cap.
 //!
-//! The most specific owner of the chain with a setting decides, as for keys: the repository, its
-//! organisation or user, the instance. A setting without a key leaves the choice to
-//! [`AiHub::resolve`]. The feature's spending is counted under a scope of its own in `ai_month`,
-//! so its cap holds by reservation like a key's, and a feature at its cap pauses until the month
-//! ends or the cap is raised.
+//! The most specific owner of the chain with a setting chooses the key, as for keys: the
+//! repository, its organisation or user, the instance. A setting without a key leaves the choice
+//! to [`AiHub::resolve`]. Every setting of the chain counts the feature's spending under a scope of
+//! its own in `ai_month` and its cap holds by reservation like a key's, so a repository's setting
+//! cannot lift its owner's cap. A feature at any of its caps pauses until the month ends or that
+//! cap is raised.
 
 use asc_rpc::server::wire;
 use sqlx::Row;
@@ -82,22 +83,21 @@ pub fn chain_of(owner: &Owner) -> Vec<Owner> {
     }
 }
 
-/// A feature as an owner sees it: the setting that applies, the month's spending under it and the
-/// key the feature uses now.
+/// A feature as an owner sees it: the setting that applies, the month's spending under it, the
+/// owner whose cap stops it and the key the feature uses now.
 #[derive(Clone, Debug)]
 pub struct View {
     pub feature: Feature,
     pub applying: Option<Setting>,
     pub spent: u64,
+    pub paused_by: Option<Owner>,
     pub key: Option<KeyRow>,
 }
 
 impl View {
-    /// Whether the month's spending reached the cap.
+    /// Whether the month's spending reached a cap of the chain.
     pub fn paused(&self) -> bool {
-        self.applying
-            .as_ref()
-            .is_some_and(|s| s.monthly_cap > 0 && self.spent >= s.monthly_cap)
+        self.paused_by.is_some()
     }
 }
 
@@ -141,43 +141,57 @@ impl AiHub {
         })
     }
 
-    /// The setting of `f` that applies to `owner`: its own, else the nearest one up its chain.
-    pub async fn applying(&self, owner: &Owner, f: Feature) -> Result<Option<Setting>, AiError> {
+    /// Every setting of `f` up `owner`'s chain, most specific first: the first chooses the key,
+    /// and the cap of each holds.
+    pub async fn settings_up(&self, owner: &Owner, f: Feature) -> Result<Vec<Setting>, AiError> {
+        let mut out = Vec::new();
         for o in chain_of(owner) {
             if let Some(s) = self.own_setting(&o, f).await? {
-                return Ok(Some(s));
+                out.push(s);
             }
         }
-        Ok(None)
+        Ok(out)
     }
 
-    /// The setting of `f` for a call made for `repo` (`owner/name`); none for a call that names no
-    /// repository.
+    /// The setting of `f` that applies to `owner`: its own, else the nearest one up its chain.
+    pub async fn applying(&self, owner: &Owner, f: Feature) -> Result<Option<Setting>, AiError> {
+        Ok(self.settings_up(owner, f).await?.into_iter().next())
+    }
+
+    /// Every setting of `f` for a call made for `repo` (`owner/name`), most specific first; none
+    /// for a call that names no repository.
+    pub async fn settings_for_repo(&self, repo: &str, f: Feature) -> Result<Vec<Setting>, AiError> {
+        if repo.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.settings_up(&Owner::Repo(repo.to_ascii_lowercase()), f)
+            .await
+    }
+
+    /// The setting of `f` that chooses the key for a call made for `repo`.
     pub async fn setting_for_repo(
         &self,
         repo: &str,
         f: Feature,
     ) -> Result<Option<Setting>, AiError> {
-        if repo.is_empty() {
-            return Ok(None);
-        }
-        self.applying(&Owner::Repo(repo.to_ascii_lowercase()), f)
-            .await
+        Ok(self.settings_for_repo(repo, f).await?.into_iter().next())
     }
 
-    /// Whether `f` is at its cap for calls made for `repo`.
-    pub async fn feature_paused(&self, repo: &str, f: Feature) -> Result<bool, AiError> {
-        let Some(s) = self.setting_for_repo(repo, f).await? else {
-            return Ok(false);
-        };
-        if s.monthly_cap == 0 {
-            return Ok(false);
+    /// The owner of the first of `settings` whose cap the month's spending reached.
+    async fn capped_by(&self, settings: &[Setting]) -> Result<Option<Owner>, AiError> {
+        let month = clock::month(clock::now());
+        for s in settings.iter().filter(|s| s.monthly_cap > 0) {
+            if self.store.month_spent(&s.scope(), &month).await? >= s.monthly_cap {
+                return Ok(Some(s.owner.clone()));
+            }
         }
-        let spent = self
-            .store
-            .month_spent(&s.scope(), &clock::month(clock::now()))
-            .await?;
-        Ok(spent >= s.monthly_cap)
+        Ok(None)
+    }
+
+    /// Whether `f` is at any of its caps for calls made for `repo`.
+    pub async fn feature_paused(&self, repo: &str, f: Feature) -> Result<bool, AiError> {
+        let settings = self.settings_for_repo(repo, f).await?;
+        Ok(self.capped_by(&settings).await?.is_some())
     }
 
     /// Every feature as `owner` sees it.
@@ -186,7 +200,9 @@ impl AiHub {
         let month = clock::month(clock::now());
         let mut out = Vec::with_capacity(Feature::ALL.len());
         for f in Feature::ALL {
-            let applying = self.applying(owner, f).await?;
+            let settings = self.settings_up(owner, f).await?;
+            let paused_by = self.capped_by(&settings).await?;
+            let applying = settings.into_iter().next();
             let spent = match &applying {
                 Some(s) => self.store.month_spent(&s.scope(), &month).await?,
                 None => 0,
@@ -204,6 +220,7 @@ impl AiHub {
                 feature: f,
                 applying,
                 spent,
+                paused_by,
                 key,
             });
         }
@@ -275,8 +292,10 @@ impl AiHub {
     }
 }
 
-/// The wire form of `v`.
-pub async fn wire_feature(hub: &AiHub, v: &View) -> wire::AiFeatureSetting {
+/// The wire form of `v` for `viewer`, the owner whose features were asked for. A key of another
+/// owner is only a reference: the viewer may use it but does not administer it, so its base URL,
+/// last error, spending and creator stay with its owner.
+pub async fn wire_feature(hub: &AiHub, v: &View, viewer: &Owner) -> wire::AiFeatureSetting {
     let paused = v.paused();
     let resumes_at = if paused {
         clock::next_month_start(clock::month_start(clock::now()))
@@ -284,7 +303,8 @@ pub async fn wire_feature(hub: &AiHub, v: &View) -> wire::AiFeatureSetting {
         0
     };
     let key = match &v.key {
-        Some(k) => Some(wire_key(hub, k).await),
+        Some(k) if k.owner == *viewer => Some(wire_key(hub, k).await),
+        Some(k) => Some(key_reference(hub, k).await),
         None => None,
     };
     let s = v.applying.as_ref();
@@ -299,5 +319,20 @@ pub async fn wire_feature(hub: &AiHub, v: &View) -> wire::AiFeatureSetting {
         key,
         updated: s.map_or(0, |s| s.updated),
         updated_by: s.map(|s| s.updated_by.clone()).unwrap_or_default(),
+        paused_by: v.paused_by.as_ref().map(Owner::to_wire),
+    }
+}
+
+/// What an owner that may use `k` but does not own it sees of it.
+async fn key_reference(hub: &AiHub, k: &KeyRow) -> wire::AiKey {
+    let full = wire_key(hub, k).await;
+    wire::AiKey {
+        id: full.id,
+        owner: full.owner,
+        label: full.label,
+        provider: full.provider,
+        has_key: full.has_key,
+        state: full.state,
+        ..wire::AiKey::default()
     }
 }
