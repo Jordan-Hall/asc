@@ -1375,7 +1375,7 @@ impl ServerMutations {
 }
 
 /// git's default revert message.
-fn revert_message(original: &[u8], id: ChangesetId) -> Vec<u8> {
+pub(crate) fn revert_message(original: &[u8], id: ChangesetId) -> Vec<u8> {
     let subject: Vec<u8> = original
         .split(|&b| b == b'\n')
         .next()

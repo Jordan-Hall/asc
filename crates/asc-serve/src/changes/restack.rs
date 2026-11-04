@@ -91,7 +91,7 @@ fn invalid(m: impl Into<String>) -> Status {
     Status::invalid_argument(m.into())
 }
 
-fn now() -> i64 {
+pub(super) fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .ok()
@@ -101,7 +101,7 @@ fn now() -> i64 {
 
 /// Runs an engine future to completion on a blocking thread: the rebase and commit futures are
 /// not provably `Send`.
-async fn on_blocking_thread<F, Fut, T>(make: F) -> Result<T, Status>
+pub(super) async fn on_blocking_thread<F, Fut, T>(make: F) -> Result<T, Status>
 where
     F: FnOnce() -> Fut + Send + 'static,
     Fut: std::future::Future<Output = T>,
@@ -113,7 +113,7 @@ where
         .map_err(|e| internal("engine task", &e))
 }
 
-fn merge_status(e: merge::Error) -> Status {
+pub(super) fn merge_status(e: merge::Error) -> Status {
     match e {
         merge::Error::Commit(e) => commit_status(e),
         e @ merge::Error::NotLinear(_) => Status::failed_precondition(e.to_string()),
@@ -122,7 +122,7 @@ fn merge_status(e: merge::Error) -> Status {
 }
 
 /// The wire form of a merge conflict of the head `source`.
-fn conflict_wire(source: ChangesetId, c: &Conflict) -> wire::Conflict {
+pub(super) fn conflict_wire(source: ChangesetId, c: &Conflict) -> wire::Conflict {
     use wire::ConflictKind as W;
     let id = |e: &Option<Entry>| match e {
         Some(e) if matches!(e.kind, Kind::File | Kind::Exec | Kind::Symlink) => {
@@ -387,7 +387,7 @@ pub struct Restacker {
     registry: Arc<Registry>,
     pipeline: Arc<PipelineHooks>,
     hooks: Arc<ReadHooks>,
-    refs: ServerRefs,
+    pub(super) refs: ServerRefs,
 }
 
 /// The unit's one line in `register_all` (through [`super::register`]): hands the `Changes`
@@ -785,7 +785,7 @@ impl Restacker {
     }
 
     /// The changeset `onto` names; empty names the default branch.
-    async fn onto(
+    pub(super) async fn onto(
         &self,
         ids: &IdCodec,
         entry: &RepoEntry,
@@ -1679,7 +1679,7 @@ pub(crate) mod tests {
     const MALLORY: &str = "mallory-token";
     const BOB: &str = "bob-token";
 
-    struct Internal;
+    pub(crate) struct Internal;
     impl PushHooks for Internal {
         fn may_skip_pre(&self, ctx: &CallCtx) -> bool {
             crate::authz::is_host_service(&ctx.principal.id)
@@ -1879,7 +1879,7 @@ pub(crate) mod tests {
                 .unwrap()
         }
 
-        async fn set_ref(&self, name: &str, cs: ChangesetId) {
+        pub(crate) async fn set_ref(&self, name: &str, cs: ChangesetId) {
             use asc_store::refs::{Actor, Expect, RefTxn, RefUpdate};
             let txn = RefTxn {
                 updates: vec![RefUpdate {
@@ -1898,7 +1898,7 @@ pub(crate) mod tests {
             self.reg.refs().update(self.e.key, &txn).await.unwrap();
         }
 
-        async fn ref_of(&self, name: &str) -> Option<RefTarget> {
+        pub(crate) async fn ref_of(&self, name: &str) -> Option<RefTarget> {
             self.reg
                 .refs()
                 .get(
