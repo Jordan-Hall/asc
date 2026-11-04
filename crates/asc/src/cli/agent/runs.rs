@@ -327,6 +327,7 @@ pub async fn list(ctx: &Ctx, a: ListArgs) -> Result<ExitCode> {
         created_by: a.by.clone().unwrap_or_default(),
         limit: a.limit.unwrap_or(0),
         page_token: a.page.clone().unwrap_or_default(),
+        offset: 0,
     };
     let r = conn
         .call(false, |s, _| {

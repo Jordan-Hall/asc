@@ -255,6 +255,7 @@ impl Agents for Fake {
             ]
         };
         Ok(Response::new(wire::ListAgentRunsResponse {
+            total: runs.len() as u64,
             runs,
             next_page_token: if self.empty {
                 String::new()
