@@ -549,6 +549,27 @@ impl AiProviders for Fake {
             }],
         }))
     }
+
+    async fn replace_key(
+        &self,
+        _: Request<wire::ReplaceAiKeyRequest>,
+    ) -> Result<Response<wire::ReplaceAiKeyResponse>, Status> {
+        Err(Status::unimplemented("not used by these tests"))
+    }
+
+    async fn list_features(
+        &self,
+        _: Request<wire::ListAiFeaturesRequest>,
+    ) -> Result<Response<wire::ListAiFeaturesResponse>, Status> {
+        Err(Status::unimplemented("not used by these tests"))
+    }
+
+    async fn set_feature(
+        &self,
+        _: Request<wire::SetAiFeatureRequest>,
+    ) -> Result<Response<wire::SetAiFeatureResponse>, Status> {
+        Err(Status::unimplemented("not used by these tests"))
+    }
 }
 
 fn definition() -> wire::WorkflowDefinition {
