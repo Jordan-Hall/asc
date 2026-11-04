@@ -53,6 +53,11 @@ const MAX_TRUSTED_FILE_BYTES: u64 = 1024 * 1024;
 const MAX_TRUSTED_TOKENS: usize = 1000;
 const SWEEP_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
 const DAY_SECS: u64 = 24 * 60 * 60;
+/// The directory of build cache revision indexes in a scope (`<scope>/revs/<rev>/<id>`).
+const REVS_DIR: &str = "revs";
+/// Most index files read for one revision, and most keys answered.
+const MAX_REV_FILES: usize = 1000;
+const MAX_REV_KEYS: usize = 200_000;
 
 /// Why a turbo request or setup failed.
 #[derive(Debug, thiserror::Error)]
@@ -379,6 +384,11 @@ impl TurboState {
         self.path(slug, &Scope::Trusted, &format!("{}.path", hash.as_str()))
     }
 
+    /// The index files of revision `rev` in `scope`.
+    fn rev_dir(&self, slug: &Slug, scope: &Scope, rev: &str) -> StorePath {
+        self.path(slug, scope, REVS_DIR).join(rev)
+    }
+
     /// The registered directory of a trusted artefact.
     async fn read_dir(&self, p: &StorePath) -> Result<Option<String>, TurboError> {
         let got = match self.store.get(p).await {
@@ -567,6 +577,31 @@ impl TurboState {
                 .skip(skip)
                 .map(|p| p.as_ref().to_owned())
                 .collect();
+            let retention = |scope: &str| {
+                let days = if scope == "trusted" {
+                    self.cfg.trusted_retention_days
+                } else {
+                    self.cfg.pr_retention_days
+                };
+                Duration::from_secs(u64::from(days) * DAY_SECS)
+            };
+            let age = now
+                .duration_since(SystemTime::from(obj.last_modified))
+                .unwrap_or_default();
+            // A build cache revision index file (`<scope>/revs/<rev>/<id>`) ages like an artefact.
+            if let [_, scope, revs, _, _] = parts.as_slice()
+                && revs == REVS_DIR
+            {
+                stats.scanned += 1;
+                if age > retention(scope) {
+                    match self.store.delete(&obj.location).await {
+                        Ok(()) | Err(object_store::Error::NotFound { .. }) => {}
+                        Err(e) => return Err(e.into()),
+                    }
+                    stats.deleted += 1;
+                }
+                continue;
+            }
             let [_, scope, file] = parts.as_slice() else {
                 continue;
             };
@@ -574,16 +609,7 @@ impl TurboState {
                 continue;
             };
             stats.scanned += 1;
-            let days = if scope == "trusted" {
-                self.cfg.trusted_retention_days
-            } else {
-                self.cfg.pr_retention_days
-            };
-            let limit = Duration::from_secs(u64::from(days) * DAY_SECS);
-            let age = now
-                .duration_since(SystemTime::from(obj.last_modified))
-                .unwrap_or_default();
-            if age <= limit {
+            if age <= retention(scope) {
                 continue;
             }
             let dir: StorePath = obj.location.parts().take(skip + 2).collect();
@@ -1001,9 +1027,107 @@ pub fn router(state: Arc<TurboState>) -> axum::Router {
         )
         .route("/v8/artifacts", post(query_artifacts))
         .route("/v8/asc/artifact-paths", post(register_paths))
+        .route(
+            "/v8/asc/build-revs/{rev}",
+            get(get_build_rev).post(post_build_rev),
+        )
         .with_state(state);
     // The edge answers 401 with the Basic challenge first, and 400 for a malformed header.
     crate::authn::guard(routes, crate::authn::Surface::Api)
+}
+
+/// A revision: a git commit or an asc changeset id, as lowercase hex.
+fn rev_ok(rev: &str) -> bool {
+    matches!(rev.len(), 40 | 64) && rev.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+#[derive(Deserialize)]
+struct RevKeys {
+    keys: Vec<String>,
+}
+
+/// `POST /v8/asc/build-revs/<rev>`: records which build cache artefacts a build of `rev` used
+/// (`asc cache push --rev`, docs/designs/build-cache.md §3), in the caller's scope. Each call
+/// is its own file, so parallel jobs of one revision never overwrite each other.
+async fn post_build_rev(
+    State(s): State<Arc<TurboState>>,
+    Path(rev): Path<String>,
+    Query(q): Query<RepoQuery>,
+    headers: HeaderMap,
+    body: Body,
+) -> Result<Response, TurboError> {
+    if !rev_ok(&rev) {
+        return Err(TurboError::BadRequest("invalid revision"));
+    }
+    let caller = s.gate(&headers, &q, Access::Write).await?;
+    let req: RevKeys = read_json(body).await?;
+    if req.keys.len() > MAX_ITEMS {
+        return Err(TurboError::BadRequest("too many keys"));
+    }
+    let mut keys = req
+        .keys
+        .iter()
+        .map(|k| ArtifactHash::parse(k).map(|h| h.0))
+        .collect::<Result<Vec<_>, _>>()?;
+    keys.sort();
+    keys.dedup();
+    if !keys.is_empty() {
+        let p = s
+            .rev_dir(&caller.slug, &caller.scope, &rev)
+            .join(uuid::Uuid::new_v4().simple().to_string());
+        let body = serde_json::to_vec(&serde_json::json!({ "keys": keys }))
+            .map_err(|e| TurboError::Config(e.to_string()))?;
+        s.store.put(&p, body.into()).await?;
+    }
+    Ok(axum::Json(serde_json::json!({ "recorded": keys.len() })).into_response())
+}
+
+/// `GET /v8/asc/build-revs/<rev>`: the artefacts recorded for `rev` in the caller's scope and in
+/// `trusted` (`asc cache warm`). Fetching each still goes through the artefact routes and their
+/// checks.
+async fn get_build_rev(
+    State(s): State<Arc<TurboState>>,
+    Path(rev): Path<String>,
+    Query(q): Query<RepoQuery>,
+    headers: HeaderMap,
+) -> Result<Response, TurboError> {
+    if !rev_ok(&rev) {
+        return Err(TurboError::BadRequest("invalid revision"));
+    }
+    let caller = s.gate(&headers, &q, Access::Read).await?;
+    let mut scopes = vec![caller.scope.clone()];
+    if caller.scope != Scope::Trusted {
+        scopes.push(Scope::Trusted);
+    }
+    let mut keys = std::collections::BTreeSet::new();
+    let mut files = 0usize;
+    'scopes: for scope in scopes {
+        let dir = s.rev_dir(&caller.slug, &scope, &rev);
+        let listed: Vec<_> = s.store.list(Some(&dir)).try_collect().await?;
+        for obj in listed {
+            files += 1;
+            if files > MAX_REV_FILES || keys.len() >= MAX_REV_KEYS {
+                break 'scopes;
+            }
+            if obj.size > MAX_JSON_BYTES as u64 {
+                continue;
+            }
+            let bytes = match s.store.get(&obj.location).await {
+                Ok(g) => g.bytes().await?,
+                Err(object_store::Error::NotFound { .. }) => continue,
+                Err(e) => return Err(e.into()),
+            };
+            let Ok(doc) = serde_json::from_slice::<RevKeys>(&bytes) else {
+                continue;
+            };
+            keys.extend(
+                doc.keys
+                    .into_iter()
+                    .filter(|k| ArtifactHash::parse(k).is_ok()),
+            );
+        }
+    }
+    Ok(axum::Json(serde_json::json!({ "keys": keys })).into_response())
 }
 
 #[derive(Deserialize)]
@@ -1590,6 +1714,93 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn build_rev_indexes_merge_jobs_and_fall_back_to_trusted() {
+        let (s, mem) = state();
+        let rev = "ab".repeat(20);
+        let uri = format!("/v8/asc/build-revs/{rev}?slug={SLUG}");
+        let post = |token: &'static str, keys: &[&str]| {
+            call("POST", &uri, Some(token))
+                .header("content-type", "application/json")
+                .body(serde_json::json!({ "keys": keys }).to_string())
+        };
+        // Two CI jobs of one revision, and one developer.
+        assert_eq!(
+            post("ci-secret", &["asc-1", "asc-2"]).send(&s).await.0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            post("ci-secret", &["asc-2", "asc-3"]).send(&s).await.0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            post("dev-secret", &["asc-9"]).send(&s).await.0,
+            StatusCode::OK
+        );
+        let keys = |b: Vec<u8>| -> Vec<String> {
+            serde_json::from_slice::<serde_json::Value>(&b).unwrap()["keys"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|k| k.as_str().unwrap().to_owned())
+                .collect()
+        };
+        let (st, _, b) = call("GET", &uri, Some("dev-secret")).send(&s).await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(keys(b), ["asc-1", "asc-2", "asc-3", "asc-9"]);
+        let (_, _, b) = call("GET", &uri, Some("dev2-secret")).send(&s).await;
+        assert_eq!(
+            keys(b),
+            ["asc-1", "asc-2", "asc-3"],
+            "not alice's own scope"
+        );
+        let (_, _, b) = call("GET", &uri, Some("ro-secret")).send(&s).await;
+        assert_eq!(
+            keys(b),
+            ["asc-1", "asc-2", "asc-3"],
+            "a reader sees trusted"
+        );
+        assert_eq!(
+            call("GET", &uri, None).send(&s).await.0,
+            StatusCode::UNAUTHORIZED
+        );
+
+        assert_eq!(
+            post("ro-secret", &["asc-1"]).send(&s).await.0,
+            StatusCode::FORBIDDEN
+        );
+        let anon = call("POST", &uri, None)
+            .body(r#"{"keys":["asc-1"]}"#)
+            .send(&s)
+            .await;
+        assert_eq!(anon.0, StatusCode::UNAUTHORIZED);
+        for bad in ["abc", &"AB".repeat(20), &"g".repeat(40)] {
+            let u = format!("/v8/asc/build-revs/{bad}?slug={SLUG}");
+            assert_eq!(
+                call("GET", &u, Some("ci-secret")).send(&s).await.0,
+                StatusCode::BAD_REQUEST,
+                "{bad}"
+            );
+        }
+        assert_eq!(
+            post("ci-secret", &["../x"]).send(&s).await.0,
+            StatusCode::BAD_REQUEST
+        );
+
+        // Index files age out with their scope.
+        let day = Duration::from_secs(DAY_SECS);
+        let stats = s.sweep(SystemTime::now() + day * 20).await.unwrap();
+        assert_eq!(stats.deleted, 1, "the dev index goes after 14 days");
+        let stats = s.sweep(SystemTime::now() + day * 61).await.unwrap();
+        assert_eq!(stats.deleted, 2);
+        let left: Vec<_> = mem
+            .list(Some(&StorePath::from("root/turbo")))
+            .try_collect()
+            .await
+            .unwrap();
+        assert!(left.is_empty(), "{left:?}");
     }
 
     struct FixedScope(Option<Scope>);
