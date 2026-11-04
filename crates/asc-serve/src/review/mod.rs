@@ -151,6 +151,8 @@ pub(crate) fn require_handle(ctx: &CallCtx) -> Result<String, Status> {
 /// The state the `Review`, `Inbox` and `Ci` handlers share.
 pub struct Reviews {
     pub(crate) registry: Arc<Registry>,
+    /// The policy in force, for the `[ci]` flaky threshold the statistics name.
+    pub(crate) policies: crate::policy::PolicyStore,
 }
 
 /// The place the server's single [`Reviews`] hub is registered, once (read by `build_routes`).
@@ -170,15 +172,16 @@ impl ReviewSlot {
 
 /// The unit's one line in `register_all`.
 pub fn register(ext: &crate::registry::Extensions, registry: &Arc<Registry>) {
-    let hub = Arc::new(Reviews {
-        registry: registry.clone(),
-    });
+    let hub = Arc::new(Reviews::new(registry.clone()));
     assert!(ext.review.set(hub), "the review hub is registered once");
 }
 
 impl Reviews {
     pub fn new(registry: Arc<Registry>) -> Self {
-        Self { registry }
+        Self {
+            policies: crate::policy::PolicyStore::new(registry.clone()),
+            registry,
+        }
     }
 
     /// Opens the repository of `ctx`.

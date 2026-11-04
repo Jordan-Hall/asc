@@ -2,8 +2,9 @@
 //! "statistics").
 //!
 //! * `Ci.Stats`: over a window of days, how many runs finished, how many passed, the pass rate against
-//!   the window before it, the failure groups still open, the tests flaky now, the median duration of a
-//!   finished run and the slowest job (by its median over the window).
+//!   the window before it, the failure groups still open (and how many of them are an hour old at most),
+//!   the tests that flip and those flaky now under the policy's threshold, the median duration of a
+//!   finished run and the slowest job (by its median over the window), and the same day by day.
 //! * `Ci.CompareWithMain`: for the newest finished run of a change, which failing tests are *new*
 //!   (not failing in the newest finished run on the default branch), what main looked like, and the
 //!   slowest test now against the same test on main. Runs on the default branch are the runs whose
@@ -19,6 +20,7 @@ const DAY: i64 = 86_400;
 /// Most runs one statistics call reads.
 const MAX_RUNS: i64 = 20_000;
 const SUCCESS: i64 = 3;
+const HOUR: i64 = 3_600;
 const FAILURE: i64 = 4;
 
 fn median(v: &mut [i64]) -> i64 {
@@ -46,10 +48,32 @@ impl Reviews {
             n => i64::from(n.min(90)),
         };
         let entry = self.open(ctx).await?;
+        let threshold = match self.policies.in_force(&entry).await?.policy() {
+            Some(p) => p.ci.flaky_threshold,
+            None => asc_core::policy::CiPolicy::default().flaky_threshold,
+        };
         let ns = entry.ns.as_bytes().to_vec();
         let now = crate::review::now();
         let since = now - days * DAY;
         let before = since - days * DAY;
+        // The days of the trend: today and the days before it, `days` in all.
+        let first_day = asc_ci::insights::flaky::day_start(now) - (days - 1) * DAY;
+        let mut daily: Vec<wire::CiStatsDay> = (0..days)
+            .map(|i| wire::CiStatsDay {
+                start: first_day + i * DAY,
+                ..Default::default()
+            })
+            .collect();
+        let mut daily_durations: Vec<Vec<i64>> = vec![Vec::new(); daily.len()];
+        let n_days = daily.len();
+        let day_of = |at: i64| -> Option<usize> {
+            if at < first_day {
+                return None;
+            }
+            usize::try_from((at - first_day) / DAY)
+                .ok()
+                .filter(|i| *i < n_days)
+        };
         let runs = sqlx::query(
             "SELECT id, status, created, started, finished FROM check_runs WHERE ns = $1 AND created >= $2 AND status IN (3, 4) \
              ORDER BY created DESC LIMIT $3",
@@ -73,8 +97,16 @@ impl Reviews {
             if created >= since {
                 cur_total += 1;
                 cur_pass += u32::from(status == SUCCESS);
+                let day = day_of(created);
+                if let Some(i) = day {
+                    daily[i].runs += 1;
+                    daily[i].passed += u32::from(status == SUCCESS);
+                }
                 if started > 0 && finished >= started {
                     durations.push(finished - started);
+                    if let Some(i) = day {
+                        daily_durations[i].push(finished - started);
+                    }
                 }
                 run_ids.push(r.try_get("id").map_err(sql)?);
             } else {
@@ -109,20 +141,67 @@ impl Reviews {
             .map(|(n, v)| (n.clone(), median(v)))
             .max_by_key(|(_, m)| *m)
             .unwrap_or_default();
-        let open: i64 = sqlx::query_scalar(
+        for (d, v) in daily.iter_mut().zip(daily_durations.iter_mut()) {
+            d.median_duration_seconds = u32::try_from(median(v)).unwrap_or(u32::MAX);
+        }
+        let count = |q: &'static str, at: Option<i64>| {
+            let mut query = sqlx::query_scalar::<_, i64>(q).bind(ns.clone());
+            if let Some(at) = at {
+                query = query.bind(at);
+            }
+            query.fetch_one(self.registry.pool())
+        };
+        let open = count(
             "SELECT CAST(COUNT(*) AS BIGINT) FROM failure_groups WHERE ns = $1 AND state = 1",
+            None,
+        )
+        .await
+        .map_err(sql)?;
+        let new_hour = count(
+            "SELECT CAST(COUNT(*) AS BIGINT) FROM failure_groups WHERE ns = $1 AND state = 1 AND first_seen >= $2",
+            Some(now - HOUR),
+        )
+        .await
+        .map_err(sql)?;
+        let flaky = count(
+            "SELECT CAST(COUNT(*) AS BIGINT) FROM flaky_tests WHERE ns = $1 AND flaky = 1",
+            None,
+        )
+        .await
+        .map_err(sql)?;
+        let flipping = count(
+            "SELECT CAST(COUNT(*) AS BIGINT) FROM flaky_tests WHERE ns = $1 AND flips > 0",
+            None,
+        )
+        .await
+        .map_err(sql)?;
+        let groups = sqlx::query(
+            "SELECT first_seen FROM failure_groups WHERE ns = $1 AND first_seen >= $2 LIMIT 100000",
         )
         .bind(ns.clone())
-        .fetch_one(self.registry.pool())
+        .bind(first_day)
+        .fetch_all(self.registry.pool())
         .await
         .map_err(sql)?;
-        let flaky: i64 = sqlx::query_scalar(
-            "SELECT CAST(COUNT(*) AS BIGINT) FROM flaky_tests WHERE ns = $1 AND flaky = 1",
+        for r in &groups {
+            if let Some(i) = day_of(r.try_get("first_seen").map_err(sql)?) {
+                daily[i].failure_groups_new += 1;
+            }
+        }
+        let flips = sqlx::query(
+            "SELECT day, CAST(SUM(flips) AS BIGINT) AS flips FROM flaky_daily WHERE ns = $1 AND day >= $2 GROUP BY day",
         )
         .bind(ns)
-        .fetch_one(self.registry.pool())
+        .bind(first_day)
+        .fetch_all(self.registry.pool())
         .await
         .map_err(sql)?;
+        for r in &flips {
+            if let Some(i) = day_of(r.try_get("day").map_err(sql)?) {
+                daily[i].flaky_flips =
+                    u32::try_from(r.try_get::<i64, _>("flips").map_err(sql)?).unwrap_or(u32::MAX);
+            }
+        }
         Ok(wire::CiStatsResponse {
             days: u32::try_from(days).unwrap_or(0),
             runs: cur_total,
@@ -136,6 +215,10 @@ impl Reviews {
             median_duration_seconds: u32::try_from(median(&mut durations)).unwrap_or(u32::MAX),
             slowest_job: slowest.0,
             slowest_job_seconds: u32::try_from(slowest.1).unwrap_or(u32::MAX),
+            failure_groups_new_hour: u32::try_from(new_hour).unwrap_or(u32::MAX),
+            flipping_tests: u32::try_from(flipping).unwrap_or(u32::MAX),
+            flaky_threshold_permille: (threshold.clamp(0.0, 1.0) * 1000.0).round() as u32,
+            daily,
         })
     }
 

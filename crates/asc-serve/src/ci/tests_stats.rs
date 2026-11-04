@@ -226,3 +226,86 @@ async fn a_change_is_compared_with_main_for_new_failures_and_the_slowest_test() 
     assert_eq!(none.main_status, C::Success as i32);
     assert_eq!(cmp(9).await.unwrap_err().code(), Code::NotFound);
 }
+
+#[tokio::test]
+async fn the_checks_board_has_new_groups_flipping_tests_the_threshold_and_a_trend() {
+    let f = fx().await;
+    run(&f, "m1", 0, C::Success, &[("unit", 30)], 60, 0).await;
+    run(&f, "m2", 0, C::Failure, &[("unit", 30)], 120, 0).await;
+    run(&f, "c1", 1, C::Success, &[("unit", 40)], 90, 2).await;
+    let ns = f.e.ns.as_bytes().to_vec();
+    let now = crate::review::now();
+    for (id, state, first_seen) in [
+        (1i64, 1i64, now - 60),
+        (2, 1, now - 7_200),
+        (3, 3, now - 30),
+    ] {
+        sqlx::query("INSERT INTO failure_groups (ns, id, signature, title, test_name, job_name, state, first_seen, last_seen) VALUES ($1, $2, $3, 't', 'a', 'unit', $4, $5, $5)")
+            .bind(ns.clone())
+            .bind(id)
+            .bind(format!("s{id}"))
+            .bind(state)
+            .bind(first_seen)
+            .execute(f.reg.pool())
+            .await
+            .unwrap();
+    }
+    for (test, flips, flaky) in [("a", 4i64, 1i64), ("b", 1, 0), ("c", 0, 0)] {
+        sqlx::query("INSERT INTO flaky_tests (ns, job_name, test, runs, failures, flips, flaky, updated) VALUES ($1, 'unit', $2, 10, 3, $3, $4, 1)")
+            .bind(ns.clone())
+            .bind(test)
+            .bind(flips)
+            .bind(flaky)
+            .execute(f.reg.pool())
+            .await
+            .unwrap();
+    }
+    let today = asc_ci::insights::flaky::day_start(now);
+    sqlx::query("INSERT INTO flaky_daily (ns, job_name, test, day, runs, failures, flips) VALUES ($1, 'unit', 'a', $2, 5, 2, 3), ($1, 'unit', 'b', $2, 5, 1, 1)")
+        .bind(ns)
+        .bind(today)
+        .execute(f.reg.pool())
+        .await
+        .unwrap();
+    let s =
+        f.ci.stats(req(
+            wire::CiStatsRequest {
+                repo: repo_ref(),
+                days: 7,
+            },
+            ALICE,
+            false,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        (s.failure_groups_open, s.failure_groups_new_hour),
+        (2, 1),
+        "a resolved group is not open, a group of two hours ago is not new"
+    );
+    assert_eq!((s.flaky_tests, s.flipping_tests), (1, 2));
+    assert_eq!(
+        s.flaky_threshold_permille, 20,
+        "the default threshold, 0.02"
+    );
+    assert_eq!(s.daily.len(), 7, "one day each, today last");
+    assert_eq!(s.daily[6].start, today);
+    assert!(
+        s.daily
+            .windows(2)
+            .all(|w| w[1].start - w[0].start == 86_400)
+    );
+    let t = &s.daily[6];
+    assert_eq!(
+        (t.runs, t.passed, t.median_duration_seconds),
+        (2, 1, 120),
+        "{t:?}"
+    );
+    assert_eq!(t.flaky_flips, 4, "{t:?}");
+    let new: u32 = s.daily.iter().map(|d| d.failure_groups_new).sum();
+    assert_eq!(new, 3, "each group on the day it was first seen");
+    let d2 = &s.daily[4];
+    assert_eq!((d2.runs, d2.passed, d2.median_duration_seconds), (1, 1, 90));
+    assert_eq!(s.daily[0].runs, 0);
+}

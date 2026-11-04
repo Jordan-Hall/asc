@@ -125,7 +125,7 @@ message AppendJobLogResponse {
 // ---------------------------------------------------------------------------------------------------- statistics
 
 // Repo read. `Stats` counts the runs that finished (success or failure) in the last `days` days (0 means 14, at most 90) and the
-// window before it, for the pass rate against the previous period. `CompareWithMain` compares the newest finished run of a change with
+// window before it, for the pass rate against the previous period, and a day by day trend of the window. `CompareWithMain` compares the newest finished run of a change with
 // the newest finished run that belongs to no change (a run of the default branch): the failing tests that are new, and the slowest
 // test now against the same test on main. Per-test timing comes from CiInsights.ReportTestCases.
 message CiStatsRequest {
@@ -145,6 +145,19 @@ message CiStatsResponse {
   uint32 median_duration_seconds = 10;
   string slowest_job = 11;               // by the median duration of its jobs in the window
   uint32 slowest_job_seconds = 12;
+  uint32 failure_groups_new_hour = 13;   // of the open groups, those first seen in the last hour
+  uint32 flipping_tests = 14;            // tests whose verdict changed on one head in their last runs, at the threshold or not
+  uint32 flaky_threshold_permille = 15;  // the repository's [ci] flaky_threshold: at or above it a test is flaky (flaky_tests)
+  repeated CiStatsDay daily = 16;        // one per day of the window, oldest first, for the trend of each number
+}
+// One day (UTC) of the window of `Stats`.
+message CiStatsDay {
+  int64 start = 1;                       // unix seconds, day aligned
+  uint32 runs = 2;                       // finished runs created that day
+  uint32 passed = 3;
+  uint32 median_duration_seconds = 4;    // 0 when no run of the day has a duration
+  uint32 failure_groups_new = 5;         // groups first seen that day
+  uint32 flaky_flips = 6;                // verdict changes on one head that day
 }
 message TestRef {
   string job = 1;
