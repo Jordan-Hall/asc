@@ -136,6 +136,24 @@ fn signature(ctx: &CallCtx) -> Result<Signature, Status> {
     .map_err(|e| invalid(format!("committer: {e}")))
 }
 
+/// The message of each new changeset, bottom (the revert of the top) first.
+fn messages(req: &wire::RevertLandedRequest, undos: &[Undo]) -> Vec<Vec<u8>> {
+    if !req.message.is_empty() {
+        let n = if req.squash { 1 } else { undos.len() };
+        return vec![req.message.to_vec(); n];
+    }
+    if !req.squash {
+        return undos
+            .iter()
+            .map(|u| revert_message(&u.message, u.cs))
+            .collect();
+    }
+    vec![match undos {
+        [one] => revert_message(&one.message, one.cs),
+        all => squash_message(all, &all[0].message),
+    }]
+}
+
 /// The landed stack `req.at` names, top first, and the target the reverts stand on.
 async fn plan(
     reader: &mut Reader<'_>,
@@ -400,15 +418,9 @@ pub(super) async fn revert_landed(
     };
     let mut made: HashMap<ChangesetId, (ChangeId, ChangesetId)> = HashMap::new();
     let mut chain: Vec<(ChangeId, ChangesetId)> = Vec::new();
+    let mut messages = messages(&req, &undos).into_iter();
     if req.squash {
-        let message = if req.message.is_empty() {
-            match undos.as_slice() {
-                [one] => revert_message(&one.message, one.cs),
-                all => squash_message(all, &all[0].message),
-            }
-        } else {
-            req.message.to_vec()
-        };
+        let message = messages.next().expect("one message");
         let root = undos
             .last()
             .and_then(|u| u.root)
@@ -421,12 +433,7 @@ pub(super) async fn revert_landed(
         chain.push((change, cs));
     } else {
         let mut parent = onto;
-        for u in &undos {
-            let message = if req.message.is_empty() {
-                revert_message(&u.message, u.cs)
-            } else {
-                req.message.to_vec()
-            };
+        for (u, message) in undos.iter().zip(messages) {
             let root = u.root.expect("a clean revert has a tree");
             let cs = create(&engine, parent, root, message, &sig, policy).await?;
             let original = landed
@@ -460,6 +467,56 @@ pub(super) async fn revert_landed(
     index_new(changes, &entry, ctx, op, &chain, sig.time()).await?;
     let stored = stored_name(changes, &entry, ctx, &branch_of(top_cs, op)).await?;
     response(&ids, &landed, &undos, req.squash, Some(&made), stored).await
+}
+
+/// A replay answers only for the reverts this call would have made: by the same caller, with
+/// the same messages and trees, standing on the parent of the bottom one.
+async fn verify_replay(
+    engine: &Arc<Eng>,
+    ctx: &CallCtx,
+    req: &wire::RevertLandedRequest,
+    landed: &[Landed],
+    css: &[ChangesetId],
+) -> Result<(), Status> {
+    let other = || invalid("op id was used for another operation");
+    let sig = signature(ctx)?;
+    let mut made = Vec::with_capacity(css.len());
+    for &cs in css {
+        made.push(engine.get_changeset(cs).await.map_err(commit_status)?);
+    }
+    let onto = *made[0].parents.first().ok_or_else(other)?;
+    let onto_root = engine
+        .get_changeset(onto)
+        .await
+        .map_err(commit_status)?
+        .root;
+    // Reverts that stand on another stack undo nothing there: not this call's.
+    let undos = undo_all(engine, landed, onto_root)
+        .await
+        .map_err(|e| match e.code() {
+            tonic::Code::FailedPrecondition => other(),
+            _ => e,
+        })?;
+    let roots: Vec<Option<TreeId>> = if req.squash {
+        vec![undos.last().and_then(|u| u.root)]
+    } else {
+        undos.iter().map(|u| u.root).collect()
+    };
+    let messages = messages(req, &undos);
+    if roots.len() != made.len() || undos.iter().any(|u| !u.conflicts.is_empty()) {
+        return Err(other());
+    }
+    for ((c, root), message) in made.iter().zip(&roots).zip(&messages) {
+        if Some(c.root) != *root
+            || c.message != *message
+            || c.committer.name() != sig.name()
+            || c.committer.email() != sig.email()
+            || c.author.name() != sig.name()
+        {
+            return Err(other());
+        }
+    }
+    Ok(())
 }
 
 fn branch_of(top: ChangesetId, op: Uuid) -> String {
@@ -588,6 +645,7 @@ async fn replay(
         }
     }
     css.reverse();
+    verify_replay(engine, ctx, req, landed, &css).await?;
     let mut made = HashMap::new();
     let mut chain = Vec::with_capacity(n);
     if req.squash {
@@ -759,6 +817,26 @@ mod tests {
         let again = run(&f, Some(op), req(2, false)).await.unwrap();
         assert_eq!(again, r);
         assert_eq!(version(&f, b).await.v, 1);
+    }
+
+    #[tokio::test]
+    async fn a_replay_answers_only_the_caller_of_the_op() {
+        let f = landed().await;
+        let op = Uuid::new_v4();
+        run(&f, Some(op), req(2, false)).await.unwrap();
+        let restacker = f.rpc.restack.get().unwrap().clone();
+        let mut other = ctx(Some(op));
+        other.principal.id = "someone-else".into();
+        let e = revert_landed(&f.rpc, &restacker, &other, req(2, false))
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), tonic::Code::InvalidArgument, "{e:?}");
+        let squash = wire::RevertLandedRequest {
+            squash: true,
+            ..req(2, false)
+        };
+        let e = run(&f, Some(op), squash).await.unwrap_err();
+        assert_eq!(e.code(), tonic::Code::InvalidArgument, "{e:?}");
     }
 
     #[tokio::test]
