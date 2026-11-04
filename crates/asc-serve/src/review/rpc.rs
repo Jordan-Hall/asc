@@ -30,6 +30,7 @@ use super::{
     after_token, change_of, handle_of, next_id, now, page_limit, parse_after, require_handle,
     retry_conflict, sql, valid_handle,
 };
+use crate::pathrules::scope::Scope;
 use crate::registry::RepoEntry;
 use asc_rpc::server::CallCtx;
 
@@ -859,7 +860,11 @@ impl Review for ReviewService {
             .env
             .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
             .await?;
-        self.hub.draft_context(&ctx, msg).await.map(Response::new)
+        let scope = Scope::read(&self.pathrules, &ctx).await?;
+        self.hub
+            .draft_context(&ctx, scope.as_deref(), msg)
+            .await
+            .map(Response::new)
     }
 
     async fn summarize_change(

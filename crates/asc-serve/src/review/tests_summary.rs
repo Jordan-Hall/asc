@@ -424,3 +424,54 @@ fn the_answer_is_cut_and_cleaned() {
     assert!(summary::parse(r#"{"what": 3}"#, &paths).is_none());
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_facts_draft_leaves_out_a_path_the_caller_cannot_read() {
+    let w = World::new().await;
+    feature(&w).await;
+    let scope = Scope::new(
+        Arc::new(
+            PathAcl::new(&[Rule {
+                dir: "src/secret".into(),
+                subject: Subject::parse("*").unwrap(),
+                level: Level::None,
+            }])
+            .unwrap(),
+        ),
+        Viewer {
+            who: Who::new(Kind::User, "carol"),
+            teams: Default::default(),
+            repo_level: Level::Read,
+        },
+    );
+    let ctx = CallCtx {
+        repo: RepoName::parse("acme/app").unwrap(),
+        id_mode: IdMode::Asc,
+        principal: Principal {
+            id: "9:carol".into(),
+        },
+        op_id: None,
+        client: None,
+        admin: Default::default(),
+    };
+    let hub = w.reviews.clone().unwrap();
+    let req = || wire::DraftContextRequest {
+        repo: repo_ref(),
+        head: "feature".into(),
+        ..Default::default()
+    };
+    let all = hub.draft_context(&ctx, None, req()).await.unwrap();
+    let seen = hub.draft_context(&ctx, Some(&scope), req()).await.unwrap();
+    let paths = |r: &wire::DraftContextResponse| -> Vec<String> {
+        r.files
+            .iter()
+            .map(|f| String::from_utf8_lossy(&f.path).into_owned())
+            .collect()
+    };
+    assert!(paths(&all).contains(&"src/secret/key.rs".to_owned()));
+    assert_eq!(
+        paths(&seen),
+        vec!["src/lib.rs".to_owned(), "tests/sub.rs".to_owned()]
+    );
+    assert!(seen.added < all.added, "the hidden file is not counted");
+    assert_eq!(seen.messages, vec!["Add subtraction".to_owned()]);
+}

@@ -4,7 +4,8 @@
 //! asc supplies the facts, from the changesets in `base..head`: their subjects, the files they
 //! touch with line counts (summed per path), the size, and the risk with its reasons, the same
 //! classification the review brief uses. The patch text is read with `Repo.Diff`; nothing here
-//! is generated, so there is nothing to leak that the person could not already read.
+//! is generated. A file the person's path rules hide is left out of the list, the size and the
+//! risk, so the draft says nothing the person could not already read.
 
 use std::collections::BTreeMap;
 
@@ -17,6 +18,7 @@ use tonic::Status;
 
 use super::{Reviews, brief};
 use crate::idmode::IdCodec;
+use crate::pathrules::scope::Scope;
 
 /// Changesets walked at most.
 const MAX_CHANGESETS: usize = 500;
@@ -30,10 +32,11 @@ const MAX_FILES: usize = 200;
 const MAX_SPEC: usize = 1024;
 
 impl Reviews {
-    /// `Review.DraftContext`.
+    /// `Review.DraftContext`. `scope` is the caller's path scope; `None` reads every path.
     pub async fn draft_context(
         &self,
         ctx: &CallCtx,
+        scope: Option<&Scope>,
         req: wire::DraftContextRequest,
     ) -> Result<wire::DraftContextResponse, Status> {
         if req.base.len() > MAX_SPEC || req.head.len() > MAX_SPEC {
@@ -102,6 +105,9 @@ impl Reviews {
                 .map_err(|e| super::internal("diffstat", &e))?;
             out.truncated |= st.truncated;
             for f in &st.files {
+                if scope.is_some_and(|s| !s.can_read(f.path.as_bytes())) {
+                    continue;
+                }
                 let e = per_path.entry(f.path.as_bytes().to_vec()).or_default();
                 e.0 = e.0.saturating_add(f.added);
                 e.1 = e.1.saturating_add(f.removed);
