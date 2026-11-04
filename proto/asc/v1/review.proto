@@ -326,8 +326,12 @@ message MarkSuggestionAppliedResponse {
 }
 message SuggestReviewersRequest {
   RepoRef repo = 1;
-  bytes change = 2 [(asc.v1.json) = JSON_KIND_CHANGE];
+  bytes change = 2 [(asc.v1.json) = JSON_KIND_CHANGE];   // empty: suggest for paths instead
   uint32 limit = 3;                      // 0 means 5, at most 20
+  // Before a change exists (a compare of two branches): the files it would touch, at most 1000,
+  // and the handle of the person who would open it, who is left out.
+  repeated bytes paths = 4 [(asc.v1.json) = JSON_KIND_PATH];
+  string author = 5;
 }
 message SuggestedReviewer {
   string handle = 1;
@@ -335,6 +339,11 @@ message SuggestedReviewer {
   uint32 reviews = 3;                    // finished reviews in this repository
   uint32 on_same_files = 4;              // threads they opened on the files this change touches
   string reason = 5;
+  string owns = 6;                       // the [paths] glob of the policy that names them as a writer, if any
+  uint64 median_review_secs = 7;         // from a request to a finished review, over their recent reviews; 0 when unknown
+  bytes knows = 8 [(asc.v1.json) = JSON_KIND_PATH];   // the directory of these files where they opened the most threads
+  uint32 knows_percent = 9;              // their share of all threads in that directory
+  bool can_approve = 10;                 // false for an agent when the policy asks for a person
 }
 message SuggestReviewersResponse {
   repeated SuggestedReviewer reviewers = 1;

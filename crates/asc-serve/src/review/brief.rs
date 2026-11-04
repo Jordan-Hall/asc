@@ -1181,30 +1181,57 @@ impl Reviews {
         Ok(wire::MarkSuggestionAppliedResponse { thread })
     }
 
-    /// `Review.SuggestReviewers`: people who finished many reviews here or opened threads on the
-    /// files this change touches, without its author.
+    /// `Review.SuggestReviewers`: people the policy names as writers of the files a change touches,
+    /// who finished many reviews here or opened threads on those files, without its author. With
+    /// no change it suggests for the paths the request names (a compare before the change exists).
     pub async fn suggest_reviewers(
         &self,
         ctx: &CallCtx,
         req: wire::SuggestReviewersRequest,
     ) -> Result<wire::SuggestReviewersResponse, Status> {
-        let change = change_of(&req.change)?;
         let limit = match req.limit {
             0 => 5,
             n => usize::try_from(n).unwrap_or(20).min(20),
         };
+        if req.change.is_empty() && req.paths.is_empty() {
+            return Err(Status::invalid_argument(
+                "name a change or the paths it touches",
+            ));
+        }
+        if req.paths.len() > MAX_SUGGEST_PATHS {
+            return Err(Status::invalid_argument(format!(
+                "at most {MAX_SUGGEST_PATHS} paths"
+            )));
+        }
         let entry = self.open(ctx).await?;
         let ns = entry.ns.as_bytes().to_vec();
-        self.known(&entry, change).await?;
-        let vs = self.all_versions(&entry, change).await?;
-        let author = {
-            let mut conn = self.registry.pool().acquire().await.map_err(sql)?;
-            store::first_actor(&mut conn, entry.ns, change)
-                .await?
-                .as_deref()
-                .and_then(handle_of)
+        let (paths, author): (Vec<Bytes>, Option<String>) = if req.change.is_empty() {
+            let author = (!req.author.is_empty()).then(|| req.author.clone());
+            (req.paths, author)
+        } else {
+            let change = change_of(&req.change)?;
+            self.known(&entry, change).await?;
+            let vs = self.all_versions(&entry, change).await?;
+            let author = {
+                let mut conn = self.registry.pool().acquire().await.map_err(sql)?;
+                store::first_actor(&mut conn, entry.ns, change)
+                    .await?
+                    .as_deref()
+                    .and_then(handle_of)
+            };
+            let paths = match vs.last() {
+                Some(v) => self
+                    .file_stats(&entry, v.cs)
+                    .await?
+                    .0
+                    .into_iter()
+                    .map(|f| Bytes::copy_from_slice(&f.path))
+                    .collect(),
+                None => Vec::new(),
+            };
+            (paths, author)
         };
-        let mut score: BTreeMap<String, (u32, u32)> = BTreeMap::new();
+        let mut score: BTreeMap<String, Candidate> = BTreeMap::new();
         let rows = sqlx::query(
             "SELECT reviewer, CAST(COUNT(*) AS BIGINT) AS n FROM review_requests WHERE ns = $1 AND done_at > 0 \
              GROUP BY reviewer ORDER BY n DESC LIMIT 50",
@@ -1218,27 +1245,66 @@ impl Reviews {
             score
                 .entry(r.try_get("reviewer").map_err(sql)?)
                 .or_default()
-                .0 = u32::try_from(n).unwrap_or(u32::MAX);
+                .reviews = u32::try_from(n).unwrap_or(u32::MAX);
         }
-        if let Some(v) = vs.last() {
-            let (files, _) = self.file_stats(&entry, v.cs).await?;
-            for chunk in files.chunks(50) {
-                let q = format!(
-                    "SELECT opened_by, CAST(COUNT(*) AS BIGINT) AS n FROM review_threads WHERE ns = $1 AND path IN ({}) \
-                     GROUP BY opened_by",
-                    super::placeholders(2, chunk.len())
-                );
-                let mut query = sqlx::query(sqlx::AssertSqlSafe(q)).bind(ns.clone());
-                for f in chunk {
-                    query = query.bind(f.path.to_vec());
+        // Threads on these files, by opener and directory: who knows the code, and how much of it.
+        let mut dirs: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
+        for chunk in paths.chunks(50) {
+            let q = format!(
+                "SELECT opened_by, path, CAST(COUNT(*) AS BIGINT) AS n FROM review_threads WHERE ns = $1 AND path IN ({}) \
+                 GROUP BY opened_by, path",
+                super::placeholders(2, chunk.len())
+            );
+            let mut query = sqlx::query(sqlx::AssertSqlSafe(q)).bind(ns.clone());
+            for p in chunk {
+                query = query.bind(p.to_vec());
+            }
+            for r in query.fetch_all(self.registry.pool()).await.map_err(sql)? {
+                let n = u32::try_from(r.try_get::<i64, _>("n").map_err(sql)?).unwrap_or(0);
+                let path: Vec<u8> = r.try_get("path").map_err(sql)?;
+                let dir = dir_of(&path).to_vec();
+                *dirs.entry(dir.clone()).or_default() += n;
+                let c = score
+                    .entry(r.try_get("opened_by").map_err(sql)?)
+                    .or_default();
+                c.same += n;
+                *c.dirs.entry(dir).or_default() += n;
+            }
+        }
+        // How long a review usually takes them, over the newest finished reviews here.
+        let mut took: BTreeMap<String, Vec<i64>> = BTreeMap::new();
+        for r in sqlx::query(
+            "SELECT reviewer, done_at - requested_at AS d FROM review_requests WHERE ns = $1 AND done_at > 0 \
+             ORDER BY done_at DESC LIMIT 5000",
+        )
+        .bind(ns.clone())
+        .fetch_all(self.registry.pool())
+        .await
+        .map_err(sql)?
+        {
+            let d: i64 = r.try_get("d").map_err(sql)?;
+            if d > 0 {
+                took.entry(r.try_get("reviewer").map_err(sql)?)
+                    .or_default()
+                    .push(d);
+            }
+        }
+        let (policy, mut human_approval) =
+            match &*RepoView::new(self.registry.clone()).policy(&entry).await? {
+                crate::agents::repo::PolicyState::Valid(p) => {
+                    (Some(p.clone()), p.review.human_approval)
                 }
-                for r in query.fetch_all(self.registry.pool()).await.map_err(sql)? {
-                    let n: i64 = r.try_get("n").map_err(sql)?;
-                    score
-                        .entry(r.try_get("opened_by").map_err(sql)?)
-                        .or_default()
-                        .1 += u32::try_from(n).unwrap_or(0);
-                }
+                _ => (
+                    None,
+                    asc_core::policy::ReviewPolicy::default().human_approval,
+                ),
+            };
+        if let Some(f) = crate::org::review_floor(self.registry.pool(), entry.name.as_str()).await {
+            human_approval |= f.human_approval;
+        }
+        if let Some(p) = &policy {
+            for (handle, glob) in owners_of(p, &paths) {
+                score.entry(handle).or_default().owns.get_or_insert(glob);
             }
         }
         let agents: HashSet<String> = sqlx::query_scalar::<_, String>(
@@ -1250,15 +1316,18 @@ impl Reviews {
         .map_err(sql)?
         .into_iter()
         .collect();
-        let mut ranked: Vec<(u32, String, u32, u32)> = score
+        let mut ranked: Vec<(u32, String, Candidate)> = score
             .into_iter()
             .filter(|(h, _)| Some(h.as_str()) != author.as_deref())
-            .map(|(h, (reviews, same))| {
+            .map(|(h, c)| {
+                let owner = if c.owns.is_some() { 10 } else { 0 };
                 (
-                    same.saturating_mul(3).saturating_add(reviews),
+                    c.same
+                        .saturating_mul(3)
+                        .saturating_add(c.reviews)
+                        .saturating_add(owner),
                     h,
-                    reviews,
-                    same,
+                    c,
                 )
             })
             .collect();
@@ -1267,20 +1336,114 @@ impl Reviews {
             reviewers: ranked
                 .into_iter()
                 .take(limit)
-                .map(|(_, handle, reviews, same)| wire::SuggestedReviewer {
-                    reason: match (same, reviews) {
-                        (0, r) => format!("finished {r} reviews here"),
-                        (s, 0) => format!("commented on {s} threads on these files"),
-                        (s, r) => format!(
-                            "commented on {s} threads on these files and finished {r} reviews"
-                        ),
-                    },
-                    is_agent: agents.contains(&handle),
-                    handle,
-                    reviews,
-                    on_same_files: same,
+                .map(|(_, handle, c)| {
+                    let is_agent = agents.contains(&handle);
+                    let (knows, knows_percent) = c
+                        .dirs
+                        .iter()
+                        .max_by(|a, b| a.1.cmp(b.1).then_with(|| b.0.cmp(a.0)))
+                        .map(|(d, n)| {
+                            let all = dirs.get(d).copied().unwrap_or(*n).max(1);
+                            (Bytes::from(d.clone()), n.saturating_mul(100) / all)
+                        })
+                        .unwrap_or_default();
+                    wire::SuggestedReviewer {
+                        reason: reason_of(&c),
+                        is_agent,
+                        median_review_secs: took.get_mut(&handle).map(|d| median(d)).unwrap_or(0),
+                        handle,
+                        reviews: c.reviews,
+                        on_same_files: c.same,
+                        owns: c.owns.unwrap_or_default(),
+                        knows,
+                        knows_percent,
+                        can_approve: !(is_agent && human_approval),
+                    }
                 })
                 .collect(),
         })
     }
+}
+
+/// The most paths one `Review.SuggestReviewers` request may name.
+const MAX_SUGGEST_PATHS: usize = 1000;
+
+/// What a suggested reviewer has to do with the files.
+#[derive(Default)]
+struct Candidate {
+    /// Finished reviews in the repository.
+    reviews: u32,
+    /// Threads they opened on the files.
+    same: u32,
+    /// Those threads by directory.
+    dirs: BTreeMap<Vec<u8>, u32>,
+    /// The policy glob that names them as a writer of one of the files.
+    owns: Option<String>,
+}
+
+fn reason_of(c: &Candidate) -> String {
+    let history = match (c.same, c.reviews) {
+        (0, 0) => None,
+        (0, r) => Some(format!("finished {r} reviews here")),
+        (s, 0) => Some(format!("commented on {s} threads on these files")),
+        (s, r) => Some(format!(
+            "commented on {s} threads on these files and finished {r} reviews"
+        )),
+    };
+    match (&c.owns, history) {
+        (Some(g), Some(h)) => format!("owns {g}, {h}"),
+        (Some(g), None) => format!("owns {g}"),
+        (None, Some(h)) => h,
+        (None, None) => String::new(),
+    }
+}
+
+/// The directory of a path, or the path itself at the top of the tree.
+fn dir_of(path: &[u8]) -> &[u8] {
+    match path.iter().rposition(|&b| b == b'/') {
+        Some(i) => &path[..i],
+        None => path,
+    }
+}
+
+/// The middle of some durations (the lower one of the two middles).
+fn median(d: &mut [i64]) -> u64 {
+    if d.is_empty() {
+        return 0;
+    }
+    d.sort_unstable();
+    u64::try_from(d[(d.len() - 1) / 2]).unwrap_or(0)
+}
+
+/// The people the policy's `[paths]` rules name as writers of any of `paths`, with the glob of
+/// the first such rule. A rule open to anyone, and a subject that is a pattern, name nobody.
+fn owners_of(p: &asc_core::policy::Policy, paths: &[Bytes]) -> Vec<(String, String)> {
+    use asc_core::policy::{Kind, Subject};
+    let literal = |s: &Subject| match s {
+        Subject::Of {
+            kind: Kind::User,
+            glob,
+        } if !glob.contains(['*', '?']) => Some(glob.clone()),
+        _ => None,
+    };
+    let mut out = Vec::new();
+    for rule in &p.paths {
+        if rule.write.contains(&Subject::Anyone) || !paths.iter().any(|x| rule.glob.matches(x)) {
+            continue;
+        }
+        for s in &rule.write {
+            let names: Vec<String> = match s {
+                Subject::Role(r) => p
+                    .roles
+                    .get(r)
+                    .map(|m| m.iter().filter_map(literal).collect())
+                    .unwrap_or_default(),
+                s => literal(s).into_iter().collect(),
+            };
+            for n in names {
+                out.push((n, rule.glob.as_str().to_owned()));
+            }
+        }
+    }
+    out
 }

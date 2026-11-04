@@ -632,6 +632,8 @@ async fn reviewers_are_suggested_from_history_without_the_author() {
                 repo: repo_ref(),
                 change: cbytes(1),
                 limit: 0,
+                paths: vec![],
+                author: String::new(),
             },
             DAVE,
             false,
@@ -659,6 +661,8 @@ async fn reviewers_are_suggested_from_history_without_the_author() {
                 repo: repo_ref(),
                 change: cbytes(1),
                 limit: 1,
+                paths: vec![],
+                author: String::new(),
             },
             DAVE,
             false,
@@ -674,6 +678,8 @@ async fn reviewers_are_suggested_from_history_without_the_author() {
                 repo: repo_ref(),
                 change: cbytes(9),
                 limit: 0,
+                paths: vec![],
+                author: String::new(),
             },
             DAVE,
             false,
@@ -681,6 +687,164 @@ async fn reviewers_are_suggested_from_history_without_the_author() {
         .await
         .unwrap_err();
     assert_eq!(missing.code(), Code::NotFound);
+}
+
+#[tokio::test]
+async fn reviewers_are_suggested_for_paths_with_owners_what_they_know_and_how_fast_they_review() {
+    let f = fx().await;
+    let ns = f.e.ns.as_bytes().to_vec();
+    set_trunk_policy(
+        &f,
+        "version = 1
+[roles]
+maintainer = [\"user:alice\"]
+[paths.\"tests/**\"]
+write = [\"user:erin\", \"user:team-*\"]
+[paths.\"docs/**\"]
+write = [\"*\"]
+",
+    )
+    .await;
+    // Bob finished three reviews (60, 120 and 7200 seconds); carol one.
+    for (i, (who, took)) in [("bob", 60), ("bob", 120), ("bob", 7200), ("carol", 30)]
+        .into_iter()
+        .enumerate()
+    {
+        sqlx::query("INSERT INTO review_requests (ns, change, reviewer, requested_by, requested_at, done_at) VALUES ($1, $2, $3, 'x', 1000, $4)")
+            .bind(ns.clone())
+            .bind(vec![u8::try_from(i).unwrap(); 16])
+            .bind(who.to_owned())
+            .bind(1000 + took)
+            .execute(f.reg.pool())
+            .await
+            .unwrap();
+    }
+    // Threads on src/refunds: carol three, bob one; and one by dave on a file this change leaves alone.
+    for (id, (who, path)) in [
+        ("carol", "src/refunds/a.rs"),
+        ("carol", "src/refunds/b.rs"),
+        ("carol", "src/refunds/a.rs"),
+        ("bob", "src/refunds/a.rs"),
+        ("dave", "src/other.rs"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        sqlx::query("INSERT INTO review_threads (ns, id, change, path, version, side, start_line, end_line, status, opened_by, created, updated) VALUES ($1, $2, $3, $4, 1, 0, 1, 1, 0, $5, 1, 1)")
+            .bind(ns.clone())
+            .bind(i64::try_from(id).unwrap() + 100)
+            .bind(vec![9u8; 16])
+            .bind(path.as_bytes().to_vec())
+            .bind(who.to_owned())
+            .execute(f.reg.pool())
+            .await
+            .unwrap();
+    }
+    let ask = |paths: &[&str], author: &str| wire::SuggestReviewersRequest {
+        repo: repo_ref(),
+        change: Bytes::new(),
+        limit: 0,
+        paths: paths
+            .iter()
+            .map(|p| Bytes::copy_from_slice(p.as_bytes()))
+            .collect(),
+        author: author.to_owned(),
+    };
+    let r = f
+        .review
+        .suggest_reviewers(req(
+            ask(
+                &[
+                    "src/refunds/a.rs",
+                    "src/refunds/b.rs",
+                    "tests/x.rs",
+                    "docs/y.md",
+                ],
+                "bob",
+            ),
+            DAVE,
+            false,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    let names: Vec<&str> = r.reviewers.iter().map(|x| x.handle.as_str()).collect();
+    assert_eq!(
+        names,
+        ["carol", "erin"],
+        "bob would open it, team-* is a pattern, docs/** is open to anyone and dave knows other files"
+    );
+    let carol = &r.reviewers[0];
+    assert_eq!(carol.on_same_files, 3);
+    assert_eq!(carol.knows, &b"src/refunds"[..]);
+    assert_eq!(carol.knows_percent, 75, "three of the four threads there");
+    assert_eq!(carol.median_review_secs, 30);
+    assert!(carol.owns.is_empty() && carol.can_approve);
+    let erin = &r.reviewers[1];
+    assert_eq!(erin.owns, "tests/**");
+    assert!(erin.knows.is_empty() && erin.median_review_secs == 0);
+    assert_eq!(erin.reason, "owns tests/**");
+    // Without an author bob is back, with the lower middle of his three review times.
+    let all = f
+        .review
+        .suggest_reviewers(req(ask(&["src/refunds/a.rs"], ""), DAVE, false))
+        .await
+        .unwrap()
+        .into_inner();
+    let bob = all.reviewers.iter().find(|x| x.handle == "bob").unwrap();
+    assert_eq!(bob.median_review_secs, 120);
+    assert_eq!(bob.knows_percent, 33, "one of the three threads on a.rs");
+    // A request names a change or paths, and not too many paths.
+    for bad in [
+        ask(&[], ""),
+        wire::SuggestReviewersRequest {
+            paths: vec![Bytes::from_static(b"a"); 1001],
+            ..ask(&[], "")
+        },
+    ] {
+        let e = f
+            .review
+            .suggest_reviewers(req(bad, DAVE, false))
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), Code::InvalidArgument);
+    }
+}
+
+#[tokio::test]
+async fn an_agent_suggested_as_a_reviewer_cannot_approve_when_a_person_must() {
+    let f = fx().await;
+    sqlx::query(
+        "INSERT INTO agent_runs (id, repo, agent, state, target, base, task, created_by, created) VALUES (7, 'o/r', 'fixer', 4, 'master', $1, 't', '42:alice', 1)",
+    )
+    .bind(vec![0u8; 0])
+    .execute(f.reg.pool())
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO review_requests (ns, change, reviewer, requested_by, requested_at, done_at) VALUES ($1, $2, 'fixer', 'x', 1, 2)")
+        .bind(f.e.ns.as_bytes().to_vec())
+        .bind(vec![3u8; 16])
+        .execute(f.reg.pool())
+        .await
+        .unwrap();
+    let r = f
+        .review
+        .suggest_reviewers(req(
+            wire::SuggestReviewersRequest {
+                repo: repo_ref(),
+                change: Bytes::new(),
+                limit: 0,
+                paths: vec![Bytes::from_static(b"f")],
+                author: String::new(),
+            },
+            DAVE,
+            false,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    let fixer = &r.reviewers[0];
+    assert!(fixer.is_agent && !fixer.can_approve, "{fixer:?}");
 }
 
 #[tokio::test]
