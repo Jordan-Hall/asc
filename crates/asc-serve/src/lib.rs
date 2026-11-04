@@ -39,6 +39,7 @@ pub mod git_view;
 pub mod graph_sql;
 pub mod h3_listener;
 pub mod history;
+pub mod hook_events;
 pub mod http;
 pub mod idmode;
 pub mod import_push;

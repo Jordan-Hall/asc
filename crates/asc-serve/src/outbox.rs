@@ -162,6 +162,7 @@ impl Outbox {
             "post_receive",
             "bridge_promote",
             crate::agents::runs::FINISHED_EFFECT,
+            crate::hook_events::EFFECT,
             crate::codeintel::queue::EFFECT,
             crate::notify::policy::EFFECT,
         ] {
