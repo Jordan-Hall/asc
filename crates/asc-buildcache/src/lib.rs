@@ -5,6 +5,7 @@
 //! cas/<2 hex>/<FileId>     output bytes as they are, written once, read-only
 //! ac/<2 hex>/<action key>  action entry (JSON): the outputs and where the entry came from
 //! events/<day>.jsonl       hits, misses and writes, for `asc cache status` and `show`
+//! outbox/<key>             entries waiting for `asc cache push`
 //! tmp/                     files being written
 //! ```
 //!
@@ -16,11 +17,13 @@
 mod events;
 mod gc;
 mod key;
+mod pack;
 mod store;
 
 pub use events::{Event, EventKind, ToolStats};
 pub use gc::{GcReport, Usage};
 pub use key::{ActionKey, KeyBuilder};
+pub use pack::{MAX_UNPACKED, artifact_name, key_of_artifact};
 pub use store::{Action, EntryInfo, Origin, Output, OutputKind, Store};
 
 /// The default size the store is kept under (`cache.build.max_size`).
