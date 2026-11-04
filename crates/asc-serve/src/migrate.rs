@@ -179,6 +179,44 @@ mod tests {
         }
     }
 
+    /// Every PostgreSQL migration applies, and the column named `asc` (a reserved word there) is
+    /// reached quoted. Runs when `ASC_TEST_POSTGRES_URL` names a server.
+    #[tokio::test]
+    async fn postgres_migrates_and_reads_the_git_map() {
+        let Ok(admin) = std::env::var("ASC_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let p = connect(&crate::ai::tests::postgres_db(&admin).await, 2)
+            .await
+            .unwrap();
+        assert_eq!(backend(&p), Backend::Postgres);
+        assert!(matches!(
+            ensure_current(&p).await,
+            Err(MigrateError::Behind(_))
+        ));
+        migrate(&p).await.unwrap();
+        migrate(&p).await.unwrap();
+        ensure_current(&p).await.unwrap();
+        sqlx::query("INSERT INTO git_map (ns, git, kind, \"asc\") VALUES ($1, $2, $3, $4)")
+            .bind(vec![0u8])
+            .bind(vec![1u8])
+            .bind(1i64)
+            .bind(vec![2u8])
+            .execute(&p)
+            .await
+            .unwrap();
+        let got: Vec<u8> = sqlx::query_scalar(
+            "SELECT \"asc\" FROM git_map WHERE ns = $1 AND git = $2 AND kind = $3",
+        )
+        .bind(vec![0u8])
+        .bind(vec![1u8])
+        .bind(1i64)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+        assert_eq!(got, vec![2u8]);
+    }
+
     #[test]
     fn every_shipped_migration_is_expand_only() {
         for b in [Backend::Sqlite, Backend::Postgres] {
@@ -211,7 +249,7 @@ mod tests {
         migrate(&p).await.unwrap();
         let n1 = [
             "INSERT INTO repos (name, ns, created) VALUES ('a/b', x'00112233445566778899aabbccddeeff', 1)",
-            "INSERT INTO git_map (ns, git, kind, asc) VALUES (x'00', x'01', 1, x'02') ON CONFLICT DO NOTHING",
+            "INSERT INTO git_map (ns, git, kind, \"asc\") VALUES (x'00', x'01', 1, x'02') ON CONFLICT DO NOTHING",
             "INSERT INTO cs_graph (ns, cs, gen, parents) VALUES (x'00', x'01', 1, x'')",
             "INSERT INTO file_meta (ns, file, size, git) VALUES (x'00', x'01', 5, x'02')",
             "INSERT INTO op_results (op_id, repo_id, result, at) VALUES (x'01', 1, x'', 1)",
@@ -219,7 +257,7 @@ mod tests {
             "INSERT INTO mirror_state (repo_id, last_import) VALUES (1, 1)",
             "INSERT INTO gc_marks (run, ns, key) VALUES (1, x'00', x'01')",
             "SELECT id, name, ns, mode, default_branch FROM repos WHERE name = 'a/b'",
-            "SELECT asc FROM git_map WHERE ns = x'00' AND git = x'01' AND kind = 1",
+            "SELECT \"asc\" FROM git_map WHERE ns = x'00' AND git = x'01' AND kind = 1",
             "SELECT size, git FROM file_meta WHERE ns = x'00' AND file = x'01'",
         ];
         for q in n1 {

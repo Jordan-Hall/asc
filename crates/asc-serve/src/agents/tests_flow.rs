@@ -340,6 +340,7 @@ async fn a_run_needs_a_usable_key_and_says_why_it_cannot_start() {
         base_url: w.fake.url(),
         default_model: "model-x".into(),
         monthly_cap: 0,
+        created_by: String::new(),
     };
     let k = w.ai.create_key(&alice(), new).await.unwrap();
     let e = create(&w, "alice-token", base_msg()).await.unwrap_err();
@@ -1472,7 +1473,18 @@ async fn credentials_in_files_and_the_runs_own_secrets_never_reach_events_or_log
     assert!(!all.contains("ascat_"), "an agent token reached the events");
     assert!(all.contains("***"));
     assert!(!logs.text().contains(PLANTED));
-    assert!(!logs.text().contains("ascat_"));
+    // The logs may name the prefix (a migration's comment does, logged as it runs); a token is the
+    // prefix and a full body.
+    let text = logs.text();
+    assert!(
+        !text
+            .match_indices(crate::agents::tokens::PREFIX)
+            .any(|(i, _)| {
+                text.get(i..i + crate::agents::tokens::TOKEN_LEN)
+                    .is_some_and(crate::agents::tokens::looks_like_token)
+            }),
+        "an agent token reached the logs"
+    );
     // The failure message of a run is stored masked too.
     assert!(!row.failure_message.contains(PLANTED));
 }
@@ -2031,4 +2043,53 @@ async fn the_organisations_agent_card_and_spend_ceiling_gate_a_run() {
     .unwrap();
     let e = create(&w, "alice-token", base_msg()).await.unwrap_err();
     assert_eq!(code(&e), "AGENTS_DISABLED");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_run_uses_the_key_its_feature_chose_and_waits_while_the_feature_is_paused() {
+    use crate::ai::feature::Feature;
+    let w = World::new().await;
+    let _first = w.key(Owner::Org("acme".into()), "first").await;
+    let chosen = w.key(Owner::Org("acme".into()), "chosen").await;
+    let repo = Owner::Repo("acme/app".into());
+    w.ai.set_feature(&repo, Feature::AgentRuns, &chosen.id, 0, "pat:alice")
+        .await
+        .unwrap();
+    w.fake.set_default(done("ok"));
+    let run = create(&w, "alice-token", base_msg())
+        .await
+        .unwrap()
+        .into_inner()
+        .run
+        .unwrap();
+    assert_eq!(
+        run.ai_key_id, chosen.id,
+        "the feature's key, not the first one"
+    );
+
+    // A cap already spent pauses new runs until the month ends or the cap is raised.
+    w.ai.set_feature(&repo, Feature::AgentRuns, &chosen.id, 1, "pat:alice")
+        .await
+        .unwrap();
+    let scope = crate::ai::feature::scope(&repo, Feature::AgentRuns);
+    let month = crate::ai::clock::month(crate::ai::clock::now());
+    sqlx::query("INSERT INTO ai_month (scope, month, spent, reserved) VALUES ($1, $2, 5, 0) ON CONFLICT (scope, month) DO UPDATE SET spent = 5")
+        .bind(scope)
+        .bind(month)
+        .execute(&w.pool)
+        .await
+        .unwrap();
+    let e = create(&w, "alice-token", base_msg()).await.unwrap_err();
+    assert_eq!(e.code(), Code::ResourceExhausted);
+    assert_eq!(code(&e), "AI_CAP_REACHED");
+    w.ai.set_feature(
+        &repo,
+        Feature::AgentRuns,
+        &chosen.id,
+        1_000_000,
+        "pat:alice",
+    )
+    .await
+    .unwrap();
+    create(&w, "alice-token", base_msg()).await.unwrap();
 }

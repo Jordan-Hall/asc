@@ -84,7 +84,16 @@ pub(crate) struct Fx {
     pub dir: tempfile::TempDir,
 }
 
+/// A migrated database for one test: a SQLite file in `dir`, or, when `ASC_TEST_POSTGRES_URL` names
+/// a PostgreSQL server, a new database of its own there.
 pub(crate) async fn pool_in(dir: &tempfile::TempDir) -> AnyPool {
+    if let Ok(admin) = std::env::var("ASC_TEST_POSTGRES_URL") {
+        let pool = migrate::connect(&postgres_db(&admin).await, 8)
+            .await
+            .unwrap();
+        migrate::migrate(&pool).await.unwrap();
+        return pool;
+    }
     let url = format!(
         "sqlite:{}?mode=rwc",
         dir.path()
@@ -96,6 +105,20 @@ pub(crate) async fn pool_in(dir: &tempfile::TempDir) -> AnyPool {
     let pool = migrate::connect(&url, 8).await.unwrap();
     migrate::migrate(&pool).await.unwrap();
     pool
+}
+
+/// Creates a fresh database on the server `admin` names and returns its URL.
+pub(crate) async fn postgres_db(admin: &str) -> String {
+    let name = format!("asc_t_{}", uuid::Uuid::new_v4().simple());
+    let server = migrate::connect(admin, 1).await.unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!("CREATE DATABASE {name}")))
+        .execute(&server)
+        .await
+        .unwrap();
+    server.close().await;
+    let mut url = url::Url::parse(admin).unwrap();
+    url.set_path(&name);
+    url.into()
 }
 
 pub(crate) fn authorizer() -> Arc<dyn Authorizer> {
@@ -149,6 +172,7 @@ pub(crate) fn new_key(label: &str, base: &str) -> NewKey {
         base_url: base.into(),
         default_model: String::new(),
         monthly_cap: 0,
+        created_by: String::new(),
     }
 }
 
@@ -190,6 +214,7 @@ pub(crate) fn request(model: &str) -> ModelRequest {
 const WHO: CallInfo<'static> = CallInfo {
     repo: "acme/app",
     agent: "fixer",
+    feature: None,
 };
 
 // ------------------------------------------------------------------------------ keys
@@ -1039,7 +1064,7 @@ async fn a_failed_call_releases_its_reservation_and_a_sweep_returns_stale_ones()
     let r = f
         .hub
         .store
-        .reserve(&k.id, 1_000_000, 0, 500, now - 3 * 3600)
+        .reserve(&k.id, 1_000_000, 0, None, 500, now - 3 * 3600)
         .await
         .unwrap();
     std::mem::forget(r);
@@ -1243,7 +1268,7 @@ async fn a_key_is_found_repo_then_org_then_user_then_instance_and_never_across_o
 
 // ------------------------------------------------------------------------------ the service
 
-fn req<T>(msg: T, token: &str, op: Option<&str>) -> Request<T> {
+pub(crate) fn req<T>(msg: T, token: &str, op: Option<&str>) -> Request<T> {
     let mut r = Request::new(msg);
     r.extensions_mut()
         .insert(Credential::bearer(BearerToken::new(token).unwrap()));
@@ -1253,14 +1278,18 @@ fn req<T>(msg: T, token: &str, op: Option<&str>) -> Request<T> {
     r
 }
 
-fn owner_ref(kind: wire::OwnerKind, name: &str) -> Option<wire::OwnerRef> {
+pub(crate) fn owner_ref(kind: wire::OwnerKind, name: &str) -> Option<wire::OwnerRef> {
     Some(wire::OwnerRef {
         kind: kind as i32,
         name: name.into(),
     })
 }
 
-fn create_msg(owner: Option<wire::OwnerRef>, label: &str, base: &str) -> wire::CreateAiKeyRequest {
+pub(crate) fn create_msg(
+    owner: Option<wire::OwnerRef>,
+    label: &str,
+    base: &str,
+) -> wire::CreateAiKeyRequest {
     wire::CreateAiKeyRequest {
         owner,
         label: label.into(),
@@ -1272,12 +1301,12 @@ fn create_msg(owner: Option<wire::OwnerRef>, label: &str, base: &str) -> wire::C
     }
 }
 
-fn service(f: &Fx) -> AiService {
+pub(crate) fn service(f: &Fx) -> AiService {
     AiService::new(f.hub.clone(), f.authorizer.clone(), ServerInfo::default())
 }
 
-const OP1: &str = "11111111-1111-4111-8111-111111111111";
-const OP2: &str = "22222222-2222-4222-8222-222222222222";
+pub(crate) const OP1: &str = "11111111-1111-4111-8111-111111111111";
+pub(crate) const OP2: &str = "22222222-2222-4222-8222-222222222222";
 
 #[tokio::test(flavor = "current_thread")]
 async fn the_service_serves_the_owner_and_hides_the_key_from_everyone_else() {
@@ -1671,6 +1700,7 @@ async fn usage_is_reported_per_owner_and_group() {
             &CallInfo {
                 repo: "acme/other",
                 agent: "docs",
+                feature: None,
             },
             &request("mystery"),
             false,

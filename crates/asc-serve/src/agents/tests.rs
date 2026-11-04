@@ -283,6 +283,7 @@ impl World {
             base_url: self.fake.url(),
             default_model: "model-x".into(),
             monthly_cap: 0,
+            created_by: String::new(),
         };
         let k = self.ai.create_key(&owner, new).await.unwrap();
         self.ai

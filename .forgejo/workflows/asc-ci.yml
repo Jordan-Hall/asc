@@ -72,6 +72,19 @@ jobs:
       - run: bash build/git-oracle/oracle.sh selftest
       - run: bash build/ci/linux-check.sh
 
+  # The asc-serve tests that take ASC_TEST_POSTGRES_URL, against a throwaway PostgreSQL cluster (no Docker).
+  postgres:
+    runs-on: ${{ github.event_name == 'pull_request' && 'asc-build' || 'asc-build-trusted' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: https://github.com/dtolnay/rust-toolchain@035fceb3c12fb0c6a9461b52775e16473133e591 # 1.95.0
+        with:
+          toolchain: 1.95.0
+      - uses: https://github.com/Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: PostgreSQL server
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq postgresql
+      - run: bash build/ci/postgres-it.sh
+
   # asc-store's S3 suite against real Garage (no Docker); results in docs/garage-compat.md.
   # The Garage binaries have no published checksums, so the hashes below are the ones recorded when first fetched.
   garage-compat:
