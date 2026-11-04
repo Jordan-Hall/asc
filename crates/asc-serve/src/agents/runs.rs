@@ -241,6 +241,36 @@ pub(super) fn limits_of(s: &str) -> Budget {
     }
 }
 
+/// The WHERE clause of a run listing. `$1` is the repository; the returned binds are `$2` onwards.
+fn run_filter(
+    states: &[RunState],
+    agent: &str,
+    created_by: &str,
+    before: Option<u64>,
+) -> (String, Vec<String>) {
+    let mut conds = vec!["repo = $1".to_owned()];
+    if !states.is_empty() {
+        let list: Vec<String> = states.iter().map(|s| (*s as i64).to_string()).collect();
+        conds.push(format!("state IN ({})", list.join(", ")));
+    }
+    let mut binds: Vec<String> = Vec::new();
+    if !agent.is_empty() {
+        binds.push(agent.to_owned());
+        conds.push(format!("agent = ${}", binds.len() + 1));
+    }
+    if !created_by.is_empty() {
+        binds.push(created_by.to_owned());
+        conds.push(format!(
+            "(created_by = ${n} OR starter = ${n})",
+            n = binds.len() + 1
+        ));
+    }
+    if let Some(b) = before {
+        conds.push(format!("id < {}", i64::try_from(b).unwrap_or(i64::MAX)));
+    }
+    (conds.join(" AND "), binds)
+}
+
 fn row_of(r: &AnyRow) -> Result<RunRow, sqlx::Error> {
     let changes: Vec<String> =
         serde_json::from_str(&r.try_get::<String, _>("changes_json")?).unwrap_or_default();
@@ -366,29 +396,26 @@ impl RunStore {
         before: Option<u64>,
         limit: usize,
     ) -> Result<Vec<RunRow>, sqlx::Error> {
-        let mut conds = vec!["repo = $1".to_owned()];
-        if !states.is_empty() {
-            let list: Vec<String> = states.iter().map(|s| (*s as i64).to_string()).collect();
-            conds.push(format!("state IN ({})", list.join(", ")));
-        }
-        let mut binds: Vec<String> = Vec::new();
-        if !agent.is_empty() {
-            binds.push(agent.to_owned());
-            conds.push(format!("agent = ${}", binds.len() + 1));
-        }
-        if !created_by.is_empty() {
-            binds.push(created_by.to_owned());
-            conds.push(format!(
-                "(created_by = ${n} OR starter = ${n})",
-                n = binds.len() + 1
-            ));
-        }
-        if let Some(b) = before {
-            conds.push(format!("id < {}", i64::try_from(b).unwrap_or(i64::MAX)));
-        }
+        self.page(repo, states, agent, created_by, before, 0, limit)
+            .await
+    }
+
+    /// One page of the runs that match: newest first, `offset` runs skipped (after `before`), and one run
+    /// more than `limit` so the caller knows a next page exists.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn page(
+        &self,
+        repo: &str,
+        states: &[RunState],
+        agent: &str,
+        created_by: &str,
+        before: Option<u64>,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<RunRow>, sqlx::Error> {
+        let (conds, binds) = run_filter(states, agent, created_by, before);
         let q = format!(
-            "SELECT {COLS} FROM agent_runs WHERE {} ORDER BY id DESC LIMIT {}",
-            conds.join(" AND "),
+            "SELECT {COLS} FROM agent_runs WHERE {conds} ORDER BY id DESC LIMIT {} OFFSET {offset}",
             limit + 1
         );
         // Runs are stored under the lower-case name; a request may spell the repository otherwise.
@@ -402,6 +429,25 @@ impl RunStore {
             .iter()
             .map(row_of)
             .collect()
+    }
+
+    /// The number of runs that match the filters of [`Self::page`].
+    pub async fn count(
+        &self,
+        repo: &str,
+        states: &[RunState],
+        agent: &str,
+        created_by: &str,
+    ) -> Result<u64, sqlx::Error> {
+        let (conds, binds) = run_filter(states, agent, created_by, None);
+        let q = format!("SELECT COUNT(*) FROM agent_runs WHERE {conds}");
+        let mut query =
+            sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(q)).bind(repo.to_ascii_lowercase());
+        for b in binds {
+            query = query.bind(b);
+        }
+        let n = query.fetch_one(&self.pool).await?;
+        Ok(u64::try_from(n).unwrap_or(0))
     }
 
     /// Moves a run from one of `from` to `to`. `Ok(false)`: it was in another state.

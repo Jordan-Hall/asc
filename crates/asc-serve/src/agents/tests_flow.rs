@@ -546,6 +546,26 @@ async fn runs_are_listed_newest_first_filtered_and_paged_for_readers_only() {
     .into_inner();
     assert_eq!(next.runs.iter().map(|r| r.id).collect::<Vec<_>>(), [ids[0]]);
     assert!(next.next_page_token.is_empty());
+    assert_eq!((page.total, next.total), (3, 3));
+    // A numbered page skips the runs of the pages before it.
+    let second = list(
+        "carol-token",
+        wire::ListAgentRunsRequest {
+            repo: repo_ref(),
+            limit: 2,
+            offset: 2,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap()
+    .into_inner();
+    assert_eq!(
+        second.runs.iter().map(|r| r.id).collect::<Vec<_>>(),
+        [ids[0]]
+    );
+    assert_eq!(second.total, 3);
+    assert!(second.next_page_token.is_empty());
     let none = list(
         "carol-token",
         wire::ListAgentRunsRequest {
@@ -558,6 +578,7 @@ async fn runs_are_listed_newest_first_filtered_and_paged_for_readers_only() {
     .unwrap()
     .into_inner();
     assert!(none.runs.is_empty());
+    assert_eq!(none.total, 0);
     let mine = list(
         "carol-token",
         wire::ListAgentRunsRequest {
@@ -596,6 +617,11 @@ async fn runs_are_listed_newest_first_filtered_and_paged_for_readers_only() {
         wire::ListAgentRunsRequest {
             repo: repo_ref(),
             agent: "BAD".into(),
+            ..Default::default()
+        },
+        wire::ListAgentRunsRequest {
+            repo: repo_ref(),
+            offset: 100_001,
             ..Default::default()
         },
     ] {

@@ -45,6 +45,8 @@ use crate::review::{Env, handle_of, require_handle};
 /// Runs in one `ListRuns` page when the request names no limit, and at most.
 const DEFAULT_RUNS: usize = 30;
 const MAX_RUNS_PAGE: usize = 100;
+/// The furthest a numbered page of runs may start.
+const MAX_RUNS_OFFSET: u32 = 100_000;
 /// Tokens in one `ListTokens` page when the request names no limit, and at most.
 const DEFAULT_TOKENS: usize = 50;
 const MAX_TOKENS_PAGE: usize = 200;
@@ -417,18 +419,25 @@ impl Agents for AgentService {
         let scope = format!("Agents.ListRuns|{}", ctx.repo);
         let before = crate::pagetoken::open_id(&scope, &ctx.principal.id, &msg.page_token)?
             .map(|n| u64::try_from(n).unwrap_or(0));
-        let mut rows = self
-            .hub
-            .core
-            .runs
-            .list(
-                &ctx.repo.as_str().to_ascii_lowercase(),
+        if msg.offset > MAX_RUNS_OFFSET {
+            return Err(Status::invalid_argument("offset is at most 100000"));
+        }
+        let repo = ctx.repo.as_str().to_ascii_lowercase();
+        let runs_store = &self.hub.core.runs;
+        let mut rows = runs_store
+            .page(
+                &repo,
                 &states,
                 &msg.agent,
                 &msg.created_by,
                 before,
+                usize::try_from(msg.offset).unwrap_or(0),
                 limit,
             )
+            .await
+            .map_err(|e| db(&e))?;
+        let total = runs_store
+            .count(&repo, &states, &msg.agent, &msg.created_by)
             .await
             .map_err(|e| db(&e))?;
         let next = if rows.len() > limit {
@@ -446,6 +455,7 @@ impl Agents for AgentService {
         Ok(Response::new(wire::ListAgentRunsResponse {
             runs,
             next_page_token: next,
+            total,
         }))
     }
 
