@@ -14,6 +14,7 @@ members = [
     "crates/asc-vfs",
     "crates/asc-serve",
     "crates/asc-ci",
+    "crates/asc-buildcache",
     "crates/asc-embed",
     "crates/asc-codeintel",
     "crates/asc",
@@ -42,6 +43,7 @@ asc-wc = { path = "crates/asc-wc" }
 asc-vfs = { path = "crates/asc-vfs" }
 asc-serve = { path = "crates/asc-serve", default-features = false }   # `asc` forwards `git-compat` itself (SPEC 25.9)
 asc-ci = { path = "crates/asc-ci" }
+asc-buildcache = { path = "crates/asc-buildcache" }
 asc-codeintel = { path = "crates/asc-codeintel" }
 asc-mcp = { path = "crates/asc-mcp" }
 

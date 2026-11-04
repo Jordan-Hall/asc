@@ -251,6 +251,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "asc-buildcache"
+version = "0.1.0"
+dependencies = [
+ "asc-core",
+ "blake3",
+ "data-encoding",
+ "reflink-copy",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "uuid",
+]
+
+[[package]]
 name = "asc-ci"
 version = "0.1.0"
 dependencies = [
