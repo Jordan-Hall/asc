@@ -1100,13 +1100,14 @@ async fn get_build_rev(
         scopes.push(Scope::Trusted);
     }
     let mut keys = std::collections::BTreeSet::new();
+    let mut shared = std::collections::BTreeSet::new();
     let mut files = 0usize;
     'scopes: for scope in scopes {
         let dir = s.rev_dir(&caller.slug, &scope, &rev);
         let listed: Vec<_> = s.store.list(Some(&dir)).try_collect().await?;
         for obj in listed {
             files += 1;
-            if files > MAX_REV_FILES || keys.len() >= MAX_REV_KEYS {
+            if files > MAX_REV_FILES || keys.len() + shared.len() >= MAX_REV_KEYS {
                 break 'scopes;
             }
             if obj.size > MAX_JSON_BYTES as u64 {
@@ -1120,11 +1121,28 @@ async fn get_build_rev(
             let Ok(doc) = serde_json::from_slice::<RevKeys>(&bytes) else {
                 continue;
             };
-            keys.extend(
-                doc.keys
-                    .into_iter()
-                    .filter(|k| ArtifactHash::parse(k).is_ok()),
-            );
+            let valid = doc
+                .keys
+                .into_iter()
+                .filter(|k| ArtifactHash::parse(k).is_ok());
+            // Under path rules a shared key is listed only where `find` would serve it.
+            if caller.rules.is_some() && scope != caller.scope {
+                shared.extend(valid);
+            } else {
+                keys.extend(valid);
+            }
+        }
+    }
+    if let Some(rules) = &caller.rules {
+        let extra: Vec<String> = shared.difference(&keys).cloned().collect();
+        for k in extra {
+            let Ok(hash) = ArtifactHash::parse(&k) else {
+                continue;
+            };
+            let dir = s.read_dir(&s.dir_path(&caller.slug, &hash)).await?;
+            if dir.is_some_and(|d| rules.level(d.as_bytes()) >= asc_core::pathacl::Level::Build) {
+                keys.insert(k);
+            }
         }
     }
     Ok(axum::Json(serde_json::json!({ "keys": keys })).into_response())
@@ -1376,6 +1394,52 @@ mod tests {
         .send(s)
         .await
         .0
+    }
+
+    #[tokio::test]
+    async fn a_revision_lists_only_shared_keys_the_caller_could_fetch() {
+        let (s, _) = state();
+        let (hidden, open, unregistered) = ("a".repeat(16), "b".repeat(16), "d".repeat(16));
+        with_rules(&s, "none").await;
+        for h in [&hidden, &open, &unregistered] {
+            assert_eq!(
+                put(&s, "ci-secret", h, b"out", None).await,
+                StatusCode::ACCEPTED
+            );
+        }
+        assert_eq!(
+            register(&s, "ci-secret", &hidden, "secret/app").await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            register(&s, "ci-secret", &open, "src").await,
+            StatusCode::OK
+        );
+        let uri = format!("/v8/asc/build-revs/{}?slug={SLUG}", "ab".repeat(20));
+        let body = serde_json::json!({ "keys": [&hidden, &open, &unregistered] }).to_string();
+        let posted = call("POST", &uri, Some("ci-secret"))
+            .header("content-type", "application/json")
+            .body(body.clone())
+            .send(&s)
+            .await;
+        assert_eq!(posted.0, StatusCode::OK);
+        let mine = "e".repeat(16);
+        let own = call("POST", &uri, Some("dev-secret"))
+            .header("content-type", "application/json")
+            .body(serde_json::json!({ "keys": [&mine] }).to_string())
+            .send(&s)
+            .await;
+        assert_eq!(own.0, StatusCode::OK);
+        let (_, _, b) = call("GET", &uri, Some("dev-secret")).send(&s).await;
+        let got: serde_json::Value = serde_json::from_slice(&b).unwrap();
+        assert_eq!(got["keys"], serde_json::json!([open, mine]));
+        let (_, _, b) = call("GET", &uri, Some("ci-secret")).send(&s).await;
+        let got: serde_json::Value = serde_json::from_slice(&b).unwrap();
+        assert_eq!(
+            got["keys"].as_array().unwrap().len(),
+            3,
+            "trusted reads its own scope"
+        );
     }
 
     #[tokio::test]
