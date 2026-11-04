@@ -4,7 +4,8 @@
 //! update of trunk changes that file. The effect compares the policy of the old tip with the new
 //! one and, when they differ, tells the recent contributors of the repository (the people the
 //! rules apply to; the hub drops those who cannot read it). The person who pushed the change is
-//! not told. A change the file made is told once: the key is the new tip.
+//! not told. A change the file made is told once: the key is the new tip. The change is also
+//! queued for the forge's webhooks as a `policy.changed` event ([`crate::hook_events`]).
 
 use std::sync::Arc;
 
@@ -15,6 +16,7 @@ use sqlx::AnyPool;
 use super::{Event, Kind, MAX_USERS};
 use crate::agents::repo::{PolicyState, RepoView};
 use crate::codeintel::source::RegistryChanges;
+use crate::hook_events::HookEvent;
 use crate::outbox::{Effect, EffectError, Job};
 use crate::registry::Registry;
 
@@ -138,14 +140,19 @@ impl Effect for PolicyChanged {
             let Some(how) = change(&before, &after) else {
                 continue;
             };
+            let hex = |b: &[u8]| -> String { b.iter().map(|x| format!("{x:02x}")).collect() };
+            let event = HookEvent::PolicyChanged {
+                before: hex(old.as_bytes()),
+                after: hex(new.as_bytes()),
+                summary: how.to_owned(),
+                sender: pusher.clone(),
+            };
+            crate::hook_events::enqueue(self.registry.pool(), job.repo_id, &event)
+                .await
+                .map_err(|e| EffectError(format!("hook event: {e}")))?;
             let people = contributors(self.registry.pool(), entry.ns.as_bytes(), &pusher).await;
             let repo = entry.name.as_str();
-            let key: String = new
-                .as_bytes()
-                .iter()
-                .take(8)
-                .map(|b| format!("{b:02x}"))
-                .collect();
+            let key: String = hex(&new.as_bytes()[..8]);
             super::record(
                 self.registry.pool(),
                 repo,

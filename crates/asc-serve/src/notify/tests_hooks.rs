@@ -312,12 +312,39 @@ async fn trunk_moving_over_a_changed_policy_tells_the_contributors_but_not_the_p
     );
     assert_eq!(n[0].4, "/o/r/settings/policy");
     assert!(n[0].3.contains("rules"), "{}", n[0].3);
-    // Delivered again (at-least-once): one row only.
+    // The forge's webhooks are told too, under an id the change names.
+    let hook_rows = || async {
+        sqlx::query_as::<_, (Vec<u8>, Vec<u8>)>(
+            "SELECT op_id, effects FROM outbox WHERE repo_id = $1 AND CAST(effects AS TEXT) LIKE '%hook_event%' ORDER BY id",
+        )
+        .bind(id)
+        .fetch_all(f.reg.pool())
+        .await
+        .unwrap()
+    };
+    let rows = hook_rows().await;
+    assert_eq!(rows.len(), 1);
+    let doc: serde_json::Value = serde_json::from_slice(&rows[0].1).unwrap();
+    assert_eq!(
+        doc,
+        serde_json::json!({
+            "effects": ["hook_event"],
+            "event": "policy.changed",
+            "before": hex(same.as_bytes()),
+            "after": hex(loose.as_bytes()),
+            "summary": "The rules of the repository changed.",
+            "sender": "alice",
+        })
+    );
+    // Delivered again (at-least-once): one notice, and the hook event keeps its id.
     effect
         .run(&job(id, &trunk, same, loose, "42:alice"))
         .await
         .unwrap();
     assert_eq!(notes(f.reg.pool()).await.len(), 1);
+    let rows = hook_rows().await;
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].0, rows[1].0);
     // A creation or a deletion of trunk has nothing to compare.
     let mut created = job(id, &trunk, same, loose, "42:alice");
     created.doc["refs"][0]["old"] = serde_json::Value::Null;
