@@ -108,13 +108,31 @@ fn fatal(e: impl std::fmt::Display) -> CliError {
     CliError::Fatal(e.to_string())
 }
 
+/// `p` canonical as far as it exists: a path not written yet (an output) is its nearest existing
+/// directory, canonical, with the rest appended, so it compares with a canonical root.
+fn canon(p: &Path) -> std::path::PathBuf {
+    let mut base = p;
+    let mut rest = Vec::new();
+    loop {
+        if let Ok(c) = base.canonicalize() {
+            return rest.iter().rev().fold(c, |acc, n| acc.join(n));
+        }
+        match (base.parent(), base.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name.to_owned());
+                base = parent;
+            }
+            _ => return p.to_owned(),
+        }
+    }
+}
+
 /// `arg` (relative to `prefix`, the current directory below the root, or absolute below `root`)
 /// as a repository path; empty for the root itself.
 pub fn normalize(root: &Path, prefix: &str, arg: &OsString) -> Result<Vec<u8>> {
     let raw = arg.to_string_lossy().replace('\\', "/");
     let path = Path::new(arg);
     let joined = if path.is_absolute() {
-        let canon = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_owned());
         canon(path)
             .strip_prefix(canon(root))
             .map(|r| r.to_string_lossy().replace('\\', "/"))
@@ -439,6 +457,17 @@ mod tests {
         assert_eq!(n("pkg/ui", "../core/./lib").unwrap(), b"pkg/core/lib");
         assert_eq!(n("", "a\\b").unwrap(), b"a/b");
         assert!(n("pkg", "../..").is_err(), "above the root");
+    }
+
+    #[test]
+    fn an_absolute_path_not_written_yet_is_below_the_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let later = dir.path().join("app").join("dist");
+        assert_eq!(
+            normalize(&root, "", &later.into_os_string()).unwrap(),
+            b"app/dist"
+        );
     }
 
     #[test]
