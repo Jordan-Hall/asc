@@ -29,6 +29,46 @@ make_release "$work/r123b" 1.2.3 "$work/r123.bins" || exit 1
 if cmp -s "$work/r123/SHA256SUMS" "$work/r123b/SHA256SUMS"; then ok "two assemblies of one input are byte identical"; else bad "two assemblies of one input are byte identical"; fi
 refuse "assemble refuses a non-empty output directory" make_release "$work/r123" 1.2.3 "$work/r123.bins"
 
+# ---- package-manager publishing ------------------------------------------------------------------
+
+mkdir -p "$work/fakebin"
+gh_state="$work/gh"
+new_gh_repo() { mkdir -p "$gh_state/repos/$1/refs"; printf '%s\n' "$2" > "$gh_state/repos/$1/default"; printf '%s' "${3:-c0ffee}" > "$gh_state/repos/$1/refs/$2"; }
+new_gh_repo microsoft/winget-pkgs master upstream1
+new_gh_repo rel-bot/winget-pkgs master old
+new_gh_repo acme/scoop-asc main
+new_gh_repo acme/homebrew-asc main
+cat > "$work/fakebin/gh" <<FAKE
+#!/bin/sh
+exec "$PY" "$ROOT/scripts/release/test/fake_gh.py" "$gh_state" "\$@"
+FAKE
+chmod +x "$work/fakebin/gh"
+PKG="$REL/publish-packages.sh"
+pub() { env ASC_GH="$work/fakebin/gh" WINGET_FORK=rel-bot/winget-pkgs SCOOP_BUCKET=acme/scoop-asc HOMEBREW_TAP=acme/homebrew-asc "$SH" "$PKG" "$@"; }
+
+check "scripts parse under sh: publish-packages" "$SH" -n "$PKG"
+check "every package manager is published" pub "$work/r123" 1.2.3
+log=$(cat "$gh_state/log")
+contains "the winget branch starts at the upstream tip" "$log" "REF rel-bot/winget-pkgs asc.asc-1.2.3 upstream1"
+contains "the winget manifests are in the fork branch" "$log" "PUT rel-bot/winget-pkgs asc.asc-1.2.3 manifests/a/asc/asc/1.2.3/asc.asc.installer.yaml"
+contains "the winget pull request is opened upstream" "$log" "PR microsoft/winget-pkgs rel-bot:asc.asc-1.2.3 -> master: New version: asc.asc version 1.2.3"
+contains "the scoop manifest is in the bucket" "$log" "PUT acme/scoop-asc main bucket/asc.json"
+contains "the formula is in the tap" "$log" "PUT acme/homebrew-asc main Formula/asc.rb"
+if cmp -s "$gh_state/repos/acme/homebrew-asc/files/main/Formula/asc.rb" "$work/r123/asc.rb"; then ok "the tap holds the release's formula"; else bad "the tap holds the release's formula"; fi
+if cmp -s "$gh_state/repos/rel-bot/winget-pkgs/files/asc.asc-1.2.3/manifests/a/asc/asc/1.2.3/asc.asc.yaml" "$work/r123/winget-asc.asc.yaml"; then ok "the winget prefix is dropped"; else bad "the winget prefix is dropped"; fi
+
+: > "$gh_state/log"
+again=$(pub "$work/r123" 1.2.3 2>&1)
+contains "a re-run sees the open pull request" "$again" "already open"
+contains "a re-run leaves current files alone" "$again" "acme/scoop-asc:bucket/asc.json is current"
+[ ! -s "$gh_state/log" ] && ok "a re-run writes nothing" || bad "a re-run writes nothing" "$(cat "$gh_state/log")"
+
+skipped=$(env ASC_GH="$work/fakebin/gh" "$SH" "$PKG" "$work/r123" 1.2.3 2>&1)
+contains "an unset repository is skipped" "$skipped" "skip winget (WINGET_FORK is not set)"
+refuse "a named target needs its repository" env ASC_GH="$work/fakebin/gh" "$SH" "$PKG" "$work/r123" 1.2.3 scoop
+refuse "a bad version is refused" pub "$work/r123" 1.2
+refuse "a bad repository name is refused" env ASC_GH="$work/fakebin/gh" SCOOP_BUCKET='acme/x;y' "$SH" "$PKG" "$work/r123" 1.2.3 scoop
+
 # ---- linux packages ----------------------------------------------------------------------------
 
 mkdir -p "$work/fakebin"
