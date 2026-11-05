@@ -223,6 +223,8 @@ a hit has to skip them. `asc-rstest` (the `bin` of `@asc/build-cache`, also `run
 - **Hit**: the outputs are restored, the output is replayed and the exit status is 0. No test runs.
 - **Miss**: the tests run with their output shown as it comes. Only a run that exits 0, with at most 16 MiB on each
   stream, is stored. A failing run is never stored, so it runs again next time.
+- The stored output travels with the entry to the server tier, as with `asc cache run`. A suite that prints secrets
+  should run with `--asc-no-remote` (or `asc.buildcache.remote off`), which keeps the entry on the machine.
 
 ### 4.3 Protocols on the daemon
 
