@@ -27,7 +27,17 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: https://github.com/dtolnay/rust-toolchain@035fceb3c12fb0c6a9461b52775e16473133e591 # 1.95.0
-      - uses: https://github.com/Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # The asc build cache, not a tarball of target/: content-named blobs a backup copies once, the job's own
+      # store in RUNNER_TEMP, the server read on pull requests (docs/ci/build-cache.md). Without the ASC_URL
+      # variables asc/rust-cache warns and the job builds cold.
+      - name: asc for the build cache
+        if: ${{ vars.ASC_URL != '' && runner.os == 'Linux' }}
+        uses: ./actions/asc/setup
+        with:
+          version: ${{ vars.ASC_VERSION }}
+          url: ${{ vars.ASC_URL }}
+          sha256: ${{ vars.ASC_SHA256 }}
+      - uses: ./actions/asc/rust-cache
       - run: cargo build --release -p asc
       - run: npm ci --ignore-scripts --prefix crates/asc/tests/inspector
       - name: Inspector tools/list against asc mcp
@@ -37,3 +47,5 @@ jobs:
           test -s "$RUNNER_TEMP/tools.json"
       - name: Budgets (idle RSS, 8 concurrent 25k-token diffs, tools/list tokens)
         run: cargo test --release -p asc --test mcp_budgets -- --include-ignored
+      - if: ${{ always() }}
+        uses: ./actions/asc/rust-cache/save

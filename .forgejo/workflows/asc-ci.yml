@@ -27,7 +27,17 @@ jobs:
         with:
           toolchain: 1.95.0
           components: rustfmt, clippy
-      - uses: https://github.com/Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # The asc build cache, not a tarball of target/: content-named blobs a backup copies once, the job's own
+      # store in RUNNER_TEMP, the server read on pull requests (docs/ci/build-cache.md). Without the ASC_URL
+      # variables asc/rust-cache warns and the job builds cold.
+      - name: asc for the build cache
+        if: ${{ vars.ASC_URL != '' && runner.os == 'Linux' }}
+        uses: ./actions/asc/setup
+        with:
+          version: ${{ vars.ASC_VERSION }}
+          url: ${{ vars.ASC_URL }}
+          sha256: ${{ vars.ASC_SHA256 }}
+      - uses: ./actions/asc/rust-cache
       - name: Pinned git oracle build tools
         if: ${{ runner.os == 'Linux' }}
         run: sudo apt-get update -qq && sudo apt-get install -y -qq build-essential libcurl4-openssl-dev zlib1g-dev xz-utils curl
@@ -51,6 +61,8 @@ jobs:
       - run: bash build/lint/no-raw-worktree-fs.sh --self-test
       - run: bash build/lint/no-raw-worktree-fs.sh
       - run: cargo test --workspace
+      - if: ${{ always() }}
+        uses: ./actions/asc/rust-cache/save
 
   linux:
     runs-on: ${{ github.event_name == 'pull_request' && 'asc-build' || 'asc-build-trusted' }}
@@ -64,13 +76,25 @@ jobs:
         with:
           toolchain: 1.95.0
           components: rustfmt, clippy
-      - uses: https://github.com/Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # The asc build cache, not a tarball of target/: content-named blobs a backup copies once, the job's own
+      # store in RUNNER_TEMP, the server read on pull requests (docs/ci/build-cache.md). Without the ASC_URL
+      # variables asc/rust-cache warns and the job builds cold.
+      - name: asc for the build cache
+        if: ${{ vars.ASC_URL != '' && runner.os == 'Linux' }}
+        uses: ./actions/asc/setup
+        with:
+          version: ${{ vars.ASC_VERSION }}
+          url: ${{ vars.ASC_URL }}
+          sha256: ${{ vars.ASC_SHA256 }}
+      - uses: ./actions/asc/rust-cache
       # No cache for the oracle: a pull request could poison a shared cache, so the pinned git is
       # rebuilt from its sha256-verified source tarball in every job.
       - name: Pinned git oracle build tools
         run: sudo apt-get update -qq && sudo apt-get install -y -qq build-essential libcurl4-openssl-dev zlib1g-dev xz-utils curl
       - run: bash build/git-oracle/oracle.sh selftest
       - run: bash build/ci/linux-check.sh
+      - if: ${{ always() }}
+        uses: ./actions/asc/rust-cache/save
 
   # The asc-serve tests that take ASC_TEST_POSTGRES_URL, against a throwaway PostgreSQL cluster (no Docker).
   postgres:
@@ -80,10 +104,22 @@ jobs:
       - uses: https://github.com/dtolnay/rust-toolchain@035fceb3c12fb0c6a9461b52775e16473133e591 # 1.95.0
         with:
           toolchain: 1.95.0
-      - uses: https://github.com/Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # The asc build cache, not a tarball of target/: content-named blobs a backup copies once, the job's own
+      # store in RUNNER_TEMP, the server read on pull requests (docs/ci/build-cache.md). Without the ASC_URL
+      # variables asc/rust-cache warns and the job builds cold.
+      - name: asc for the build cache
+        if: ${{ vars.ASC_URL != '' && runner.os == 'Linux' }}
+        uses: ./actions/asc/setup
+        with:
+          version: ${{ vars.ASC_VERSION }}
+          url: ${{ vars.ASC_URL }}
+          sha256: ${{ vars.ASC_SHA256 }}
+      - uses: ./actions/asc/rust-cache
       - name: PostgreSQL server
         run: sudo apt-get update -qq && sudo apt-get install -y -qq postgresql
       - run: bash build/ci/postgres-it.sh
+      - if: ${{ always() }}
+        uses: ./actions/asc/rust-cache/save
 
   # asc-store's S3 suite against real Garage (no Docker); results in docs/garage-compat.md.
   # The Garage binaries have no published checksums, so the hashes below are the ones recorded when first fetched.
@@ -104,7 +140,17 @@ jobs:
       - uses: https://github.com/dtolnay/rust-toolchain@035fceb3c12fb0c6a9461b52775e16473133e591 # 1.95.0
         with:
           toolchain: 1.95.0
-      - uses: https://github.com/Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # The asc build cache, not a tarball of target/: content-named blobs a backup copies once, the job's own
+      # store in RUNNER_TEMP, the server read on pull requests (docs/ci/build-cache.md). Without the ASC_URL
+      # variables asc/rust-cache warns and the job builds cold.
+      - name: asc for the build cache
+        if: ${{ vars.ASC_URL != '' && runner.os == 'Linux' }}
+        uses: ./actions/asc/setup
+        with:
+          version: ${{ vars.ASC_VERSION }}
+          url: ${{ vars.ASC_URL }}
+          sha256: ${{ vars.ASC_SHA256 }}
+      - uses: ./actions/asc/rust-cache
       - name: Fetch Garage ${{ matrix.garage }}
         run: |
           mkdir -p "$HOME/garage-bin"
@@ -113,3 +159,5 @@ jobs:
           chmod +x "$HOME/garage-bin/garage"
       # All three versions ignore If-None-Match, so the probe must fail (BucketRefs refused); a change here is news.
       - run: GARAGE_BIN="$HOME/garage-bin/garage" ASC_IT_GARAGE_EXPECT_EXCLUSIVE=false bash build/ci/garage-it.sh
+      - if: ${{ always() }}
+        uses: ./actions/asc/rust-cache/save

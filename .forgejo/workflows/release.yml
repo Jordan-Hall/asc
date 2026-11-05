@@ -44,7 +44,7 @@ jobs:
       - uses: https://github.com/dtolnay/rust-toolchain@035fceb3c12fb0c6a9461b52775e16473133e591 # 1.95.0
         with:
           toolchain: 1.95.0
-      - uses: https://github.com/Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # No build cache in a release: every release binary is compiled from source, never restored from a store.
       - run: cargo test -p asc --test compat
       - run: "cargo test -p asc upgrade::"
 
@@ -56,7 +56,6 @@ jobs:
       - uses: https://github.com/dtolnay/rust-toolchain@035fceb3c12fb0c6a9461b52775e16473133e591 # 1.95.0
         with:
           toolchain: 1.95.0
-      - uses: https://github.com/Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo test -p asc --test compat
       - run: "cargo test -p asc upgrade::"
 
@@ -71,9 +70,6 @@ jobs:
         with:
           toolchain: 1.95.0
           targets: x86_64-unknown-linux-gnu
-      - uses: https://github.com/Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          key: x86_64-unknown-linux-gnu
       - name: Check the tag against the crate version
         shell: bash
         run: |
@@ -106,9 +102,6 @@ jobs:
         with:
           toolchain: 1.95.0
           targets: x86_64-pc-windows-msvc
-      - uses: https://github.com/Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          key: x86_64-pc-windows-msvc
       - name: Check the tag against the crate version
         shell: bash
         run: |
