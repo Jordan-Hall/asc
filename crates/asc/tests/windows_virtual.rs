@@ -217,11 +217,23 @@ mod projfs {
         parent.join("v")
     }
 
-    /// The total of hydrated downloads the daemon reports, from `asc debug hydrations --json`.
-    fn downloads(sb: &Sandbox, ws: &Path) -> u64 {
+    /// The hydrations the daemon reports per path (`asc debug hydrations --json`, one row per path).
+    fn hydrations(sb: &Sandbox, ws: &Path) -> Vec<(String, u64)> {
         let out = ok(sb, ws, &["debug", "hydrations", "--json"]);
         let v: serde_json::Value = serde_json::from_str(&out).expect("json");
-        v["downloads"].as_u64().expect("downloads counter")
+        v.as_array()
+            .expect("an array of rows")
+            .iter()
+            .map(|r| {
+                let path = r["path"].as_str().unwrap_or_default().replace('\\', "/");
+                (path, r["count"].as_u64().unwrap_or_default())
+            })
+            .collect()
+    }
+
+    /// The total of hydrations the daemon reports.
+    fn downloads(sb: &Sandbox, ws: &Path) -> u64 {
+        hydrations(sb, ws).iter().map(|(_, n)| n).sum()
     }
 
     #[test]
@@ -338,5 +350,46 @@ mod projfs {
         std::fs::write(ws.join("a.txt"), "x\n").unwrap();
         let asc_status = ok(&sb, &ws, &["status", "--porcelain=v2"]);
         assert!(asc_status.contains("a.txt"));
+    }
+
+    /// docs/designs/build-cache.md §1: the inputs digest of a cached action comes from the tree
+    /// and the dirty list, so neither the miss's key nor the hit reads a clean input.
+    #[test]
+    #[ignore = "needs Windows with ProjFS"]
+    fn a_cached_action_keys_clean_inputs_without_hydrating_them() {
+        let sb = Sandbox::new();
+        let url = seed(&sb);
+        let ws = virtual_clone(&sb, &url);
+        std::fs::write(ws.join(".gitignore"), "out/\n").unwrap();
+        ok(&sb, &ws, &["config", "asc.buildcache.remote", "off"]);
+        let action = [
+            "cache",
+            "run",
+            "--name",
+            "gen",
+            "--inputs",
+            "src",
+            "--outputs",
+            "out",
+            "--",
+            "cmd",
+            "/C",
+            "(if not exist out mkdir out) & echo built> out\\f.txt",
+        ];
+        ok(&sb, &ws, &action);
+        std::fs::remove_dir_all(ws.join("out")).unwrap();
+        let hit = super::asc(&sb, &ws, &action);
+        assert!(hit.status.success(), "{}", super::text(&hit.stderr));
+        assert!(
+            super::text(&hit.stderr).contains("asc cache: hit gen"),
+            "{}",
+            super::text(&hit.stderr)
+        );
+        assert!(ws.join("out").join("f.txt").is_file());
+        let read: Vec<_> = hydrations(&sb, &ws)
+            .into_iter()
+            .filter(|(p, _)| p.ends_with("src/b.txt"))
+            .collect();
+        assert!(read.is_empty(), "the key hydrated {read:?}");
     }
 }
