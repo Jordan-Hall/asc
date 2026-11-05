@@ -1,4 +1,4 @@
-//! `asc cache status | ls | show | gc | clear | push | warm | run | rustc | go | restore | save | serve | env | setup`: the machine-wide build cache
+//! `asc cache status | ls | show | gc | clear | push | warm | run | dotnet | pytest | rustc | go | restore | save | serve | env | setup`: the machine-wide build cache
 //! (docs/designs/build-cache.md §2, §3, §5). The store is `asc.buildcache.dir`, else
 //! `<ASC_HOME>/buildcache`; it is kept under `asc.buildcache.maxSize` (20 GiB when unset).
 
@@ -17,6 +17,7 @@ use crate::native::NativeSpec;
 pub(crate) mod bundle;
 pub(crate) mod front;
 pub(crate) mod go;
+pub(crate) mod lang;
 pub(crate) mod remote;
 pub(crate) mod run;
 pub(crate) mod rustc;
@@ -54,6 +55,11 @@ pub enum Sub {
     Warm(WarmArgs),
     /// Runs a command as a cached action: a hit restores its outputs and replays its output.
     Run(run::RunArgs),
+    /// `dotnet build`, `test`, `publish` or `pack` as a cached action; other dotnet commands run
+    /// unchanged.
+    Dotnet(lang::DotnetArgs),
+    /// A pytest run as a cached action (not one that depends on the last run).
+    Pytest(lang::PytestArgs),
     /// Cargo's `RUSTC_WRAPPER`: a compile asc caches is restored, any other runs unchanged.
     Rustc(rustc::RustcArgs),
     /// The go command's `GOCACHEPROG`: its build results kept in the shared store.
@@ -646,6 +652,8 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
     let cmd = args.cmd.unwrap_or(Sub::Status(Json::default()));
     match cmd {
         Sub::Run(a) => return run::run(ctx, a).await,
+        Sub::Dotnet(a) => return lang::dotnet(ctx, a).await,
+        Sub::Pytest(a) => return lang::pytest(ctx, a).await,
         Sub::Rustc(a) => return rustc::run(ctx, a).await,
         Sub::Go(a) => return go::run(ctx, a).await,
         Sub::Serve => return serve(ctx).await,
@@ -699,7 +707,14 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
         }
         Sub::Setup(a) => setup::run(ctx, &a, &mut out),
         Sub::Env(a) => env(ctx, &a, &mut out),
-        Sub::Run(_) | Sub::Rustc(_) | Sub::Go(_) | Sub::Serve | Sub::Restore(_) | Sub::Save(_) => {
+        Sub::Run(_)
+        | Sub::Dotnet(_)
+        | Sub::Pytest(_)
+        | Sub::Rustc(_)
+        | Sub::Go(_)
+        | Sub::Serve
+        | Sub::Restore(_)
+        | Sub::Save(_) => {
             unreachable!("dispatched above")
         }
     }
