@@ -7,7 +7,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "license": "UNLICENSED",
+  "license": "MIT OR Apache-2.0",
   "repository": {
     "type": "git",
     "url": "https://forge.example.org/asc/source-control"
