@@ -1,5 +1,5 @@
-//! `asc cache status | ls | show | gc | clear`: the machine-wide build cache
-//! (docs/designs/build-cache.md §2, §5). The store is `asc.buildcache.dir`, else
+//! `asc cache status | ls | show | gc | clear | push | warm`: the machine-wide build cache
+//! (docs/designs/build-cache.md §2, §3, §5). The store is `asc.buildcache.dir`, else
 //! `<ASC_HOME>/buildcache`; it is kept under `asc.buildcache.maxSize` (20 GiB when unset).
 
 use std::collections::BTreeSet;
@@ -13,6 +13,8 @@ use serde_json::{Value, json};
 
 use super::common::{CliError, Ctx, Result};
 use crate::native::NativeSpec;
+
+pub(crate) mod remote;
 
 #[derive(clap::Parser, Debug)]
 #[command(
@@ -38,6 +40,33 @@ pub enum Sub {
     Gc(GcArgs),
     /// Removes every entry, or those of one tool.
     Clear(ClearArgs),
+    /// Uploads the entries waiting in the outbox and lists them under a revision.
+    Push(RemoteArgs),
+    /// Fetches the entries a revision's builds used that this machine lacks.
+    Warm(WarmArgs),
+}
+
+#[derive(clap::Args, Debug)]
+pub struct RemoteArgs {
+    /// The revision to list the keys under (default: the work tree's HEAD commit).
+    #[arg(long)]
+    rev: Option<String>,
+    /// The server remote (default: origin).
+    #[arg(long)]
+    remote: Option<String>,
+    #[command(flatten)]
+    json: Json,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct WarmArgs {
+    /// The revision whose entries to fetch (default: the work tree's HEAD commit).
+    rev: Option<String>,
+    /// The server remote (default: origin).
+    #[arg(long)]
+    remote: Option<String>,
+    #[command(flatten)]
+    json: Json,
 }
 
 #[derive(clap::Args, Debug, Default)]
@@ -84,7 +113,15 @@ pub struct ClearArgs {
 
 pub const NATIVE: &[NativeSpec] = &[NativeSpec {
     cmd: "cache",
-    flags: &["--json", "--tool", "--limit", "-n", "--max-size"],
+    flags: &[
+        "--json",
+        "--tool",
+        "--limit",
+        "-n",
+        "--max-size",
+        "--rev",
+        "--remote",
+    ],
     placeholders: &[],
 }];
 
@@ -422,6 +459,26 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
             let r = open_store(ctx)?.clear(a.tool.as_deref()).map_err(io_err)?;
             print_report(&mut out, "cleared", &r, a.json.json)?;
             Ok(ExitCode::SUCCESS)
+        }
+        Sub::Push(a) => {
+            remote::push(
+                ctx,
+                a.remote.as_deref(),
+                a.rev.as_deref(),
+                a.json.json,
+                &mut out,
+            )
+            .await
+        }
+        Sub::Warm(a) => {
+            remote::warm(
+                ctx,
+                a.remote.as_deref(),
+                a.rev.as_deref(),
+                a.json.json,
+                &mut out,
+            )
+            .await
         }
     }
 }
