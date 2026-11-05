@@ -1,4 +1,4 @@
-//! `asc cache status | ls | show | gc | clear | push | warm`: the machine-wide build cache
+//! `asc cache status | ls | show | gc | clear | push | warm | run`: the machine-wide build cache
 //! (docs/designs/build-cache.md §2, §3, §5). The store is `asc.buildcache.dir`, else
 //! `<ASC_HOME>/buildcache`; it is kept under `asc.buildcache.maxSize` (20 GiB when unset).
 
@@ -15,6 +15,7 @@ use super::common::{CliError, Ctx, Result};
 use crate::native::NativeSpec;
 
 pub(crate) mod remote;
+pub(crate) mod run;
 
 #[derive(clap::Parser, Debug)]
 #[command(
@@ -44,6 +45,8 @@ pub enum Sub {
     Push(RemoteArgs),
     /// Fetches the entries a revision's builds used that this machine lacks.
     Warm(WarmArgs),
+    /// Runs a command as a cached action: a hit restores its outputs and replays its output.
+    Run(run::RunArgs),
 }
 
 #[derive(clap::Args, Debug)]
@@ -121,6 +124,13 @@ pub const NATIVE: &[NativeSpec] = &[NativeSpec {
         "--max-size",
         "--rev",
         "--remote",
+        "--name",
+        "--inputs",
+        "--outputs",
+        "--env",
+        "--no-remote",
+        "--quiet",
+        "-q",
     ],
     placeholders: &[],
 }];
@@ -183,7 +193,7 @@ pub(crate) fn max_size(ctx: &Ctx) -> Result<u64> {
     }
 }
 
-fn io_err(e: std::io::Error) -> CliError {
+pub(crate) fn io_err(e: std::io::Error) -> CliError {
     CliError::Fatal(format!("build cache: {e}"))
 }
 
@@ -437,8 +447,12 @@ fn print_report(out: &mut impl Write, verb: &str, r: &GcReport, json_out: bool) 
 }
 
 pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
+    let cmd = args.cmd.unwrap_or(Sub::Status(Json::default()));
+    if let Sub::Run(a) = cmd {
+        return run::run(ctx, a).await;
+    }
     let mut out = std::io::stdout().lock();
-    match args.cmd.unwrap_or(Sub::Status(Json::default())) {
+    match cmd {
         Sub::Status(a) => status(ctx, &a, &mut out),
         Sub::Ls(a) => ls(ctx, &a, &mut out),
         Sub::Show(a) => show(ctx, &a, &mut out),
@@ -480,6 +494,7 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
             )
             .await
         }
+        Sub::Run(_) => unreachable!("dispatched above"),
     }
 }
 
