@@ -1,0 +1,50 @@
+{
+  "name": "@asc/build-cache",
+  "version": "0.1.0",
+  "description": "The asc build cache for Rsbuild, Rslib and Vite: a build whose inputs another work tree already built restores its outputs instead.",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "bun": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./rsbuild": {
+      "bun": "./src/rsbuild.ts",
+      "types": "./dist/rsbuild.d.ts",
+      "default": "./dist/rsbuild.js"
+    },
+    "./vite": {
+      "bun": "./src/vite.ts",
+      "types": "./dist/vite.d.ts",
+      "default": "./dist/vite.js"
+    }
+  },
+  "files": ["dist", "src"],
+  "sideEffects": false,
+  "engines": { "node": ">=20.19" },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "bun test"
+  },
+  "peerDependencies": {
+    "@rsbuild/core": ">=1.2",
+    "@rslib/core": ">=0.5",
+    "vite": ">=5"
+  },
+  "peerDependenciesMeta": {
+    "@rsbuild/core": { "optional": true },
+    "@rslib/core": { "optional": true },
+    "vite": { "optional": true }
+  },
+  "devDependencies": {
+    "@rsbuild/core": "1.7.6",
+    "@rslib/core": "0.15.1",
+    "@types/bun": "^1.4.4",
+    "@types/node": "^24.0.0",
+    "typescript": "5.9.2",
+    "vite": "7.1.12"
+  }
+}
