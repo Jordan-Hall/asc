@@ -9,12 +9,26 @@ use toml_edit::{DocumentMut, Item, Table, value};
 
 use crate::cli::common::{CliError, Ctx, Result};
 
+pub(crate) mod fronts;
+
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tool {
     /// `build.rustc-wrapper` in cargo's configuration.
     Cargo,
     /// `GOCACHEPROG` in the user's go env file.
     Go,
+    /// turbo's remote cache: the front, through `asc cache env`.
+    Turbo,
+    /// Nx's self-hosted remote cache: the front, through `asc cache env`.
+    Nx,
+    /// `--remote_cache` in the user's `.bazelrc`.
+    Bazel,
+    /// An init script in the Gradle user home that names the front as the remote build cache.
+    Gradle,
+    /// The token as a server in the user's Maven settings; `asc cache env` gives `MAVEN_ARGS`.
+    Maven,
+    /// ccache's `remote_storage`.
+    Ccache,
 }
 
 #[derive(clap::Args, Debug)]
@@ -50,6 +64,7 @@ pub fn run(ctx: &Ctx, a: &SetupArgs, out: &mut impl Write) -> Result<ExitCode> {
     match a.tool {
         Tool::Cargo => cargo(ctx, a, out),
         Tool::Go => go(a, out),
+        _ => fronts::run(ctx, a, out),
     }
 }
 
