@@ -32,6 +32,7 @@ use std::process::ExitCode;
 use dispatch::Program;
 
 fn main() -> ExitCode {
+    child::keep_std_handles_private();
     let args: Vec<OsString> = std::env::args_os().collect();
     // The `git` shim's fall-through to real git needs no runtime and none of asc's registrations;
     // it is decided here, before either costs time (SPEC §11.4).

@@ -22,6 +22,38 @@ struct Setup {
 
 static SETUP: Mutex<Option<Arc<Setup>>> = Mutex::new(None);
 
+/// Makes this process's standard handles not inheritable (Windows). Children are created with
+/// handle inheritance on, so a detached child (the daemon, `cache push`) would otherwise keep the
+/// pipes of whoever ran asc open, and a caller that reads asc's output to the end (a script, a
+/// test) would wait for the daemon to exit. A child given a standard handle still gets it:
+/// `Stdio::inherit` duplicates it as inheritable for that child only.
+#[cfg(windows)]
+#[allow(unsafe_code)] // Win32 standard handles; every call is confined to this function.
+pub fn keep_std_handles_private() {
+    use windows_sys::Win32::Foundation::{
+        HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation,
+    };
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetStdHandle(which: u32) -> HANDLE;
+    }
+    // STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE
+    for which in [-10_i32, -11, -12] {
+        // SAFETY: plain Win32 calls on this process's own standard handles, which stay open and
+        // only lose their inherit flag.
+        unsafe {
+            let h = GetStdHandle(which as u32);
+            if !h.is_null() && h != INVALID_HANDLE_VALUE {
+                SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0);
+            }
+        }
+    }
+}
+
+/// Nothing to do: a child gets only the descriptors it is given (the rest are close-on-exec).
+#[cfg(not(windows))]
+pub fn keep_std_handles_private() {}
+
 /// `git[.exe]`, the shim's file name.
 const GIT_FILE: &str = if cfg!(windows) { "git.exe" } else { "git" };
 
