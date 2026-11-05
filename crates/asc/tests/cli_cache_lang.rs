@@ -60,10 +60,9 @@ impl Env {
     }
 
     fn asc(&self, cwd: &Path, sdk: &str, args: &[&str]) -> Output {
-        let path = std::env::join_paths(
-            std::iter::once(self.bin.clone())
-                .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())),
-        )
+        let path = std::env::join_paths(std::iter::once(self.bin.clone()).chain(
+            std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+        ))
         .unwrap();
         self.sb
             .asc(cwd)
@@ -99,7 +98,11 @@ impl Env {
         std::fs::write(r.join("global.json"), "{}\n").unwrap();
         std::fs::create_dir_all(r.join("tests")).unwrap();
         std::fs::write(r.join("pyproject.toml"), "[project]\nname = \"x\"\n").unwrap();
-        std::fs::write(r.join("tests/test_sum.py"), "def test_sum():\n    assert 1 + 2 == 3\n").unwrap();
+        std::fs::write(
+            r.join("tests/test_sum.py"),
+            "def test_sum():\n    assert 1 + 2 == 3\n",
+        )
+        .unwrap();
         r
     }
 }
@@ -113,18 +116,31 @@ fn dotnet_build_and_test_are_restored_in_another_work_tree() {
     let a = e.repo("a");
     let build = e.ok(&a, &["cache", "dotnet", "--", "build"]);
     assert!(text(&build.stdout).contains("Build succeeded."));
-    e.ok(&a, &["cache", "dotnet", "--", "test", "--results-directory", "tr"]);
+    e.ok(
+        &a,
+        &["cache", "dotnet", "--", "test", "--results-directory", "tr"],
+    );
     assert_eq!(e.runs(), ["build", "test"]);
 
     let b = e.repo("b");
     let hit = e.ok(&b, &["cache", "dotnet", "--", "build"]);
-    assert!(text(&hit.stdout).contains("Build succeeded."), "output replayed");
-    assert!(text(&hit.stderr).contains("asc cache: hit dotnet-build"), "{}", text(&hit.stderr));
+    assert!(
+        text(&hit.stdout).contains("Build succeeded."),
+        "output replayed"
+    );
+    assert!(
+        text(&hit.stderr).contains("asc cache: hit dotnet-build"),
+        "{}",
+        text(&hit.stderr)
+    );
     assert_eq!(
         std::fs::read_to_string(b.join("app/bin/Debug/app.dll")).unwrap(),
         "<Project />\n"
     );
-    e.ok(&b, &["cache", "dotnet", "--", "test", "--results-directory", "tr"]);
+    e.ok(
+        &b,
+        &["cache", "dotnet", "--", "test", "--results-directory", "tr"],
+    );
     assert!(b.join("tr/run.trx").is_file());
     assert_eq!(e.runs().len(), 2, "both restored");
 
@@ -151,19 +167,32 @@ fn pytest_runs_are_restored_unless_they_depend_on_the_last_run() {
     }
     let e = Env::new();
     let a = e.repo("a");
-    let first = e.ok(&a, &["cache", "pytest", "--", "--junitxml=out/junit.xml", "tests"]);
+    let first = e.ok(
+        &a,
+        &["cache", "pytest", "--", "--junitxml=out/junit.xml", "tests"],
+    );
     assert!(text(&first.stdout).contains("3 passed"));
     assert_eq!(e.runs().len(), 1);
 
     let b = e.repo("b");
-    let hit = e.ok(&b, &["cache", "pytest", "--", "--junitxml=out/junit.xml", "tests"]);
+    let hit = e.ok(
+        &b,
+        &["cache", "pytest", "--", "--junitxml=out/junit.xml", "tests"],
+    );
     assert!(text(&hit.stdout).contains("3 passed"));
     assert!(b.join("out/junit.xml").is_file(), "report restored");
     assert_eq!(e.runs().len(), 1);
 
     // A changed test runs again; `--lf` always runs.
-    std::fs::write(b.join("tests/test_sum.py"), "def test_sum():\n    assert 2 + 1 == 3\n").unwrap();
-    e.ok(&b, &["cache", "pytest", "--", "--junitxml=out/junit.xml", "tests"]);
+    std::fs::write(
+        b.join("tests/test_sum.py"),
+        "def test_sum():\n    assert 2 + 1 == 3\n",
+    )
+    .unwrap();
+    e.ok(
+        &b,
+        &["cache", "pytest", "--", "--junitxml=out/junit.xml", "tests"],
+    );
     assert_eq!(e.runs().len(), 2);
     e.ok(&b, &["cache", "pytest", "--", "--lf"]);
     e.ok(&b, &["cache", "pytest", "--", "--lf"]);
@@ -172,7 +201,12 @@ fn pytest_runs_are_restored_unless_they_depend_on_the_last_run() {
     // A failing run is not stored.
     std::fs::write(a.join("fail.txt"), "\n").unwrap();
     for _ in 0..2 {
-        assert_eq!(e.asc(&a, "8.0.100", &["cache", "pytest", "--", "-q"]).status.code(), Some(1));
+        assert_eq!(
+            e.asc(&a, "8.0.100", &["cache", "pytest", "--", "-q"])
+                .status
+                .code(),
+            Some(1)
+        );
     }
     assert_eq!(e.runs().len(), 6);
 }
