@@ -200,6 +200,39 @@ such as a Homebrew cellar, refuses and says so; update those with their package 
 The URLs point at the directory the release was assembled for: the GitHub release for a workflow run. To render
 them for a hub instead, run `assemble.py` with `--release-url <base>/<ver>`.
 
+A tag release publishes them itself (job `packages`, `scripts/release/publish-packages.sh`): a pull request to
+microsoft/winget-pkgs at `manifests/a/asc/asc/<ver>/`, `bucket/asc.json` in the Scoop bucket and `Formula/asc.rb`
+in the Homebrew tap. Set these on the repository; a target whose variable is unset is skipped:
+
+| Name | Kind | What |
+| --- | --- | --- |
+| `ASC_PACKAGES_TOKEN` | secret | A token with contents write on the bucket, the tap and the winget fork, and pull request write on microsoft/winget-pkgs. |
+| `WINGET_FORK` | variable | `owner/winget-pkgs`: a fork of microsoft/winget-pkgs owned by the token's account. |
+| `SCOOP_BUCKET` | variable | `owner/name` of the bucket repository. Users run `scoop bucket add asc https://github.com/<owner>/<name>` then `scoop install asc`. |
+| `HOMEBREW_TAP` | variable | `owner/homebrew-<name>`. Users run `brew install <owner>/<name>/asc`. |
+
+The first winget submission of `asc.asc` is reviewed by the winget maintainers; later versions are checked by
+their bots. Once merged, `winget install asc.asc` installs the portable zip and puts `asc` on the PATH.
+
+## Automatic releases and deploys
+
+`auto-release.yml` runs when ci passes on a push to master. When the version in `crates/asc/Cargo.toml` has no
+`v<ver>` tag yet, it tags the commit that passed and starts `release.yml` on the tag; the release then builds,
+signs, publishes and updates the package managers. A version that is already released does nothing, so a
+version bump on master is a release. Only the newest master commit is tagged.
+
+Every push to master also builds the asc-serve image (`image.yml`). Its job `hub` pins the hub repository's
+`ASC_SERVE_IMAGE` to the new image and starts the hub's image build, whose job `deploy` deploys it to Coolify:
+
+| Repository | Name | Kind | What |
+| --- | --- | --- | --- |
+| asc | `ASC_HUB_REPO` | variable | `owner/name` of the hub repository. |
+| asc | `ASC_HUB_DISPATCH_TOKEN` | secret | A token with actions write and variables write on the hub repository. |
+| hub | `COOLIFY_URL` | variable | The https base URL of the Coolify instance. |
+| hub | `COOLIFY_SERVICE` | variable | The uuid of the Coolify service that runs the hub. |
+| hub | `DEPLOY_HEALTH_URL` | variable | An https URL of the hub that answers 200 once it is up. |
+| hub | `COOLIFY_API_TOKEN` | secret | A Coolify API token that may change that service. |
+
 ## Reproducibility
 
 A build is meant to give the same bytes for the same commit, toolchain and runner image:
