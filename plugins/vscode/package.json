@@ -83,6 +83,11 @@
           "scope": "machine",
           "uniqueItems": true,
           "markdownDescription": "Hosts you sign in to, such as `forge.example.org` (https only). `ASC: Sign in` offers these and the hosts of the open folders. Tokens are never kept in settings."
+        },
+        "asc.cache.terminalEnv": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Give new terminals the variables of `asc cache env`, so turbo, Nx and Maven use the local build cache fronts."
         }
       }
     },
@@ -602,6 +607,52 @@
         "title": "Show sign-in status",
         "category": "ASC",
         "enablement": "asc.workspace"
+      },
+      {
+        "command": "asc.cache.refresh",
+        "title": "Refresh build cache",
+        "category": "ASC",
+        "enablement": "asc.workspace",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "asc.cache.show",
+        "title": "Show build cache entry",
+        "category": "ASC",
+        "enablement": "asc.workspace"
+      },
+      {
+        "command": "asc.cache.delete",
+        "title": "Delete build cache entry",
+        "category": "ASC",
+        "enablement": "asc.workspace",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "asc.cache.clear",
+        "title": "Clear build cache",
+        "category": "ASC",
+        "enablement": "asc.workspace",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "asc.cache.gc",
+        "title": "Clean up build cache",
+        "category": "ASC",
+        "enablement": "asc.workspace"
+      },
+      {
+        "command": "asc.cache.warm",
+        "title": "Warm build cache for this revision",
+        "category": "ASC",
+        "enablement": "asc.workspace",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "asc.cache.setup",
+        "title": "Set up build caching for this workspace",
+        "category": "ASC",
+        "enablement": "asc.workspace"
       }
     ],
     "views": {
@@ -638,6 +689,11 @@
           "id": "asc.actions",
           "name": "Actions",
           "when": "asc.workspace && asc.feature.ci"
+        },
+        {
+          "id": "asc.buildCache",
+          "name": "Build cache",
+          "when": "asc.workspace"
         }
       ],
       "explorer": [
@@ -755,6 +811,26 @@
           "command": "asc.inbox.checkout",
           "when": "view == asc.inbox && viewItem =~ /^asc\\.inbox\\.(item|pinned)$/",
           "group": "inline@3"
+        },
+        {
+          "command": "asc.cache.delete",
+          "when": "view == asc.buildCache && viewItem == asc.cache.entry",
+          "group": "inline@1"
+        },
+        {
+          "command": "asc.cache.show",
+          "when": "view == asc.buildCache && viewItem == asc.cache.entry",
+          "group": "1_open@1"
+        },
+        {
+          "command": "asc.cache.delete",
+          "when": "view == asc.buildCache && viewItem == asc.cache.entry",
+          "group": "2_edit@1"
+        },
+        {
+          "command": "asc.cache.clear",
+          "when": "view == asc.buildCache && viewItem == asc.cache.tool",
+          "group": "inline@1"
         }
       ],
       "view/title": [
@@ -787,6 +863,31 @@
           "command": "asc.actions.refresh",
           "when": "view == asc.actions",
           "group": "navigation"
+        },
+        {
+          "command": "asc.cache.refresh",
+          "when": "view == asc.buildCache",
+          "group": "navigation@1"
+        },
+        {
+          "command": "asc.cache.warm",
+          "when": "view == asc.buildCache",
+          "group": "navigation@2"
+        },
+        {
+          "command": "asc.cache.clear",
+          "when": "view == asc.buildCache",
+          "group": "navigation@3"
+        },
+        {
+          "command": "asc.cache.setup",
+          "when": "view == asc.buildCache",
+          "group": "1_admin@1"
+        },
+        {
+          "command": "asc.cache.gc",
+          "when": "view == asc.buildCache",
+          "group": "1_admin@2"
         }
       ],
       "commandPalette": [
@@ -864,6 +965,14 @@
         },
         {
           "command": "asc.review.reopenThread",
+          "when": "false"
+        },
+        {
+          "command": "asc.cache.show",
+          "when": "false"
+        },
+        {
+          "command": "asc.cache.delete",
           "when": "false"
         }
       ],
@@ -1150,6 +1259,49 @@
             "description": "The target name."
           }
         }
+      },
+      {
+        "type": "asc-build",
+        "properties": {
+          "build": {
+            "type": "string",
+            "description": "A detected build: `cargo`, `go` or `script:<name>` (a package.json script that runs rsbuild, rslib or vite build)."
+          },
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9:_.-]{1,64}$",
+            "description": "An `asc cache run` action: its name in `asc cache ls`."
+          },
+          "inputs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Paths from the work tree root whose content keys the action (default: the root)."
+          },
+          "outputs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Files or directories the command writes, restored on a hit."
+          },
+          "command": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "description": "The command and its arguments."
+          },
+          "env": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Environment variables whose values key the action."
+          }
+        }
       }
     ],
     "keybindings": [
@@ -1176,6 +1328,63 @@
         "key": "ctrl+k ctrl+alt+end",
         "mac": "cmd+k cmd+alt+end",
         "when": "asc.workspace && asc.mutating"
+      }
+    ],
+    "problemMatchers": [
+      {
+        "name": "asc-rustc",
+        "owner": "rust",
+        "source": "rustc",
+        "fileLocation": [
+          "relative",
+          "${workspaceFolder}"
+        ],
+        "pattern": [
+          {
+            "regexp": "^(warning|error)(?:\\[(E\\d+)\\])?: (.*)$",
+            "severity": 1,
+            "code": 2,
+            "message": 3
+          },
+          {
+            "regexp": "^\\s+--> (.+?):(\\d+):(\\d+)$",
+            "file": 1,
+            "line": 2,
+            "column": 3
+          }
+        ]
+      },
+      {
+        "name": "asc-go",
+        "owner": "go",
+        "source": "go",
+        "fileLocation": [
+          "relative",
+          "${workspaceFolder}"
+        ],
+        "pattern": {
+          "regexp": "^(?:\\./)?([^\\s:#][^:]*\\.go):(\\d+):(\\d+): (.*)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "message": 4
+        }
+      },
+      {
+        "name": "asc-build",
+        "owner": "asc-build",
+        "source": "build",
+        "fileLocation": [
+          "autoDetect",
+          "${workspaceFolder}"
+        ],
+        "pattern": {
+          "regexp": "^\\s*(?:(?:ERROR|error|File)[:\\s]+)?((?:[A-Za-z]:)?[^\\s:(]+\\.(?:[cm]?[jt]sx?|vue|svelte|css|scss|less|html)):(\\d+):(\\d+)(?::\\s*(.*))?$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "message": 4
+        }
       }
     ]
   },

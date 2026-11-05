@@ -51,6 +51,8 @@ import { cliLiveApi, LiveModel, registerLive } from "./stack/live";
 import { registerStackNav } from "./stack/nav";
 import { registerShare } from "./stack/share";
 import { registerTasks } from "./tasks";
+import { cliCacheApi } from "./cache/model";
+import { registerBuildCache } from "./cache/register";
 import { bridgeActionsApi, currentChange, registerActions, splitRepo } from "./views/actions";
 import { AffectedModel, bridgeAffectedApi, registerAffected } from "./views/affected";
 import { bridgeHistoryApi, registerFileHistory } from "./views/file-history";
@@ -387,6 +389,13 @@ export function registerAll(e: FeatureEnv): Disposable {
   subs.push(
     registerAffected(vscode, affected, viewApi, pump, log),
     registerTasks(vscode, affected, log),
+    // The build cache (docs/designs/build-cache.md §6): status item, view, tasks, admin commands.
+    registerBuildCache(vscode, ctx, {
+      api: cliCacheApi(cli),
+      roots,
+      ascPath: e.ascPath,
+      terminalEnv: () => cfg().get<boolean>("cache.terminalEnv", true),
+    }),
   );
 
   // P47b and P59: cloud upload state and live updates, for the first root. Both refresh on events only:
