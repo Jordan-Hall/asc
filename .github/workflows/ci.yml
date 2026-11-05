@@ -109,5 +109,22 @@ jobs:
       - name: Toolchain (from rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Build the virtual workspace tests
+        run: cargo test -p asc --locked --test windows_virtual --no-run
       - name: Virtual workspace tests
-        run: cargo test -p asc --locked --test windows_virtual -- --include-ignored
+        shell: bash
+        timeout-minutes: 30
+        env:
+          RUST_BACKTRACE: '1'
+        # One test at a time, each with a limit, so a test that hangs is named and the others still report.
+        run: |
+          status=0
+          for t in $(cargo test -p asc --locked --test windows_virtual -- --include-ignored --list --format terse | sed -n 's/: test$//p'); do
+            echo "::group::$t"
+            if ! timeout 300 cargo test -p asc --locked --test windows_virtual -- --include-ignored --exact --nocapture "$t"; then
+              echo "::error::$t failed or ran over 5 minutes"
+              status=1
+            fi
+            echo "::endgroup::"
+          done
+          exit $status
