@@ -7,6 +7,7 @@
 //! asc workflow runs [<name>] [--state S]... | status <id> | watch <id> | cancel <id>
 //! asc workflow approve <id> <step> [--comment ...] | reject <id> <step> [--comment ...]
 //! asc workflow secret list | set <name> | rm <name>
+//! asc workflow templates | new <template> [--name N] [--force] [--stdout]
 //! ```
 //!
 //! The server is the authority: it reads the definition from the trunk tip, never from an update,
@@ -15,6 +16,7 @@
 
 mod runs;
 mod secrets;
+mod templates;
 
 use std::process::ExitCode;
 
@@ -78,6 +80,10 @@ pub enum Sub {
     Reject(runs::DecideArgs),
     /// The secrets the command steps read.
     Secret(secrets::SecretArgs),
+    /// Lists the built-in workflow templates.
+    Templates(templates::TemplatesArgs),
+    /// Writes a template to `.asc/workflows/<name>.toml` in the workspace.
+    New(templates::NewArgs),
 }
 
 pub const NATIVE: &[NativeSpec] = &[NativeSpec {
@@ -99,6 +105,9 @@ pub const NATIVE: &[NativeSpec] = &[NativeSpec {
         "--after",
         "--key-env",
         "--key-file",
+        "--name",
+        "--force",
+        "--stdout",
     ],
     placeholders: &[],
 }];
@@ -118,6 +127,8 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         Sub::Approve(x) => runs::decide(ctx, x, true).await,
         Sub::Reject(x) => runs::decide(ctx, x, false).await,
         Sub::Secret(x) => secrets::run(ctx, x).await,
+        Sub::Templates(x) => templates::list(x),
+        Sub::New(x) => templates::new(ctx, x),
     }
 }
 

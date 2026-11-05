@@ -250,6 +250,8 @@ All take `--json` and `--remote <name\|url>`. The scope is `--rev <rev>`, `--cha
 | `workflow cancel` | Stops a run. | `asc workflow cancel 21` |
 | `workflow approve`, `reject` | Decides an approval step. | `asc workflow approve 21 deploy --comment ok` |
 | `workflow secret list`, `set`, `rm` | Manages the secrets steps read; `set` takes the value from `--key-file`, `--key-env` or standard input. | `asc workflow secret set DEPLOY_KEY --key-env DEPLOY_KEY` |
+| `workflow templates` | Lists the built-in workflow templates. | `asc workflow templates` |
+| `workflow new` | Writes a template to `.asc/workflows/<name>.toml` in the workspace; keeps an existing file unless `--force`; `--stdout` prints it instead. It runs once it lands on trunk. | `asc workflow new tsrx-check` |
 | `release list` | Lists releases, newest first (`--channel stable|pre-release|draft`). | `asc release list --channel pre-release` |
 | `release show` | Shows a release with its provenance and the SHA-256 of each asset. | `asc release show v2.18.0` |
 | `release next` | Counts the changes since the latest release and proposes the next tag. | `asc release next` |
