@@ -4,7 +4,7 @@ ignore = ["**/fixtures/**", "**/node_modules/**"]
 
 [global]
 # A change to CI itself makes every project affected.
-inputs = [".forgejo/workflows/*.yml", ".asc/ci.toml", "ops/coolify/deploy-targets.json"]
+inputs = [".forgejo/workflows/*.yml", ".asc/ci.toml"]
 unowned = "ignore"
 
 [named_inputs]

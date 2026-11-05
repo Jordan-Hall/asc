@@ -396,7 +396,7 @@ plan:
    **Choose (a).** It is computed once per changeset and is cheap.
 3. Maps paths to packages, adds dependents, and applies global rules: `turbo.json` means everything, and root files go through turbo's root-package rules.
 4. If `bun.lock` changed, runs turbo's lockfile diff through (a) with `TURBO_SCM_BASE`. It does not reimplement the bun lockfile parser.
-5. Maps packages to job switches: `rust` (pipeline-svc, dsl-rust), `images` (`ops/coolify/deploy-targets.json` and the docker services), and `e2e`.
+5. Maps packages to job switches: `rust` (pipeline-svc, dsl-rust), `images` (the docker services), and `e2e`.
 
 Jobs then use `if: needs.plan.outputs.rust == 'true'`. This replaces every hand-written `paths:` list. Workflow-level `paths:` filters in Forgejo also go through `ChangedPaths` once the asc backend lands (`forgejo.md` 3.3).
 

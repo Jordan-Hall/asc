@@ -8,8 +8,6 @@ docker compose -f deploy/compose.yml up -d --wait
 
 Stop and discard it with `docker compose -f deploy/compose.yml down -v`.
 
-The Coolify deployments (staging) are in `deploy/coolify/README.md`; this bundle is the local one.
-
 ## What it runs
 
 | Service | Role | Host address |
@@ -66,4 +64,4 @@ It initialises a fresh repository through `RepoAdmin`, then clones, pushes, land
 
 `asc-serve.toml.example` is the https shape: S3 over https, Postgres with verified TLS, a TLS proxy
 in front, and secrets from the environment or files. `deploy/Dockerfile.serve` builds the
-full-featured image (git smart-HTTP and SSH); `deploy/coolify/` holds the staging runbook.
+full-featured image (git smart-HTTP and SSH).

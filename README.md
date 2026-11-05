@@ -66,7 +66,7 @@ asc sync                         # fetch, fast-forward trunk, drop landed change
 | Component | What it is | Where it is documented |
 |---|---|---|
 | `asc` | The client and the one binary: CLI, daemon and `asc serve`. | this repository |
-| `asc serve` | The storage and RPC server (gRPC, HTTP/2, optional HTTP/3), plus the git compatibility layer (see below). | [`deploy/`](deploy/README.md), [`deploy/coolify/`](deploy/coolify/README.md) |
+| `asc serve` | The storage and RPC server (gRPC, HTTP/2, optional HTTP/3), plus the git compatibility layer (see below). | [`deploy/`](deploy/README.md) |
 | ASC Hub | The ASC fork of Forgejo v16 (repository `asc/asc-hub`, image `forge.example.org/asc/asc-hub`): web UI, review, Actions, packages. It asks `asc serve` for repository data. | `docs/asc/README.md` in the ASC Hub repository |
 
 See [`docs/STATUS.md`](docs/STATUS.md) for the architecture sketch and what runs where.

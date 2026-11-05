@@ -78,7 +78,6 @@ Words: **done** = code and a test on `origin/master`; **partial** = works but a 
 | Self-update | `cli/upgrade.rs:129` `verify`, `tests/self_update.rs` | done | minisign-verify with a compiled-in key, no key means refusal (`:506`) | Untested against a real release |
 | `deploy/Dockerfile.serve` | SPEC s.8.1 | partial | pinned digests, non-root, healthcheck `/healthz`; `image.yml` 27 successes | Web bundle added in `feat/web-bundle-image`; image is built but a staging deploy of this build is not recorded |
 | CI | `ci.yml`, `image.yml` | partial | Rust gate green at c0b6bbd3 | No TS job (web, `packages/*`, plugins), no Windows or macOS test leg, no Postgres, no S3 integration, no fuzz or bench (those live in `.forgejo/workflows`, runner-dependent). Flaky port-race tests recur (6617bcd9, d1912ab2) |
-| Staging deploy | `deploy/coolify`, ROADMAP release cadence | missing | none recorded this session | Needs a release, Coolify token |
 
 ## Prioritized work units
 

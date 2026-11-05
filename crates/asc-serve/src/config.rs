@@ -1580,7 +1580,7 @@ http3_port = {port}"
                 ),
             )
         };
-        // Behind a TLS-terminating proxy (the Coolify setup): plain listener, https public_url.
+        // Behind a TLS-terminating proxy: plain listener, https public_url.
         let proxied = cfg("listen = \"0.0.0.0:7890\"\npublic_url = \"https://asc.example.org\"");
         assert!(proxied.check_listener(Policy::STRICT).is_ok());
         // The h3 hint is a port; 0 is not one.
