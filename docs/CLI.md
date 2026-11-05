@@ -207,7 +207,7 @@ All take `--json` and `--remote <name\|url>`. The scope is `--rev <rev>`, `--cha
 |---|---|---|
 | `affected` | The projects a change touches. `--base`, `--head`, `--uncommitted`, `--format`, `--json`. | `asc affected --base master --json` |
 | `inputs` | The content identity of work-tree paths for build caches: a clean directory is one tree id, changed and untracked files are hashed. `--digest`, `--json`, `--allow-missing`, `-z`. | `asc inputs --digest app Cargo.lock` |
-| `cache` | The machine-wide build cache shared by every worktree and workflow: `status` (size, hit rate per tool), `ls [--tool T] [-n N]`, `show <key>` (outputs and the worktrees that used it), `gc [--max-size S]`, `clear [--tool T]`. `--json` on each. | `asc cache ls --tool rustc` |
+| `cache` | The machine-wide build cache shared by every worktree and workflow: `status` (size, hit rate per tool), `ls [--tool T] [-n N]`, `show <key>` (outputs and the worktrees that used it), `gc [--max-size S]`, `clear [--tool T]`, `push [--rev R] [--remote N]` (upload queued entries to the server and list them under the revision), `warm [<rev>] [--remote N]` (fetch a revision's entries this machine lacks). `--json` on each. | `asc cache warm main` |
 | `projects` | Lists projects of a revision, or the owners of paths (`--owner <path>`). | `asc projects --format json` |
 | `graph` | The project graph as JSON (`--format json`) or Graphviz (`--format dot`). | `asc graph --format dot` |
 | `ci checkout` | The checkout step of a CI job from the host cache. The token comes from `ASC_TOKEN`. | `asc ci checkout --repo acme/payments --rev "$HEAD" --base "$BASE" --dir .` |

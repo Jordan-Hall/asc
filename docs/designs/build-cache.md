@@ -77,9 +77,26 @@ tmp/                            files being written
 
 Misses fall through to `asc serve`, reusing the turbo artefact store (`/v8/artifacts`, SPEC §12.4) with its scopes:
 reads try the caller's scope and then `trusted`; writes go only to the caller's scope (`trusted` from CI on the
-default branch, `pr-<n>`, `dev-<user>`). An action entry and its blobs travel as one artefact (tar, zstd) named by the
-action key. Uploads run in the background after the local write. `asc.buildcache.remote = off | read | read-write`
-(default `read` for people, `read-write` in trusted CI).
+default branch, `pr-<n>`, `dev-<user>`). Under path rules a `trusted` artefact is served only where CI registered its
+directory and the caller may build there.
+
+- **Artefact**: an entry and its blobs travel as one artefact named `asc-<key>`:
+  `zstd("ASCBC01\n" key[32] u32 len entry-JSON u32 count {id[32] u64 len bytes}*)`. Unpacking stores each blob under
+  the id of the bytes received and refuses the artefact when the key differs, a blob's content differs from its id,
+  the blobs are not exactly those the entry uses, the entry is over 4 MiB or the whole is over 4 GiB. Entries over
+  512 MiB packed stay local.
+- **Output safety**: an entry, local or fetched, is refused when an output path is not relative, repeats, or lies
+  below another output; when a link target is absolute or climbs above the root (`..` only as a leading run); and a
+  restore refuses to write below a directory that is a link.
+- **Outbox**: an adapter in `read-write` mode queues each key it puts or hits (`outbox/<key>`) and starts
+  `asc cache push` in the background. Push heads each artefact, uploads the ones the server lacks, and posts every
+  queued key under the revision (`POST /v8/asc/build-revs/<rev>`, the work tree's HEAD changeset unless `--rev`).
+  Each job's list is kept separately and a read merges the caller's scope with `trusted`; lists age out with their
+  scope.
+- **Warm**: `asc cache warm [<rev>]` reads the revision's keys (`GET /v8/asc/build-revs/<rev>`) and fetches the ones
+  the store lacks, eight at a time. A refused artefact is reported and skipped.
+- **Mode**: `asc.buildcache.remote = off | read | read-write`; unset it is `read-write` when `CI` is set and `read`
+  elsewhere. `off` refuses push and warm; adapters fetch on a local miss in `read` and `read-write`.
 
 ## 4. Adapters
 
@@ -162,8 +179,9 @@ and stores the outputs on a miss. Exit status and stdout/stderr are stored with 
 - `asc cache status [--json]`: store size, entries, hit rate per tool over the last day and week, server tier state.
 - `asc cache ls [--tool T] [--json]`, `asc cache show <key>`: entries, their origin (worktree, workflow, CI) and the
   other worktrees that used them.
-- `asc cache gc [--max-size S]`, `asc cache clear [--tool T]`, `asc cache warm <rev>`: warm fetches the `trusted`
-  entries CI wrote for a revision.
+- `asc cache gc [--max-size S]`, `asc cache clear [--tool T]`.
+- `asc cache push [--rev R] [--remote N]`, `asc cache warm [<rev>] [--remote N]`: send the outbox and list it under a
+  revision; fetch a revision's entries before a build.
 - `asc cache setup <cargo|go|ccache|gradle|maven|bazel|nx|turbo|js>`: writes the tool's configuration (user or
   repository level, as asked) and prints what changed. `--undo` takes it out again.
 

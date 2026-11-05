@@ -30,6 +30,7 @@ The commands that read these keys are in [`CLI.md`](CLI.md); the index of all do
 | `asc.cache.maxSize` | the daemon's default | The size the daemon keeps the cache under (`asc.cache.maxsize` is accepted too). | `asc config --global asc.cache.maxSize 20GiB` |
 | `asc.buildcache.dir` | `<ASC_HOME>/buildcache` | Where the build cache lives (`~/` expanded). | `asc config --global asc.buildcache.dir ~/.cache/asc-build` |
 | `asc.buildcache.maxSize` | 20 GiB | The size `asc cache gc` and the adapters keep the build cache under (bytes, or `K`, `M`, `G`, `T`). | `asc config --global asc.buildcache.maxSize 50G` |
+| `asc.buildcache.remote` | `read`; `read-write` when `CI` is set | The build cache's server tier: `off`, `read` (fetch on a miss, `asc cache warm`) or `read-write` (also queue and push what builds write). | `asc config asc.buildcache.remote read-write` |
 | `asc.releasesUrl` | none | The https release directory `asc upgrade`, `asc self-update` and `asc codeintel enable-embed` read, in place of `ASC_DOWNLOAD_BASE_URL`. | `asc config --global asc.releasesUrl https://downloads.example.org/asc` |
 | `asc.shim.init` | unset | With the value `asc`, `git init` run through the shim creates an asc repository. | `asc config --global asc.shim.init asc` |
 | `asc.excludesFile` | `~/.config/asc/ignore` | Your global ignore file, read before `core.excludesFile`; a repository's `.ascignore` rules still apply. | `asc config --global asc.excludesFile ~/.config/asc/ignore` |
