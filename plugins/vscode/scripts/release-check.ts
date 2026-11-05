@@ -23,6 +23,9 @@ export const VSIX_ALLOWED = [
   /^README\.md$/,
   /^CHANGELOG\.md$/,
   /^icon\.png$/,
+  /^LICENSE\.txt$/,
+  /^language-configuration\.json$/,
+  /^syntaxes\/tsrx\.tmLanguage\.json$/,
   /^dist\/extension\.cjs$/,
   /^dist\/ui\//,
 ];
@@ -31,7 +34,11 @@ export const VSIX_REQUIRED = [
   "README.md",
   "CHANGELOG.md",
   "icon.png",
+  "LICENSE.txt",
+  "language-configuration.json",
+  "syntaxes/tsrx.tmLanguage.json",
   "dist/extension.cjs",
+  "dist/ui/index.js",
 ];
 
 interface Step {

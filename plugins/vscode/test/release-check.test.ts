@@ -65,6 +65,9 @@ describe("release-check", () => {
       "README.md",
       "CHANGELOG.md",
       "icon.png",
+      "LICENSE.txt",
+      "language-configuration.json",
+      "syntaxes/tsrx.tmLanguage.json",
       "dist/extension.cjs",
       "dist/ui/index.js",
     ];

@@ -32,6 +32,9 @@ jobs:
       - name: Test
         run: bun test
         working-directory: plugins/vscode
+      - name: Build the webview UI
+        run: bun run build
+        working-directory: packages/asc-ui
       - name: Package
         run: bun run package --out asc.vsix
         working-directory: plugins/vscode
