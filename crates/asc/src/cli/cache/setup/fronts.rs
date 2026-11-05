@@ -87,11 +87,46 @@ fn read(path: &Path) -> Result<String> {
     }
 }
 
+/// Writes `text` to `path` through a sibling temporary file and a rename, so a reader never sees
+/// half a file. The text holds the front's token, so the file is owner-only on Unix: `0600`, or
+/// the existing mode when it is already stricter. A file reached by a link (a dotfiles checkout)
+/// is written at its target, and the link stays.
 fn write(path: &Path, text: &str) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(path, text)?;
+    let path = match std::fs::canonicalize(path) {
+        Ok(p) => p,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => path.to_path_buf(),
+        Err(e) => return Err(e.into()),
+    };
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let tmp = path.with_file_name(format!(".{name}.asc-{}.tmp", std::process::id()));
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let mode = match std::fs::metadata(&path) {
+            Ok(m) => m.permissions().mode() & 0o600,
+            Err(_) => 0o600,
+        };
+        opts.mode(mode);
+    }
+    let res = opts
+        .open(&tmp)
+        .and_then(|mut f| {
+            f.write_all(text.as_bytes())?;
+            f.sync_all()
+        })
+        .and_then(|()| std::fs::rename(&tmp, &path));
+    if let Err(e) = res {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.into());
+    }
     Ok(())
 }
 
@@ -409,5 +444,77 @@ mod tests {
             "{s}"
         );
         assert!(s.contains("allowInsecureProtocol = true"));
+    }
+
+    #[test]
+    fn a_write_replaces_the_file_whole_and_leaves_no_temporary() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("sub/.bazelrc");
+        write(
+            &p, "one
+",
+        )
+        .unwrap();
+        write(
+            &p, "two
+",
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&p).unwrap(),
+            "two
+"
+        );
+        assert_eq!(std::fs::read_dir(d.path().join("sub")).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_written_file_is_owner_only_and_a_link_stays_a_link() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let target = d.path().join("dotfiles-bazelrc");
+        std::fs::write(
+            &target, "mine
+",
+        )
+        .unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let link = d.path().join(".bazelrc");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        write(
+            &link, "token
+",
+        )
+        .unwrap();
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "token
+"
+        );
+        let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o400)).unwrap();
+        write(
+            &link, "again
+",
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o400
+        );
+        let fresh = d.path().join("new.xml");
+        write(&fresh, "x").unwrap();
+        assert_eq!(
+            std::fs::metadata(&fresh).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 }
