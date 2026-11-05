@@ -28,6 +28,12 @@ process.
   { "type": "asc-build", "name": "docs", "inputs": ["docs"], "outputs": ["site"], "command": ["mkdocs", "build"] }
   ```
 
+- TSRX: the `.tsrx` language with a TextMate grammar. It colours component bodies (`@{ }`), the
+  control flow (`@if`, `@else`, `@for`, `@empty`, `@switch`, `@case`, `@default`, `@try`,
+  `@pending`, `@catch`), tags, attributes, `{expr}` slots and fragments, with TypeScript between
+  them and CSS in `<style>`. Comment toggling, bracket matching and auto-closing pairs come from
+  its language configuration.
+
 ## Security
 
 - `asc` starts only in trusted workspaces. The `asc.path` setting is restricted in untrusted

@@ -12,6 +12,7 @@ All notable changes to the ASC extension are recorded here. The format follows
 
 ### Added
 
+- TSRX language: `.tsrx` files get a TextMate grammar (component bodies, control flow, tags, attributes, slots, fragments, TypeScript and `<style>` CSS) and a language configuration.
 - Build cache: status item, Build cache view (Show, Delete, Clear tool), `asc-build` tasks with problem matchers (Cargo, Go, Rsbuild, Rslib, Vite, and `asc cache run` tasks declared in tasks.json), the hits and misses of each task, Set up build caching, Warm, Clean up, Clear, and the `asc cache env` variables in new terminals (`asc.cache.terminalEnv`).
 - Release workflow (`vscode-release.yml`): `vsce` and `ovsx` publish on a `vscode-v<version>` tag, with `scripts/release-check.ts` as the dry run. The first publish is to be verified by hand and recorded here.
 - Packaging as a VSIX with `vsce package` (README, CHANGELOG and icon).
