@@ -144,6 +144,15 @@ impl Server {
                     .into_service(),
                     log: log.clone(),
                 };
+                // The turbo routes (`/v8/...`, the build cache's server tier) on the same port,
+                // over an in-memory bucket.
+                let turbo = asc_serve::turbo::router(Arc::new(asc_serve::turbo::TurboState::new(
+                    auth.clone(),
+                    Arc::new(object_store::memory::InMemory::new()),
+                    object_store::path::Path::from("turbo"),
+                    asc_serve::config::TurboConfig::default(),
+                    Arc::new(asc_serve::http::Metrics::new()),
+                )));
                 let svc = Counting {
                     inner: RepoService::new(ext.handlers.clone(), auth, ServerInfo::default())
                         .into_service(),
@@ -165,6 +174,8 @@ impl Server {
                     Some((r, l))
                 });
                 let _ = tonic::transport::Server::builder()
+                    .accept_http1(true)
+                    .add_routes(tonic::service::Routes::from(turbo))
                     .add_service(svc)
                     .add_optional_service(changes_svc)
                     .add_service(projects)
