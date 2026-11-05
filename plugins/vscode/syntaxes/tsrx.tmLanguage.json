@@ -1,0 +1,336 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "TSRX",
+  "scopeName": "source.tsrx",
+  "fileTypes": [
+    "tsrx"
+  ],
+  "patterns": [
+    {
+      "include": "#code"
+    }
+  ],
+  "repository": {
+    "code": {
+      "patterns": [
+        {
+          "include": "#comment"
+        },
+        {
+          "include": "#component-body"
+        },
+        {
+          "include": "#control"
+        },
+        {
+          "include": "#style"
+        },
+        {
+          "include": "#fragment"
+        },
+        {
+          "include": "#element"
+        },
+        {
+          "include": "#block"
+        },
+        {
+          "include": "source.ts"
+        }
+      ]
+    },
+    "block": {
+      "name": "meta.block.tsrx",
+      "begin": "\\{",
+      "end": "\\}",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.block.tsrx"
+        }
+      },
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.block.tsrx"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#code"
+        }
+      ]
+    },
+    "comment": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.tsrx",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.block.tsrx",
+          "begin": "/\\*",
+          "end": "\\*/"
+        }
+      ]
+    },
+    "component-body": {
+      "name": "meta.block.component.tsrx",
+      "begin": "@\\{",
+      "beginCaptures": {
+        "0": {
+          "name": "keyword.control.component.tsrx"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "keyword.control.component.tsrx"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#code"
+        }
+      ]
+    },
+    "control": {
+      "name": "meta.control.tsrx",
+      "begin": "@(?:else\\s+if|if|else|for|empty|switch|case|default|try|pending|catch)\\b",
+      "beginCaptures": {
+        "0": {
+          "name": "keyword.control.flow.tsrx"
+        }
+      },
+      "end": "(?<=\\})|(?=[;<])",
+      "patterns": [
+        {
+          "include": "#comment"
+        },
+        {
+          "name": "meta.control.head.tsrx",
+          "begin": "\\(",
+          "end": "\\)",
+          "beginCaptures": {
+            "0": {
+              "name": "meta.brace.round.tsrx"
+            }
+          },
+          "endCaptures": {
+            "0": {
+              "name": "meta.brace.round.tsrx"
+            }
+          },
+          "patterns": [
+            {
+              "include": "source.ts"
+            }
+          ]
+        },
+        {
+          "name": "meta.control.body.tsrx",
+          "begin": "\\{",
+          "end": "\\}",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.definition.block.tsrx"
+            }
+          },
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.block.tsrx"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#code"
+            }
+          ]
+        },
+        {
+          "include": "source.ts"
+        }
+      ]
+    },
+    "style": {
+      "name": "meta.tag.style.tsrx",
+      "begin": "(?<![\\w$)\\]])(<)(style)\\b([^>]{0,200})(>)",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.tag.begin.tsrx"
+        },
+        "2": {
+          "name": "entity.name.tag.tsrx"
+        },
+        "3": {
+          "patterns": [
+            {
+              "include": "#attributes"
+            }
+          ]
+        },
+        "4": {
+          "name": "punctuation.definition.tag.end.tsrx"
+        }
+      },
+      "end": "(</)(style)\\s*(>)",
+      "endCaptures": {
+        "1": {
+          "name": "punctuation.definition.tag.begin.tsrx"
+        },
+        "2": {
+          "name": "entity.name.tag.tsrx"
+        },
+        "3": {
+          "name": "punctuation.definition.tag.end.tsrx"
+        }
+      },
+      "contentName": "source.css",
+      "patterns": [
+        {
+          "include": "source.css"
+        }
+      ]
+    },
+    "fragment": {
+      "name": "meta.tag.fragment.tsrx",
+      "begin": "(?<![\\w$)\\]])(<)(>)",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.tag.begin.tsrx"
+        },
+        "2": {
+          "name": "punctuation.definition.tag.end.tsrx"
+        }
+      },
+      "end": "(</)(>)",
+      "endCaptures": {
+        "1": {
+          "name": "punctuation.definition.tag.begin.tsrx"
+        },
+        "2": {
+          "name": "punctuation.definition.tag.end.tsrx"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#children"
+        }
+      ]
+    },
+    "element": {
+      "name": "meta.tag.tsrx",
+      "begin": "(?<![\\w$)\\]])(<)([A-Za-z_][\\w.:$-]*)(?=[\\s/>]|$)",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.tag.begin.tsrx"
+        },
+        "2": {
+          "name": "entity.name.tag.tsrx"
+        }
+      },
+      "end": "(/>)|(</)([A-Za-z_][\\w.:$-]*)?\\s*(>)",
+      "endCaptures": {
+        "1": {
+          "name": "punctuation.definition.tag.end.tsrx"
+        },
+        "2": {
+          "name": "punctuation.definition.tag.begin.tsrx"
+        },
+        "3": {
+          "name": "entity.name.tag.tsrx"
+        },
+        "4": {
+          "name": "punctuation.definition.tag.end.tsrx"
+        }
+      },
+      "patterns": [
+        {
+          "name": "meta.tag.attributes.tsrx",
+          "begin": "\\G",
+          "end": "(?=/>)|(>)",
+          "endCaptures": {
+            "1": {
+              "name": "punctuation.definition.tag.end.tsrx"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#attributes"
+            }
+          ]
+        },
+        {
+          "include": "#children"
+        }
+      ]
+    },
+    "attributes": {
+      "patterns": [
+        {
+          "include": "#comment"
+        },
+        {
+          "name": "entity.other.attribute-name.tsrx",
+          "match": "[A-Za-z_][\\w:.$-]*"
+        },
+        {
+          "name": "keyword.operator.assignment.tsrx",
+          "match": "="
+        },
+        {
+          "name": "string.quoted.double.tsrx",
+          "match": "\"[^\"]*\""
+        },
+        {
+          "name": "string.quoted.single.tsrx",
+          "match": "'[^']*'"
+        },
+        {
+          "include": "#slot"
+        }
+      ]
+    },
+    "slot": {
+      "name": "meta.embedded.expression.tsrx",
+      "begin": "\\{",
+      "end": "\\}",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.section.embedded.begin.tsrx"
+        }
+      },
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.section.embedded.end.tsrx"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#code"
+        }
+      ]
+    },
+    "children": {
+      "patterns": [
+        {
+          "include": "#style"
+        },
+        {
+          "include": "#fragment"
+        },
+        {
+          "include": "#element"
+        },
+        {
+          "include": "#control"
+        },
+        {
+          "include": "#slot"
+        },
+        {
+          "name": "constant.character.entity.tsrx",
+          "match": "&(?:[A-Za-z][A-Za-z0-9]{1,31}|#[0-9]{1,7}|#x[0-9A-Fa-f]{1,6});"
+        }
+      ]
+    }
+  }
+}

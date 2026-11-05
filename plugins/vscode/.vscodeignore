@@ -5,3 +5,5 @@
 !CHANGELOG.md
 !icon.png
 !dist/ui/**
+!syntaxes/**
+!language-configuration.json
