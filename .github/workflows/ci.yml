@@ -113,7 +113,7 @@ jobs:
         run: cargo test -p asc --locked --test windows_virtual --no-run
       - name: Virtual workspace tests
         shell: bash
-        timeout-minutes: 30
+        timeout-minutes: 60
         env:
           RUST_BACKTRACE: '1'
         # One test at a time, each with a limit, so a test that hangs is named and the others still report.
@@ -125,6 +125,9 @@ jobs:
               echo "::error::$t failed or ran over 5 minutes"
               status=1
             fi
+            # A test stopped by the limit leaves its daemon and test binary running, holding asc.exe open.
+            taskkill //F //T //IM asc.exe >/dev/null 2>&1 || true
+            taskkill //F //T //IM 'windows_virtual-*' >/dev/null 2>&1 || true
             echo "::endgroup::"
           done
           exit $status
