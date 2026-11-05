@@ -1,0 +1,6 @@
+.gradle/
+.kotlin/
+buildSrc/.gradle/
+buildSrc/build/
+build/
+.intellijPlatform/
