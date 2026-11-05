@@ -155,17 +155,53 @@ asc-aware adapters also skip hydration.
 - A compile is not an operation of the repository: `asc cache rustc` writes no op-log entry.
 ### 4.2 Rsbuild, Rslib and Vite
 
-`@asc/build-cache` (workspace package `packages/asc-build-cache`) with three entry points:
+`@asc/build-cache` (workspace package `packages/asc-build-cache`) caches a whole `build` as one action. It has two
+entry points, `@asc/build-cache/rsbuild` (`pluginAscBuildCache`, for Rsbuild and Rslib) and `@asc/build-cache/vite`
+(`ascBuildCache`). The plugins call two commands, and any other tool's plugin can call them too:
 
-- **Build-level cache.** The plugin asks the daemon for the input digest of the project: its source directories,
-  config files, the lockfile and the workspace packages it imports (from the lockfile's workspace graph), plus the
-  tool version, mode and the `define`d environment. On a hit it restores the output directory and ends the build
-  before any module is read; on a miss it builds and stores the output. Rsbuild and Rslib use `onBeforeBuild` /
-  `onAfterBuild`; Vite uses `config` / `buildStart` / `closeBundle`.
-- **Module-level cache.** On a miss, Rsbuild's and Rslib's persistent cache (`performance.buildCache`) is pointed at
-  the shared store under a digest of the config and lockfile, with `cacheDigest` set from asc inputs, so a second
-  worktree starts warm. Vite's dependency pre-bundle (`cacheDir`) is shared the same way under the lockfile digest.
-- **Dev servers are not cached**; only `build`.
+- `asc cache restore --tool T --name N --inputs P... --outputs P... [--part NAME=VALUE]... [--env V]... [--no-remote]
+  [--json]` computes the key: the tool, the project's path in the work tree, the platform, the parts and the named
+  environment variables in sorted order, and the digest of the inputs (`asc inputs`). It looks the key up in the local
+  store, then on the server tier. An entry counts only when all its blobs are present. On a hit it deletes the output
+  paths and restores the entry's outputs. With `--json` it prints `{"hit": bool, "key": hex}` and exits 0; without it,
+  it prints the key and exits 1 on a miss.
+- `asc cache save --key K --tool T [--name N] --outputs P... [--no-remote]` stores the output paths that exist under
+  the key (an error when none exist), queues the entry for the server tier and runs eviction.
+
+What the plugins send:
+
+- **Inputs**: the project directory, each lockfile from the project up to the work-tree root, the workspace packages
+  the project depends on (directly or through each other: a dependency whose `node_modules` entry links to a directory
+  of the work tree outside any `node_modules`), and the paths in the `inputs` option. Outputs must be ignored by
+  `.gitignore` or `.ascignore`, as `dist/` usually is: an output that is an input changes the key on every build.
+- **Parts**: the tool version (`api.context.version`, Vite's `this.meta.viteVersion`, and `@rslib/core` under Rslib),
+  the mode, the plugin names, the plugin's own version, and a digest of the rest of the configuration (keys sorted,
+  functions by their source, the work-tree root replaced by a placeholder, so the same configuration in another work
+  tree has the same digest).
+- **Environment**: `NODE_ENV`, every variable with a public prefix (`PUBLIC_` for Rsbuild, `envPrefix` or `VITE_` for
+  Vite) and the names in the `env` option.
+
+On a hit, the outputs are restored before the tool reads a module. The tool still runs, but does almost nothing:
+
+- Vite builds one empty virtual module with `write: false`.
+- Rsbuild and Rslib build one empty entry into `node_modules/.cache/asc-build-cache/<environment>/out`.
+
+On a miss, the tool builds as usual. The plugin saves the outputs after a successful build: in Vite's last
+`closeBundle`, and in Rsbuild's `onAfterBuild`.
+
+When the plugin does not run:
+
+- A watched build (`--watch` or `build.watch`) and the dev server are not cached.
+- `ASC_BUILD_CACHE=0` or `enabled: false` turns the plugin off.
+
+When the plugin cannot use asc (no binary, or the project is not in a work tree), the build runs as if the plugin were
+not there, with one warning. `ASC_BIN` names the binary. `ASC_BUILD_CACHE_DEBUG=1` prints each asc command.
+`ASC_BUILD_CACHE_QUIET=1` silences the hit line.
+
+The plugins do not share the tools' module-level caches. Rspack's persistent cache (`performance.buildCache`) and
+Vite's `cacheDir` store absolute paths of the work tree, so they cannot be used from another work tree. They also
+have no lock, so two work trees writing to the same cache directory would corrupt it. Each work tree keeps its own
+module-level cache. The whole-build entry is what different work trees share.
 
 ### 4.3 Protocols on the daemon
 
@@ -259,9 +295,12 @@ runs any command as a cached action.
 - `asc cache push [--rev R] [--remote N]`, `asc cache warm [<rev>] [--remote N]`: send the outbox and list it under a
   revision; fetch a revision's entries before a build.
 - `asc cache run --name <n> ... -- <command>`: §4.4.
+- `asc cache restore ...` and `asc cache save --key K ...`: one build as a cached action, for a build tool's plugin
+  (§4.2).
 - `asc cache serve`: the fronts in the foreground (§4.3). `asc cache env [--shell sh|pwsh|cmd|json]`: the front's variables for turbo, Nx and Maven.
-- `asc cache setup <cargo|go|ccache|gradle|maven|bazel|nx|turbo|js> [--user|--repo] [--no-incremental] [--trimpath] [--undo]`: writes the tool's configuration (user or
-  repository level, as asked) and prints what changed. `--undo` takes it out again.
+- `asc cache setup <cargo|go|ccache|gradle|maven|bazel|nx|turbo> [--user|--repo] [--no-incremental] [--trimpath] [--undo]`: writes the tool's configuration (user or
+  repository level, as asked) and prints what changed. `--undo` takes it out again. The Rsbuild, Rslib and Vite
+  plugins go in the build's own configuration (§4.2).
 
 ## 6. VS Code
 
