@@ -109,6 +109,7 @@ asc-aware adapters also skip hydration.
 | Rust (Cargo, rustc, `build.rs`) | `asc cache rustc` as `RUSTC_WRAPPER` | yes |
 | JS: Rsbuild, Rslib | `@asc/build-cache/rsbuild` plugin | yes |
 | JS: Vite | `@asc/build-cache/vite` plugin | yes |
+| JS: Rstest | `asc-rstest` runner (`@asc/build-cache/rstest`) | yes |
 | JS: Turborepo | daemon `/v8` front, then `asc serve` | turbo hashes |
 | JS: Nx | daemon Nx remote cache front | Nx hashes |
 | Go | `asc cache go` as `GOCACHEPROG` | go hashes |
@@ -202,6 +203,26 @@ The plugins do not share the tools' module-level caches. Rspack's persistent cac
 Vite's `cacheDir` store absolute paths of the work tree, so they cannot be used from another work tree. They also
 have no lock, so two work trees writing to the same cache directory would corrupt it. Each work tree keeps its own
 module-level cache. The whole-build entry is what different work trees share.
+
+### 4.2.1 Rstest
+
+A test run is cached by a runner, not a plugin: an Rstest plugin or reporter runs only after the tests have started, and
+a hit has to skip them. `asc-rstest` (the `bin` of `@asc/build-cache`, also `runRstest` from
+`@asc/build-cache/rstest`) takes asc options first, then the rstest command line:
+
+    asc-rstest [--asc-name N] [--asc-output P]... [--asc-input P]... [--asc-env V]... [--asc-no-remote] [--asc-off] run [rstest options]
+
+- It runs the `@rstest/core` installed in the project or a directory above it, with the same Node (or Bun).
+- **Cached**: `run` only. Watch mode (`-w`, `--watch`, or no `run`), snapshot updates (`-u`, `--update`, which write
+  the sources) and `--asc-off` (or `ASC_BUILD_CACHE=0`) run the tests every time.
+- **Key**: the inputs of §4.2 (the project, the lockfiles, the linked workspace packages, `--asc-input`); the parts
+  rstest's version, the Node version and the rstest arguments; the variables `NODE_ENV`, `NODE_OPTIONS`, `TZ`, `CI`,
+  every `RSTEST_` variable and `--asc-env`.
+- **Outputs**: the run's stdout and stderr, kept in `node_modules/.cache/asc-rstest`, and each `--asc-output` (for
+  example `coverage`). They must be ignored, as for a build.
+- **Hit**: the outputs are restored, the output is replayed and the exit status is 0. No test runs.
+- **Miss**: the tests run with their output shown as it comes. Only a run that exits 0, with at most 16 MiB on each
+  stream, is stored. A failing run is never stored, so it runs again next time.
 
 ### 4.3 Protocols on the daemon
 
@@ -340,6 +361,6 @@ cache is optional.
 5. Rust: `asc cache rustc`, `asc cache setup cargo`.
 6. Go: `asc cache go`, setup.
 7. Daemon loopback fronts: turbo, Nx, Bazel, Gradle, Maven, ccache; setup for each.
-8. `@asc/build-cache`: Rsbuild, Rslib, Vite.
+8. `@asc/build-cache`: Rsbuild, Rslib, Vite, Rstest.
 9. VS Code: status item, view, tasks, admin commands.
 10. VS Code open items: TSRX grammar, publishing.
