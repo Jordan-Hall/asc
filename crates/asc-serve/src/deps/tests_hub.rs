@@ -277,6 +277,18 @@ async fn a_scan_reports_what_it_read_and_what_it_found_and_records_it() {
         HashMap::from([("crates.io".to_owned(), 2)])
     );
     assert_eq!(listed.last_lookup, wire::DepLookupStatus::Complete as i32);
+    assert_eq!(listed.packages_unknown, 0);
+    assert_eq!(
+        listed.open_by_severity,
+        HashMap::from([
+            ("critical".to_owned(), 0),
+            ("high".to_owned(), 1),
+            ("moderate".to_owned(), 0),
+            ("low".to_owned(), 0),
+            ("unknown".to_owned(), 0),
+        ]),
+        "every severity is present, counted over the open findings"
+    );
 }
 
 #[tokio::test]
@@ -547,6 +559,14 @@ async fn a_finding_is_dismissed_by_a_person_and_stays_dismissed() {
             .is_empty()
     );
     assert_eq!(h.findings(&[]).await.counts_by_state["dismissed"], 1);
+    assert!(
+        h.findings(&[])
+            .await
+            .open_by_severity
+            .values()
+            .all(|n| *n == 0),
+        "a dismissed finding is not counted as open"
+    );
     let f = dismiss(wire::DepDismissReason::Unspecified, id, "")
         .await
         .unwrap()

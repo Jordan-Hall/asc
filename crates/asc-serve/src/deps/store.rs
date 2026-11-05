@@ -459,6 +459,39 @@ pub async fn counts(
     Ok(out)
 }
 
+/// How many open findings of `repo_id` there are of each severity, keyed "critical", "high", "moderate", "low" and
+/// "unknown" (no severity given by the source). Every key is present.
+pub async fn open_by_severity(
+    pool: &AnyPool,
+    repo_id: i64,
+) -> Result<BTreeMap<&'static str, u32>, sqlx::Error> {
+    let rows = sqlx::query(
+        "SELECT severity, CAST(COUNT(*) AS BIGINT) AS n FROM deps_findings WHERE repo_id = $1 AND state = $2 GROUP BY severity",
+    )
+    .bind(repo_id)
+    .bind(State::Open as i64)
+    .fetch_all(pool)
+    .await?;
+    let mut out: BTreeMap<&'static str, u32> = BTreeMap::new();
+    for k in ["critical", "high", "moderate", "low", "unknown"] {
+        out.insert(k, 0);
+    }
+    for r in rows {
+        let code: i64 = r.try_get("severity")?;
+        let n: i64 = r.try_get("n")?;
+        let key = match severity_of_code(code) {
+            Some(DepSeverity::Critical) => "critical",
+            Some(DepSeverity::High) => "high",
+            Some(DepSeverity::Moderate) => "moderate",
+            Some(DepSeverity::Low) => "low",
+            None => "unknown",
+        };
+        let v = out.entry(key).or_insert(0);
+        *v = v.saturating_add(u32::try_from(n).unwrap_or(u32::MAX));
+    }
+    Ok(out)
+}
+
 /// Moves finding `id` to `state` (open reopens). `None` when there is no such finding. The audit event
 /// is appended in the same transaction.
 #[allow(clippy::too_many_arguments)] // the columns of one transition, called from one place

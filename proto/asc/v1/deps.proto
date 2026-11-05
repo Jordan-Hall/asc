@@ -142,6 +142,8 @@ message ListDepFindingsResponse {
   DepLookupStatus last_lookup = 6;
   uint32 packages_checked = 7;          // distinct packages the last scan of trunk checked; 0 when there is none
   map<string, uint32> packages_by_ecosystem = 8;   // of those, per OSV ecosystem name; the values add up to `packages_checked`; empty for a scan recorded before this field existed
+  map<string, uint32> open_by_severity = 9;   // open findings of the repository per severity ("critical", "high", "moderate", "low", "unknown"); every key is present
+  uint32 packages_unknown = 10;         // of `packages_checked`, how many the last scan could not look up
 }
 
 message DepUpdate {

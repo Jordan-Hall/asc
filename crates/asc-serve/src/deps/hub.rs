@@ -548,6 +548,9 @@ impl DepsHub {
             String::new()
         };
         let counts = store::counts(pool, entry.key.0).await.map_err(sql)?;
+        let by_severity = store::open_by_severity(pool, entry.key.0)
+            .await
+            .map_err(sql)?;
         let last = store::last_scan(pool, entry.key.0).await.map_err(sql)?;
         Ok(wire::ListDepFindingsResponse {
             findings: rows.iter().map(finding_wire).collect(),
@@ -567,6 +570,13 @@ impl DepsHub {
                 .as_ref()
                 .map(|l| l.by_ecosystem.clone().into_iter().collect())
                 .unwrap_or_default(),
+            packages_unknown: last
+                .as_ref()
+                .map_or(0, |l| u32::try_from(l.unknown).unwrap_or(u32::MAX)),
+            open_by_severity: by_severity
+                .into_iter()
+                .map(|(k, v)| (k.to_owned(), v))
+                .collect(),
             last_lookup: last.map_or(0, |l| i32::try_from(l.lookup).unwrap_or(0)),
         })
     }
