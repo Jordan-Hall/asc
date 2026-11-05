@@ -113,11 +113,13 @@ asc-aware adapters also skip hydration.
 | JS: Turborepo | daemon `/v8` front, then `asc serve` | turbo hashes |
 | JS: Nx | daemon Nx remote cache front | Nx hashes |
 | Go | `asc cache go` as `GOCACHEPROG` | go hashes |
+| .NET (`dotnet build`, `test`, `publish`, `pack`) | `asc cache dotnet` | yes |
+| Python (pytest) | `asc cache pytest` | yes |
 | C, C++ (ccache) | daemon HTTP storage front (`remote_storage`) | ccache hashes |
 | Java, Kotlin (Gradle) | daemon HTTP build cache front | Gradle hashes |
 | Java (Maven build cache extension) | daemon HTTP front | Maven hashes |
 | Bazel and anything on it | daemon HTTP cache front (`/ac`, `/cas`) | Bazel hashes |
-| Anything else (make, scripts, .NET, Python wheels, docs) | `asc cache run` | yes |
+| Anything else (make, scripts, Python wheels, docs) | `asc cache run` | yes |
 
 ### 4.1 Rust
 
@@ -309,6 +311,31 @@ runs any command as a cached action.
 - **Setup**: Go has no repository-level configuration, so `--repo` is refused. `--undo` takes out `GOCACHEPROG` when
   it names asc, and `-trimpath` from `GOFLAGS` only with `--undo --trimpath`.
 - The cache server is not an operation of the repository: it writes no op-log entry.
+### 4.6 .NET and Python
+
+`asc cache dotnet [opts] -- <dotnet command>` and `asc cache pytest [--python P] [opts] -- [pytest arguments]` are
+`asc cache run` (§4.4) with the tool's inputs, outputs and versions filled in. The options are those of `asc cache
+run`: `--name`, `--inputs` and `--outputs` (added to the ones below), `--env`, `--no-remote`, `-q`.
+
+- **dotnet**: `build`, `test`, `publish` and `pack` are cached (tool `dotnet`, name `dotnet-<verb>`); any other
+  command runs uncached. The projects are the one the command names, else those under the directory or solution it
+  names (or the current directory), skipping `bin`, `obj` and hidden directories, plus every project they reference
+  (`ProjectReference`) inside the work tree. Inputs: the current directory, each project's directory, and
+  `global.json`, `Directory.Build.*`, `Directory.Packages.props`, `Directory.Solution.*` and `NuGet.Config` in those
+  directories and above them up to the work-tree root. Outputs: each project's `bin`, and the `-o`/`--output` and
+  `--results-directory` given. `obj` is not stored: it holds absolute paths, and the next uncached build
+  writes it again. Key parts: `dotnet --version`, and the variables starting `DOTNET_`, `NUGET_` or `MSBUILD`.
+- **pytest**: runs `<python> -m pytest` (`--python`, default `python3`, `python` on Windows; tool `pytest`). Inputs:
+  the current directory and `pyproject.toml`, `setup.cfg`, `setup.py`, `pytest.ini`, `tox.ini`, `conftest.py`,
+  `.python-version`, `requirements*.txt` and the lock files (`uv.lock`, `poetry.lock`, `Pipfile.lock`, `pdm.lock`) in
+  it and above it up to the work-tree root. Key parts: the interpreter's version and every installed distribution
+  with its version, so another virtual environment with the same packages shares the entry; and the variables
+  starting `PYTHON` or `PYTEST_`. Outputs: the `--junitxml` file, the `--cov-report` files and `.coverage`.
+- A pytest run that depends on the last run, stops for a debugger, loops or writes the sources (`--lf`, `--ff`,
+  `--nf`, `--sw`, `-f`, `--pdb`, `--trace`, `--snapshot-update`, `--force-regen`, `--inline-snapshot`) runs
+  uncached. Neither front stores a failure.
+- Both read the inputs digest from the tree and the dirty list (§1), so a clean file is never hydrated.
+
 ## 5. Commands
 
 - `asc cache status [--json]`: store size, entries, hit rate per tool over the last day and week, and the server
@@ -320,7 +347,8 @@ runs any command as a cached action.
   unknown key removes nothing).
 - `asc cache push [--rev R] [--remote N]`, `asc cache warm [<rev>] [--remote N]`: send the outbox and list it under a
   revision; fetch a revision's entries before a build.
-- `asc cache run --name <n> ... -- <command>`: §4.4.
+- `asc cache run --name <n> ... -- <command>`: §4.4. `asc cache dotnet ... -- <command>`, `asc cache pytest ... --
+  [args]`: §4.6.
 - `asc cache restore ...` and `asc cache save --key K ...`: one build as a cached action, for a build tool's plugin
   (§4.2).
 - `asc cache serve`: the fronts in the foreground (§4.3). `asc cache env [--shell sh|pwsh|cmd|json]`: the front's variables for turbo, Nx and Maven.
@@ -361,7 +389,7 @@ cache is optional.
 3. Server tier on the turbo artefact store; `asc cache warm`.
 4. `asc cache run`.
 5. Rust: `asc cache rustc`, `asc cache setup cargo`.
-6. Go: `asc cache go`, setup.
+6. Go: `asc cache go`, setup. .NET and Python: `asc cache dotnet`, `asc cache pytest`.
 7. Daemon loopback fronts: turbo, Nx, Bazel, Gradle, Maven, ccache; setup for each.
 8. `@asc/build-cache`: Rsbuild, Rslib, Vite, Rstest.
 9. VS Code: status item, view, tasks, admin commands.
