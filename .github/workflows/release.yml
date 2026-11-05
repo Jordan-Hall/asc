@@ -375,3 +375,35 @@ jobs:
           fi
           gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber release/*
           gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+
+  # The package managers read the manifests of the published release: a winget pull request, the Scoop bucket and
+  # the Homebrew tap (scripts/release/publish-packages.sh). Each is skipped while its repository variable is unset:
+  #   variable WINGET_FORK    owner/winget-pkgs, a fork of microsoft/winget-pkgs owned by the token's account
+  #   variable SCOOP_BUCKET   owner/name of the bucket repository (bucket/asc.json)
+  #   variable HOMEBREW_TAP   owner/homebrew-<name> (Formula/asc.rb)
+  #   secret   ASC_PACKAGES_TOKEN  a token that can write to those repositories and open the winget pull request
+  packages:
+    if: github.ref_type == 'tag'
+    needs: [prepare, publish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      GH_TOKEN: ${{ secrets.ASC_PACKAGES_TOKEN }}
+      WINGET_FORK: ${{ vars.WINGET_FORK }}
+      SCOOP_BUCKET: ${{ vars.SCOOP_BUCKET }}
+      HOMEBREW_TAP: ${{ vars.HOMEBREW_TAP }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: release
+      - name: Publish the package manifests
+        run: |
+          set -euo pipefail
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning::ASC_PACKAGES_TOKEN is not set; winget, Scoop and Homebrew are not updated"
+            exit 0
+          fi
+          sh scripts/release/publish-packages.sh release "$VERSION"
