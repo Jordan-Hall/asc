@@ -38,8 +38,10 @@ id). Paths are relative to the
 repository root with `/`, so the digest is the same in every worktree that holds the same content. The daemon serves
 the same answer over the plugin API (`Inputs` RPC) so editor and build plugins need no child process per call.
 
-Cost: one status walk of the matched paths (the same one `asc status` does, journal-driven in a virtual workspace)
-plus a hash of each changed file. No hydration.
+Cost: one status walk of the matched paths (the same one `asc status` does) plus a hash of each changed file. No
+hydration: in a virtual workspace a file the provider still projects from the base tree (a ProjFS placeholder or clean
+hydrated placeholder, from `PrjGetOnDiskFileState`; under FUSE, a base-tree file with the `user.asc.projected`
+attribute) is taken as the tree's entry and never read.
 
 ## 2. The store
 
