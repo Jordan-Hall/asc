@@ -120,23 +120,39 @@ asc-aware adapters also skip hydration.
 
 ### 4.1 Rust
 
-`RUSTC_WRAPPER=asc` (`asc cache rustc`, set by `asc cache setup cargo`):
+`build.rustc-wrapper = "asc"` (written by `asc cache setup cargo`, or `RUSTC_WRAPPER=asc`): cargo runs
+`asc <rustc> <args>…` for each crate, which asc treats as `asc cache rustc -- <rustc> <args>…`. `clippy-driver rustc`
+(cargo's workspace wrapper under `cargo clippy`) is accepted the same way, with its lints cached as output.
 
-- **Cacheable**: `lib`, `rlib`, `staticlib`, `proc-macro`, `bin` and build-script compilations without
-  `-C incremental`. Anything else runs rustc unchanged. Cargo's dev profile turns incremental on for workspace members;
-  `asc cache setup cargo` offers `CARGO_INCREMENTAL=0` for the profiles the person picks, and says what it costs.
-- **Key material**: `rustc -vV`, the arguments with every path made repository-relative (and
-  `--remap-path-prefix=<root>=.` added so outputs carry no absolute path and are valid in any worktree), the
-  environment rustc and the crate read (`CARGO_*` that cargo sets, `env!`/`option_env!` names from the dep-info), the
-  extern crates by content id, and the inputs.
-- **Inputs without reading the sources (two-level lookup)**: the first compile of a key writes dep-info; the entry
-  stores the list of source paths it read. The next lookup takes that list, asks §1 for their ids (tree ids where
-  clean) and builds the full key; only on a miss is rustc run. A changed source list is just a different entry.
+- **Cacheable**: a compile with one source file, `--crate-name`, `--out-dir`, `dep-info` in `--emit`, and crate types
+  among `lib`, `rlib`, `staticlib`, `proc-macro` and `bin`. Anything else runs rustc unchanged: version probes,
+  `--print`, `-o`, stdin input, argument files (`@path`), `cdylib` and `dylib`, and `-C incremental`. Cargo's dev
+  profile compiles workspace members incrementally; `asc cache setup cargo --no-incremental` writes
+  `profile.dev.incremental = false` and says what that costs (an edit recompiles the whole crate).
+- **Placeholders**: the work-tree root, the target directory (the ancestor of `--out-dir` with cargo's
+  `CACHEDIR.TAG`) and the cargo home are replaced by placeholders in the key, the stored dep-info and the stored output,
+  as written natively, with `/` and JSON-escaped (case-insensitive on Windows, and only at a path boundary). A hit puts
+  back the current work tree's directories, so cargo's fingerprints and pipelining notices name real files. On a miss
+  rustc also gets `--remap-path-prefix=<root>=.`, so the outputs hold no work-tree path.
+- **Unit key**: `rustc -vV` (remembered per compiler file unless a rustup proxy could pick another toolchain), the
+  working directory, each option with its paths as placeholders, each `--extern` by its file's content, each native
+  library directory (`-L native=` and the like) by the content of its files when it is in the target directory or the
+  work tree and by name otherwise, the `CARGO_*` variables cargo sets (not the jobserver, target directory or terminal
+  ones), `OUT_DIR`, and the variables rustc reads (`RUSTC_BOOTSTRAP`, `SOURCE_DATE_EPOCH`, deployment targets).
+  `-L dependency=` is left out: the externs are keyed by content.
+- **Full key (two-level lookup)**: the unit key names a `rustc-deps` entry, the sources and variables the dep-info
+  listed last time. The full key adds their identity: sources in the work tree through §1 (tree and file ids, no
+  hydration), the rest (cargo home, target directory, ignored files) by content, remembered by path, size and time;
+  and each listed variable's value. A changed source list is a different entry.
+- **Hit**: the outputs (the files in `--out-dir` named after the crate and its `-C extra-filename`) are written, the
+  dep-info gets the current directories back, and rustc's output is replayed. **Miss**: rustc runs with its output
+  copied through; a success is stored under both keys unless a source changed while it ran. Any failure of the cache
+  itself is a warning and rustc runs as usual.
 - **`build.rs`**: compiling the build script is cached as above. Running it is cargo's decision: cargo has no hook
   around a build script run, and its fingerprints use mtimes, so a fresh worktree runs each build script once. What the
   script produces for rustc (its `OUT_DIR` files) is read by the crate's compile, so they are inputs of that compile
   (hashed from local bytes) and the crate's compile still hits.
-
+- A compile is not an operation of the repository: `asc cache rustc` writes no op-log entry.
 ### 4.2 Rsbuild, Rslib and Vite
 
 `@asc/build-cache` (workspace package `packages/asc-build-cache`) with three entry points:
@@ -196,7 +212,7 @@ runs any command as a cached action.
 - `asc cache push [--rev R] [--remote N]`, `asc cache warm [<rev>] [--remote N]`: send the outbox and list it under a
   revision; fetch a revision's entries before a build.
 - `asc cache run --name <n> ... -- <command>`: §4.4.
-- `asc cache setup <cargo|go|ccache|gradle|maven|bazel|nx|turbo|js>`: writes the tool's configuration (user or
+- `asc cache setup <cargo|go|ccache|gradle|maven|bazel|nx|turbo|js> [--user|--repo] [--undo]`: writes the tool's configuration (user or
   repository level, as asked) and prints what changed. `--undo` takes it out again.
 
 ## 6. VS Code
