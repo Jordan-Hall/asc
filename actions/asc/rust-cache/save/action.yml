@@ -1,0 +1,27 @@
+name: asc/rust-cache/save
+description: >-
+  Sends the compiles this job added to the asc server (asc cache push), listed under the commit. Run it last, with
+  if always(); it does nothing when asc/rust-cache was not enabled or the server tier is not read-write.
+inputs:
+  rev:
+    description: Revision to list the compiles under. Empty is the job's commit.
+    default: ''
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        IN_REV: ${{ inputs.rev || github.sha }}
+      run: |
+        set -euo pipefail
+        case "$IN_REV" in *[!0-9A-Za-z._/-]*|'') echo "asc/rust-cache/save: bad rev" >&2; exit 1 ;; esac
+        if [ -z "${RUSTC_WRAPPER:-}" ] || ! command -v asc >/dev/null 2>&1; then
+          echo "asc/rust-cache/save: the cache is not enabled; nothing to send"
+          exit 0
+        fi
+        mode="$(asc config --get asc.buildcache.remote 2>/dev/null || true)"
+        if [ "$mode" != read-write ]; then
+          echo "asc/rust-cache/save: the server tier is ${mode:-off}; nothing to send"
+          exit 0
+        fi
+        asc cache push --rev "$IN_REV"

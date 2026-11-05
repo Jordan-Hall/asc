@@ -1,0 +1,78 @@
+name: asc/rust-cache
+description: >-
+  Caches Rust compiles in the asc build cache (cargo's RUSTC_WRAPPER) instead of a tarball of target/. Blobs are
+  content named and never rewritten, so a backup of the cache server copies only new compiles. The job's own store
+  is in RUNNER_TEMP, a warmed host store can be read (never written), and the asc server is read on pull requests
+  and read-write otherwise.
+inputs:
+  server:
+    description: asc repository URL of the cache server. Empty uses the job's ASC_REMOTE (set by the hub for an asc repository), else the forge.
+    default: ''
+  token:
+    description: Task token.
+    default: ${{ github.token }}
+  lower:
+    description: Read-only host stores, path-list separated. Empty uses the job's ASC_HOST_BUILDCACHE.
+    default: ''
+  mode:
+    description: Server tier, off, read or read-write. Empty is read on pull requests and read-write otherwise.
+    default: ''
+  dir:
+    description: The job's own store. Empty is RUNNER_TEMP/asc-buildcache.
+    default: ''
+outputs:
+  enabled:
+    description: true when cargo compiles through the cache, false when asc is not installed.
+    value: ${{ steps.wire.outputs.enabled }}
+runs:
+  using: composite
+  steps:
+    - id: wire
+      shell: bash
+      env:
+        IN_SERVER: ${{ inputs.server && format('{0}/{1}', inputs.server, github.repository) || env.ASC_REMOTE || format('{0}/{1}', github.server_url, github.repository) }}
+        IN_TOKEN: ${{ inputs.token }}
+        IN_LOWER: ${{ inputs.lower || env.ASC_HOST_BUILDCACHE }}
+        IN_MODE: ${{ inputs.mode }}
+        IN_DIR: ${{ inputs.dir }}
+        IN_EVENT: ${{ github.event_name }}
+      run: |
+        set -euo pipefail
+        case "$IN_SERVER$IN_TOKEN$IN_LOWER$IN_MODE$IN_DIR" in *$'\n'*|*$'\r'*) echo "asc/rust-cache: invalid input" >&2; exit 1 ;; esac
+        case "$IN_SERVER" in https://*|http://127.0.0.1[:/]*|http://localhost[:/]*) ;; *) echo "asc/rust-cache: server must be https" >&2; exit 1 ;; esac
+        mode="$IN_MODE"
+        if [ -z "$mode" ]; then
+          mode=read-write
+          case "$IN_EVENT" in pull_request*) mode=read ;; esac
+        fi
+        case "$mode" in off|read|read-write) ;; *) echo "asc/rust-cache: mode must be off, read or read-write" >&2; exit 1 ;; esac
+        asc="$(command -v asc || true)"
+        if [ -z "$asc" ]; then
+          echo "::warning::asc/rust-cache: asc is not installed (add asc/setup before this step); building without the cache"
+          echo "enabled=false" >>"$GITHUB_OUTPUT"
+          exit 0
+        fi
+        dir="${IN_DIR:-${RUNNER_TEMP:?RUNNER_TEMP is not set}/asc-buildcache}"
+        mkdir -p "$dir"
+        n="${GIT_CONFIG_COUNT:-0}"
+        case "$n" in *[!0-9]*|'') n=0 ;; esac
+        {
+          set_key() {
+            echo "GIT_CONFIG_KEY_$n=$1"
+            echo "GIT_CONFIG_VALUE_$n=$2"
+            n=$((n + 1))
+          }
+          set_key asc.buildcache.dir "$dir"
+          if [ -n "$IN_LOWER" ]; then set_key asc.buildcache.lower "$IN_LOWER"; fi
+          set_key asc.buildcache.server "$IN_SERVER"
+          set_key asc.buildcache.remote "$mode"
+          echo "GIT_CONFIG_COUNT=$n"
+          echo "RUSTC_WRAPPER=$asc"
+          # Incremental artifacts are per machine and change on every build: they would only churn the store.
+          echo "CARGO_INCREMENTAL=0"
+          if [ -z "${ASC_TOKEN:-}" ] && [ -n "$IN_TOKEN" ]; then
+            echo "::add-mask::$IN_TOKEN" >&2
+            echo "ASC_TOKEN=$IN_TOKEN"
+          fi
+        } >>"$GITHUB_ENV"
+        echo "enabled=true" >>"$GITHUB_OUTPUT"
