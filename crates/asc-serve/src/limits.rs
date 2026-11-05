@@ -577,6 +577,7 @@ const TABLE: &[(&str, Class, &[&str])] = &[
             "Blame",
             "CommitGraph",
             "Diff",
+            "Inputs",
             "Log",
             "ReadFile",
             "Search",
