@@ -92,10 +92,13 @@ pub struct EntryInfo {
     pub entry_bytes: u64,
 }
 
-/// The store at one root.
+/// The store at one root, with read-only stores below it.
 #[derive(Clone, Debug)]
 pub struct Store {
     root: PathBuf,
+    /// Stores read on a miss and never written (`asc.buildcache.lower`): a host cache mounted
+    /// read-only into a job, filled by a trusted build.
+    lower: Vec<PathBuf>,
 }
 
 fn bad(text: impl Into<String>) -> io::Error {
@@ -178,11 +181,27 @@ impl Store {
         for d in ["cas", "ac", "events", "tmp"] {
             fs::create_dir_all(root.join(d))?;
         }
-        Ok(Store { root })
+        Ok(Store {
+            root,
+            lower: Vec::new(),
+        })
+    }
+
+    /// The same store, reading `dirs` in order on a miss. A lower store is only read: an entry
+    /// found there is copied up, each blob checked against its id, so this store never refers
+    /// to a file it does not hold and a damaged lower store costs a miss, not a wrong output.
+    pub fn with_lower(mut self, dirs: Vec<PathBuf>) -> Self {
+        self.lower = dirs.into_iter().filter(|d| *d != self.root).collect();
+        self
     }
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// The read-only stores below this one.
+    pub fn lower(&self) -> &[PathBuf] {
+        &self.lower
     }
 
     pub(crate) fn cas(&self) -> PathBuf {
@@ -348,12 +367,15 @@ impl Store {
         Ok(())
     }
 
-    /// The entry, if present and readable; marks it used.
+    /// The entry, if present and readable; marks it used. A miss reads the lower stores.
     pub fn get_action(&self, key: &ActionKey) -> io::Result<Option<Action>> {
         let path = self.entry_path(key);
         let body = match fs::read(&path) {
             Ok(b) => b,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => match self.copy_up(key)? {
+                Some(b) => b,
+                None => return Ok(None),
+            },
             Err(e) => return Err(e),
         };
         let Ok(action) = serde_json::from_slice::<Action>(&body) else {
@@ -365,6 +387,59 @@ impl Store {
             let _ = f.set_modified(std::time::SystemTime::now());
         }
         Ok(Some(action))
+    }
+
+    /// Copies the entry `key` and its blobs from the first lower store that holds all of them
+    /// whole, and returns the entry as written here. A lower store is never written: its files
+    /// keep their times, so a backup of it sees no change.
+    fn copy_up(&self, key: &ActionKey) -> io::Result<Option<Vec<u8>>> {
+        let name = key.to_string();
+        for root in &self.lower {
+            let Ok(body) = fs::read(sharded(&root.join("ac"), &name)) else {
+                continue;
+            };
+            let Ok(action) = serde_json::from_slice::<Action>(&body) else {
+                continue;
+            };
+            if check_paths(&action).is_err() || !self.copy_blobs(root, &action)? {
+                continue;
+            }
+            if self.put_action(key, &action).is_err() {
+                continue;
+            }
+            return fs::read(self.entry_path(key)).map(Some);
+        }
+        Ok(None)
+    }
+
+    /// Copies the blobs of `action` this store lacks from the lower store at `root`. `false`
+    /// when one is missing there or its bytes are not those of its id.
+    fn copy_blobs(&self, root: &Path, action: &Action) -> io::Result<bool> {
+        let cas = root.join("cas");
+        for blob in action
+            .outputs
+            .iter()
+            .map(|o| o.blob.as_str())
+            .chain(action.stdout.as_deref())
+            .chain(action.stderr.as_deref())
+        {
+            let Some(id) = unhex(blob) else {
+                return Ok(false);
+            };
+            if self.has_blob(&id) {
+                continue;
+            }
+            let Ok(mut f) = fs::File::open(sharded(&cas, &hex(&id))) else {
+                return Ok(false);
+            };
+            // Placed under the id of the bytes read: a damaged blob lands under another name and
+            // is taken by the next gc, never under the id the entry names.
+            let (got, _) = self.put_blob_reader(&mut f)?;
+            if got != id {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// Looks `key` up and records the hit or miss for `tool`.

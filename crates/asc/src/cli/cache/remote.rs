@@ -52,6 +52,17 @@ pub(crate) fn mode(ctx: &Ctx) -> Result<Mode> {
     }
 }
 
+/// The server of the build cache: `--remote`, else `asc.buildcache.server` (a remote name or an
+/// https URL), else `origin`. A job whose checkout points at a forge without the build cache
+/// names the asc server here.
+fn server(ctx: &Ctx, remote: Option<&str>) -> Option<String> {
+    remote.map(str::to_owned).or_else(|| {
+        ctx.config
+            .get("asc.buildcache.server")
+            .filter(|s| !s.trim().is_empty())
+    })
+}
+
 fn require_on(ctx: &Ctx) -> Result<()> {
     if mode(ctx)? == Mode::Off {
         return Err(CliError::Fatal(
@@ -165,7 +176,7 @@ async fn fetch_one(api: &HttpApi, store: &Store, key: &ActionKey) -> Result<Fetc
 /// A remote hit for `key`, or `None` on a miss, without a server, or when the server cannot be
 /// reached (the build goes on as on a miss).
 pub(crate) async fn fetch_entry(ctx: &Ctx, store: &Store, key: &ActionKey) -> Option<Action> {
-    let api = http_api(ctx, None).await.ok()?;
+    let api = http_api(ctx, server(ctx, None).as_deref()).await.ok()?;
     match fetch(&api, store, key).await {
         Ok(Fetched::Stored(_)) => store.get_action(key).ok().flatten(),
         Ok(Fetched::Refused(m)) => {
@@ -237,7 +248,7 @@ pub(crate) async fn push(
     let store = open_store(ctx)?;
     let rev = revision(ctx, rev).await?;
     let queued = store.queued().map_err(io_err)?;
-    let api = http_api(ctx, remote).await?;
+    let api = http_api(ctx, server(ctx, remote).as_deref()).await?;
     let (mut uploaded, mut present, mut gone, mut too_large, mut bytes) = (0, 0, 0, 0, 0u64);
     let mut listed = Vec::new();
     let mut results = futures::stream::iter(queued.iter())
@@ -327,7 +338,7 @@ pub(crate) async fn warm(
             "error: name a revision (outside a work tree, or on an unborn HEAD)".into(),
         ));
     };
-    let api = http_api(ctx, remote).await?;
+    let api = http_api(ctx, server(ctx, remote).as_deref()).await?;
     let res = api
         .turbo(
             Method::GET,

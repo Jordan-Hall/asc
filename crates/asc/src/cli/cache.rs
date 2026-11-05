@@ -230,12 +230,30 @@ pub(crate) fn store_dir(ctx: &Ctx) -> Result<PathBuf> {
 
 pub(crate) fn open_store(ctx: &Ctx) -> Result<Store> {
     let dir = store_dir(ctx)?;
-    Store::open(&dir).map_err(|e| {
-        CliError::Fatal(format!(
-            "cannot open the build cache {}: {e}",
-            dir.display()
-        ))
-    })
+    Store::open(&dir)
+        .map(|s| s.with_lower(lower_dirs(ctx)))
+        .map_err(|e| {
+            CliError::Fatal(format!(
+                "cannot open the build cache {}: {e}",
+                dir.display()
+            ))
+        })
+}
+
+/// `asc.buildcache.lower`: read-only stores read on a miss, in order. The key may repeat, and
+/// each value may hold several directories joined by the path separator (`:`, or `;` on
+/// Windows). A directory that does not exist is skipped.
+pub(crate) fn lower_dirs(ctx: &Ctx) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    for value in ctx.config.get_all("asc.buildcache.lower") {
+        for d in std::env::split_paths(&value) {
+            let d = expand(&d.to_string_lossy());
+            if !d.as_os_str().is_empty() && d.is_dir() && !dirs.contains(&d) {
+                dirs.push(d);
+            }
+        }
+    }
+    dirs
 }
 
 /// `asc.buildcache.maxSize`, else 20 GiB.
@@ -416,6 +434,7 @@ fn status(ctx: &Ctx, a: &Json, out: &mut impl Write) -> Result<ExitCode> {
             out,
             &json!({
                 "root": store.root().to_string_lossy(),
+                "lower": store.lower().iter().map(|d| d.to_string_lossy()).collect::<Vec<_>>(),
                 "bytes": usage.bytes,
                 "max_size": max,
                 "entries": usage.entries,
@@ -431,6 +450,9 @@ fn status(ctx: &Ctx, a: &Json, out: &mut impl Write) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
     writeln!(out, "store    {}", store.root().display())?;
+    for d in store.lower() {
+        writeln!(out, "lower    {} (read only)", d.display())?;
+    }
     writeln!(
         out,
         "size     {} of {} ({} entries, {} blobs)",
