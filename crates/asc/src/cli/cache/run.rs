@@ -57,16 +57,53 @@ pub(crate) fn origin(root: &Path) -> Origin {
     }
 }
 
-/// The action key: the name, the directory it runs in, the command line, the named variables,
-/// the platform and the inputs digest.
-fn key(a: &RunArgs, prefix: &str, digest: &[u8; 32]) -> ActionKey {
-    let mut b = ActionKey::builder(TOOL)
+/// One cached command: `asc cache run`, or a tool's front (`asc cache dotnet`, `asc cache
+/// pytest`) that fills in the tool's inputs, outputs, variables and versions.
+#[derive(Debug, Default)]
+pub(crate) struct Spec {
+    /// The entries' tool in `asc cache ls` and `status`.
+    pub(crate) tool: &'static str,
+    pub(crate) name: String,
+    /// Paths from the current directory, or absolute paths in the work tree.
+    pub(crate) inputs: Vec<OsString>,
+    pub(crate) outputs: Vec<OsString>,
+    pub(crate) env: Vec<String>,
+    /// More of the key, such as the tool's version.
+    pub(crate) parts: Vec<(&'static str, Vec<u8>)>,
+    pub(crate) no_remote: bool,
+    pub(crate) quiet: bool,
+    pub(crate) command: Vec<OsString>,
+}
+
+impl From<RunArgs> for Spec {
+    fn from(a: RunArgs) -> Self {
+        Spec {
+            tool: TOOL,
+            name: a.name,
+            inputs: a.inputs,
+            outputs: a.outputs,
+            env: a.env,
+            parts: Vec::new(),
+            no_remote: a.no_remote,
+            quiet: a.quiet,
+            command: a.command,
+        }
+    }
+}
+
+/// The action key: the name, the directory it runs in, the command line, the parts, the named
+/// variables, the platform and the inputs digest.
+fn key(a: &Spec, prefix: &str, digest: &[u8; 32]) -> ActionKey {
+    let mut b = ActionKey::builder(a.tool)
         .part("name", a.name.as_bytes())
         .part("cwd", prefix.as_bytes())
         .part(
             "platform",
             format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH).as_bytes(),
         );
+    for (name, value) in &a.parts {
+        b = b.part("part", name.as_bytes()).part("value", value);
+    }
     for arg in &a.command {
         b = b.part("arg", arg.as_encoded_bytes());
     }
@@ -215,6 +252,12 @@ fn replay(store: &Store, blob: Option<&str>, to: &mut dyn Write) -> Result<()> {
 }
 
 pub async fn run(ctx: &Ctx, a: RunArgs) -> Result<ExitCode> {
+    cached(ctx, &a.into()).await
+}
+
+/// Runs `a` as a cached action: a hit restores the outputs and replays the output and exit
+/// status, a miss runs the command and stores a success.
+pub(crate) async fn cached(ctx: &Ctx, a: &Spec) -> Result<ExitCode> {
     let ws = ctx.ws()?;
     let root = ws.projection.toplevel().to_owned();
     let prefix = crate::cli::add::cwd_prefix(ctx, ws);
@@ -233,7 +276,7 @@ pub async fn run(ctx: &Ctx, a: RunArgs) -> Result<ExitCode> {
         })
         .collect::<Result<_>>()?;
     let digest = inputs::compute(ctx, ws, &a.inputs, false).await?.digest;
-    let key = key(&a, &prefix, &digest);
+    let key = key(a, &prefix, &digest);
     let store = open_store(ctx)?;
     let origin = origin(&root);
     let mode = if a.no_remote {
@@ -242,7 +285,7 @@ pub async fn run(ctx: &Ctx, a: RunArgs) -> Result<ExitCode> {
         remote::mode(ctx)?
     };
 
-    let mut hit = store.lookup(TOOL, &key, &origin).map_err(io_err)?;
+    let mut hit = store.lookup(a.tool, &key, &origin).map_err(io_err)?;
     if hit.is_none() && mode != Mode::Off {
         hit = remote::fetch_entry(ctx, &store, &key).await;
     }
@@ -276,7 +319,7 @@ pub async fn run(ctx: &Ctx, a: RunArgs) -> Result<ExitCode> {
         .into_iter()
         .filter(|o| std::fs::symlink_metadata(root.join(o)).is_ok())
         .collect();
-    let mut action = Action::new(TOOL, &a.name, origin);
+    let mut action = Action::new(a.tool, &a.name, origin);
     action.outputs = store.put_outputs(&root, &present).map_err(io_err)?;
     for (bytes, slot) in [(&stdout, &mut action.stdout), (&stderr, &mut action.stderr)] {
         if !bytes.is_empty() {
@@ -305,10 +348,11 @@ mod tests {
         a: RunArgs,
     }
 
-    fn args(v: &[&str]) -> RunArgs {
+    fn args(v: &[&str]) -> Spec {
         T::try_parse_from(std::iter::once("t").chain(v.iter().copied()))
             .unwrap()
             .a
+            .into()
     }
 
     #[test]
@@ -335,6 +379,21 @@ mod tests {
             &d,
         );
         assert_ne!(unset, key(&args(&["--name", "a", "--", "x"]), "", &d));
+    }
+
+    #[test]
+    fn a_front_keys_its_tool_and_parts() {
+        let d = [1u8; 32];
+        let run = key(&args(&["--name", "a", "--", "x"]), "", &d);
+        let mut front = args(&["--name", "a", "--", "x"]);
+        front.tool = "dotnet";
+        let dotnet = key(&front, "", &d);
+        assert_ne!(run, dotnet);
+        front.parts.push(("version", b"9.0.100".to_vec()));
+        let v9 = key(&front, "", &d);
+        assert_ne!(dotnet, v9);
+        front.parts[0].1 = b"9.0.200".to_vec();
+        assert_ne!(v9, key(&front, "", &d));
     }
 
     #[test]
