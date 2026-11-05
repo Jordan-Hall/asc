@@ -173,3 +173,42 @@ fn the_store_follows_config() {
     assert_eq!(root, dir.to_string_lossy().replace('\\', "/"));
     assert!(dir.join("cas").is_dir());
 }
+
+#[test]
+fn lower_stores_follow_config_and_are_shown() {
+    if asc_binary().is_none() {
+        return;
+    }
+    let sb = Sandbox::new();
+    let host = sb.dir("host-cache");
+    Store::open(&host).unwrap();
+    let gone = sb.user.join("no-such-cache");
+    std::fs::write(
+        sb.user.join(".gitconfig"),
+        format!(
+            "[asc \"buildcache\"]\n\tlower = {}\n\tlower = {}\n",
+            slashes(&gone.to_string_lossy()),
+            slashes(&host.to_string_lossy())
+        ),
+    )
+    .unwrap();
+    let st = json(&sb, &["cache", "status", "--json"]);
+    let lower: Vec<String> = st["lower"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| slashes(v.as_str().unwrap()))
+        .collect();
+    assert_eq!(lower, [slashes(&host.to_string_lossy())]);
+    let out = sb.run(&sb.dir("elsewhere"), &["cache", "status"]);
+    assert!(
+        text(&out.stdout).contains("(read only)"),
+        "{}",
+        text(&out.stdout)
+    );
+}
+
+/// A path with forward slashes, so Windows and Unix paths compare the same.
+fn slashes(p: &str) -> String {
+    p.replace(std::path::MAIN_SEPARATOR, "/")
+}

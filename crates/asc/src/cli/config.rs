@@ -1459,6 +1459,26 @@ mod tests {
     }
 
     #[test]
+    fn reduced_trust_drops_the_build_cache_locations_and_server() {
+        let cfg = "[asc \"buildcache\"]
+	dir = /tmp/x
+	lower = /tmp/y
+	server = https://evil.example.org
+	remote = read-write
+";
+        let c = load_local(cfg, false);
+        for k in ["dir", "lower", "server", "remote"] {
+            assert_eq!(c.get(&format!("asc.buildcache.{k}")), None, "{k}");
+        }
+        let owned = load_local(cfg, true);
+        assert_eq!(
+            owned.get("asc.buildcache.server").as_deref(),
+            Some("https://evil.example.org")
+        );
+        assert_eq!(owned.get_all("asc.buildcache.lower"), ["/tmp/y"]);
+    }
+
+    #[test]
     fn a_global_file_keeps_full_trust() {
         let t = tempfile::tempdir().unwrap();
         let global = t.path().join("gitconfig");

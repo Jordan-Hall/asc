@@ -634,6 +634,127 @@ mod tests {
         (d, s)
     }
 
+    /// A lower store holding one entry `key` with the outputs `lib.rlib` and `out.txt`.
+    fn lower_with_entry(d: &Path) -> (Store, ActionKey, Action) {
+        let lower = Store::open(d.join("host")).unwrap();
+        let src = d.join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("lib.rlib"), "rlib").unwrap();
+        fs::write(src.join("out.txt"), "out").unwrap();
+        let key = ActionKey::builder("rustc").inputs(&[7; 32]).finish();
+        let mut a = Action::new("rustc", "nova", Origin::default());
+        a.outputs = lower
+            .put_outputs(&src, &["lib.rlib".into(), "out.txt".into()])
+            .unwrap();
+        lower.put_action(&key, &a).unwrap();
+        (lower, key, a)
+    }
+
+    fn mtimes(dir: &Path) -> Vec<(PathBuf, std::time::SystemTime)> {
+        let mut out = Vec::new();
+        for e in walk(dir) {
+            out.push((e.clone(), fs::metadata(&e).unwrap().modified().unwrap()));
+        }
+        out.sort();
+        out
+    }
+
+    fn walk(dir: &Path) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        for e in fs::read_dir(dir).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                out.extend(walk(&p));
+            } else {
+                out.push(p);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_miss_copies_the_entry_up_from_a_lower_store_and_leaves_it_untouched() {
+        let d = tempfile::tempdir().unwrap();
+        let (lower, key, a) = lower_with_entry(d.path());
+        let before = mtimes(lower.root());
+        std::thread::sleep(std::time::Duration::from_millis(20));
+
+        let s = Store::open(d.path().join("job"))
+            .unwrap()
+            .with_lower(vec![d.path().join("missing"), lower.root().to_path_buf()]);
+        let got = s.get_action(&key).unwrap().unwrap();
+        assert_eq!(got, a);
+        assert!(s.entry_path(&key).is_file(), "the entry is copied up");
+        for o in &a.outputs {
+            assert!(
+                s.has_blob(&unhex(&o.blob).unwrap()),
+                "{} is copied up",
+                o.path
+            );
+        }
+        let dst = d.path().join("wt");
+        assert!(s.restore(&got, &dst).unwrap());
+        assert_eq!(fs::read_to_string(dst.join("lib.rlib")).unwrap(), "rlib");
+        assert_eq!(
+            mtimes(lower.root()),
+            before,
+            "the lower store is never written"
+        );
+    }
+
+    #[test]
+    fn a_damaged_lower_blob_is_a_miss() {
+        let d = tempfile::tempdir().unwrap();
+        let (lower, key, a) = lower_with_entry(d.path());
+        let id = unhex(&a.outputs[0].blob).unwrap();
+        let path = lower.blob_path(&id);
+        let mut perms = fs::metadata(&path).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+        fs::set_permissions(&path, perms).unwrap();
+        fs::write(&path, "poisoned").unwrap();
+
+        let s = Store::open(d.path().join("job"))
+            .unwrap()
+            .with_lower(vec![lower.root().to_path_buf()]);
+        assert!(s.get_action(&key).unwrap().is_none());
+        assert!(!s.entry_path(&key).exists());
+        assert!(!s.has_blob(&id), "the damaged bytes never take the id");
+    }
+
+    #[test]
+    fn a_lower_entry_with_a_missing_blob_or_an_escaping_path_is_a_miss() {
+        let d = tempfile::tempdir().unwrap();
+        let (lower, key, a) = lower_with_entry(d.path());
+        let id = unhex(&a.outputs[1].blob).unwrap();
+        let path = lower.blob_path(&id);
+        let mut perms = fs::metadata(&path).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+        fs::set_permissions(&path, perms).unwrap();
+        fs::remove_file(&path).unwrap();
+        let s = Store::open(d.path().join("job"))
+            .unwrap()
+            .with_lower(vec![lower.root().to_path_buf()]);
+        assert!(s.get_action(&key).unwrap().is_none());
+
+        let evil = ActionKey::builder("rustc").inputs(&[8; 32]).finish();
+        let mut bad = a.clone();
+        bad.outputs[0].path = "../escape".into();
+        let entry = sharded(&lower.ac(), &evil.to_string());
+        fs::create_dir_all(entry.parent().unwrap()).unwrap();
+        fs::write(&entry, serde_json::to_vec(&bad).unwrap()).unwrap();
+        assert!(s.get_action(&evil).unwrap().is_none());
+    }
+
+    #[test]
+    fn the_store_itself_is_not_its_own_lower_store() {
+        let (_d, s) = store();
+        let root = s.root().to_path_buf();
+        let s = s.with_lower(vec![root.clone()]);
+        assert!(s.lower().is_empty());
+    }
+
     #[test]
     fn check_rel_refuses_escapes() {
         for ok in ["a", "a/b.rlib", "target/debug/x"] {
