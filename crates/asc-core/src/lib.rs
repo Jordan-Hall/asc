@@ -15,3 +15,4 @@ pub mod sig;
 pub mod sshsig;
 pub mod transport_policy;
 pub mod workflow;
+pub mod workflow_templates;

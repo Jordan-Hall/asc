@@ -1,0 +1,40 @@
+# Format, lint and type-check the TSRX files of a change (https://tsrx.dev).
+#
+# The repository lists the tools as dev dependencies and commits a lockfile:
+#
+#   npm install -D prettier @tsrx/prettier-plugin eslint @tsrx/eslint-parser @tsrx/eslint-plugin typescript @tsrx/typescript-plugin
+#
+# with `{ "plugins": ["@tsrx/prettier-plugin"] }` in `.prettierrc` and
+# `export default [...tsrx.configs.recommended];` in `eslint.config.js`. Each step gets its own
+# fresh working copy, so each one installs from the lockfile first. Install scripts do not run.
+description = "Format, lint and type-check TSRX files"
+max_parallel_runs = 2
+
+[[trigger]]
+kind = "change_opened"
+paths = ["**/*.tsrx", "package.json", "package-lock.json", ".prettierrc", "eslint.config.js", "tsconfig.json"]
+
+[[trigger]]
+kind = "change_updated"
+paths = ["**/*.tsrx", "package.json", "package-lock.json", ".prettierrc", "eslint.config.js", "tsconfig.json"]
+
+[[trigger]]
+kind = "manual"
+
+[[step]]
+id = "format"
+kind = "command"
+command = ["sh", "-c", "npm ci --ignore-scripts --no-audit --no-fund && npx --no-install prettier --check '**/*.tsrx'"]
+timeout_seconds = 900
+
+[[step]]
+id = "lint"
+kind = "command"
+command = ["sh", "-c", "npm ci --ignore-scripts --no-audit --no-fund && npx --no-install eslint --max-warnings 0 ."]
+timeout_seconds = 900
+
+[[step]]
+id = "types"
+kind = "command"
+command = ["sh", "-c", "npm ci --ignore-scripts --no-audit --no-fund && npx --no-install tsrx-tsc --noEmit"]
+timeout_seconds = 900
