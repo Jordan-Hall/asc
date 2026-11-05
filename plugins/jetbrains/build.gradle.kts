@@ -22,6 +22,7 @@ kotlin { jvmToolchain(21) }
 dependencies {
     intellijPlatform {
         intellijIdea("2026.1")
+        bundledPlugin("org.jetbrains.plugins.textmate")
         pluginVerifier()
         zipSigner()
         testFramework(TestFrameworkType.Platform)
@@ -45,7 +46,18 @@ val copyAscUi = tasks.register<Copy>("copyAscUi") {
     }
 }
 sourceSets { main { resources.srcDir(layout.buildDirectory.dir("generated/asc-ui")) } }
-tasks.named("processResources") { dependsOn(copyAscUi) }
+
+// TSRX colouring (TsrxBundleProvider): the VS Code extension's grammar and language configuration are the one
+// source; they join the bundle's package.json under /tsrx-bundle/ in the jar.
+val copyTsrxGrammar = tasks.register<Copy>("copyTsrxGrammar") {
+    description = "Copies the TSRX grammar and language configuration from plugins/vscode into /tsrx-bundle/."
+    from(layout.projectDirectory.dir("../vscode")) {
+        include("syntaxes/tsrx.tmLanguage.json", "language-configuration.json")
+    }
+    into(layout.buildDirectory.dir("generated/tsrx/tsrx-bundle"))
+}
+sourceSets { main { resources.srcDir(layout.buildDirectory.dir("generated/tsrx")) } }
+tasks.named("processResources") { dependsOn(copyAscUi, copyTsrxGrammar) }
 
 protobuf {
     protoc { artifact = "com.google.protobuf:protoc:4.31.1" }

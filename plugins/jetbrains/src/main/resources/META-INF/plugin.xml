@@ -5,6 +5,7 @@
   <description>Version control for ASC workspaces: stacks, review and history, through the asc bridge.</description>
   <depends>com.intellij.modules.platform</depends>
   <depends>com.intellij.modules.vcs</depends>
+  <depends optional="true" config-file="asc-textmate.xml">org.jetbrains.plugins.textmate</depends>
   <extensions defaultExtensionNs="com.intellij">
     <applicationService serviceImplementation="asc.asc.bridge.AscBridgeService"/>
     <vcs name="asc" vcsClass="asc.asc.vcs.AscVcs" displayName="asc"/>

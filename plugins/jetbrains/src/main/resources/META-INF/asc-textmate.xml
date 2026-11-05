@@ -1,0 +1,6 @@
+<!-- Loaded only when the TextMate plugin is present (the optional dependency in plugin.xml). -->
+<idea-plugin>
+  <extensions defaultExtensionNs="com.intellij">
+    <textmate.bundleProvider implementation="asc.asc.tsrx.TsrxBundleProvider"/>
+  </extensions>
+</idea-plugin>

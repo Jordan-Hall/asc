@@ -1,0 +1,27 @@
+{
+  "name": "asc-tsrx",
+  "displayName": "TSRX",
+  "description": "TSRX syntax colouring for the ASC plugin. The grammar and language configuration are copied from plugins/vscode at build time.",
+  "version": "0.0.0",
+  "contributes": {
+    "languages": [
+      {
+        "id": "tsrx",
+        "aliases": ["TSRX", "tsrx"],
+        "extensions": [".tsrx"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "tsrx",
+        "scopeName": "source.tsrx",
+        "path": "./syntaxes/tsrx.tmLanguage.json",
+        "embeddedLanguages": {
+          "source.css": "css",
+          "meta.embedded.expression.tsrx": "typescript"
+        }
+      }
+    ]
+  }
+}
