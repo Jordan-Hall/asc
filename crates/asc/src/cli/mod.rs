@@ -93,6 +93,7 @@ pub mod notes;
 pub mod pick;
 pub mod plumbing;
 pub mod prefetch;
+pub(crate) mod projected;
 pub mod projects;
 pub mod pull;
 pub mod push;

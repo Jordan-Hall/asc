@@ -240,6 +240,7 @@ async fn needing_update(ctx: &Ctx, ws: &WsCtx) -> Result<Vec<String>> {
         redirections: &redirections,
         ignore: &sources,
         eol: &NoEol,
+        projected: None,
     };
     let status = compute(&wc, &ws.db, &ws.workspace)
         .await

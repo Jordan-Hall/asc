@@ -650,6 +650,7 @@ async fn gather(ctx: &Ctx, ws: &WsCtx, o: &Opts) -> Result<Report> {
         cache: CacheDir::open(ws.home.cache(), ws.home.tmp())?,
     };
     let symlinks = ctx.config.bool("core.symlinks").unwrap_or(!cfg!(windows));
+    let projected = super::projected::for_workspace(ws);
     let wc = Wc {
         engine: &ws.engine,
         store: &store,
@@ -661,6 +662,7 @@ async fn gather(ctx: &Ctx, ws: &WsCtx, o: &Opts) -> Result<Report> {
         redirections: &redirections,
         ignore: &sources,
         eol: &NoEol,
+        projected: projected.as_deref(),
     };
     let status = compute(&wc, &ws.db, &ws.workspace).await.map_err(wc_err)?;
 

@@ -408,7 +408,11 @@ pub async fn compute<O: Objects, R: Refs>(
             Some(r) => staged_row(&mut w, wc, &path, Some(head_eff), &r)?,
         };
         if let Some(eff) = eff {
-            unstaged(&mut w, wc, &path, eff, &cache, &index, false)?;
+            let at = Want {
+                eff,
+                head: Some(head_eff),
+            };
+            unstaged(&mut w, wc, &path, at, &cache, &index, false)?;
         }
     }
     drop(walk);
@@ -420,7 +424,8 @@ pub async fn compute<O: Objects, R: Refs>(
         };
         let intent = r.iter().any(|x| x.intent_to_add);
         if let Some(eff) = staged_row(&mut w, wc, &path, None, &r)? {
-            unstaged(&mut w, wc, &path, eff, &cache, &index, intent)?;
+            let at = Want { eff, head: None };
+            unstaged(&mut w, wc, &path, at, &cache, &index, intent)?;
         }
     }
     untracked(wc, &mut w)?;
@@ -471,28 +476,49 @@ fn staged_row<O: Objects, R: Refs>(
     Ok(new)
 }
 
-/// Compares the work tree with the staged state `eff` of `path` and marks the path tracked.
+/// What a tracked path is staged as, and what the base tree has there.
+struct Want {
+    eff: Eff,
+    head: Option<Eff>,
+}
+
+/// Compares the work tree with the staged state of `path` and marks the path tracked.
 fn unstaged<O: Objects, R: Refs>(
     w: &mut Walk,
     wc: &Wc<'_, O, R>,
     path: &RepoPath,
-    eff: Eff,
+    want: Want,
     cache: &HashMap<&[u8], &IndexEntry>,
     index: &IndexFile,
     intent_to_add: bool,
 ) -> Result<()> {
     w.track(path);
+    let eff = want.eff;
     let cached = cache.get(path.as_bytes()).copied();
     if cached.is_some_and(|e| e.flags.skip_worktree) || eff.kind == Kind::Gitlink {
         return Ok(());
     }
+    let io_err = |source| Error::Io {
+        path: fs_path(wc.root, path),
+        source,
+    };
+    // A file the provider still projects from the base tree is that tree's entry, unread.
+    let projected = match (wc.projected, want.head) {
+        (Some(p), Some(head)) if p.unchanged(path).map_err(io_err)? => Some(Probe::File {
+            oid: head.git,
+            symlink: head.kind == Kind::Symlink,
+            exec: None,
+        }),
+        _ => None,
+    };
     let kind = if intent_to_add {
         Some(ChangeKind::Added)
     } else {
-        match probe(wc.root, wc.eol, path, cached, index.mtime).map_err(|source| Error::Io {
-            path: fs_path(wc.root, path),
-            source,
-        })? {
+        let found = match projected {
+            Some(p) => p,
+            None => probe(wc.root, wc.eol, path, cached, index.mtime).map_err(io_err)?,
+        };
+        match found {
             Probe::Missing | Probe::Dir => Some(ChangeKind::Deleted),
             Probe::Other => Some(ChangeKind::TypeChanged),
             Probe::File { oid, symlink, exec } => {

@@ -200,6 +200,7 @@ pub async fn stat_dirty_rows(
         redirections: &redirections,
         ignore: &ignore,
         eol: &NoEol,
+        projected: None,
     };
     let state = status::compute(&wc, &ws.db, &ws.workspace)
         .await

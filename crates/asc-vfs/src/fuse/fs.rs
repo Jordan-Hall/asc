@@ -356,6 +356,18 @@ impl Inner {
         self.blk(self.core.resolve(p)).map_err(vfs_errno)
     }
 
+    /// Whether `ino` is a file of the base tree that nobody wrote to: its bytes are the tree's,
+    /// so a caller that knows the tree need not read (and fetch) them.
+    fn projected(&self, ino: u64) -> Res<bool> {
+        let Some(p) = self.loc(ino)? else {
+            return Ok(false);
+        };
+        Ok(
+            matches!(self.view(&p)?, Some(Found { src: Src::Base(n), .. })
+            if !matches!(n.kind, Kind::Dir | Kind::Gitlink)),
+        )
+    }
+
     fn view(&self, p: &RepoPath) -> Res<Option<Found>> {
         if self.is_redirect_node(p) {
             return Ok(Some(Found {
@@ -1757,15 +1769,17 @@ impl fuser::Filesystem for FuseFs {
         reply.error(Errno::EOPNOTSUPP);
     }
 
-    fn getxattr(
-        &self,
-        _req: &Request,
-        _ino: INodeNo,
-        _name: &OsStr,
-        _size: u32,
-        reply: ReplyXattr,
-    ) {
-        reply.error(Errno::NO_XATTR);
+    fn getxattr(&self, _req: &Request, ino: INodeNo, name: &OsStr, size: u32, reply: ReplyXattr) {
+        if name.as_bytes() != super::PROJECTED_XATTR.as_bytes() {
+            reply.error(Errno::NO_XATTR);
+            return;
+        }
+        match self.inner.projected(ino.0) {
+            Ok(true) if size == 0 => reply.size(1),
+            Ok(true) => reply.data(b"1"),
+            Ok(false) => reply.error(Errno::NO_XATTR),
+            Err(e) => reply.error(e),
+        }
     }
 
     fn listxattr(&self, _req: &Request, _ino: INodeNo, size: u32, reply: ReplyXattr) {

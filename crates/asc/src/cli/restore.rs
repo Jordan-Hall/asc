@@ -28,7 +28,7 @@ use asc_store::storeset::StoreSet;
 use asc_wc::SafeRoot;
 use asc_wc::compose_plain::{Replace, clear, is_restricted_projection, restrict};
 use asc_wc::ignore::IgnoreSources;
-use asc_wc::plain::{self, Mode, Sparse, Wc};
+use asc_wc::plain::{self, Mode, Projected, Sparse, Wc};
 use asc_wc::redirect::Redirections;
 use asc_wc::status::NoEol;
 use futures::TryStreamExt;
@@ -391,6 +391,7 @@ pub(crate) struct WcParts {
     ignore_case: bool,
     root: PathBuf,
     index: PathBuf,
+    projected: Option<Box<dyn Projected>>,
 }
 
 impl WcParts {
@@ -425,6 +426,7 @@ impl WcParts {
             ignore_case: ctx.ignore_case(),
             root,
             index,
+            projected: super::projected::for_workspace(ws),
         })
     }
 
@@ -443,6 +445,7 @@ impl WcParts {
             redirections: &self.redirections,
             ignore: &self.ignore,
             eol: &NoEol,
+            projected: self.projected.as_deref(),
         }
     }
 }

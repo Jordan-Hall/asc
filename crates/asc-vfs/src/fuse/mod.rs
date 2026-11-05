@@ -27,6 +27,10 @@ pub use fs::{Config, FuseProvider};
 pub const WATCH_NOTE: &str =
     "note: file watchers do not see this switch; restart watch processes or use polling";
 
+/// The extended attribute a file of the mount has, with the value `1`, while it is a base-tree
+/// entry nobody wrote to. Status reads it instead of the file, so a clean file is never fetched.
+pub const PROJECTED_XATTR: &str = "user.asc.projected";
+
 /// Most `/proc` entries the watcher scan looks at.
 const MAX_SCAN_PROCS: usize = 200_000;
 /// Most descriptors the watcher scan examines in total.

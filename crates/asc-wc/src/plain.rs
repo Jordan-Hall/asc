@@ -100,6 +100,14 @@ impl Sparse {
     }
 }
 
+/// What the provider of a virtual work tree reports about a file without reading it.
+pub trait Projected {
+    /// Whether the file at `path` still holds the content projected from the base tree: a
+    /// placeholder, or a placeholder whose data was fetched and not changed. Reading such a file
+    /// would hydrate it, so status takes the base tree's entry instead.
+    fn unchanged(&self, path: &RepoPath) -> io::Result<bool>;
+}
+
 /// A plain working copy: where it lives and what it reads from.
 pub struct Wc<'a, O: Objects, R: Refs> {
     pub engine: &'a Engine<O, R>,
@@ -118,6 +126,8 @@ pub struct Wc<'a, O: Objects, R: Refs> {
     pub redirections: &'a Redirections,
     pub ignore: &'a IgnoreSources,
     pub eol: &'a dyn EolRules,
+    /// The provider's view of a virtual work tree; `None` for a plain one.
+    pub projected: Option<&'a dyn Projected>,
 }
 
 /// What a switch did.
@@ -658,6 +668,7 @@ pub(crate) mod testutil {
                 redirections: &self.redirections,
                 ignore: &self.ignore,
                 eol: &NoEol,
+                projected: None,
             }
         }
 
