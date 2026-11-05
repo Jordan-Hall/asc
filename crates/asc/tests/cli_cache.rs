@@ -59,6 +59,8 @@ fn status_ls_show_gc_clear() {
     assert_eq!(st["tools"]["rustc"]["week"]["hits"], 1);
     assert_eq!(st["tools"]["rustc"]["week"]["misses"], 1);
     assert_eq!(st["tools"]["rustc"]["day"]["hit_rate"], 0.5);
+    assert_eq!(st["remote"]["queued"], 0);
+    assert!(st["remote"]["last"].is_null(), "no exchange yet: {st}");
     let plain = sb.run(&sb.dir("elsewhere"), &["cache"]);
     assert!(plain.status.success(), "{}", text(&plain.stderr));
     assert!(
@@ -113,6 +115,41 @@ fn status_ls_show_gc_clear() {
     let cl = json(&sb, &["cache", "clear", "--tool", "rustc", "--json"]);
     assert_eq!(cl["entries"], 1);
     assert_eq!(cl["after"]["bytes"], 0);
+}
+
+#[test]
+fn rm_removes_entries_by_key_or_none_when_one_is_unknown() {
+    if asc_binary().is_none() {
+        return;
+    }
+    let sb = Sandbox::new();
+    let store = Store::open(sb.asc_home.join("buildcache")).unwrap();
+    let one = seed(&store, "vite", 1, 100, "/w/one");
+    let two = seed(&store, "vite", 2, 100, "/w/one");
+    let three = seed(&store, "rustc", 3, 100, "/w/one");
+    store.queue_push(&one).unwrap();
+
+    let (k1, k2) = (one.to_string(), two.to_string());
+    let bad = sb.run(&sb.dir("elsewhere"), &["cache", "rm", &k1, "abcdabcd"]);
+    assert_eq!(bad.status.code(), Some(1));
+    assert!(store.get_action(&one).unwrap().is_some(), "nothing removed");
+
+    let rm = json(&sb, &["cache", "rm", &k1[..12], &k2, "--json"]);
+    let mut want = vec![k1.clone(), k2.clone()];
+    want.sort();
+    assert_eq!(rm["removed"], serde_json::json!(want));
+    assert!(store.get_action(&one).unwrap().is_none());
+    assert!(store.get_action(&two).unwrap().is_none());
+    assert!(store.get_action(&three).unwrap().is_some());
+    assert!(
+        store.queued().unwrap().is_empty(),
+        "a removed entry is not uploaded"
+    );
+    assert!(
+        !sb.run(&sb.dir("elsewhere"), &["cache", "rm"])
+            .status
+            .success()
+    );
 }
 
 #[test]

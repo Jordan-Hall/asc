@@ -85,6 +85,11 @@ fn push_lists_the_revision_and_warm_fetches_it_back() {
 
     let pushed = json(&sb, &repo, &["cache", "push", "--json"]);
     assert_eq!(pushed["uploaded"], 1, "{pushed}");
+    let st = json(&sb, &repo, &["cache", "status", "--json"]);
+    assert_eq!(st["remote"]["mode"], "read");
+    assert_eq!(st["remote"]["queued"], 0);
+    assert!(st["remote"]["last"]["error"].is_null(), "{st}");
+    assert!(st["remote"]["last"]["at"].as_u64().unwrap() > 0);
     assert_eq!(pushed["present"], 0);
     // The index is under the changeset id; the git spelling of HEAD resolves to it below.
     let rev = pushed["rev"].as_str().unwrap();
@@ -128,6 +133,25 @@ fn push_lists_the_revision_and_warm_fetches_it_back() {
         "{}",
         text(&bad.stderr)
     );
+}
+
+#[test]
+fn status_names_a_server_that_cannot_be_reached() {
+    if asc_binary().is_none() {
+        return;
+    }
+    let server = Server::start(&["acme/app"]);
+    let sb = Sandbox::new();
+    let repo = repo(&sb, &server);
+    let store = Store::open(sb.asc_home.join("buildcache")).unwrap();
+    seed(&store);
+    drop(server);
+    assert!(!run(&sb, &repo, &["cache", "push"]).status.success());
+    let st = json(&sb, &repo, &["cache", "status", "--json"]);
+    assert_eq!(st["remote"]["queued"], 1, "{st}");
+    assert!(st["remote"]["last"]["error"].is_string(), "{st}");
+    let plain = ok(&sb, &repo, &["cache", "status"]);
+    assert!(plain.contains("1 queued, failed"), "{plain}");
 }
 
 #[test]

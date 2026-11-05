@@ -46,6 +46,8 @@ pub enum Sub {
     Gc(GcArgs),
     /// Removes every entry, or those of one tool.
     Clear(ClearArgs),
+    /// Removes entries by key; their blobs go at the next `gc`.
+    Rm(RmArgs),
     /// Uploads the entries waiting in the outbox and lists them under a revision.
     Push(RemoteArgs),
     /// Fetches the entries a revision's builds used that this machine lacks.
@@ -146,6 +148,15 @@ pub struct GcArgs {
 pub struct ClearArgs {
     #[arg(long)]
     tool: Option<String>,
+    #[command(flatten)]
+    json: Json,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct RmArgs {
+    /// Keys, or unique prefixes of at least 4 hex digits.
+    #[arg(required = true)]
+    keys: Vec<String>,
     #[command(flatten)]
     json: Json,
 }
@@ -377,6 +388,13 @@ fn status(ctx: &Ctx, a: &Json, out: &mut impl Write) -> Result<ExitCode> {
     let t = now();
     let day = store.stats(t.saturating_sub(DAY)).map_err(io_err)?;
     let week = store.stats(t.saturating_sub(7 * DAY)).map_err(io_err)?;
+    let remote_mode = match remote::mode(ctx)? {
+        remote::Mode::Off => "off",
+        remote::Mode::Read => "read",
+        remote::Mode::ReadWrite => "read-write",
+    };
+    let queued = store.queued().map_err(io_err)?.len();
+    let last = remote::state(&store);
     if a.json {
         let tools: serde_json::Map<String, Value> = week
             .iter()
@@ -397,6 +415,11 @@ fn status(ctx: &Ctx, a: &Json, out: &mut impl Write) -> Result<ExitCode> {
                 "entries": usage.entries,
                 "blobs": usage.blobs,
                 "tools": tools,
+                "remote": {
+                    "mode": remote_mode,
+                    "queued": queued,
+                    "last": last,
+                },
             }),
         )?;
         return Ok(ExitCode::SUCCESS);
@@ -410,6 +433,12 @@ fn status(ctx: &Ctx, a: &Json, out: &mut impl Write) -> Result<ExitCode> {
         usage.entries,
         usage.blobs
     )?;
+    let reached = match &last {
+        None => String::new(),
+        Some(remote::State { at, error: None }) => format!(", reached {}", ago(*at, t)),
+        Some(remote::State { at, error: Some(e) }) => format!(", failed {}: {e}", ago(*at, t)),
+    };
+    writeln!(out, "server   {remote_mode}, {queued} queued{reached}")?;
     if week.is_empty() {
         writeln!(out, "no lookups in the last 7 days")?;
         return Ok(ExitCode::SUCCESS);
@@ -567,6 +596,52 @@ fn print_report(out: &mut impl Write, verb: &str, r: &GcReport, json_out: bool) 
     Ok(())
 }
 
+/// `asc cache rm`: every key is found before any is removed, so a bad key removes nothing.
+fn rm(ctx: &Ctx, a: &RmArgs, out: &mut impl Write) -> Result<ExitCode> {
+    let store = open_store(ctx)?;
+    let mut found = Vec::new();
+    for k in &a.keys {
+        match store.find(k).map_err(|err| {
+            CliError::Raw(
+                format!(
+                    "asc: {err}
+"
+                ),
+                1,
+            )
+        })? {
+            Some(e) => found.push(e.key),
+            None => {
+                return Err(CliError::Raw(
+                    format!(
+                        "asc: no build cache entry '{k}'
+"
+                    ),
+                    1,
+                ));
+            }
+        }
+    }
+    found.sort();
+    found.dedup();
+    let mut removed = Vec::new();
+    for key in &found {
+        if store.remove(key).map_err(io_err)? {
+            removed.push(key.to_string());
+        }
+        // An entry removed here is not uploaded later.
+        store.unqueue(key).map_err(io_err)?;
+    }
+    if a.json.json {
+        print_json(out, &json!({ "removed": removed }))?;
+    } else {
+        for k in &removed {
+            writeln!(out, "removed {k}")?;
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
     let cmd = args.cmd.unwrap_or(Sub::Status(Json::default()));
     match cmd {
@@ -601,6 +676,7 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
             print_report(&mut out, "cleared", &r, a.json.json)?;
             Ok(ExitCode::SUCCESS)
         }
+        Sub::Rm(a) => rm(ctx, &a, &mut out),
         Sub::Push(a) => {
             remote::push(
                 ctx,

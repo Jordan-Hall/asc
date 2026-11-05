@@ -61,6 +61,45 @@ fn require_on(ctx: &Ctx) -> Result<()> {
     Ok(())
 }
 
+/// The file that holds the outcome of the last exchange with the server tier.
+const STATE: &str = "remote.json";
+
+/// The outcome of the last exchange with the server tier, for `asc cache status`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct State {
+    /// Unix seconds.
+    pub at: u64,
+    /// Why it failed; `None` when the server answered.
+    pub error: Option<String>,
+}
+
+/// Records how an exchange went. A store that cannot be written keeps the old state: the state
+/// only informs, and the build goes on either way.
+fn record<T>(store: &Store, r: &Result<T>) {
+    let error = r.as_ref().err().map(|e| e.to_string().trim().to_owned());
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let Ok(text) = serde_json::to_vec(&State { at, error }) else {
+        return;
+    };
+    // Written beside and renamed, so a reader never sees half a file.
+    let tmp = store
+        .root()
+        .join(format!("{STATE}.{}.tmp", std::process::id()));
+    if std::fs::write(&tmp, text).is_err()
+        || std::fs::rename(&tmp, store.root().join(STATE)).is_err()
+    {
+        let _ = std::fs::remove_file(&tmp);
+    }
+}
+
+/// The outcome of the last exchange, if there was one.
+pub(crate) fn state(store: &Store) -> Option<State> {
+    let text = std::fs::read(store.root().join(STATE)).ok()?;
+    serde_json::from_slice(&text).ok()
+}
+
 /// The revision a push indexes or a warm reads: `rev` resolved in the work tree, else its HEAD
 /// commit. `None` outside a work tree when `rev` is not given, or on an unborn HEAD.
 async fn revision(ctx: &Ctx, rev: Option<&str>) -> Result<Option<String>> {
@@ -96,6 +135,12 @@ pub(crate) enum Fetched {
 /// Fetches the artefact of `key` into `store`. Of a refused artefact only blobs that matched
 /// their ids are kept (the next `gc` sweeps them).
 pub(crate) async fn fetch(api: &HttpApi, store: &Store, key: &ActionKey) -> Result<Fetched> {
+    let r = fetch_one(api, store, key).await;
+    record(store, &r);
+    r
+}
+
+async fn fetch_one(api: &HttpApi, store: &Store, key: &ActionKey) -> Result<Fetched> {
     let path = format!("/v8/artifacts/{}", artifact_name(key));
     let res = api
         .turbo(Method::GET, &path, Bytes::new(), MAX_ARTIFACT)
@@ -144,6 +189,12 @@ enum Sent {
 }
 
 async fn send(api: &HttpApi, store: &Store, key: &ActionKey) -> Result<Sent> {
+    let r = send_one(api, store, key).await;
+    record(store, &r);
+    r
+}
+
+async fn send_one(api: &HttpApi, store: &Store, key: &ActionKey) -> Result<Sent> {
     let path = format!("/v8/artifacts/{}", artifact_name(key));
     let head = api
         .turbo(Method::HEAD, &path, Bytes::new(), SMALL)
@@ -285,7 +336,9 @@ pub(crate) async fn warm(
             64 << 20,
         )
         .await
-        .map_err(fatal)?;
+        .map_err(fatal);
+    record(&store, &res);
+    let res = res?;
     if !res.status.is_success() {
         return Err(fatal(failure(res)));
     }
