@@ -170,10 +170,23 @@ read each other's entries.
 
 ### 4.4 `asc cache run`
 
-`asc cache run --name <n> --inputs <pathspec>... --outputs <path>... [--env NAME]... -- <command>` keys the command
-on its argv, the named environment variables and the inputs (§1), restores the outputs on a hit, and runs the command
-and stores the outputs on a miss. Exit status and stdout/stderr are stored with the entry and replayed on a hit.
+`asc cache run --name <n> [--inputs <path>...] [--outputs <path>...] [--env NAME]... [--no-remote] [-q] -- <command>`
+runs any command as a cached action.
 
+- **Key**: the name, the directory it runs in (repository-relative), each argument, each named variable's value (an
+  unset variable differs from an empty one), the platform (`os-arch`) and the inputs digest (§1). The inputs default
+  to the current directory; ignored files are left out, so outputs below an input do not change the key. No absolute
+  path is in the key, so every work tree and workflow with the same inputs shares the entry.
+- **Hit**: the outputs are restored below the work-tree root (§2), the stored stdout and stderr are replayed, and the
+  stored exit code is returned. `asc cache: hit <name> (<key>)` goes to stderr unless `-q`. An entry whose blobs were
+  evicted is a miss.
+- **Remote**: on a local miss with the server tier not off, the artefact is fetched (§3). No server, or one that
+  cannot be reached, is a miss with a warning; the build goes on.
+- **Miss**: the command runs with stdout and stderr copied through as they arrive. Only exit code 0 is stored, with
+  the outputs that exist and up to 16 MiB of each stream (more runs uncached). A failure keeps its exit code.
+- **Push**: in `read-write` mode the entry (hit or new) is queued and a detached `asc cache push` starts, at most once
+  a minute. A CI job runs `asc cache push` itself as its last step, since the job may end before a detached push does.
+- On Windows a bare program name is searched on `PATH` with `PATHEXT`, so `npm` finds `npm.cmd`.
 ## 5. Commands
 
 - `asc cache status [--json]`: store size, entries, hit rate per tool over the last day and week, server tier state.
@@ -182,6 +195,7 @@ and stores the outputs on a miss. Exit status and stdout/stderr are stored with 
 - `asc cache gc [--max-size S]`, `asc cache clear [--tool T]`.
 - `asc cache push [--rev R] [--remote N]`, `asc cache warm [<rev>] [--remote N]`: send the outbox and list it under a
   revision; fetch a revision's entries before a build.
+- `asc cache run --name <n> ... -- <command>`: §4.4.
 - `asc cache setup <cargo|go|ccache|gradle|maven|bazel|nx|turbo|js>`: writes the tool's configuration (user or
   repository level, as asked) and prints what changed. `--undo` takes it out again.
 
