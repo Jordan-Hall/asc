@@ -667,6 +667,12 @@ pub async fn run(prog: Program, args: Vec<OsString>) -> ExitCode {
 }
 
 async fn run_inner(prog: Program, args: Vec<OsString>) -> Result<ExitCode> {
+    // Cargo runs a `RUSTC_WRAPPER` as `asc <rustc> <args>…` (docs/designs/build-cache.md §4.1).
+    let args = if prog == Program::Asc {
+        crate::cli::cache::rustc::as_wrapper(args)
+    } else {
+        args
+    };
     let mut env = GitEnv::from_process();
     let get = |k: &str| std::env::var_os(k);
     let tail = args.get(1..).unwrap_or_default();
@@ -706,6 +712,12 @@ async fn run_inner(prog: Program, args: Vec<OsString>) -> Result<ExitCode> {
     let ctx = std::sync::Arc::new(Ctx::open(prog, env, cwd).await?);
     // The sinks (SPEC §20.3) see this invocation's workspace through the bound context.
     crate::stack::sinks::bind(ctx.clone());
+    // A compile is not an operation of the repository: no op log entry for each crate.
+    if rest.first().is_some_and(|w| w == "cache") && rest.get(1).is_some_and(|w| w == "rustc") {
+        let result = dispatch(&ctx, rest).await;
+        crate::stack::sinks::unbind();
+        return result;
+    }
     let op = crate::ext::op_sink().begin(&rest);
     let result = dispatch(&ctx, rest).await;
     crate::ext::op_sink().end(op);

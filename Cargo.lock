@@ -213,6 +213,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "toml",
+ "toml_edit",
  "tonic",
  "url",
  "uuid",
@@ -6968,6 +6969,7 @@ dependencies = [
  "indexmap",
  "toml_datetime",
  "toml_parser",
+ "toml_writer",
  "winnow",
 ]
 
