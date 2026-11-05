@@ -1,6 +1,6 @@
 name: ci
 # Linux gate: Rust format, clippy and the workspace tests; the @asc/build-cache plugins and runner against the asc
-# they call.
+# they call. Windows: the virtual (ProjFS) workspace tests, which need the ProjFS driver.
 on:
   push:
     branches: [master]
@@ -89,3 +89,25 @@ jobs:
         env:
           ASC_BIN: ${{ github.workspace }}/target/debug/asc
         run: bun test
+
+  projfs:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    env:
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Enable ProjFS
+        shell: pwsh
+        run: |
+          Enable-WindowsOptionalFeature -Online -FeatureName Client-ProjFS -NoRestart -All | Out-Null
+          $svc = Get-Service prjflt -ErrorAction Stop
+          if ($svc.Status -ne 'Running') { Start-Service prjflt }
+          (Get-Service prjflt).Status
+      - name: Toolchain (from rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Virtual workspace tests
+        run: cargo test -p asc --locked --test windows_virtual -- --include-ignored
