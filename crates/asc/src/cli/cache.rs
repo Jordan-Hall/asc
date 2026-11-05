@@ -1,4 +1,4 @@
-//! `asc cache status | ls | show | gc | clear | push | warm | run | rustc | go | setup`: the machine-wide build cache
+//! `asc cache status | ls | show | gc | clear | push | warm | run | rustc | go | serve | env | setup`: the machine-wide build cache
 //! (docs/designs/build-cache.md §2, §3, §5). The store is `asc.buildcache.dir`, else
 //! `<ASC_HOME>/buildcache`; it is kept under `asc.buildcache.maxSize` (20 GiB when unset).
 
@@ -14,6 +14,7 @@ use serde_json::{Value, json};
 use super::common::{CliError, Ctx, Result};
 use crate::native::NativeSpec;
 
+pub(crate) mod front;
 pub(crate) mod go;
 pub(crate) mod remote;
 pub(crate) mod run;
@@ -54,8 +55,28 @@ pub enum Sub {
     Rustc(rustc::RustcArgs),
     /// The go command's `GOCACHEPROG`: its build results kept in the shared store.
     Go(go::GoArgs),
+    /// Serves the cache fronts (turbo, Nx, Bazel, Gradle, Maven, ccache) on the loopback interface
+    /// in the foreground, for a machine without the daemon (CI).
+    Serve,
+    /// Prints the variables that point turbo, Nx and Maven at the cache fronts.
+    Env(EnvArgs),
     /// Writes a build tool's configuration so its builds use the cache (`--undo` takes it out).
     Setup(setup::SetupArgs),
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Shell {
+    Sh,
+    Pwsh,
+    Cmd,
+    Json,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct EnvArgs {
+    /// The syntax (default: pwsh on Windows, sh elsewhere).
+    #[arg(long, value_enum)]
+    shell: Option<Shell>,
 }
 
 #[derive(clap::Args, Debug)]
@@ -144,6 +165,7 @@ pub const NATIVE: &[NativeSpec] = &[NativeSpec {
         "--repo",
         "--no-incremental",
         "--trimpath",
+        "--shell",
         "--undo",
     ],
     placeholders: &[],
@@ -263,6 +285,83 @@ fn print_json(out: &mut impl Write, v: &Value) -> Result<()> {
     Ok(())
 }
 
+/// The front file of this user, created when absent.
+pub(crate) fn front_file(ctx: &Ctx) -> Result<front::FrontFile> {
+    let home = AscHome::locate()?;
+    front::FrontFile::ensure(&home, &store_dir(ctx)?).map_err(io_err)
+}
+
+async fn serve(ctx: &Ctx) -> Result<ExitCode> {
+    let f = front_file(ctx)?;
+    let store = open_store(ctx)?;
+    let queue = remote::mode(ctx)? == remote::Mode::ReadWrite;
+    let listener = front::bind(&f).await.map_err(|e| {
+        CliError::Fatal(format!(
+            "cannot listen on {}: {e} (does the daemon serve the fronts already?)",
+            f.addr()
+        ))
+    })?;
+    eprintln!("asc cache: serving the build cache fronts on {}", f.url());
+    front::serve(listener, front::router(store, &f.token, queue), async {
+        let _ = tokio::signal::ctrl_c().await;
+    })
+    .await
+    .map_err(io_err)?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The variables of the tools that read their cache from the environment.
+fn env_vars(f: &front::FrontFile) -> Vec<(&'static str, String)> {
+    let url = f.url();
+    vec![
+        ("TURBO_API", url.clone()),
+        ("TURBO_TOKEN", f.token.clone()),
+        ("TURBO_TEAM", "asc".into()),
+        ("NX_SELF_HOSTED_REMOTE_CACHE_SERVER", url.clone()),
+        ("NX_SELF_HOSTED_REMOTE_CACHE_ACCESS_TOKEN", f.token.clone()),
+        (
+            "MAVEN_ARGS",
+            format!(
+                "-Dmaven.build.cache.remote.enabled=true -Dmaven.build.cache.remote.save.enabled=true \
+                 -Dmaven.build.cache.remote.url={url}/maven \
+                 -Dmaven.build.cache.remote.server.id={}",
+                setup::fronts::MAVEN_SERVER
+            ),
+        ),
+        ("ASC_BUILDCACHE_URL", url),
+        ("ASC_BUILDCACHE_TOKEN", f.token.clone()),
+    ]
+}
+
+fn env(ctx: &Ctx, a: &EnvArgs, out: &mut impl Write) -> Result<ExitCode> {
+    let f = front_file(ctx)?;
+    let vars = env_vars(&f);
+    let shell = a.shell.unwrap_or(if cfg!(windows) {
+        Shell::Pwsh
+    } else {
+        Shell::Sh
+    });
+    match shell {
+        Shell::Json => {
+            let map: serde_json::Map<String, Value> = vars
+                .into_iter()
+                .map(|(k, v)| (k.to_owned(), Value::String(v)))
+                .collect();
+            writeln!(out, "{}", Value::Object(map))?;
+        }
+        // The values are a URL, hex and a word: nothing to quote beyond the delimiters.
+        Shell::Sh => vars
+            .iter()
+            .try_for_each(|(k, v)| writeln!(out, "export {k}='{v}'"))?,
+        Shell::Pwsh => vars
+            .iter()
+            .try_for_each(|(k, v)| writeln!(out, "$env:{k} = '{v}'"))?,
+        Shell::Cmd => vars
+            .iter()
+            .try_for_each(|(k, v)| writeln!(out, "set \"{k}={v}\""))?,
+    }
+    Ok(ExitCode::SUCCESS)
+}
 fn status(ctx: &Ctx, a: &Json, out: &mut impl Write) -> Result<ExitCode> {
     let store = open_store(ctx)?;
     let max = max_size(ctx)?;
@@ -466,6 +565,7 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
         Sub::Run(a) => return run::run(ctx, a).await,
         Sub::Rustc(a) => return rustc::run(ctx, a).await,
         Sub::Go(a) => return go::run(ctx, a).await,
+        Sub::Serve => return serve(ctx).await,
         _ => {}
     }
     let mut out = std::io::stdout().lock();
@@ -512,7 +612,8 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
             .await
         }
         Sub::Setup(a) => setup::run(ctx, &a, &mut out),
-        Sub::Run(_) | Sub::Rustc(_) | Sub::Go(_) => unreachable!("dispatched above"),
+        Sub::Env(a) => env(ctx, &a, &mut out),
+        Sub::Run(_) | Sub::Rustc(_) | Sub::Go(_) | Sub::Serve => unreachable!("dispatched above"),
     }
 }
 

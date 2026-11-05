@@ -56,6 +56,7 @@ regex = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tokio-util = { workspace = true, features = ["io"] }
 uuid = { workspace = true }
 linkme = { workspace = true }
 automod = { workspace = true }
@@ -73,12 +74,13 @@ roaring = { workspace = true }
 tantivy = { workspace = true }
 blake3 = { workspace = true }
 toml_edit = { workspace = true }
+# The build cache fronts (cli/cache/front.rs).
+axum = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
 similar = { workspace = true }
 toml = { workspace = true }
-axum = { workspace = true }
 rustls = { workspace = true }
 rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "ring", "pem"] }
 

@@ -273,6 +273,7 @@ async fn run_with(
     let mut running = None;
     let mut live = None;
     let mut metrics_stop = None;
+    let mut front_stop = None;
     let state = match hosting {
         None => None,
         Some(h) => {
@@ -296,6 +297,10 @@ async fn run_with(
             running = Some(tasks.start(meter.clone(), events.clone()));
             // Live updates (SPEC §21.3.8): one driver per asc server repository, each running
             // `asc live run` in the worktrees on ref updates, cloud wake-ups and the poll fallback.
+            // The build cache fronts (docs/designs/build-cache.md §4.3), while the front file exists.
+            let (tx, rx) = tokio::sync::watch::channel(false);
+            tokio::spawn(crate::cli::cache::front::supervise(home.clone(), rx));
+            front_stop = Some(tx);
             live = live::prod::Supervisor::start(home, h.settings.asc_exe.clone(), events.clone());
             if let Some(listener) = metrics_listener {
                 let (tx, rx) = tokio::sync::watch::channel(false);
@@ -320,6 +325,9 @@ async fn run_with(
         .serve_with_incoming_shutdown(serve_incoming(listener), done)
         .await;
     if let Some(tx) = metrics_stop {
+        let _ = tx.send(true);
+    }
+    if let Some(tx) = front_stop {
         let _ = tx.send(true);
     }
     if let Some(live) = live {
