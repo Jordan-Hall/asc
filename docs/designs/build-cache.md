@@ -307,13 +307,29 @@ runs any command as a cached action.
 
 ## 6. VS Code
 
-- **Status item**: hits and misses of the last build, and a warning when the server tier is unreachable.
-- **Build cache view**: entries by tool and project, size, last use, the worktrees and workflows that share each entry;
-  Show, Delete.
-- **Tasks**: a task provider for Cargo, Rsbuild, Rslib, Vite and `asc cache run` tasks from `asc.toml`, run with the
-  cache on, problems matched into the editor, and the hit or miss shown per task.
-- **Admin commands**: Set up caching for this workspace (runs `asc cache setup` for the tools it finds), Warm cache
-  for this revision, Clean up cache, Clear cache for a tool.
+The extension runs `asc cache ... --json` directly, with the fixed argv of `cli-direct` (no shell, typed inputs, a
+time limit), and reads each reply defensively. It refreshes when a task ends, when the view is shown, when the window
+gets focus and after an admin command; there is no timer. A failed read hides the status item and is not logged: the
+cache is optional.
+
+- **Status item**: the hits and misses of the last `asc-build` task (the difference of `cache status` before and after
+  it), else today's hit rate; the tooltip has each tool's numbers, the size of the store and the server tier's mode,
+  queue and last exchange. A failed last exchange turns it into a warning. A click focuses the view.
+- **Build cache view** (`asc.buildCache`): tools, then their entries (label, size, last use; the tooltip names the
+  work tree and workflow that wrote it). Show opens `cache show --json` as a read-only document, with the work trees
+  and workflows that used the entry; Delete runs `cache rm` after a confirmation; Clear on a tool runs
+  `cache clear --tool`.
+- **Tasks** (type `asc-build`, trusted workspaces only): `cargo build` with asc as `RUSTC_WRAPPER` (and
+  `CARGO_INCREMENTAL=0`), `go build ./...` with asc as `GOCACHEPROG`, and each package.json script that runs
+  `rsbuild build`, `rslib build` or `vite build`, with the package manager of the lockfile (`@asc/build-cache` in the
+  config caches it). There is no `asc.toml`: an `asc cache run` task is declared in tasks.json with `name`, `inputs`
+  (default the root), `outputs`, `command` and `env`; paths must stay inside the root. Every task gets the variables
+  of `cache env`, and the problem matchers `$asc-rustc`, `$asc-go` and `$asc-build`.
+- **Admin commands**: Set up build caching for this workspace (offers the tools whose files it finds, runs
+  `cache setup` for each one picked), Warm build cache for this revision, Clean up build cache (`cache gc`), Clear
+  build cache (a tool or all, after a confirmation), Refresh.
+- **Terminals**: new terminals get the variables of `cache env` (`asc.cache.terminalEnv`, default on), so turbo, Nx
+  and Maven run there use the local fronts.
 
 ## 7. Units
 

@@ -18,6 +18,15 @@ process.
   through a URI. It never activates on `*`.
 - One notification offers to turn off the built-in git (`git.enabled`) for an asc workspace.
 - Commands: `asc: Restart the bridge` and `asc: Show output`.
+- Build cache: a status item with the hits and misses of the last build (and a warning when the
+  build cache server cannot be reached), a Build cache view of the entries by tool with Show and
+  Delete, `asc-build` tasks for Cargo, Go and the package.json scripts that run Rsbuild, Rslib or
+  Vite, and the commands Set up build caching, Warm, Clean up and Clear. A task in tasks.json with
+  `name`, `inputs`, `outputs` and `command` runs through `asc cache run`:
+
+  ```json
+  { "type": "asc-build", "name": "docs", "inputs": ["docs"], "outputs": ["site"], "command": ["mkdocs", "build"] }
+  ```
 
 ## Security
 
@@ -33,6 +42,7 @@ process.
 | Setting | Default | Meaning |
 |---|---|---|
 | `asc.path` | empty | Absolute path to the `asc` executable. |
+| `asc.cache.terminalEnv` | `true` | Give new terminals the variables of `asc cache env` (turbo, Nx, Maven). |
 
 ## Install
 
