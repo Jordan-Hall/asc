@@ -1,0 +1,52 @@
+name: auto-release
+# A push to master that passes ci releases itself. When the version of the asc crate (crates/asc/Cargo.toml) has
+# no v<version> tag yet, the tag is made on the commit that passed and the release workflow is started on it: a
+# tag pushed with the workflow token starts no workflow, a dispatch does. The release then builds, signs,
+# publishes and updates winget, Scoop and Homebrew. A version that is already released does nothing, so bumping
+# the version is what releases; the asc serve image (image.yml) deploys on every push regardless.
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - name: Tag a new version and start its release
+        run: |
+          set -euo pipefail
+          ver=$(python3 -I -c 'import tomllib; print(tomllib.load(open("crates/asc/Cargo.toml","rb"))["package"]["version"])')
+          printf '%s' "$ver" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' || { echo "bad version: $ver" >&2; exit 1; }
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v$ver" >/dev/null 2>&1; then
+            echo "::notice::v$ver is already released; bump crates/asc/Cargo.toml to release again"
+            exit 0
+          fi
+          # Only the newest master commit is released, so an older run finishing late does not tag behind it.
+          tip=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/master" --jq .object.sha)
+          if [ "$tip" != "$SHA" ]; then
+            echo "::notice::master moved on to $tip; its own ci run releases"
+            exit 0
+          fi
+          gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/v$ver" -f sha="$SHA" >/dev/null
+          gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "v$ver"
+          echo "::notice::tagged v$ver at $SHA and started the release"
