@@ -169,18 +169,48 @@ asc-aware adapters also skip hydration.
 
 ### 4.3 Protocols on the daemon
 
-The daemon serves the fronts on `127.0.0.1` only, on a port it chooses, with a random per-user token (Bearer or basic
-auth, as each tool supports). Plain HTTP is used only because these tools speak nothing else to a cache, and only on
-the loopback interface; it is off until `asc cache setup <tool>` turns it on for that tool (the explicit opt-in the
-transport rules ask for). Every front maps the tool's key to an action key with the tool name as prefix, so tools never
-read each other's entries.
+The fronts answer the cache protocols of turbo, Nx, Bazel, Gradle, Maven and ccache from the shared store, on
+`127.0.0.1` only. Plain HTTP is used only because these tools speak nothing else to a local cache, and only on the
+loopback interface; it is off until the user asks for it with `asc cache setup <tool>` or `asc cache env` (the explicit
+opt-in the transport rules ask for).
 
-- Turbo: `/v8/artifacts/*` as `asc serve` does, local first.
-- Nx: `PUT|GET /v1/cache/<hash>`.
-- Bazel: `GET|PUT /ac/<sha256>`, `/cas/<sha256>`; CAS bodies are checked against their sha256.
-- Gradle: `GET|PUT /cache/<key>`.
+- The front file, `<ASC_HOME>/buildcache-front.json` (mode 0600), holds the port, a 256-bit token and the store. The
+  first `asc cache setup <tool>` or `asc cache env` creates it with a free port; later calls keep the port and token,
+  because each tool's configuration names them. The file is the user's, so setup for a front tool writes only user
+  configuration and refuses `--repo`.
+- The daemon serves the fronts while the front file exists; it reads the file every 5 seconds and restarts the
+  listener when the port, token or store changes. `asc cache serve` serves them in the foreground for CI or a machine
+  without the daemon.
+- Every request needs a single loopback `Host` (so a web page that rebinds a name to 127.0.0.1 is refused with 403)
+  and the token, as Bearer or as the password of Basic auth (401 otherwise). Keys are printable ASCII, at most 1 KiB,
+  with no empty, `.` or `..` path segment. Bodies stream to the store up to the artefact limit of §3.
+- Each front keys entries by its tool name, a kind and the tool's key, so tools never read each other's entries, and
+  `asc cache ls --tool <tool>` lists them. A `GET` counts a hit or miss for `asc cache status`.
+- Under the daemon the fronts never queue entries for the server. `asc cache serve` queues what it stores when the
+  server tier is read-write. Neither fetches from the server on a miss; `asc cache warm` fetches ahead of a build.
+
+The routes:
+
+- Turbo: `GET|PUT|HEAD /v8/artifacts/<hash>` (the `x-artifact-tag` signature is kept and returned),
+  `/v8/artifacts/status`, `POST /v8/artifacts/events`.
+- Nx: `GET|PUT /v1/cache/<hash>`; a `PUT` needs `Content-Length` (411) and an existing hash is 409.
+- Bazel: `GET|PUT|HEAD /bazel/ac/<sha256>` and `/bazel/cas/<sha256>`; CAS bodies are checked against their sha256
+  (400).
+- Gradle: `GET|PUT|HEAD /gradle/<key>`.
 - Maven build cache extension: `GET|PUT|HEAD` under `/maven/`.
-- ccache: `GET|PUT|HEAD|DELETE` under `/ccache/` (ccache's HTTP storage layout).
+- ccache: `GET|PUT|HEAD|DELETE` under `/ccache/`, keyed by the last path segment.
+
+What `asc cache setup` writes, each part marked so `--undo` takes out only that:
+
+- turbo, Nx: nothing; they read `TURBO_API`, `TURBO_TOKEN`, `TURBO_TEAM` and
+  `NX_SELF_HOSTED_REMOTE_CACHE_SERVER`, `NX_SELF_HOSTED_REMOTE_CACHE_ACCESS_TOKEN` from the environment, which
+  `asc cache env [--shell sh|pwsh|cmd|json]` prints and the VS Code extension sets in its terminals and tasks.
+- Bazel: a block in `~/.bazelrc` with `build --remote_cache=<front>/bazel` and the token as an `Authorization` header.
+- Gradle: `init.d/asc-build-cache.gradle` in the Gradle user home, which reads the front file when a build starts and
+  sets an `HttpBuildCache` with push on, and `org.gradle.caching=true` in its `gradle.properties`.
+- Maven: a `<server>` with the id `asc-build-cache` and the token in `~/.m2/settings.xml`; the project needs the build
+  cache extension, and `asc cache env` gives `MAVEN_ARGS` that turn its remote cache on and point it at the front.
+- ccache: `remote_storage` through `ccache --set-config`; setup refuses to replace a value that is not the front's.
 
 `asc cache go` speaks `GOCACHEPROG` (JSON over stdio), so Go needs no port (§4.5).
 
@@ -229,6 +259,7 @@ runs any command as a cached action.
 - `asc cache push [--rev R] [--remote N]`, `asc cache warm [<rev>] [--remote N]`: send the outbox and list it under a
   revision; fetch a revision's entries before a build.
 - `asc cache run --name <n> ... -- <command>`: §4.4.
+- `asc cache serve`: the fronts in the foreground (§4.3). `asc cache env [--shell sh|pwsh|cmd|json]`: the front's variables for turbo, Nx and Maven.
 - `asc cache setup <cargo|go|ccache|gradle|maven|bazel|nx|turbo|js> [--user|--repo] [--no-incremental] [--trimpath] [--undo]`: writes the tool's configuration (user or
   repository level, as asked) and prints what changed. `--undo` takes it out again.
 
