@@ -211,6 +211,36 @@ mod projfs {
 
     use super::{Sandbox, ok, seed};
 
+    /// A sandbox whose daemon is stopped when the test ends, pass or fail: a daemon left running
+    /// keeps the sandbox's files and the built binary open.
+    struct Virtual(Sandbox);
+
+    impl Virtual {
+        fn new() -> Self {
+            Self(Sandbox::new())
+        }
+    }
+
+    impl std::ops::Deref for Virtual {
+        type Target = Sandbox;
+        fn deref(&self) -> &Sandbox {
+            &self.0
+        }
+    }
+
+    impl Drop for Virtual {
+        fn drop(&mut self) {
+            let _ = self
+                .0
+                .asc(self.0.tmp.path())
+                .args(["daemon", "stop"])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+    }
+
     fn virtual_clone(sb: &Sandbox, url: &str) -> std::path::PathBuf {
         let parent = sb.dir("work");
         ok(sb, &parent, &["clone", "-q", "--mode", "virtual", url, "v"]);
@@ -239,7 +269,7 @@ mod projfs {
     #[test]
     #[ignore = "needs Windows with ProjFS"]
     fn clone_edit_commit_switch_without_downloads() {
-        let sb = Sandbox::new();
+        let sb = Virtual::new();
         let url = seed(&sb);
         let ws = virtual_clone(&sb, &url);
         assert_eq!(std::fs::read_to_string(ws.join("a.txt")).unwrap(), "a\n");
@@ -272,7 +302,7 @@ mod projfs {
     #[test]
     #[ignore = "needs Windows with ProjFS"]
     fn worktree_add_is_fast_and_git_verbs_work_through_the_shim() {
-        let sb = Sandbox::new();
+        let sb = Virtual::new();
         let url = seed(&sb);
         let ws = virtual_clone(&sb, &url);
 
@@ -318,7 +348,7 @@ mod projfs {
     #[test]
     #[ignore = "needs Windows with ProjFS"]
     fn convert_to_plain_keeps_edits() {
-        let sb = Sandbox::new();
+        let sb = Virtual::new();
         let url = seed(&sb);
         let ws = virtual_clone(&sb, &url);
         std::fs::write(ws.join("a.txt"), "edited\n").unwrap();
@@ -337,7 +367,7 @@ mod projfs {
     #[test]
     #[ignore = "needs Windows with ProjFS"]
     fn tree_without_turbo_json_has_no_index_and_status_matches_git() {
-        let sb = Sandbox::new();
+        let sb = Virtual::new();
         let url = seed(&sb);
         let ws = virtual_clone(&sb, &url);
         // SPEC §9.4: no turbo.json, so asc.turboIndex renders no `index` file.
@@ -357,7 +387,7 @@ mod projfs {
     #[test]
     #[ignore = "needs Windows with ProjFS"]
     fn a_cached_action_keys_clean_inputs_without_hydrating_them() {
-        let sb = Sandbox::new();
+        let sb = Virtual::new();
         let url = seed(&sb);
         let ws = virtual_clone(&sb, &url);
         std::fs::write(ws.join(".gitignore"), "out/\n").unwrap();
