@@ -5,7 +5,7 @@
 use std::io::Write;
 use std::process::ExitCode;
 
-use asc_buildcache::{ActionKey, Store, artifact_name, human_size, key_of_artifact};
+use asc_buildcache::{Action, ActionKey, Store, artifact_name, human_size, key_of_artifact};
 use bytes::Bytes;
 use futures::StreamExt;
 use reqwest::{Method, StatusCode};
@@ -115,6 +115,24 @@ pub(crate) async fn fetch(api: &HttpApi, store: &Store, key: &ActionKey) -> Resu
         Ok(_) => Fetched::Stored(body.len() as u64),
         Err(e) => Fetched::Refused(e.to_string()),
     })
+}
+
+/// A remote hit for `key`, or `None` on a miss, without a server, or when the server cannot be
+/// reached (the build goes on as on a miss).
+pub(crate) async fn fetch_entry(ctx: &Ctx, store: &Store, key: &ActionKey) -> Option<Action> {
+    let api = http_api(ctx, None).await.ok()?;
+    match fetch(&api, store, key).await {
+        Ok(Fetched::Stored(_)) => store.get_action(key).ok().flatten(),
+        Ok(Fetched::Refused(m)) => {
+            eprintln!("warning: build cache artefact refused: {m}");
+            None
+        }
+        Ok(Fetched::Missing | Fetched::TooLarge) => None,
+        Err(e) => {
+            eprintln!("warning: build cache server: {e}");
+            None
+        }
+    }
 }
 
 /// What sending one queued key did.

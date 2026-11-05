@@ -10,7 +10,7 @@ use std::process::{Command, ExitCode, Stdio};
 
 use asc_buildcache::{Action, ActionKey, Origin, Store, hex};
 
-use super::remote::{self, Fetched, Mode};
+use super::remote::{self, Mode};
 use super::{io_err, max_size, open_store};
 use crate::cli::common::{CliError, Ctx, Result};
 use crate::cli::inputs;
@@ -121,7 +121,7 @@ pub(crate) fn spawn_push(store: &Store, cwd: &Path) {
 
 /// `program` as a path: on Windows a bare name is searched on `PATH` with `PATHEXT`, so `npm`
 /// finds `npm.cmd` (whose arguments the standard library then quotes or refuses).
-fn program(name: &OsString) -> OsString {
+pub(crate) fn program(name: &OsString) -> OsString {
     #[cfg(windows)]
     {
         let p = Path::new(name);
@@ -165,16 +165,17 @@ fn tee(mut from: impl Read, mut to: impl Write) -> Option<Vec<u8>> {
 }
 
 /// What the command did.
-struct Ran {
+pub(crate) struct Ran {
     /// `None` when it was ended by a signal.
-    code: Option<i32>,
-    stdout: Option<Vec<u8>>,
-    stderr: Option<Vec<u8>>,
+    pub(crate) code: Option<i32>,
+    pub(crate) stdout: Option<Vec<u8>>,
+    pub(crate) stderr: Option<Vec<u8>>,
 }
 
-fn run_command(a: &RunArgs, cwd: &Path) -> Result<Ran> {
-    let mut child = Command::new(program(&a.command[0]))
-        .args(&a.command[1..])
+/// Runs `command` in `cwd`, copying its output through as it arrives and keeping it.
+pub(crate) fn run_teed(command: &[OsString], cwd: &Path) -> Result<Ran> {
+    let mut child = Command::new(program(&command[0]))
+        .args(&command[1..])
         .current_dir(cwd)
         .stdin(Stdio::inherit())
         .stdout(Stdio::piped())
@@ -183,7 +184,7 @@ fn run_command(a: &RunArgs, cwd: &Path) -> Result<Ran> {
         .map_err(|e| {
             CliError::Fatal(format!(
                 "cannot run '{}': {e}",
-                a.command[0].to_string_lossy()
+                command[0].to_string_lossy()
             ))
         })?;
     let out = child.stdout.take().expect("piped");
@@ -243,7 +244,7 @@ pub async fn run(ctx: &Ctx, a: RunArgs) -> Result<ExitCode> {
 
     let mut hit = store.lookup(TOOL, &key, &origin).map_err(io_err)?;
     if hit.is_none() && mode != Mode::Off {
-        hit = fetch(ctx, &store, &key).await;
+        hit = remote::fetch_entry(ctx, &store, &key).await;
     }
     if let Some(action) = hit
         && store.restore(&action, &root).map_err(io_err)?
@@ -260,7 +261,7 @@ pub async fn run(ctx: &Ctx, a: RunArgs) -> Result<ExitCode> {
         return Ok(exit(action.exit));
     }
 
-    let ran = run_command(&a, &ctx.cwd)?;
+    let ran = run_teed(&a.command, &ctx.cwd)?;
     let Some(code) = ran.code else {
         return Ok(ExitCode::FAILURE);
     };
@@ -291,24 +292,6 @@ pub async fn run(ctx: &Ctx, a: RunArgs) -> Result<ExitCode> {
         let _ = store.maybe_gc(max);
     }
     Ok(ExitCode::SUCCESS)
-}
-
-/// A remote hit for `key`, or `None` on a miss, without a server, or when the server cannot be
-/// reached (the build goes on as on a miss).
-async fn fetch(ctx: &Ctx, store: &Store, key: &ActionKey) -> Option<Action> {
-    let api = crate::cli::ci::cache::http_api(ctx, None).await.ok()?;
-    match remote::fetch(&api, store, key).await {
-        Ok(Fetched::Stored(_)) => store.get_action(key).ok().flatten(),
-        Ok(Fetched::Refused(m)) => {
-            eprintln!("warning: build cache artefact refused: {m}");
-            None
-        }
-        Ok(Fetched::Missing | Fetched::TooLarge) => None,
-        Err(e) => {
-            eprintln!("warning: build cache server: {e}");
-            None
-        }
-    }
 }
 
 #[cfg(test)]
