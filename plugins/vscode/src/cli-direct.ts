@@ -1,9 +1,10 @@
-// Read-mostly verbs the bridge does not carry. `Bridge.Run` refuses `op log` (its result is an
-// `OpLogResponse`, which `RunEvent` cannot hold) and its argv schema has no `cloud status` or `live`
-// entries, so the extension runs these few fixed argv itself, with the same rules as the bridge: no shell,
-// the null device as stdin, an environment rebuilt from a short list, a neutral working directory
-// (the executable's own; the root travels as `-C <root>`), a time limit and a cap on the output. The argv is built here from typed inputs and nowhere
-// else; nothing a webview or a repository supplies reaches it.
+// Verbs the bridge does not carry: the read-mostly ones and the build cache's admin verbs.
+// `Bridge.Run` refuses `op log` (its result is an `OpLogResponse`, which `RunEvent` cannot hold)
+// and its argv schema has no `cloud status`, `live` or `cache` entries, so the extension runs these
+// few fixed argv itself, with the same rules as the bridge: no shell, the null device as stdin, an
+// environment rebuilt from a short list, a neutral working directory (the executable's own; the
+// root travels as `-C <root>`), a time limit and a cap on the output. The argv is built here from
+// typed inputs and nowhere else; nothing a webview or a repository supplies reaches it.
 import { spawn } from "node:child_process";
 import { dirname } from "node:path";
 import { isAbsoluteExe } from "./bridge";
@@ -22,7 +23,40 @@ export type CliCall =
   | { kind: "cloud-status" }
   | { kind: "live"; action: "status" | "pause" | "resume" }
   /** Forgets the credential the git credential helpers hold for a bare `host[:port]` (https). */
-  | { kind: "auth-logout"; host: string };
+  | { kind: "auth-logout"; host: string }
+  /** The build cache (docs/designs/build-cache.md §5). */
+  | { kind: "cache-status" }
+  | { kind: "cache-ls"; tool?: string; limit: number }
+  | { kind: "cache-show"; key: string }
+  | { kind: "cache-rm"; keys: readonly string[] }
+  | { kind: "cache-gc" }
+  | { kind: "cache-clear"; tool?: string }
+  | { kind: "cache-warm" }
+  | { kind: "cache-setup"; tool: CacheSetupTool; undo: boolean }
+  | { kind: "cache-env" };
+
+/** The tools `asc cache setup` configures. */
+export const CACHE_SETUP_TOOLS = [
+  "cargo",
+  "go",
+  "turbo",
+  "nx",
+  "bazel",
+  "gradle",
+  "maven",
+  "ccache",
+] as const;
+export type CacheSetupTool = (typeof CACHE_SETUP_TOOLS)[number];
+
+/** Most entries `cache ls` is asked for. */
+export const CACHE_LS_MAX = 5000;
+/** Most keys one `cache rm` names. */
+export const CACHE_RM_MAX = 200;
+/** A warm or a setup moves data or writes files: they get longer than a read. */
+const SLOW_MS = 300_000;
+
+const TOOL = /^[a-z0-9][a-z0-9-]{0,31}$/;
+const KEY = /^[0-9a-f]{4,64}$/;
 
 const HOST = /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]{1,5})?$/;
 
@@ -42,9 +76,44 @@ export function cliArgv(call: CliCall): string[] | null {
       return typeof call.host === "string" && call.host.length <= 259 && HOST.test(call.host)
         ? ["auth", "logout", "--host", `https://${call.host}`]
         : null;
+    case "cache-status":
+      return ["cache", "status", "--json"];
+    case "cache-ls": {
+      if (!Number.isInteger(call.limit) || call.limit < 1 || call.limit > CACHE_LS_MAX) return null;
+      if (call.tool !== undefined && !TOOL.test(call.tool)) return null;
+      const tool = call.tool === undefined ? [] : ["--tool", call.tool];
+      return ["cache", "ls", "--json", "-n", String(call.limit), ...tool];
+    }
+    case "cache-show":
+      return KEY.test(call.key) ? ["cache", "show", "--json", call.key] : null;
+    case "cache-rm":
+      return call.keys.length >= 1 &&
+        call.keys.length <= CACHE_RM_MAX &&
+        call.keys.every((k) => KEY.test(k))
+        ? ["cache", "rm", "--json", ...call.keys]
+        : null;
+    case "cache-gc":
+      return ["cache", "gc", "--json"];
+    case "cache-clear":
+      if (call.tool === undefined) return ["cache", "clear", "--json"];
+      return TOOL.test(call.tool) ? ["cache", "clear", "--json", "--tool", call.tool] : null;
+    case "cache-warm":
+      return ["cache", "warm", "--json"];
+    case "cache-setup":
+      if (!(CACHE_SETUP_TOOLS as readonly string[]).includes(call.tool)) return null;
+      return ["cache", "setup", call.tool, ...(call.undo ? ["--undo"] : [])];
+    case "cache-env":
+      return ["cache", "env", "--shell", "json"];
     default:
       return null;
   }
+}
+
+/** The time limit of `call`: the default, or longer for a verb that moves data. */
+export function callTimeout(call: CliCall, fallback: number): number {
+  return call.kind === "cache-warm" || call.kind === "cache-setup" || call.kind === "cache-gc"
+    ? Math.max(fallback, SLOW_MS)
+    : fallback;
 }
 
 /** Variables copied to the child; nothing else is, so a stray token or `GIT_*` setting never leaks in. */
@@ -164,10 +233,13 @@ export function createCliDirect(o: CliOptions): CliDirect {
         const kill = () => {
           if (!child.killed) child.kill();
         };
-        const timer = setTimeout(() => {
-          kill();
-          finish(() => reject(new Error("asc: the verb timed out")));
-        }, o.timeoutMs ?? CLI_TIMEOUT_MS);
+        const timer = setTimeout(
+          () => {
+            kill();
+            finish(() => reject(new Error("asc: the verb timed out")));
+          },
+          callTimeout(call, o.timeoutMs ?? CLI_TIMEOUT_MS),
+        );
         const onAbort = () => {
           kill();
           finish(() => reject(new Error("asc: cancelled")));
