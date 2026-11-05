@@ -909,6 +909,48 @@ mod tests {
         );
     }
 
+    /// A provider that reports the listed paths as still holding the base tree's content.
+    struct Unchanged(Vec<&'static str>);
+
+    impl crate::plain::Projected for Unchanged {
+        fn unchanged(&self, path: &RepoPath) -> io::Result<bool> {
+            Ok(self.0.iter().any(|p| p.as_bytes() == path.as_bytes()))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_projected_file_is_the_base_tree_entry_and_is_not_read() {
+        let fx = Fixture::new();
+        let tree = fx.tree(TREE).await;
+        checkout(&fx.wc(), fx.empty(), tree, Mode::Safe)
+            .await
+            .unwrap();
+        let (db, ws) = workspace(&fx, tree).await;
+        // No stat cache, as in a virtual work tree without turbo.json: every file would be read.
+        fs::remove_file(&fx.index).unwrap();
+        fs::write(fx.root.join("a.txt"), b"not what the provider serves\n").unwrap();
+        fs::write(fx.root.join("d/b.txt"), b"edited\n").unwrap();
+        let s: &[u8] = b"staged";
+        let rows = [StageRow {
+            path: b"keep.txt".to_vec(),
+            stage: 0,
+            kind: F,
+            file: Some(FileId::of(s)),
+            size: 6,
+            git: Some(blob_oid(s)),
+            intent_to_add: false,
+        }];
+        stage::upsert(&db, ws.ws.id, StageSet::Default, &rows)
+            .await
+            .unwrap();
+        let provider = Unchanged(vec!["a.txt", "keep.txt"]);
+        let mut wc = fx.wc();
+        wc.projected = Some(&provider);
+        let st = compute(&wc, &db, &ws).await.unwrap();
+        // a.txt is taken as the tree's entry; d/b.txt is read; keep.txt holds HEAD, not the stage.
+        assert_eq!(from_status(&st), [".M d/b.txt", "MM keep.txt"]);
+    }
+
     #[tokio::test]
     async fn staged_rows_are_compared_with_head() {
         let fx = Fixture::new();
