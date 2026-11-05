@@ -284,9 +284,9 @@ def write_manifest(
 
 
 def release_files(out: Path) -> list[Path]:
-    """Every file that SHA256SUMS covers: all but itself and the signatures."""
+    """Every file that SHA256SUMS covers: all but itself and the signatures, in byte order of name on every OS."""
     files = []
-    for p in sorted(out.iterdir()):
+    for p in sorted(out.iterdir(), key=lambda p: p.name):
         if p.is_symlink():
             raise ReleaseError(f"{p} is a symbolic link")
         if p.is_dir():
