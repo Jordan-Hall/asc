@@ -53,11 +53,12 @@ fn runs_programs_or_redirects(
     let section = section.to_ascii_lowercase();
     let name = name.to_ascii_lowercase();
     match section.as_str() {
-        // The real git binary, the home and the cache and store locations.
+        // The real git binary, the home, the cache and store locations, and the build cache (its
+        // directory, the read-only lower stores it copies entries from and the server it sends to).
         "asc" => {
             matches!(name.as_str(), "realgit" | "home" | "allowloopbackhttp")
                 || sub.is_some_and(|s| {
-                    ["cache", "store", "state"]
+                    ["cache", "store", "state", "buildcache"]
                         .iter()
                         .any(|d| s.eq_ignore_ascii_case(d))
                 })
