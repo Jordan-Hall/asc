@@ -13,6 +13,8 @@ use crate::cli::common::{CliError, Ctx, Result};
 pub enum Tool {
     /// `build.rustc-wrapper` in cargo's configuration.
     Cargo,
+    /// `GOCACHEPROG` in the user's go env file.
+    Go,
 }
 
 #[derive(clap::Args, Debug)]
@@ -28,6 +30,10 @@ pub struct SetupArgs {
     /// cached too.
     #[arg(long = "no-incremental")]
     no_incremental: bool,
+    /// Go: add `-trimpath` to `GOFLAGS`, so packages in different work trees share entries
+    /// (with `--undo`: take it out).
+    #[arg(long)]
+    trimpath: bool,
     /// Takes out what setup wrote.
     #[arg(long)]
     undo: bool,
@@ -43,6 +49,7 @@ enum Change {
 pub fn run(ctx: &Ctx, a: &SetupArgs, out: &mut impl Write) -> Result<ExitCode> {
     match a.tool {
         Tool::Cargo => cargo(ctx, a, out),
+        Tool::Go => go(a, out),
     }
 }
 
@@ -175,20 +182,14 @@ fn cargo(ctx: &Ctx, a: &SetupArgs, out: &mut impl Write) -> Result<ExitCode> {
         .map_err(|e| CliError::Fatal(format!("{}: {e}", file.display())))?;
     let changes = edit_cargo(&mut doc, &wrapper, a.no_incremental, a.undo)?;
     let shown = file.display().to_string().replace('\\', "/");
+    print(out, &shown, &changes)?;
     if changes.is_empty() {
-        writeln!(out, "{shown}: nothing to change")?;
         return Ok(ExitCode::SUCCESS);
     }
     if let Some(dir) = file.parent() {
         std::fs::create_dir_all(dir)?;
     }
     std::fs::write(&file, doc.to_string())?;
-    for c in &changes {
-        match c {
-            Change::Set(k, v) => writeln!(out, "{shown}: set {k} = {v}")?,
-            Change::Removed(k) => writeln!(out, "{shown}: removed {k}")?,
-        }
-    }
     if changes.contains(&Change::Set("profile.dev.incremental", "false".into())) {
         writeln!(
             out,
@@ -200,6 +201,186 @@ fn cargo(ctx: &Ctx, a: &SetupArgs, out: &mut impl Write) -> Result<ExitCode> {
             out,
             "note: cargo compiles workspace crates incrementally in dev builds, and those are not \
              cached; --no-incremental turns that off"
+        )?;
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn print(out: &mut impl Write, shown: &str, changes: &[Change]) -> Result<()> {
+    if changes.is_empty() {
+        writeln!(out, "{shown}: nothing to change")?;
+    }
+    for c in changes {
+        match c {
+            Change::Set(k, v) => writeln!(out, "{shown}: set {k} = {v}")?,
+            Change::Removed(k) => writeln!(out, "{shown}: removed {k}")?,
+        }
+    }
+    Ok(())
+}
+
+/// Whether `prog` (a `GOCACHEPROG` value) runs asc's go cache.
+fn is_asc_go(prog: &str) -> bool {
+    let first = prog
+        .strip_prefix('"')
+        .and_then(|p| p.split_once('"'))
+        .map_or_else(|| prog.split(' ').next().unwrap_or_default(), |(p, _)| p);
+    is_asc(first) && prog.ends_with(" cache go")
+}
+
+/// The edits to the go env file: each change with the variable's new value (`None`: unset).
+fn edit_go(
+    prog: Option<&str>,
+    flags: Option<&str>,
+    wanted: &str,
+    trimpath: bool,
+    undo: bool,
+) -> Result<Vec<(Change, &'static str, Option<String>)>> {
+    let mut edits = Vec::new();
+    let flags: Vec<&str> = flags.unwrap_or_default().split_whitespace().collect();
+    let has_trim = flags
+        .iter()
+        .any(|f| *f == "-trimpath" || *f == "-trimpath=true");
+    if undo {
+        if prog.is_some_and(is_asc_go) {
+            edits.push((Change::Removed("GOCACHEPROG"), "GOCACHEPROG", None));
+        }
+        if trimpath && has_trim {
+            let rest: Vec<&str> = flags
+                .iter()
+                .copied()
+                .filter(|f| *f != "-trimpath" && *f != "-trimpath=true")
+                .collect();
+            let value = (!rest.is_empty()).then(|| rest.join(" "));
+            edits.push((Change::Removed("-trimpath from GOFLAGS"), "GOFLAGS", value));
+        }
+        return Ok(edits);
+    }
+    match prog.filter(|p| !p.is_empty()) {
+        Some(p) if p == wanted => {}
+        Some(p) if !is_asc_go(p) => {
+            return Err(CliError::Fatal(format!(
+                "GOCACHEPROG is already '{p}'; remove it first"
+            )));
+        }
+        _ => edits.push((
+            Change::Set("GOCACHEPROG", wanted.to_owned()),
+            "GOCACHEPROG",
+            Some(wanted.to_owned()),
+        )),
+    }
+    if trimpath && !has_trim {
+        let mut all = flags.clone();
+        all.push("-trimpath");
+        let value = all.join(" ");
+        edits.push((
+            Change::Set("GOFLAGS", value.clone()),
+            "GOFLAGS",
+            Some(value),
+        ));
+    }
+    Ok(edits)
+}
+
+fn go_cmd() -> std::process::Command {
+    std::process::Command::new(super::run::program(&"go".into()))
+}
+
+/// `go env <args>`, its output trimmed.
+fn go_env(args: &[&str]) -> Result<String> {
+    let out = go_cmd()
+        .arg("env")
+        .args(args)
+        .output()
+        .map_err(|e| CliError::Fatal(format!("cannot run 'go': {e}")))?;
+    if !out.status.success() {
+        return Err(CliError::Fatal(format!(
+            "go env {}: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+}
+
+/// The values the go env file itself holds (not the environment's).
+fn go_file_values(file: &Path) -> Result<(Option<String>, Option<String>)> {
+    let text = match std::fs::read_to_string(file) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e.into()),
+    };
+    let get = |name: &str| {
+        text.lines()
+            .filter_map(|l| l.split_once('='))
+            .filter(|(k, _)| k.trim() == name)
+            .map(|(_, v)| v.trim().to_owned())
+            .next_back()
+    };
+    Ok((get("GOCACHEPROG"), get("GOFLAGS")))
+}
+
+fn go(a: &SetupArgs, out: &mut impl Write) -> Result<ExitCode> {
+    if a.repo {
+        return Err(CliError::Usage(
+            "error: go reads GOCACHEPROG from the environment or the user's go env file, not \
+             from the repository; leave out --repo"
+                .into(),
+        ));
+    }
+    let file = go_env(&["GOENV"])?;
+    if file.is_empty() || file == "off" {
+        return Err(CliError::Fatal(
+            "the go env file is off (GOENV=off); set GOCACHEPROG in the environment instead".into(),
+        ));
+    }
+    let file = PathBuf::from(file);
+    let exe = std::env::current_exe()?
+        .to_string_lossy()
+        .replace('\\', "/");
+    let exe = if exe.contains(' ') {
+        format!("\"{exe}\"")
+    } else {
+        exe
+    };
+    let wanted = format!("{exe} cache go");
+    let (prog, flags) = go_file_values(&file)?;
+    let edits = edit_go(
+        prog.as_deref(),
+        flags.as_deref(),
+        &wanted,
+        a.trimpath,
+        a.undo,
+    )?;
+    let mut set = Vec::new();
+    let mut unset = Vec::new();
+    for (_, name, value) in &edits {
+        match value {
+            Some(v) => set.push(format!("{name}={v}")),
+            None => unset.push(*name),
+        }
+    }
+    if !set.is_empty() {
+        let mut args = vec!["-w"];
+        args.extend(set.iter().map(String::as_str));
+        go_env(&args)?;
+    }
+    if !unset.is_empty() {
+        let mut args = vec!["-u"];
+        args.extend(unset.iter().copied());
+        go_env(&args)?;
+    }
+    let changes: Vec<Change> = edits.into_iter().map(|(c, _, _)| c).collect();
+    print(
+        out,
+        &file.display().to_string().replace('\\', "/"),
+        &changes,
+    )?;
+    if !a.undo && !a.trimpath && !flags.unwrap_or_default().contains("-trimpath") {
+        writeln!(
+            out,
+            "note: go keys a package by its directory unless it builds with -trimpath, so work \
+             trees share entries only with --trimpath"
         )?;
     }
     Ok(ExitCode::SUCCESS)
@@ -244,6 +425,50 @@ mod tests {
                 .unwrap()
                 .len(),
             1
+        );
+    }
+
+    #[test]
+    fn go_setup_sets_and_undoes_only_its_own_values() {
+        let want = "/opt/bin/asc cache go";
+        let e = edit_go(None, Some("-mod=mod"), want, true, false).unwrap();
+        assert_eq!(e.len(), 2);
+        assert_eq!(e[0].2.as_deref(), Some(want));
+        assert_eq!(e[1].2.as_deref(), Some("-mod=mod -trimpath"));
+        assert!(
+            edit_go(Some(want), Some("-mod=mod -trimpath"), want, true, false)
+                .unwrap()
+                .is_empty()
+        );
+        // Another path to asc is replaced; another program is not.
+        assert_eq!(
+            edit_go(
+                Some("\"C:/x y/asc.exe\" cache go"),
+                None,
+                want,
+                false,
+                false
+            )
+            .unwrap()
+            .len(),
+            1
+        );
+        assert!(edit_go(Some("gobuildcache"), None, want, false, false).is_err());
+        let u = edit_go(Some(want), Some("-mod=mod -trimpath"), want, true, true).unwrap();
+        assert_eq!(u.len(), 2);
+        assert_eq!(u[0].2, None);
+        assert_eq!(u[1].2.as_deref(), Some("-mod=mod"));
+        // Without --trimpath, undo leaves GOFLAGS alone.
+        assert_eq!(
+            edit_go(Some(want), Some("-trimpath"), want, false, true)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            edit_go(Some("gobuildcache"), None, want, false, true)
+                .unwrap()
+                .is_empty()
         );
     }
 }
