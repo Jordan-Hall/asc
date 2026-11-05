@@ -712,8 +712,11 @@ async fn run_inner(prog: Program, args: Vec<OsString>) -> Result<ExitCode> {
     let ctx = std::sync::Arc::new(Ctx::open(prog, env, cwd).await?);
     // The sinks (SPEC §20.3) see this invocation's workspace through the bound context.
     crate::stack::sinks::bind(ctx.clone());
-    // A compile is not an operation of the repository: no op log entry for each crate.
-    if rest.first().is_some_and(|w| w == "cache") && rest.get(1).is_some_and(|w| w == "rustc") {
+    // A compile, or the go command's cache server, is not an operation of the repository: no op
+    // log entry for each crate or build.
+    if rest.first().is_some_and(|w| w == "cache")
+        && rest.get(1).is_some_and(|w| w == "rustc" || w == "go")
+    {
         let result = dispatch(&ctx, rest).await;
         crate::stack::sinks::unbind();
         return result;

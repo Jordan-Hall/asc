@@ -1,4 +1,4 @@
-//! `asc cache status | ls | show | gc | clear | push | warm | run | rustc | setup`: the machine-wide build cache
+//! `asc cache status | ls | show | gc | clear | push | warm | run | rustc | go | setup`: the machine-wide build cache
 //! (docs/designs/build-cache.md §2, §3, §5). The store is `asc.buildcache.dir`, else
 //! `<ASC_HOME>/buildcache`; it is kept under `asc.buildcache.maxSize` (20 GiB when unset).
 
@@ -14,6 +14,7 @@ use serde_json::{Value, json};
 use super::common::{CliError, Ctx, Result};
 use crate::native::NativeSpec;
 
+pub(crate) mod go;
 pub(crate) mod remote;
 pub(crate) mod run;
 pub(crate) mod rustc;
@@ -51,6 +52,8 @@ pub enum Sub {
     Run(run::RunArgs),
     /// Cargo's `RUSTC_WRAPPER`: a compile asc caches is restored, any other runs unchanged.
     Rustc(rustc::RustcArgs),
+    /// The go command's `GOCACHEPROG`: its build results kept in the shared store.
+    Go(go::GoArgs),
     /// Writes a build tool's configuration so its builds use the cache (`--undo` takes it out).
     Setup(setup::SetupArgs),
 }
@@ -140,6 +143,7 @@ pub const NATIVE: &[NativeSpec] = &[NativeSpec {
         "--user",
         "--repo",
         "--no-incremental",
+        "--trimpath",
         "--undo",
     ],
     placeholders: &[],
@@ -461,6 +465,7 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
     match cmd {
         Sub::Run(a) => return run::run(ctx, a).await,
         Sub::Rustc(a) => return rustc::run(ctx, a).await,
+        Sub::Go(a) => return go::run(ctx, a).await,
         _ => {}
     }
     let mut out = std::io::stdout().lock();
@@ -507,7 +512,7 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
             .await
         }
         Sub::Setup(a) => setup::run(ctx, &a, &mut out),
-        Sub::Run(_) | Sub::Rustc(_) => unreachable!("dispatched above"),
+        Sub::Run(_) | Sub::Rustc(_) | Sub::Go(_) => unreachable!("dispatched above"),
     }
 }
 
