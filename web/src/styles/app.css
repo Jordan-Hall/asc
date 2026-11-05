@@ -50,6 +50,18 @@
   --hdr-line-rgb: 36 48 73;
   --hdr-field-rgb: 17 28 48;
   --hdr-hover-rgb: 30 41 59;
+  /* Code colours (the hub's chroma palette); each is 4.5:1 or better on the surface. */
+  --syn-comment: #6a737d;
+  --syn-keyword: #c0293a;
+  --syn-control: #3c5d5d;
+  --syn-constant: #c0293a;
+  --syn-type: #445588;
+  --syn-string: #106303;
+  --syn-number: #00727a;
+  --syn-func: #005cc5;
+  --syn-tag: #22863a;
+  --syn-attr: #c0293a;
+  --syn-punct: #c0293a;
 }
 
 [data-theme="asc-dark"],
@@ -82,6 +94,17 @@
   --color-bg-danger: 127 29 29;
   --color-bg-default: 26 36 56;
   --color-accent-emerald: 52 211 153;
+  --syn-comment: #8b93a8;
+  --syn-keyword: #ff7540;
+  --syn-control: #8ec07c;
+  --syn-constant: #649bc4;
+  --syn-type: #ff7b72;
+  --syn-string: #b8bb26;
+  --syn-number: #649bc4;
+  --syn-func: #fabd2f;
+  --syn-tag: #ff7540;
+  --syn-attr: #fabd2f;
+  --syn-punct: #ff7540;
 }
 
 /* ASC-DARK-AUTO-BEGIN */
@@ -115,6 +138,17 @@
     --color-bg-danger: 127 29 29;
     --color-bg-default: 26 36 56;
     --color-accent-emerald: 52 211 153;
+    --syn-comment: #8b93a8;
+    --syn-keyword: #ff7540;
+    --syn-control: #8ec07c;
+    --syn-constant: #649bc4;
+    --syn-type: #ff7b72;
+    --syn-string: #b8bb26;
+    --syn-number: #649bc4;
+    --syn-func: #fabd2f;
+    --syn-tag: #ff7540;
+    --syn-attr: #fabd2f;
+    --syn-punct: #ff7540;
   }
 }
 /* ASC-DARK-AUTO-END */
@@ -308,4 +342,39 @@ html {
 /* The header is ink in every theme, so its focus ring is the cyan accent, which reads on ink. */
 .hdr :focus-visible {
   outline-color: rgb(var(--color-accent-fill));
+}
+
+/* Code view token colours (src/lib/highlight). */
+.syn-comment {
+  color: var(--syn-comment);
+}
+.syn-keyword {
+  color: var(--syn-keyword);
+}
+.syn-control {
+  color: var(--syn-control);
+}
+.syn-constant {
+  color: var(--syn-constant);
+}
+.syn-type {
+  color: var(--syn-type);
+}
+.syn-string {
+  color: var(--syn-string);
+}
+.syn-number {
+  color: var(--syn-number);
+}
+.syn-func {
+  color: var(--syn-func);
+}
+.syn-tag {
+  color: var(--syn-tag);
+}
+.syn-attr {
+  color: var(--syn-attr);
+}
+.syn-punct {
+  color: var(--syn-punct);
 }

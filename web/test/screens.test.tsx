@@ -194,6 +194,21 @@ describe("screens", () => {
     expect(html).toContain('id="L1"');
   });
 
+  test("a .tsrx file is coloured, other files and the anchored line are plain", () => {
+    const lines = ["function A() @{", '  <div class="x">{a}</div>', "}"];
+    const file = { lines, count: 3, size: 40, binary: false, truncated: false, done: true };
+    const tsrx = renderToString(<CodeLines file={file} selected={2} path="src/a.tsrx" />);
+    expect(tsrx).toContain('<span class="syn-control">@{</span>');
+    expect(tsrx).toContain('<span class="syn-func">A</span>');
+    expect(tsrx).not.toContain('<span class="syn-tag">div</span>');
+    const next = renderToString(<CodeLines file={file} selected={undefined} path="src/a.tsrx" />);
+    expect(next).toContain('<span class="syn-tag">div</span>');
+    const plain = renderToString(
+      <CodeLines file={{ ...file, lines: [...lines] }} selected={undefined} path="src/a.ts" />,
+    );
+    expect(plain).not.toContain("syn-");
+  });
+
   test("change list shows stack headers, badges and links", async () => {
     const { ctx } = setup();
     const q = ctx.queries.changes(DEMO_REPO);

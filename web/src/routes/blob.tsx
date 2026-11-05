@@ -6,6 +6,7 @@ import { useApp, useQ } from "../api/queries";
 import { ErrorState } from "../components/error-state";
 import { Bar } from "../components/skeleton";
 import { VirtualList } from "../components/virtual-list";
+import { type Highlighter, type Kind, highlighterOf } from "../lib/highlight";
 import { Link, useHash, useParams } from "../lib/router";
 import { treeHref } from "../lib/paths";
 import { useTitle } from "../lib/title";
@@ -19,8 +20,45 @@ export function parseLineHash(hash: string): number | undefined {
   return m ? Number(m[1]) : undefined;
 }
 
-export function CodeLines(props: { file: FileView; selected: number | undefined }): ReactNode {
-  const { file, selected } = props;
+/** The class of each token kind; plain text keeps the row's colour. */
+const KIND_CLASS: Record<Kind, string | undefined> = {
+  text: undefined,
+  comment: "syn-comment",
+  keyword: "syn-keyword",
+  control: "syn-control",
+  constant: "syn-constant",
+  type: "syn-type",
+  string: "syn-string",
+  number: "syn-number",
+  func: "syn-func",
+  tag: "syn-tag",
+  attr: "syn-attr",
+  punct: "syn-punct",
+};
+
+function LineText(props: { lines: readonly string[]; i: number; hl: Highlighter | undefined }): ReactNode {
+  const { lines, i, hl } = props;
+  if (hl === undefined) return <span>{lines[i]}</span>;
+  return (
+    <span>
+      {hl.tokens(lines, i).map((t, k) => {
+        const cls = KIND_CLASS[t.kind];
+        // Tokens of a line never reorder, so the index is a stable key.
+        // biome-ignore lint/suspicious/noArrayIndexKey: see above
+        return cls === undefined ? t.text : <span key={k} className={cls}>{t.text}</span>;
+      })}
+    </span>
+  );
+}
+
+export function CodeLines(props: {
+  file: FileView;
+  selected: number | undefined;
+  /** The file's path; it picks the highlighter. */
+  path?: string;
+}): ReactNode {
+  const { file, selected, path = "" } = props;
+  const hl = highlighterOf(file.lines, path);
   const digits = String(Math.max(file.count, 1)).length;
   return (
     <VirtualList
@@ -47,7 +85,8 @@ export function CodeLines(props: { file: FileView; selected: number | undefined 
           >
             {i + 1}
           </a>
-          <span>{file.lines[i]}</span>
+          {/* The anchored line is plain: the code colours are checked against the surface only. */}
+          <LineText lines={file.lines} i={i} hl={selected === i + 1 ? undefined : hl} />
         </div>
       )}
     />
@@ -113,7 +152,7 @@ export default function BlobPage(): ReactNode {
             This file is binary and is not shown.
           </p>
         ) : data ? (
-          <CodeLines file={data} selected={parseLineHash(hash)} />
+          <CodeLines file={data} selected={parseLineHash(hash)} path={path} />
         ) : (
           <div
             style={{ height: MAX_ROWS * LINE_HEIGHT }}
