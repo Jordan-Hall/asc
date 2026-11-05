@@ -1,4 +1,4 @@
-//! `asc cache status | ls | show | gc | clear | push | warm | run | rustc | go | serve | env | setup`: the machine-wide build cache
+//! `asc cache status | ls | show | gc | clear | push | warm | run | rustc | go | restore | save | serve | env | setup`: the machine-wide build cache
 //! (docs/designs/build-cache.md §2, §3, §5). The store is `asc.buildcache.dir`, else
 //! `<ASC_HOME>/buildcache`; it is kept under `asc.buildcache.maxSize` (20 GiB when unset).
 
@@ -14,6 +14,7 @@ use serde_json::{Value, json};
 use super::common::{CliError, Ctx, Result};
 use crate::native::NativeSpec;
 
+pub(crate) mod bundle;
 pub(crate) mod front;
 pub(crate) mod go;
 pub(crate) mod remote;
@@ -55,6 +56,11 @@ pub enum Sub {
     Rustc(rustc::RustcArgs),
     /// The go command's `GOCACHEPROG`: its build results kept in the shared store.
     Go(go::GoArgs),
+    /// Restores a build's outputs from the cache by its inputs, and prints its key (for build
+    /// tool plugins: on a miss the tool builds and calls `save`).
+    Restore(bundle::RestoreArgs),
+    /// Stores a build's outputs under the key `restore` printed.
+    Save(bundle::SaveArgs),
     /// Serves the cache fronts (turbo, Nx, Bazel, Gradle, Maven, ccache) on the loopback interface
     /// in the foreground, for a machine without the daemon (CI).
     Serve,
@@ -166,6 +172,8 @@ pub const NATIVE: &[NativeSpec] = &[NativeSpec {
         "--no-incremental",
         "--trimpath",
         "--shell",
+        "--part",
+        "--key",
         "--undo",
     ],
     placeholders: &[],
@@ -566,6 +574,8 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
         Sub::Rustc(a) => return rustc::run(ctx, a).await,
         Sub::Go(a) => return go::run(ctx, a).await,
         Sub::Serve => return serve(ctx).await,
+        Sub::Restore(a) => return bundle::restore(ctx, a, &mut std::io::stdout().lock()).await,
+        Sub::Save(a) => return bundle::save(ctx, a),
         _ => {}
     }
     let mut out = std::io::stdout().lock();
@@ -613,7 +623,9 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
         }
         Sub::Setup(a) => setup::run(ctx, &a, &mut out),
         Sub::Env(a) => env(ctx, &a, &mut out),
-        Sub::Run(_) | Sub::Rustc(_) | Sub::Go(_) | Sub::Serve => unreachable!("dispatched above"),
+        Sub::Run(_) | Sub::Rustc(_) | Sub::Go(_) | Sub::Serve | Sub::Restore(_) | Sub::Save(_) => {
+            unreachable!("dispatched above")
+        }
     }
 }
 
