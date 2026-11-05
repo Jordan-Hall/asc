@@ -219,10 +219,13 @@ fn projects_under(dir: &Path, depth: usize, out: &mut BTreeSet<PathBuf>) {
         let p = e.path();
         let name = e.file_name().to_string_lossy().into_owned();
         match e.file_type() {
-            Ok(t) if t.is_dir() => {
-                if depth > 0 && !name.starts_with('.') && !SKIP_DIRS.contains(&name.as_str()) {
-                    projects_under(&p, depth - 1, out);
-                }
+            Ok(t)
+                if t.is_dir()
+                    && depth > 0
+                    && !name.starts_with('.')
+                    && !SKIP_DIRS.contains(&name.as_str()) =>
+            {
+                projects_under(&p, depth - 1, out);
             }
             Ok(t) if t.is_file() && is_project(&p) => {
                 out.insert(p);
@@ -241,10 +244,10 @@ fn project_references(text: &str) -> Vec<String> {
         let tag = &rest[..rest.find('>').unwrap_or(rest.len())];
         if let Some(i) = tag.find("Include=") {
             let v = &tag[i + "Include=".len()..];
-            if let Some(q) = v.chars().next().filter(|c| *c == '"' || *c == '\'') {
-                if let Some(end) = v[1..].find(q) {
-                    out.push(v[1..1 + end].replace('\\', "/"));
-                }
+            if let Some(q) = v.chars().next().filter(|c| *c == '"' || *c == '\'')
+                && let Some(end) = v[1..].find(q)
+            {
+                out.push(v[1..1 + end].replace('\\', "/"));
             }
         }
     }
