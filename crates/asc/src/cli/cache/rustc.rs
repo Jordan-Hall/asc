@@ -185,7 +185,7 @@ struct Unit {
 }
 
 impl Unit {
-    /// The output names start with one of these, then `.`.
+    /// The output names are one of these, or one of these then `.` (a Unix binary has no extension).
     fn stems(&self) -> [String; 2] {
         let s = format!("{}{}", self.crate_name, self.extra);
         [format!("lib{s}"), s]
@@ -868,7 +868,7 @@ async fn store_compile(
             let name = e.file_name().into_string().ok()?;
             let ours = stems.iter().any(|s| {
                 name.strip_prefix(s.as_str())
-                    .is_some_and(|r| r.starts_with('.'))
+                    .is_some_and(|r| r.is_empty() || r.starts_with('.'))
             });
             let modified = e.metadata().ok()?.modified().ok()?;
             (ours && modified >= fresh).then_some(name)
