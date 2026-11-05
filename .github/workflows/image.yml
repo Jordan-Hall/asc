@@ -48,3 +48,28 @@ jobs:
           tags: ${{ steps.tags.outputs.list }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # A new asc-serve image on master rebuilds the hub image on it, and the hub workflow deploys that image. Skipped
+  # while either is unset:
+  #   variable ASC_HUB_REPO            owner/name of the hub repository
+  #   secret   ASC_HUB_DISPATCH_TOKEN  a token that may start workflows in it (actions: write)
+  hub:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    needs: image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    env:
+      GH_TOKEN: ${{ secrets.ASC_HUB_DISPATCH_TOKEN }}
+      HUB_REPO: ${{ vars.ASC_HUB_REPO }}
+    steps:
+      - name: Start the hub image build on this asc-serve image
+        run: |
+          set -euo pipefail
+          if [ -z "$GH_TOKEN" ] || [ -z "$HUB_REPO" ]; then
+            echo "::warning::ASC_HUB_REPO or ASC_HUB_DISPATCH_TOKEN is not set; the hub is not rebuilt on this image"
+            exit 0
+          fi
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/asc-serve:${GITHUB_SHA::12}"
+          gh workflow run asc-hub-image.yml --repo "$HUB_REPO" --ref asc/v16 -f asc_image="$image"
+          echo "::notice::started the hub image build on $image"
