@@ -5,14 +5,18 @@
 # verified by asc regardless. The job-local writable cache is $RUNNER_TEMP/asc-cache.
 container:
   # Plain bind mount with the read-only flag. Never mount the cache read-write.
-  options: "-v /var/cache/asc/cache:/var/cache/asc/cache:ro"
+  # The build cache host store is optional; remove its -v and its line below if the host has none.
+  options: "-v /var/cache/asc/cache:/var/cache/asc/cache:ro -v /var/cache/asc/buildcache:/var/cache/asc/buildcache:ro"
   valid_volumes:
     - /var/cache/asc/cache
+    - /var/cache/asc/buildcache
   # No privileged jobs, no host networking.
   privileged: false
   network: ""
 runner:
   envs:
     ASC_HOST_CACHE: /var/cache/asc/cache
+    # Read by asc/rust-cache as a read-only build cache store (docs/ci/build-cache.md).
+    ASC_HOST_BUILDCACHE: /var/cache/asc/buildcache
     # Public URL of asc serve; https only (plain http is for loopback test setups).
     ASC_SERVER_URL: https://git.example.com

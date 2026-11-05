@@ -13,7 +13,7 @@ asc config --get asc.live.update               # read the effective value
 Scopes: **user** means a key that only your own user or system config may set; a repository's
 `config` is ignored for it. A repository config that you do not own cannot set the keys that
 choose a program or redirect where asc reads and writes (`asc.realGit`, `asc.home`,
-`asc.allowLoopbackHttp`, `asc.cache.dir`, `asc.cache.readOnly`), the same rule git applies. Sizes
+`asc.allowLoopbackHttp`, `asc.cache.dir`, `asc.cache.readOnly`, every `asc.buildcache.*` key), the same rule git applies. Sizes
 take a number with a suffix such as `500MiB`; durations take a number with `s`, `m`, `h` or `d`.
 
 The commands that read these keys are in [`CLI.md`](CLI.md); the index of all docs is
@@ -30,6 +30,8 @@ The commands that read these keys are in [`CLI.md`](CLI.md); the index of all do
 | `asc.cache.maxSize` | the daemon's default | The size the daemon keeps the cache under (`asc.cache.maxsize` is accepted too). | `asc config --global asc.cache.maxSize 20GiB` |
 | `asc.buildcache.dir` | `<ASC_HOME>/buildcache` | Where the build cache lives (`~/` expanded). | `asc config --global asc.buildcache.dir ~/.cache/asc-build` |
 | `asc.buildcache.maxSize` | 20 GiB | The size `asc cache gc` and the adapters keep the build cache under (bytes, or `K`, `M`, `G`, `T`). | `asc config --global asc.buildcache.maxSize 50G` |
+| `asc.buildcache.lower` | none | A build cache store that is read, never written: a hit there is copied into the store, without touching the lower store's files, so its backups see no change. Repeatable, or a path list; missing directories are skipped. | `asc config --add asc.buildcache.lower /var/cache/asc/buildcache` |
+| `asc.buildcache.server` | the remote `origin` | The remote name or repository URL the build cache's server tier uses (`--remote` on `asc cache push` and `warm` overrides it). | `asc config asc.buildcache.server https://git.example.org/acme/nova` |
 | `asc.buildcache.remote` | `read`; `read-write` when `CI` is set | The build cache's server tier: `off`, `read` (fetch on a miss, `asc cache warm`) or `read-write` (also queue and push what builds write). | `asc config asc.buildcache.remote read-write` |
 | `asc.releasesUrl` | none | The https release directory `asc upgrade`, `asc self-update` and `asc codeintel enable-embed` read, in place of `ASC_DOWNLOAD_BASE_URL`. | `asc config --global asc.releasesUrl https://downloads.example.org/asc` |
 | `asc.shim.init` | unset | With the value `asc`, `git init` run through the shim creates an asc repository. | `asc config --global asc.shim.init asc` |
@@ -126,6 +128,7 @@ they grant. See [`mcp.md`](mcp.md).
 | `ASC_DOWNLOAD_BASE_URL` | The release directory the installers and `asc upgrade` read. |
 | `ASC_RELEASE_PUBKEY` | The minisign public key; the installers then require a signed `SHA256SUMS`. |
 | `ASC_HOST_CACHE` | The host cache directory for `asc ci checkout`. |
+| `ASC_HOST_BUILDCACHE` | The read-only host build cache store `asc/rust-cache` adds as `asc.buildcache.lower`. |
 | `ASC_SERVE_CONFIG` | The `asc-serve.toml` path for `asc serve`, when `--config` is not given. |
 
 The server reads its own file, `asc-serve.toml`; see [`../deploy/README.md`](../deploy/README.md).

@@ -2,7 +2,7 @@
 
 The `asc/actions` set (SPEC 12.7, PLAN U64): forks of `checkout`, `cache`, `upload-artifact` and
 `download-artifact` that call `asc ci ...` instead of git, plus `asc/setup`, `asc/changed`,
-`asc/affected` and `asc/turbo-cache`. This directory is the source of the `asc/actions` mirror.
+`asc/affected`, `asc/turbo-cache` and `asc/rust-cache`. This directory is the source of the `asc/actions` mirror.
 
 Run the self test with one command:
 
@@ -24,6 +24,8 @@ never starts a server. It needs Python with PyYAML for the static checks.
 | `asc/setup` | – | Downloads a release tarball over https, verifies its SHA-256, caches it by version in `RUNNER_TOOL_CACHE`. |
 | `asc/changed`, `asc/affected` | `asc ci changed`, `asc ci affected` | No checkout. Outputs `all`, `count`, `matrix`, `turbo_filter`, `rust` and the switches of `.asc/ci.toml`. |
 | `asc/turbo-cache` | – | Exports `TURBO_API`, `TURBO_TOKEN`, `TURBO_TEAM`, `TURBO_CACHE` (`remote:r` on pull requests). |
+| `asc/rust-cache` | – | Sets `RUSTC_WRAPPER=asc`, `CARGO_INCREMENTAL=0` and the build cache config: the job's store in `RUNNER_TEMP`, read-only host stores (`ASC_HOST_BUILDCACHE`), the server read on pull requests. Output `enabled`. Without asc it warns and builds cold. See [`../docs/ci/build-cache.md`](../docs/ci/build-cache.md). |
+| `asc/rust-cache/save` | `asc cache push` | Sends the job's new compiles, listed under the commit. Does nothing unless the tier is `read-write`. |
 
 ## Security rules
 
