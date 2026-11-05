@@ -1,7 +1,7 @@
 {
   "name": "@asc/build-cache",
   "version": "0.1.0",
-  "description": "The asc build cache for Rsbuild, Rslib and Vite: a build whose inputs another work tree already built restores its outputs instead.",
+  "description": "The asc build cache for Rsbuild, Rslib, Vite and Rstest: a build or test run whose inputs another work tree already built or passed restores its outputs instead.",
   "license": "MIT OR Apache-2.0",
   "type": "module",
   "exports": {
@@ -19,8 +19,14 @@
       "bun": "./src/vite.ts",
       "types": "./dist/vite.d.ts",
       "default": "./dist/vite.js"
+    },
+    "./rstest": {
+      "bun": "./src/rstest.ts",
+      "types": "./dist/rstest.d.ts",
+      "default": "./dist/rstest.js"
     }
   },
+  "bin": { "asc-rstest": "./dist/rstest-cli.js" },
   "files": ["dist", "src"],
   "sideEffects": false,
   "engines": { "node": ">=20.19" },
