@@ -22,10 +22,13 @@ REQUIRED_INPUTS = {
     "asc/changed": {"repo", "base", "head"},
     "asc/affected": {"repo", "base", "head"},
     "asc/turbo-cache": {"token", "server"},
+    "asc/rust-cache": {"server", "token", "lower", "mode", "dir"},
+    "asc/rust-cache/save": {"rev"},
 }
 REQUIRED_OUTPUTS = {
     "cache": {"cache-hit"},
     "asc/affected": {"rust", "matrix", "turbo_filter", "count"},
+    "asc/rust-cache": {"enabled"},
 }
 # The hub sets these for every job of an asc repository (SPEC 12.10); an action must not shadow them with the
 # forge's URL when its `server` input is left empty.
@@ -35,6 +38,7 @@ JOB_ENV_FALLBACK = {
     "upload-artifact": "env.ASC_REMOTE",
     "download-artifact": "env.ASC_REMOTE",
     "asc/turbo-cache": "env.TURBO_API",
+    "asc/rust-cache": "env.ASC_REMOTE",
 }
 errors: list[str] = []
 

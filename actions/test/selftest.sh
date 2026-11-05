@@ -78,6 +78,71 @@ if run_turbo push https://asc.example.com 'no-slash'; then echo "bad repo accept
 if run_turbo push https://asc.example.com $'asc/orbit\nTURBO_API=x'; then echo "newline accepted" >&2; exit 1; fi
 ok "asc/turbo-cache exports and rejects hostile input"
 
+# rust-cache: wires cargo to the build cache through env only; PR events read the server, others read-write;
+# without asc it warns and changes nothing; hostile input is refused.
+fake="$scratch/fakebin"
+mkdir -p "$fake" "$scratch/nobin" "$scratch/rt"
+printf '#!%s\ncase "$1" in config) echo "${FAKE_MODE:-}" ;; cache) echo "$*" >>"$FAKE_LOG" ;; esac\n' "$BASH" >"$fake/asc"
+chmod +x "$fake/asc"
+# Only mkdir on PATH, so a real asc on the machine cannot make "asc is not installed" pass or fail.
+printf '#!%s
+exec %q "$@"
+' "$BASH" "$(command -v mkdir)" >"$scratch/nobin/mkdir"
+chmod +x "$scratch/nobin/mkdir"
+run_rust() {
+  local event="$1" server="$2" path="$3" genv="$scratch/renv.$RANDOM" gout="$scratch/rout.$RANDOM"
+  : >"$genv"; : >"$gout"
+  env -i PATH="$path:$PATH_TOOLS" IN_SERVER="$server" IN_TOKEN=tok456 IN_LOWER="${IN_LOWER:-}" IN_MODE="${IN_MODE:-}" \
+    IN_DIR="" IN_EVENT="$event" RUNNER_TEMP="$scratch/rt" GITHUB_ENV="$genv" GITHUB_OUTPUT="$gout" \
+    ${GIT_CONFIG_COUNT:+GIT_CONFIG_COUNT=$GIT_CONFIG_COUNT} ${ASC_TOKEN:+ASC_TOKEN=$ASC_TOKEN} \
+    "$BASH" "$scratch/asc_rust-cache.0.sh" >"$scratch/out" 2>&1 || return 1
+  cat "$genv" "$gout"
+}
+PATH_TOOLS="$scratch/nobin"
+srv=https://asc.example.com/asc/orbit
+out="$(run_rust push "$srv" "$scratch/nobin")"
+grep -qx 'enabled=false' <<<"$out"
+if grep -q RUSTC_WRAPPER <<<"$out"; then echo "rust-cache wired without asc" >&2; exit 1; fi
+grep -q 'asc is not installed' "$scratch/out"
+out="$(run_rust push "$srv" "$fake")"
+grep -qx "RUSTC_WRAPPER=$fake/asc" <<<"$out"
+grep -qx 'CARGO_INCREMENTAL=0' <<<"$out"
+grep -qx 'GIT_CONFIG_KEY_0=asc.buildcache.dir' <<<"$out"
+grep -qx "GIT_CONFIG_VALUE_0=$scratch/rt/asc-buildcache" <<<"$out"
+grep -qx "GIT_CONFIG_VALUE_1=$srv" <<<"$out"
+grep -qx 'GIT_CONFIG_VALUE_2=read-write' <<<"$out"
+grep -qx 'GIT_CONFIG_COUNT=3' <<<"$out"
+grep -qx 'ASC_TOKEN=tok456' <<<"$out"
+grep -qx 'enabled=true' <<<"$out"
+[ -d "$scratch/rt/asc-buildcache" ]
+out="$(run_rust pull_request "$srv" "$fake")"
+grep -qx 'GIT_CONFIG_VALUE_2=read' <<<"$out"
+out="$(GIT_CONFIG_COUNT=2 IN_LOWER=/var/cache/asc/buildcache run_rust push "$srv" "$fake")"
+grep -qx 'GIT_CONFIG_KEY_2=asc.buildcache.dir' <<<"$out"
+grep -qx 'GIT_CONFIG_KEY_3=asc.buildcache.lower' <<<"$out"
+grep -qx 'GIT_CONFIG_VALUE_3=/var/cache/asc/buildcache' <<<"$out"
+grep -qx 'GIT_CONFIG_COUNT=6' <<<"$out"
+out="$(ASC_TOKEN=already run_rust push "$srv" "$fake")"
+if grep -q '^ASC_TOKEN=' <<<"$out"; then echo "rust-cache replaced the job's ASC_TOKEN" >&2; exit 1; fi
+if run_rust push http://evil.example.com/a/b "$fake" >/dev/null; then echo "rust-cache took plain http" >&2; exit 1; fi
+if run_rust push "$srv"$'\n'"GIT_CONFIG_COUNT=0" "$fake" >/dev/null; then echo "rust-cache took a newline" >&2; exit 1; fi
+if IN_MODE=everything run_rust push "$srv" "$fake" >/dev/null; then echo "rust-cache took a bad mode" >&2; exit 1; fi
+ok "asc/rust-cache wires the build cache and refuses hostile input"
+
+# rust-cache/save: pushes only when the cache is on and read-write, under a plain revision.
+run_save() {
+  FAKE_LOG="$scratch/pushed" FAKE_MODE="$1" IN_REV="$2" PATH="$fake:$PATH" RUSTC_WRAPPER="$3" \
+    "$BASH" "$scratch/asc_rust-cache_save.0.sh" >"$scratch/out" 2>&1
+}
+: >"$scratch/pushed"
+run_save read-write abc123 ""
+run_save read abc123 "$fake/asc"
+[ ! -s "$scratch/pushed" ]
+run_save read-write abc123 "$fake/asc"
+grep -qx 'cache push --rev abc123' "$scratch/pushed"
+if run_save read-write 'abc;rm -rf /' "$fake/asc"; then echo "save took a bad rev" >&2; exit 1; fi
+ok "asc/rust-cache/save pushes only a read-write cache"
+
 # setup: refuses non-https, bad digests and bad versions before touching the network.
 run_setup() {
   IN_VERSION="$1" IN_URL="$2" IN_SHA="$3" RUNNER_TEMP="$scratch" RUNNER_TOOL_CACHE="$scratch/tc" \
@@ -133,7 +198,7 @@ ok "forgejo actions snippet"
 # 5. Optional mirror check.
 if [ -n "$mirror" ]; then
   case "$mirror" in https://*) ;; *) echo "mirror must be https" >&2; exit 1 ;; esac
-  for a in checkout cache upload-artifact download-artifact asc/setup asc/changed asc/affected asc/turbo-cache; do
+  for a in checkout cache upload-artifact download-artifact asc/setup asc/changed asc/affected asc/turbo-cache asc/rust-cache asc/rust-cache/save; do
     curl -fsS --proto '=https' --max-time 20 -o /dev/null "${mirror%/}/$a/action.yml"
   done
   ok "mirror serves every action"
