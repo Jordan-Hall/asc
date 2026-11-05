@@ -288,10 +288,13 @@ runs any command as a cached action.
 - The cache server is not an operation of the repository: it writes no op-log entry.
 ## 5. Commands
 
-- `asc cache status [--json]`: store size, entries, hit rate per tool over the last day and week, server tier state.
+- `asc cache status [--json]`: store size, entries, hit rate per tool over the last day and week, and the server
+  tier: its mode, the entries waiting in the outbox, and when the last exchange with the server succeeded or why it
+  failed (`remote.json` in the store).
 - `asc cache ls [--tool T] [--json]`, `asc cache show <key>`: entries, their origin (worktree, workflow, CI) and the
   other worktrees that used them.
-- `asc cache gc [--max-size S]`, `asc cache clear [--tool T]`.
+- `asc cache gc [--max-size S]`, `asc cache clear [--tool T]`, `asc cache rm <key>...` (keys or unique prefixes; an
+  unknown key removes nothing).
 - `asc cache push [--rev R] [--remote N]`, `asc cache warm [<rev>] [--remote N]`: send the outbox and list it under a
   revision; fetch a revision's entries before a build.
 - `asc cache run --name <n> ... -- <command>`: §4.4.
