@@ -182,7 +182,7 @@ read each other's entries.
 - Maven build cache extension: `GET|PUT|HEAD` under `/maven/`.
 - ccache: `GET|PUT|HEAD|DELETE` under `/ccache/` (ccache's HTTP storage layout).
 
-`asc cache go` speaks `GOCACHEPROG` (JSON over stdio), so Go needs no port.
+`asc cache go` speaks `GOCACHEPROG` (JSON over stdio), so Go needs no port (§4.5).
 
 ### 4.4 `asc cache run`
 
@@ -203,6 +203,23 @@ runs any command as a cached action.
 - **Push**: in `read-write` mode the entry (hit or new) is queued and a detached `asc cache push` starts, at most once
   a minute. A CI job runs `asc cache push` itself as its last step, since the job may end before a detached push does.
 - On Windows a bare program name is searched on `PATH` with `PATHEXT`, so `npm` finds `npm.cmd`.
+### 4.5 Go
+
+`GOCACHEPROG="asc cache go"` (written to the user's go env file by `asc cache setup go`): the go command starts one
+`asc cache go` per build and asks it for each compile, link, vet and test result by the go command's own action id.
+
+- **Entries**: tool `go`, keyed by the action id. The entry has one output, named by the go command's output id, whose
+  blob is the body; replies name the blob file in the store itself (the go command only reads it), so a hit copies
+  nothing.
+- **Work trees**: the go command puts a package's directory in its action id unless it builds with `-trimpath`.
+  `asc cache setup go --trimpath` adds `-trimpath` to `GOFLAGS`, and then work trees with the same sources share every
+  entry. Without it only packages outside the work tree (the module cache, the standard library) are shared.
+- **Remote**: a local miss with the server tier on is fetched from the server while the go command asks for other
+  actions (replies may come in any order). The first failure to reach the server turns it off for that build, with one
+  warning. In `read-write` mode every entry used or stored is queued and pushed when the build ends.
+- **Setup**: Go has no repository-level configuration, so `--repo` is refused. `--undo` takes out `GOCACHEPROG` when
+  it names asc, and `-trimpath` from `GOFLAGS` only with `--undo --trimpath`.
+- The cache server is not an operation of the repository: it writes no op-log entry.
 ## 5. Commands
 
 - `asc cache status [--json]`: store size, entries, hit rate per tool over the last day and week, server tier state.
@@ -212,7 +229,7 @@ runs any command as a cached action.
 - `asc cache push [--rev R] [--remote N]`, `asc cache warm [<rev>] [--remote N]`: send the outbox and list it under a
   revision; fetch a revision's entries before a build.
 - `asc cache run --name <n> ... -- <command>`: §4.4.
-- `asc cache setup <cargo|go|ccache|gradle|maven|bazel|nx|turbo|js> [--user|--repo] [--undo]`: writes the tool's configuration (user or
+- `asc cache setup <cargo|go|ccache|gradle|maven|bazel|nx|turbo|js> [--user|--repo] [--no-incremental] [--trimpath] [--undo]`: writes the tool's configuration (user or
   repository level, as asked) and prints what changed. `--undo` takes it out again.
 
 ## 6. VS Code
