@@ -93,7 +93,7 @@ fn split_keys(values: &[String]) -> Vec<String> {
         .collect()
 }
 
-pub(super) fn fatal(e: CiError) -> CliError {
+pub(crate) fn fatal(e: CiError) -> CliError {
     CliError::Fatal(format!("asc: {e}"))
 }
 
@@ -115,18 +115,27 @@ pub(super) struct Conn {
 /// Opens the server named by `remote` (default `origin`).
 pub(super) async fn connect(ctx: &Ctx, remote: Option<&str>) -> Result<Conn> {
     let r = server::open_for(ctx, remote).await?;
-    let target = r.target().clone();
+    Ok(Conn {
+        api: api_for(&r)?,
+        objects: Arc::new(r.client().objects()),
+    })
+}
+
+/// The HTTP API of the server named by `remote` (default `origin`).
+pub(crate) async fn http_api(ctx: &Ctx, remote: Option<&str>) -> Result<HttpApi> {
+    let r = server::open_for(ctx, remote).await?;
+    api_for(&r)
+}
+
+fn api_for(r: &server::ServerRemote) -> Result<HttpApi> {
+    let target = r.target();
     server::check_transport(&target.rpc_url)?;
     let credential = server::to_rpc(&r.session().resolved)?;
-    let api = HttpApi::new(
+    HttpApi::new(
         &target.rpc_url,
         &target.repo,
         credential.map(|c| c.header_value()),
-    )?;
-    Ok(Conn {
-        api,
-        objects: Arc::new(r.client().objects()),
-    })
+    )
 }
 
 /// Appends `name=value` lines to `$GITHUB_OUTPUT` when it is set, and prints them.
@@ -260,6 +269,19 @@ impl HttpApi {
         serde_json::from_slice(&whole(res)?).map_err(api_err)
     }
 
+    /// One request to a turbo route, `path?slug=<owner>.<repo>` at the server's origin, with
+    /// the answer read to at most `limit` bytes.
+    pub async fn turbo(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Bytes,
+        limit: usize,
+    ) -> Result<Reply, CiError> {
+        let url = format!("{}{path}?slug={}", self.origin, pct(&self.slug));
+        self.call(method, url, body, limit).await
+    }
+
     /// The request as plain HTTP, for h3.
     fn h3_request(
         &self,
@@ -338,14 +360,14 @@ impl HttpApi {
     }
 }
 
-type Reply = asc_rpc::h3::Reply;
+pub(crate) type Reply = asc_rpc::h3::Reply;
 
 fn api_err(e: impl std::fmt::Display) -> CiError {
     CiError::Api(e.to_string())
 }
 
 /// The body of a reply that must fit in the limit it was read with.
-fn whole(res: Reply) -> Result<Bytes, CiError> {
+pub(crate) fn whole(res: Reply) -> Result<Bytes, CiError> {
     if res.truncated {
         return Err(CiError::Api("response is too large".into()));
     }
@@ -353,7 +375,7 @@ fn whole(res: Reply) -> Result<Bytes, CiError> {
 }
 
 /// A failed call as text: the status and the server's short message.
-fn failure(res: Reply) -> CiError {
+pub(crate) fn failure(res: Reply) -> CiError {
     let status = res.status;
     let body = if res.truncated {
         Bytes::new()

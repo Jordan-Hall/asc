@@ -10,7 +10,7 @@ use crate::native::NativeSpec;
 
 mod affected;
 mod artifact;
-mod cache;
+pub(crate) mod cache;
 mod changed;
 pub mod checkout;
 mod prebuilt;
