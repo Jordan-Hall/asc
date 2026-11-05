@@ -1305,8 +1305,12 @@ async fn move_command(ctx: &Ctx, argv: &[OsString]) -> Result<ExitCode> {
 
 async fn convert_command(ctx: &Ctx, argv: &[OsString]) -> Result<ExitCode> {
     let sc = scan(argv, &[flag(None, "--plain")])?;
-    let [typed] = sc.words.as_slice() else {
-        return Err(usage_error());
+    // without a path, the working tree the command runs in
+    let here = OsString::from(".");
+    let typed = match sc.words.as_slice() {
+        [] => &here,
+        [typed] => typed,
+        _ => return Err(fatal("usage: asc worktree convert --plain [<worktree>]")),
     };
     if !sc.has("--plain") {
         return Err(fatal("worktree convert needs --plain"));
