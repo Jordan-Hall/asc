@@ -459,12 +459,28 @@ mod projfs {
             "b\n"
         );
         std::fs::remove_file(ws.join("a.txt")).unwrap();
+        assert!(
+            !ws.join("a.txt").exists(),
+            "the deletion did not take while served"
+        );
         ok(&sb, &ws, &["worktree", "convert", "--plain"]);
         ok(&sb, &ws, &["daemon", "stop"]);
 
         assert_eq!(recorded_mode(&sb, &ws, &ws), "plain");
         assert!(!is_virtual_root(&ws), "the converted root is still virtual");
-        assert!(!ws.join("a.txt").exists());
+        use std::os::windows::fs::MetadataExt;
+        let a = ws.join("a.txt");
+        assert!(
+            !a.exists(),
+            "a.txt is back: metadata {:?}, link metadata {:?}, content {:?}, listed {:?}, status {:?}",
+            std::fs::metadata(&a).map(|m| (m.len(), m.file_attributes())),
+            std::fs::symlink_metadata(&a).map(|m| (m.len(), m.file_attributes())),
+            std::fs::read(&a).map(|b| String::from_utf8_lossy(&b).into_owned()),
+            std::fs::read_dir(&ws).map(|d| d
+                .filter_map(|e| e.ok().map(|e| e.file_name()))
+                .collect::<Vec<_>>()),
+            crate::text(&crate::asc(&sb, &ws, &["status", "--porcelain"]).stdout),
+        );
         assert_eq!(ok(&sb, &ws, &["status", "--porcelain"]), " D a.txt\n");
         assert_eq!(
             std::fs::read_to_string(ws.join("src").join("b.txt")).unwrap(),
