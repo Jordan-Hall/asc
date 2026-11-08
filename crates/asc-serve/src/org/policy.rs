@@ -29,7 +29,10 @@ pub struct MergeDefaults {
 }
 
 fn strategy_ok(s: &str) -> bool {
-    matches!(s, "" | "rebase" | "rebase-disjoint" | "fast-forward")
+    matches!(
+        s,
+        "" | "rebase" | "rebase-disjoint" | "fast-forward" | "squash"
+    )
 }
 
 impl MergeDefaults {
@@ -47,7 +50,7 @@ impl MergeDefaults {
             }
         }
         if !strategy_ok(&self.strategy) {
-            return Err("strategy is rebase, rebase-disjoint or fast-forward");
+            return Err("strategy is rebase, rebase-disjoint, fast-forward or squash");
         }
         Ok(())
     }
@@ -114,6 +117,7 @@ fn strategy_of(s: &str) -> Option<Strategy> {
         "rebase" => Some(Strategy::Rebase),
         "rebase-disjoint" => Some(Strategy::RebaseDisjoint),
         "fast-forward" => Some(Strategy::FastForward),
+        "squash" => Some(Strategy::Squash),
         _ => None,
     }
 }
@@ -239,12 +243,18 @@ mod tests {
             strategy: "fast-forward".into(),
             ..d()
         };
-        let got = apply(Some(&org), own);
+        let got = apply(Some(&org), own.clone());
         assert_eq!(
             (got.approvals, got.signed, got.strategy),
             (2, true, Strategy::FastForward)
         );
         assert_eq!(got.checks, ["a", "b"]);
+        let squash = MergeDefaults {
+            strategy: "squash".into(),
+            ..d()
+        };
+        squash.validate().unwrap();
+        assert_eq!(apply(Some(&squash), own).strategy, Strategy::Squash);
     }
 
     #[test]
@@ -268,7 +278,7 @@ mod tests {
                 ..d()
             },
             MergeDefaults {
-                strategy: "squash".into(),
+                strategy: "octopus".into(),
                 ..d()
             },
         ] {

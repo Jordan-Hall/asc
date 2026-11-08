@@ -281,7 +281,7 @@ message GetPolicyResponse {
   PolicyTrunk trunk = 8;
   repeated PolicyPathRule paths = 9;
   PolicyAgents agents = 10;
-  string merge_strategy = 11;                 // rebase, rebase-disjoint or fast-forward
+  string merge_strategy = 11;                 // rebase, rebase-disjoint, fast-forward or squash
   repeated PolicyDecision decisions = 12;     // one per requested path, in order
   PolicyReview review = 13;
   PolicyMerge merge = 14;

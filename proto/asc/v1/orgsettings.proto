@@ -47,7 +47,7 @@ message MergeDefaults {
   bool author_may_approve = 6;
   bool queue = 7;                              // land through the merge queue
   bool revalidate = 8;
-  string strategy = 9;                         // "", "rebase", "rebase-disjoint" or "fast-forward"; "" leaves it to the repository
+  string strategy = 9;                         // "", "rebase", "rebase-disjoint", "fast-forward" or "squash"; "" leaves it to the repository
   bool set = 10;                               // output only: the organisation has set defaults
 }
 

@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use asc_core::change::RewriteOp;
 use asc_core::id::{ChangesetId, RefTarget};
+use asc_core::policy::Strategy;
 use asc_engine::Engine;
 use asc_engine::graph::Graph;
 use asc_engine::land::NoMergeGlobs;
@@ -209,6 +210,10 @@ pub struct Plan<'a> {
     pub current: Option<ChangesetId>,
     pub require_signed: bool,
     pub opts: LandOptions,
+    /// The branch's `[merge] strategy`. `Rebase` uses `policy`; `RebaseDisjoint` never merges
+    /// contents; `FastForward` never rewrites; `Squash` rebases with `policy`, then makes the
+    /// stack one changeset.
+    pub strategy: Strategy,
 }
 
 /// Finds the stack from `pushed` back to the first changeset that is `tip` or one of its
@@ -269,11 +274,16 @@ pub async fn plan(p: &Plan<'_>) -> Result<Landing, LandError> {
             rewrite: Rewrite::default(),
         });
     }
-    if base == tip {
+    if base == tip && (p.strategy != Strategy::Squash || stack.len() == 1) {
         return Ok(Landing {
             new_tip: p.pushed,
             rewrite: Rewrite::default(),
         });
+    }
+    if p.strategy == Strategy::FastForward {
+        return Err(LandError::NeedsClientRebase(
+            "the branch lands by fast-forward only: rebase the stack onto the branch and push again",
+        ));
     }
     if p.require_signed {
         for &id in &stack {
@@ -289,13 +299,58 @@ pub async fn plan(p: &Plan<'_>) -> Result<Landing, LandError> {
             }
         }
     }
-    let rewrite = p.policy.rewrite(p.engine, &stack, tip, p.opts).await?;
+    let rewrite = if base == tip {
+        // A squash of a stack that already sits on the branch rewrites nothing first.
+        Rewrite {
+            pairs: stack.iter().map(|&id| (id, id)).collect(),
+            signatures_dropped: 0,
+        }
+    } else if p.strategy == Strategy::RebaseDisjoint {
+        DisjointOnly.rewrite(p.engine, &stack, tip, p.opts).await?
+    } else {
+        p.policy.rewrite(p.engine, &stack, tip, p.opts).await?
+    };
+    let rewrite = if p.strategy == Strategy::Squash {
+        squash(p.engine, &stack, tip, rewrite).await?
+    } else {
+        rewrite
+    };
     let new_tip = rewrite
         .pairs
         .last()
         .map(|(_, new)| *new)
         .ok_or_else(|| LandError::internal("the policy rewrote nothing"))?;
     Ok(Landing { new_tip, rewrite })
+}
+
+/// `rewritten` (the stack moved onto `tip`) made one changeset on `tip`; every old changeset
+/// maps to it. A signature on any of them is dropped.
+async fn squash(
+    engine: &Arc<RepoEngine>,
+    stack: &[ChangesetId],
+    tip: ChangesetId,
+    rewritten: Rewrite,
+) -> Result<Rewrite, LandError> {
+    let chain: Vec<ChangesetId> = rewritten.pairs.iter().map(|(_, new)| *new).collect();
+    let mut signed = 0;
+    for &id in stack {
+        let cs = engine
+            .get_changeset(id)
+            .await
+            .map_err(LandError::internal)?;
+        signed += usize::from(cs.extra.get(&b"git.gpgsig".to_vec()).is_some());
+    }
+    // Like the rebase, the engine's squash future is not provably `Send`.
+    let engine = engine.clone();
+    let handle = tokio::runtime::Handle::current();
+    let one = tokio::task::spawn_blocking(move || handle.block_on(engine.squash(&chain, tip)))
+        .await
+        .map_err(LandError::internal)?
+        .map_err(LandError::internal)?;
+    Ok(Rewrite {
+        pairs: stack.iter().map(|&old| (old, one)).collect(),
+        signatures_dropped: signed,
+    })
 }
 
 // ------------------------------------------------------------------------------ request checks
@@ -531,6 +586,10 @@ pub(crate) async fn run(
     let opts = LandOptions {
         no_content_merge: job.req.no_content_merge,
     };
+    let strategy = match server.hooks.gate() {
+        Some(gate) => gate.land_strategy(job.entry, &refname).await?,
+        None => Strategy::Rebase,
+    };
     let mut last = Status::aborted("land did not complete");
     for _ in 0..MAX_ATTEMPTS {
         let current = server
@@ -557,6 +616,7 @@ pub(crate) async fn run(
             current: current_cs,
             require_signed,
             opts,
+            strategy,
         })
         .await?;
 
@@ -1110,5 +1170,185 @@ mod tests {
         land(&s, other).await.unwrap();
         land(&s, two).await.unwrap();
         assert_eq!(seen.0.load(Ordering::SeqCst), 2);
+    }
+
+    /// A gate that lets everything through and lands with one strategy.
+    struct Lands(Strategy);
+
+    #[async_trait]
+    impl crate::policy::gate::RefGate for Lands {
+        async fn check(&self, _: &GateRequest<'_>) -> Result<(), Status> {
+            Ok(())
+        }
+
+        async fn land_strategy(&self, _: &RepoEntry, _: &str) -> Result<Strategy, Status> {
+            Ok(self.0)
+        }
+    }
+
+    async fn with_strategy(
+        strategy: Strategy,
+    ) -> (Arc<Registry>, Arc<RepoEntry>, ServerRefs, ChangesetId) {
+        let (r, e, s, a) = setup().await;
+        s.hooks.set_gate(Arc::new(Lands(strategy))).ok().unwrap();
+        (r, e, s, a)
+    }
+
+    #[tokio::test]
+    async fn a_squash_lands_a_stack_as_one_changeset_on_the_tip() {
+        let (r, e, s, a) = with_strategy(Strategy::Squash).await;
+        let other = commit(&e, &[a], &[("other", b"1")]).await;
+        land(&s, other).await.unwrap();
+        let one = commit(&e, &[a], &[("one", b"1")]).await;
+        let two = commit(&e, &[one], &[("two", b"2")]).await;
+        let res = land(&s, two).await.unwrap();
+        let head = tip(&r, &e).await;
+        // Both pushed changesets map to the one that landed.
+        let pairs: Vec<(ChangesetId, ChangesetId)> = res
+            .rewritten
+            .iter()
+            .map(|w| {
+                (
+                    ChangesetId::from_bytes(w.old.as_ref().try_into().unwrap()),
+                    ChangesetId::from_bytes(w.new.as_ref().try_into().unwrap()),
+                )
+            })
+            .collect();
+        assert_eq!(pairs, [(one, head), (two, head)]);
+        let engine = e.backend.engine();
+        let cs = engine.get_changeset(head).await.unwrap();
+        assert_eq!(cs.parents, [other]);
+        assert_eq!(
+            cs.message,
+            b"m
+
+m
+"
+        );
+        let changed: Vec<String> = cs
+            .changes
+            .as_slice()
+            .iter()
+            .map(|(p, _)| p.to_string())
+            .collect();
+        assert_eq!(changed, ["one", "two"]);
+        for f in ["base", "other", "one", "two"] {
+            assert!(
+                engine
+                    .lookup(cs.root, &RepoPath::new(f).unwrap())
+                    .await
+                    .unwrap()
+                    .is_some(),
+                "{f}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_squash_of_a_stack_already_on_the_tip_still_makes_one_changeset() {
+        let (r, e, s, a) = with_strategy(Strategy::Squash).await;
+        let one = commit(&e, &[a], &[("one", b"1")]).await;
+        let two = commit(&e, &[one], &[("two", b"2")]).await;
+        let res = land(&s, two).await.unwrap();
+        let head = tip(&r, &e).await;
+        assert_ne!(head, two);
+        assert_eq!(res.rewritten.len(), 2);
+        let cs = e.backend.engine().get_changeset(head).await.unwrap();
+        assert_eq!(cs.parents, [a]);
+        assert_eq!(
+            cs.root,
+            e.backend.engine().get_changeset(two).await.unwrap().root
+        );
+        // One changeset on the tip has nothing to squash: it lands as pushed.
+        let three = commit(&e, &[head], &[("three", b"3")]).await;
+        let res = land(&s, three).await.unwrap();
+        assert!(res.rewritten.is_empty());
+        assert_eq!(tip(&r, &e).await, three);
+    }
+
+    #[tokio::test]
+    async fn fast_forward_only_refuses_a_stack_that_needs_a_rebase() {
+        let (r, e, s, a) = with_strategy(Strategy::FastForward).await;
+        let other = commit(&e, &[a], &[("other", b"1")]).await;
+        land(&s, other).await.unwrap();
+        let behind = commit(&e, &[a], &[("one", b"1")]).await;
+        let err = land(&s, behind).await.unwrap_err();
+        assert_eq!(code(&err), "LAND_NEEDS_CLIENT_REBASE");
+        assert_eq!(tip(&r, &e).await, other);
+        let on_tip = commit(&e, &[other], &[("one", b"1")]).await;
+        land(&s, on_tip).await.unwrap();
+        assert_eq!(tip(&r, &e).await, on_tip);
+    }
+
+    /// An overlap policy that would merge anything: it rebases the stack with the content merge
+    /// and no forbidden globs.
+    struct Merges;
+
+    #[async_trait]
+    impl OverlapPolicy for Merges {
+        async fn rewrite(
+            &self,
+            engine: &Arc<RepoEngine>,
+            stack: &[ChangesetId],
+            tip: ChangesetId,
+            _: LandOptions,
+        ) -> Result<Rewrite, LandError> {
+            let none = NoMergeGlobs::new::<&str>(&[]).map_err(LandError::internal)?;
+            let (engine, stack) = (engine.clone(), stack.to_vec());
+            let handle = tokio::runtime::Handle::current();
+            let merged = tokio::task::spawn_blocking(move || {
+                handle.block_on(engine.content_merge_land(
+                    &stack,
+                    tip,
+                    &none,
+                    &MergeOptions::default(),
+                ))
+            })
+            .await
+            .map_err(LandError::internal)?
+            .map_err(LandError::internal)?;
+            Ok(Rewrite {
+                pairs: merged.rewritten,
+                signatures_dropped: merged.signatures_dropped,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn rebase_disjoint_never_merges_contents_even_when_the_server_would() {
+        let (r, e, s, a) = with_strategy(Strategy::RebaseDisjoint).await;
+        s.hooks.set_overlap_policy(Arc::new(Merges)).ok().unwrap();
+        let other = commit(
+            &e,
+            &[a],
+            &[(
+                "base",
+                b"0
+1
+2
+3
+other
+",
+            )],
+        )
+        .await;
+        land(&s, other).await.unwrap();
+        let mine = commit(
+            &e,
+            &[a],
+            &[(
+                "base",
+                b"mine
+1
+2
+3
+4
+",
+            )],
+        )
+        .await;
+        let err = land(&s, mine).await.unwrap_err();
+        assert_eq!(code(&err), "LAND_CONFLICT");
+        assert_eq!(tip(&r, &e).await, other);
     }
 }

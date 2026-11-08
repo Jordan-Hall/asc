@@ -228,6 +228,47 @@ impl<O: Objects, R: Refs> Engine<O, R> {
         }
         out
     }
+
+    /// Squashes `chain` (oldest first, the first a child of `onto`, each the child of the
+    /// previous) into one stored changeset on `onto` that has the tree of the last.
+    ///
+    /// The author is the first changeset's and the committer the last's. The message is every
+    /// message, oldest first, with a blank line between. `extra` is the last changeset's less
+    /// `git.gpgsig` and `git.commit`, which name the old parents. An empty chain is `onto`.
+    pub async fn squash(&self, chain: &[ChangesetId], onto: ChangesetId) -> Result<ChangesetId> {
+        let (Some(&first), Some(&last)) = (chain.first(), chain.last()) else {
+            return Ok(onto);
+        };
+        let first = self.get_changeset(first).await?;
+        let last = self.get_changeset(last).await?;
+        let mut message = Vec::new();
+        for &id in chain {
+            let cs = self.get_changeset(id).await?;
+            let text = cs.message.trim_ascii_end();
+            if text.is_empty() {
+                continue;
+            }
+            if !message.is_empty() {
+                message.extend_from_slice(b"\n\n");
+            }
+            message.extend_from_slice(text);
+        }
+        if !message.is_empty() {
+            message.push(b'\n');
+        }
+        let onto_root = self.get_changeset(onto).await?.root;
+        let changes = self.leafdiff(onto_root, last.root, None).await?;
+        self.put_rewritten(Changeset {
+            parents: vec![onto],
+            root: last.root,
+            author: first.author.clone(),
+            committer: last.committer.clone(),
+            message,
+            extra: kept_extra(&last)?,
+            changes: SortedMap::new(changes)?,
+        })
+        .await
+    }
 }
 
 // The tests sit at module level so their paths read `rebase::drops_gpgsig` and so on.
@@ -357,4 +398,35 @@ async fn a_conflict_blocks_the_rest_of_the_stack() {
         other => panic!("unexpected {other:?}"),
     }
     assert!(matches!(got[1], Err(Error::Blocked)));
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn squash_makes_one_changeset_with_the_last_tree_and_every_message() {
+    let (e, base) = fixture().await;
+    let s1 = child(&e, base, &[("a", "ONE\n")], Vec::new()).await;
+    let tree = files(&e, &[("a", "ONE\n"), ("b", "b\n"), ("d", "d\n")]).await;
+    let s2 = commit(&e, &[s1], tree, "second\n\n\n").await;
+    let extra = vec![
+        (b"asc.snapshot".to_vec(), Vec::new()),
+        (b"git.gpgsig".to_vec(), b"sig".to_vec()),
+    ];
+    let s3 = child(&e, s2, &[("b", "B\n")], extra).await;
+    let id = e.squash(&[s1, s2, s3], base).await.unwrap();
+    let got = e.get_changeset(id).await.unwrap();
+    let last = e.get_changeset(s3).await.unwrap();
+    assert_eq!(got.parents, [base]);
+    assert_eq!(got.root, last.root);
+    assert_eq!(got.message, b"edit\n\nsecond\n\nedit\n");
+    // What the stack changed in all: `c` is gone, `d` is new.
+    let paths: Vec<_> = got
+        .changes
+        .as_slice()
+        .iter()
+        .map(|(p, _)| p.to_string())
+        .collect();
+    assert_eq!(paths, ["a", "b", "c", "d"]);
+    let keys: Vec<_> = got.extra.as_slice().iter().map(|(k, _)| k.clone()).collect();
+    assert_eq!(keys, [b"asc.snapshot".to_vec()]);
+    assert_eq!(e.squash(&[], base).await.unwrap(), base);
 }

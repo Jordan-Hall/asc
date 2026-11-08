@@ -55,7 +55,7 @@
 //! max_cost_micro_usd = 5000000
 //!
 //! [merge]
-//! strategy = "rebase"          # rebase | rebase-disjoint | fast-forward
+//! strategy = "rebase"          # rebase | rebase-disjoint | fast-forward | squash
 //! queue = false                # land through the merge queue
 //! revalidate = true            # the queue re-checks the exact head that would land
 //! ```
@@ -526,6 +526,8 @@ pub enum Strategy {
     RebaseDisjoint,
     /// No server rewrite: the pushed stack must already sit on the tip.
     FastForward,
+    /// Rebase like [`Strategy::Rebase`], then land the stack as one changeset.
+    Squash,
 }
 
 impl Strategy {
@@ -534,6 +536,7 @@ impl Strategy {
             Self::Rebase => "rebase",
             Self::RebaseDisjoint => "rebase-disjoint",
             Self::FastForward => "fast-forward",
+            Self::Squash => "squash",
         }
     }
 }
@@ -1065,7 +1068,7 @@ fn big_budget(n: Option<u64>, what: &str, max: u64) -> Result<Option<u64>, Polic
 }
 
 /// What landing on trunk needs, as the policy states it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LandRequirements {
     pub approvals: u32,
     pub checks: Vec<String>,
@@ -1698,7 +1701,7 @@ author_can_approve = true
                 "negative",
             ),
             (
-                format!("{head}[merge]\nstrategy = \"squash\"\n"),
+                format!("{head}[merge]\nstrategy = \"octopus\"\n"),
                 "unknown strategy",
             ),
             (

@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use asc_core::id::{ChangesetId, RefTarget};
 use asc_core::object::Changeset;
-use asc_core::policy::{Denial, Diagnostic, POLICY_PATH, Policy, SecretsPolicy, Who};
+use asc_core::policy::{Denial, Diagnostic, POLICY_PATH, Policy, SecretsPolicy, Strategy, Who};
 use asc_engine::graph::LogQuery;
 use asc_rpc::errors::RpcError;
 use asc_rpc::server::{CallCtx, wire};
@@ -94,6 +94,23 @@ pub struct GateRequest<'a> {
 pub trait RefGate: Send + Sync {
     /// `Ok` lets the update go on; an error refuses it with the status to answer.
     async fn check(&self, req: &GateRequest<'_>) -> Result<(), Status>;
+
+    /// How a land onto `name` rewrites the pushed stack. The default rebases.
+    async fn land_strategy(&self, _entry: &RepoEntry, _name: &str) -> Result<Strategy, Status> {
+        Ok(Strategy::Rebase)
+    }
+}
+
+/// Each changeset a land writes, and the pushed changesets it was made from.
+type Rewrites = HashMap<ChangesetId, Vec<ChangesetId>>;
+
+/// `(landed, pushed)` for each pushed changeset `cs` was made from; `cs` itself when the server
+/// did not rewrite it.
+fn origins(rewrites: &Rewrites, cs: &ChangesetId) -> Vec<(ChangesetId, ChangesetId)> {
+    match rewrites.get(cs) {
+        Some(olds) => olds.iter().map(|o| (*cs, *o)).collect(),
+        None => vec![(*cs, *cs)],
+    }
 }
 
 /// The gate of a server: policy, secret scanning and signatures.
@@ -717,10 +734,14 @@ impl ServerGate {
             .added(entry, old.or(in_force.source), new, limit)
             .await?;
 
-        let rewrites: HashMap<ChangesetId, ChangesetId> = match &req.mode {
-            GateMode::Land { rewrites } => rewrites.iter().map(|(o, n)| (*n, *o)).collect(),
-            GateMode::Push { .. } | GateMode::Submit => HashMap::new(),
-        };
+        // Each landed changeset and the pushed ones it was made from: one for a rebase, the whole
+        // stack for a squash.
+        let mut rewrites: Rewrites = HashMap::new();
+        if let GateMode::Land { rewrites: pairs } = &req.mode {
+            for (o, n) in pairs {
+                rewrites.entry(*n).or_default().push(*o);
+            }
+        }
 
         // The repair of an unusable policy: an administrator, or an update of trunk that touches
         // nothing but the policy file and still has the approval a reviewed change needs.
@@ -946,7 +967,7 @@ impl ServerGate {
         entry: &RepoEntry,
         policy: &Policy,
         added: &Added,
-        rewrites: &HashMap<ChangesetId, ChangesetId>,
+        rewrites: &Rewrites,
     ) -> Result<(), Status> {
         // The organisation's defaults sit under the repository's policy: more approvals, more checks.
         let own = policy.land_requirements();
@@ -973,7 +994,7 @@ impl ServerGate {
         checks: &[String],
         quarantine: bool,
         added: &Added,
-        rewrites: &HashMap<ChangesetId, ChangesetId>,
+        rewrites: &Rewrites,
     ) -> Result<(), Status> {
         let need = LandNeed {
             approvals,
@@ -984,11 +1005,15 @@ impl ServerGate {
             return Ok(());
         }
         let mut problems: Vec<String> = Vec::new();
-        for cs in &added.ids {
+        for (cs, orig) in added.ids.iter().flat_map(|cs| origins(rewrites, cs)) {
             // The reviewed version is the one that was pushed, before any server rebase.
-            let orig = rewrites.get(cs).copied().unwrap_or(*cs);
+            let label = if cs == orig {
+                short(&cs)
+            } else {
+                format!("{} (pushed as {})", short(&cs), short(&orig))
+            };
             let Some(f) = self.facts(entry, &orig).await? else {
-                problems.push(format!("{}: not a version of a reviewed change", short(cs)));
+                problems.push(format!("{}: not a version of a reviewed change", label));
                 continue;
             };
             if need.approvals > 0 {
@@ -998,16 +1023,12 @@ impl ServerGate {
                 if !current {
                     problems.push(format!(
                         "{}: approved at version {}, landing version {}",
-                        short(cs),
-                        f.reviewed_version,
-                        f.version
+                        label, f.reviewed_version, f.version
                     ));
                 } else if f.approvals < need.approvals {
                     problems.push(format!(
                         "{}: {} of {} approvals",
-                        short(cs),
-                        f.approvals,
-                        need.approvals
+                        label, f.approvals, need.approvals
                     ));
                 }
             }
@@ -1016,7 +1037,7 @@ impl ServerGate {
                     .check_passed(entry, &f.change, f.version, check, need.quarantine)
                     .await?
                 {
-                    problems.push(format!("{}: check {check:?} has not passed", short(cs)));
+                    problems.push(format!("{}: check {check:?} has not passed", label));
                 }
             }
         }
@@ -1039,7 +1060,7 @@ impl ServerGate {
         &self,
         entry: &RepoEntry,
         added: &Added,
-        rewrites: &HashMap<ChangesetId, ChangesetId>,
+        rewrites: &Rewrites,
     ) -> Result<(), Status> {
         let verifier = self.signing.verifier();
         let ns = entry.ns.as_bytes();
@@ -1050,9 +1071,17 @@ impl ServerGate {
             if v.is_valid() {
                 continue;
             }
-            if let Some(orig) = rewrites.get(cs) {
-                let source = verifier.verdict(entry.key.0, ns, orig).await.map_err(sql)?;
-                if source.is_valid() {
+            if let Some(sources) = rewrites.get(cs) {
+                // A squash is attested only when every changeset it was made from was valid.
+                let mut all_valid = true;
+                for orig in sources {
+                    all_valid &= verifier
+                        .verdict(entry.key.0, ns, orig)
+                        .await
+                        .map_err(sql)?
+                        .is_valid();
+                }
+                if all_valid {
                     if verifier
                         .attest(entry.key.0, cs, now())
                         .await
@@ -1096,6 +1125,24 @@ fn status_word(s: wire::VerificationStatus) -> &'static str {
 
 #[async_trait]
 impl RefGate for ServerGate {
+    /// `[merge] strategy` of the policy in force, under the organisation's default, for trunk.
+    /// Any other branch rebases. A policy that cannot be used leaves the default.
+    async fn land_strategy(&self, entry: &RepoEntry, name: &str) -> Result<Strategy, Status> {
+        if name != format!("refs/heads/{}", entry.default_branch) {
+            return Ok(Strategy::Rebase);
+        }
+        let in_force = self.policies.in_force(entry).await?;
+        let own = in_force
+            .policy()
+            .map(|p| p.land_requirements())
+            .unwrap_or_default();
+        let need = match self.org.get() {
+            Some(h) => h.apply_requirements(entry.name.as_str(), own).await,
+            None => own,
+        };
+        Ok(need.strategy)
+    }
+
     async fn check(&self, req: &GateRequest<'_>) -> Result<(), Status> {
         if self.read_only.load(std::sync::atomic::Ordering::Relaxed) {
             return Err(Status::unavailable(
