@@ -24,6 +24,7 @@ use super::advisory::{Index, Record};
 use super::config::Endpoint;
 use super::egress::{Egress, Limits};
 use super::model::{Advisory, Ecosystem, Lookup};
+use super::progress::Tick;
 use super::store;
 
 /// Most package versions in one `querybatch`.
@@ -295,7 +296,12 @@ impl Osv {
     }
 
     /// Asks the API about `qs` (all covered), a batch at a time.
-    async fn fetch_ids(&self, qs: &[&Query], errors: &mut Vec<String>) -> Vec<Ids> {
+    async fn fetch_ids(
+        &self,
+        qs: &[&Query],
+        errors: &mut Vec<String>,
+        tick: Option<&Tick>,
+    ) -> Vec<Ids> {
         let lim = self.limits();
         let mut out: Vec<Ids> = Vec::with_capacity(qs.len());
         let url = match join(&self.endpoint.url, &["v1", "querybatch"]) {
@@ -337,6 +343,9 @@ impl Osv {
                 Err(e) => {
                     push_error(errors, e.clone());
                     out.extend(chunk.iter().map(|_| Ids::Failed(e.clone())));
+                    if let Some(t) = tick {
+                        t.add_done(chunk.len());
+                    }
                     continue;
                 }
             };
@@ -401,6 +410,9 @@ impl Osv {
                 }
                 out.push(Ids::Found(ids));
             }
+            if let Some(t) = tick {
+                t.add_done(chunk.len());
+            }
         }
         out
     }
@@ -440,6 +452,17 @@ impl Osv {
 
     /// One answer per query, in order.
     pub async fn lookup(&self, queries: &[Query], refresh: bool) -> Answer {
+        self.lookup_with(queries, refresh, None).await
+    }
+
+    /// [`Self::lookup`], counting one step in `tick` per package version asked (cached or answered) and one per
+    /// advisory record read.
+    pub async fn lookup_with(
+        &self,
+        queries: &[Query],
+        refresh: bool,
+        tick: Option<&Tick>,
+    ) -> Answer {
         let now = (self.clock)();
         let mut errors: Vec<String> = Vec::new();
         // Distinct package versions as written, and which queries want each.
@@ -478,6 +501,16 @@ impl Osv {
             phys_of.push(mine);
         }
         let mut results: Vec<Option<Lookup>> = vec![None; unique.len()];
+        let count = |n: usize, total: bool| {
+            if let Some(t) = tick {
+                if total {
+                    t.add_total(n);
+                } else {
+                    t.add_done(n);
+                }
+            }
+        };
+        count(phys.len(), true);
 
         // The file first: it is local.
         let mut from_file: Vec<Vec<Advisory>> = vec![Vec::new(); unique.len()];
@@ -517,9 +550,11 @@ impl Osv {
                 }
             }
         }
+        // What is neither cached nor to be asked is done already.
+        count(phys.len() - missing.len(), false);
         if !missing.is_empty() {
             let asked: Vec<&Query> = missing.iter().map(|p| &phys[*p]).collect();
-            let got = self.fetch_ids(&asked, &mut errors).await;
+            let got = self.fetch_ids(&asked, &mut errors, tick).await;
             for (p, g) in missing.iter().zip(got) {
                 if let Ids::Found(list) = &g
                     && let Ok(text) = serde_json::to_string(list)
@@ -549,9 +584,13 @@ impl Osv {
             .collect();
         wanted.sort();
         wanted.dedup();
+        count(wanted.len(), true);
         let fetched: Vec<(String, Result<Arc<Record>, String>)> =
             futures::stream::iter(wanted.into_iter().map(|id| async move {
                 let r = self.record(&id, refresh).await;
+                if let Some(t) = tick {
+                    t.add_done(1);
+                }
                 (id, r)
             }))
             .buffer_unordered(self.concurrency.max(1))

@@ -23,6 +23,7 @@ service DepsService {
   rpc SetConfig(SetDepsConfigRequest) returns (SetDepsConfigResponse);           // repo maintainer; x-asc-op-id; never trunk
   rpc GetConfig(GetDepsConfigRequest) returns (GetDepsConfigResponse);           // repo read
   rpc Dismiss(DismissDepFindingRequest) returns (DismissDepFindingResponse);     // repo maintainer; x-asc-op-id
+  rpc ScanStatus(DepScanStatusRequest) returns (DepScanStatusResponse);          // repo read; what a running Scan has done
 }
 
 enum DepSeverity {
@@ -109,6 +110,31 @@ message ScanDepsRequest {
   string rev = 2;
   repeated string ecosystems = 3;
   bool refresh = 4;            // ignore the advisory cache
+}
+
+// The stage a running scan is in, in order.
+enum DepScanPhase {
+  DEP_SCAN_PHASE_UNSPECIFIED = 0;   // no scan is running
+  DEP_SCAN_PHASE_READING = 1;       // walking the revision and parsing the manifests
+  DEP_SCAN_PHASE_ADVISORIES = 2;    // asking the advisory source; `done` of `total` steps
+  DEP_SCAN_PHASE_RECORDING = 3;     // recording the findings
+}
+
+message DepScanStatusRequest {
+  RepoRef repo = 1;
+}
+
+// What the newest running scan of the repository has done. The process that answers is the one that runs the scan;
+// behind a balancer that is not sticky a client may see `running` false while another process scans.
+message DepScanStatusResponse {
+  bool running = 1;
+  DepScanPhase phase = 2;
+  uint32 done = 3;               // advisory steps done: one per package version asked (cached or answered), one per record read
+  uint32 total = 4;              // advisory steps known so far; grows when the records to read are known
+  int64 started_at = 5;          // unix seconds; 0 when nothing runs
+  uint32 eta_seconds = 6;        // the estimate of the time left; 0 when there is none
+  uint32 permille = 7;           // how far the scan is, 0 to 1000: reading 0 to 100, advisories 100 to 950, recording 950
+  uint32 last_took_seconds = 8;  // how long the last finished scan of the repository on this process took; 0 when unknown
 }
 
 message ScanDepsResponse {

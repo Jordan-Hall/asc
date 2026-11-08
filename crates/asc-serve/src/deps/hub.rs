@@ -24,6 +24,7 @@ use super::model::{Dep, Ecosystem, Lookup};
 use super::osv::{Clock, Osv, Query};
 use super::parse::{MAX_FILE_BYTES, parse_file};
 use super::plan::effective;
+use super::progress::{Phase, Scans, Tick};
 use super::repo_config::{self, Config as RepoConfig};
 use super::scan::{self, Snapshot, count_by_ecosystem, distinct};
 use super::store::{self, FindingRow, NewFinding, PackageKey, State};
@@ -57,6 +58,8 @@ pub struct DepsHub {
     /// The https URL clients use, for the scheduled workflow.
     pub(crate) server_url: Option<String>,
     pub(crate) clock: Clock,
+    /// The scans running on this process, for `ScanStatus`.
+    pub(crate) scans: Arc<Scans>,
 }
 
 /// The repository settings in force.
@@ -247,6 +250,7 @@ impl DepsHub {
             server_url: server_url.map(|u| u.trim_end_matches('/').to_owned()),
             clock,
             cfg,
+            scans: Arc::new(Scans::default()),
         })
     }
 
@@ -359,6 +363,11 @@ impl DepsHub {
 
     /// Asks the advisory source about every distinct package version of `deps`.
     pub async fn assess(&self, deps: &[Dep], refresh: bool) -> Assessed {
+        self.assess_with(deps, refresh, None).await
+    }
+
+    /// [`Self::assess`], counting its steps in `tick`.
+    pub async fn assess_with(&self, deps: &[Dep], refresh: bool, tick: Option<&Tick>) -> Assessed {
         let (pkgs, capped) = distinct(deps, self.cfg.max_packages);
         let queries: Vec<Query> = pkgs
             .iter()
@@ -368,7 +377,7 @@ impl DepsHub {
                 version: version.clone(),
             })
             .collect();
-        let answer = self.osv.lookup(&queries, refresh).await;
+        let answer = self.osv.lookup_with(&queries, refresh, tick).await;
         let mut answers = HashMap::new();
         for (q, l) in queries.iter().zip(answer.lookups) {
             answers.insert((q.eco, q.name.clone(), q.version.clone()), l);
@@ -390,6 +399,7 @@ impl DepsHub {
     ) -> Result<wire::ScanDepsResponse, Status> {
         let _permit = self.permit().await?;
         let entry = self.entry(ctx).await?;
+        let progress = self.scans.start(entry.key.0, self.now());
         let ids = self.codec(ctx, &entry);
         let trunk = self.trunk(&entry).await?;
         let rev = self.rev(&ids, &entry, &req.rev).await?;
@@ -400,7 +410,11 @@ impl DepsHub {
             ecos = loaded.config.ecosystems.clone();
         }
         let snap = self.snapshot(&entry, rev, &ecos).await?;
-        let assessed = self.assess(&snap.deps, req.refresh).await;
+        progress.phase(Phase::Advisories, self.now());
+        let assessed = self
+            .assess_with(&snap.deps, req.refresh, Some(progress.tick()))
+            .await;
+        progress.phase(Phase::Recording, self.now());
         let today = self.today();
         let now = self.now();
         let (found, unjudged) = findings_of(&snap.deps, &assessed, &loaded.config, &today);
@@ -471,6 +485,8 @@ impl DepsHub {
                 .then_with(|| a.ecosystem.cmp(&b.ecosystem))
                 .then_with(|| a.name.cmp(&b.name))
         });
+        let scanned = ids.changeset_out(rev).await?;
+        progress.finish(self.now());
         Ok(wire::ScanDepsResponse {
             files: snap
                 .files
@@ -490,10 +506,31 @@ impl DepsHub {
             lookup: lookup as i32,
             unknown_packages: failed + uncovered,
             lookup_errors: assessed.errors.clone(),
-            scanned: ids.changeset_out(rev).await?,
+            scanned,
             truncated: snap.truncated || assessed.capped,
             source: assessed.source.to_owned(),
             packages_by_ecosystem: by_ecosystem.into_iter().collect(),
+        })
+    }
+
+    /// What the newest running scan of the repository has done (docs/DEPENDENCIES.md "Progress").
+    pub async fn scan_status(&self, ctx: &CallCtx) -> Result<wire::DepScanStatusResponse, Status> {
+        let entry = self.entry(ctx).await?;
+        let s = self.scans.status(entry.key.0, self.now());
+        Ok(wire::DepScanStatusResponse {
+            running: s.phase.is_some(),
+            phase: match s.phase {
+                None => wire::DepScanPhase::Unspecified,
+                Some(Phase::Reading) => wire::DepScanPhase::Reading,
+                Some(Phase::Advisories) => wire::DepScanPhase::Advisories,
+                Some(Phase::Recording) => wire::DepScanPhase::Recording,
+            } as i32,
+            done: s.done,
+            total: s.total,
+            started_at: s.started_at,
+            eta_seconds: s.eta_secs,
+            permille: s.permille,
+            last_took_seconds: s.last_took_secs,
         })
     }
 

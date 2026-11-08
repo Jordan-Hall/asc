@@ -83,6 +83,18 @@ impl DepsService for DepsRpc {
         self.hub.scan(&ctx, msg).await.map(Response::new)
     }
 
+    async fn scan_status(
+        &self,
+        request: Request<wire::DepScanStatusRequest>,
+    ) -> Result<Response<wire::DepScanStatusResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
+            .await?;
+        self.hub.scan_status(&ctx).await.map(Response::new)
+    }
+
     async fn list_findings(
         &self,
         request: Request<wire::ListDepFindingsRequest>,

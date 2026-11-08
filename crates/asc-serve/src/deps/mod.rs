@@ -37,6 +37,7 @@ pub mod ordered;
 pub mod osv;
 pub mod parse;
 pub mod plan;
+pub mod progress;
 pub mod ranges;
 pub mod repo_config;
 pub mod requirement;
