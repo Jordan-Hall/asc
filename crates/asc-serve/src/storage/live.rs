@@ -81,7 +81,7 @@ pub fn sanitize(e: &object_store::Error) -> &'static str {
     match e {
         E::NotFound { .. } => "the bucket or object was not found",
         E::Unauthenticated { .. } => "the provider rejected the credentials",
-        E::PermissionDenied { .. } => "access denied: check the key's permissions on the bucket",
+        E::PermissionDenied { .. } => ACCESS_DENIED,
         E::AlreadyExists { .. } => "the object already exists",
         E::NotSupported { .. } | E::NotImplemented { .. } => {
             "the provider does not support this operation"
@@ -100,7 +100,7 @@ fn classify_text(hay: &str) -> &'static str {
     } else if has("quota") || has("507") || has("insufficient") {
         "the provider's storage quota is exceeded"
     } else if has("403") || has("access denied") || has("accessdenied") || has("forbidden") {
-        "access denied: check the key's permissions on the bucket"
+        ACCESS_DENIED
     } else if has("401") || has("invalidaccesskey") || has("signaturedoesnotmatch") {
         "the provider rejected the credentials"
     } else if has("nosuchbucket") || has("404") {
@@ -218,7 +218,21 @@ pub enum Step {
     Put,
     Get,
     Delete,
+    /// Advisory: whether the bucket keeps old versions of objects. It never fails a verification.
+    Versioning,
 }
+
+/// The steps a verification must pass.
+pub const REQUIRED: [Step; 5] = [
+    Step::Resolve,
+    Step::Connect,
+    Step::Put,
+    Step::Get,
+    Step::Delete,
+];
+
+/// The phrase for a refused request.
+pub const ACCESS_DENIED: &str = "access denied: check the key's permissions on the bucket";
 
 /// The outcome of one step.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -228,6 +242,8 @@ pub struct Check {
     pub latency_ms: u32,
     /// A fixed, sanitised phrase.
     pub message: String,
+    /// The permission the key lacks when the step was refused (`s3:PutObject`), or empty.
+    pub needs: &'static str,
 }
 
 /// The outcome of a verification.
@@ -238,25 +254,34 @@ pub struct Report {
 
 impl Report {
     pub fn ok(&self) -> bool {
-        self.checks.len() == 5 && self.checks.iter().all(|c| c.ok)
+        REQUIRED
+            .iter()
+            .all(|s| self.checks.iter().any(|c| c.step == *s && c.ok))
     }
 
     /// The message of the first failing step, for `last_error`.
     pub fn failure(&self) -> Option<String> {
         self.checks
             .iter()
-            .find(|c| !c.ok)
+            .find(|c| !c.ok && c.step != Step::Versioning)
             .map(|c| format!("{}: {}", step_name(c.step), c.message))
     }
 
     fn push(&mut self, step: Step, started: Instant, result: Result<(), String>) -> bool {
         let latency_ms = u32::try_from(started.elapsed().as_millis()).unwrap_or(u32::MAX);
         let ok = result.is_ok();
+        let message = result.err().unwrap_or_else(|| "ok".into());
+        let needs = if message == ACCESS_DENIED {
+            permission(step)
+        } else {
+            ""
+        };
         self.checks.push(Check {
             step,
             ok,
             latency_ms,
-            message: result.err().unwrap_or_else(|| "ok".into()),
+            message,
+            needs,
         });
         ok
     }
@@ -269,6 +294,57 @@ pub fn step_name(s: Step) -> &'static str {
         Step::Put => "put",
         Step::Get => "get",
         Step::Delete => "delete",
+        Step::Versioning => "versioning",
+    }
+}
+
+/// The S3 permission a step needs, or empty for a step that needs none.
+pub fn permission(s: Step) -> &'static str {
+    match s {
+        Step::Resolve | Step::Connect => "",
+        Step::Put => "s3:PutObject",
+        Step::Get => "s3:GetObject",
+        Step::Delete => "s3:DeleteObject",
+        Step::Versioning => "s3:GetBucketVersioning",
+    }
+}
+
+/// Reads the bucket's versioning setting with a signed `GET ?versioning` through the pinned client.
+/// `Ok` only when versioning is enabled: a bucket without it loses an overwritten or deleted object
+/// for good, which the owner should know but which does not stop the target from working.
+async fn versioning(
+    cfg: &TargetConfig,
+    pinned: &crate::netguard::Pinned,
+    client: &reqwest::Client,
+) -> Result<(), String> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+    let signed = super::sigv4::versioning_request(cfg, &pinned.endpoint().as_string(), now)
+        .map_err(|_| "the endpoint is not a valid URL".to_owned())?;
+    let mut req = client.get(signed.url);
+    for (k, v) in signed.headers {
+        req = req.header(k, v);
+    }
+    let resp = req.send().await.map_err(|e| reqwest_phrase(&e))?;
+    let status = resp.status();
+    if status == reqwest::StatusCode::FORBIDDEN {
+        return Err(ACCESS_DENIED.into());
+    }
+    if !status.is_success() {
+        return Err("the provider did not report the bucket's versioning".into());
+    }
+    // The answer is a few hundred bytes; a larger one is not a versioning answer.
+    let body = resp.bytes().await.map_err(|e| reqwest_phrase(&e))?;
+    if body.len() > 64 * 1024 {
+        return Err("the provider did not report the bucket's versioning".into());
+    }
+    match super::sigv4::versioning_status(&String::from_utf8_lossy(&body)) {
+        Some("Enabled") => Ok(()),
+        Some("Suspended") => Err(
+            "versioning is suspended: an overwritten or deleted object cannot be recovered".into(),
+        ),
+        _ => Err("versioning is off: an overwritten or deleted object cannot be recovered".into()),
     }
 }
 
@@ -289,8 +365,8 @@ fn reqwest_phrase(e: &reqwest::Error) -> String {
 
 /// Runs the handshake against a target: resolve and judge the endpoint, connect over TLS to the
 /// pinned address, then write a random probe object under `<prefix>/.asc-probe/`, read it back,
-/// compare, and delete it. Stops at the first failing step, except that a written probe object
-/// is always deleted.
+/// compare, and delete it, and last read the bucket's versioning setting (advisory). Stops at the
+/// first failing step, except that a written probe object is always deleted.
 pub async fn probe(builder: &Builder, t: &Target, sealed: &[u8]) -> Result<Report, RouteError> {
     let cfg = builder.config(t, sealed)?;
     let mut report = Report::default();
@@ -374,6 +450,10 @@ pub async fn probe(builder: &Builder, t: &Target, sealed: &[u8]) -> Result<Repor
         .map_err(|e| sanitize(&e).to_owned());
     report.push(Step::Delete, started, del);
     let _ = (wrote, read_ok);
+
+    let started = Instant::now();
+    let v = versioning(&cfg, &pinned, &client).await;
+    report.push(Step::Versioning, started, v);
     Ok(report)
 }
 

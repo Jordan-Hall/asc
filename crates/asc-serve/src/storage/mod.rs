@@ -28,6 +28,7 @@ pub mod model;
 pub mod routed;
 pub mod rpc;
 pub mod service;
+mod sigv4;
 
 #[cfg(test)]
 mod fake_s3;

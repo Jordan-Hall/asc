@@ -322,12 +322,14 @@ fn check_pb(c: &Check) -> wire::StorageVerifyCheck {
         Step::Put => wire::StorageVerifyStep::Put,
         Step::Get => wire::StorageVerifyStep::Get,
         Step::Delete => wire::StorageVerifyStep::Delete,
+        Step::Versioning => wire::StorageVerifyStep::Versioning,
     };
     wire::StorageVerifyCheck {
         step: step as i32,
         ok: c.ok,
         latency_ms: c.latency_ms,
         message: c.message.clone(),
+        needs: c.needs.to_owned(),
     }
 }
 

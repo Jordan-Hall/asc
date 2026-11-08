@@ -129,12 +129,18 @@ enum StorageVerifyStep {
   STORAGE_VERIFY_STEP_PUT = 3;         // write a probe object under `<prefix>.asc-probe/<random>`
   STORAGE_VERIFY_STEP_GET = 4;         // read it back and compare
   STORAGE_VERIFY_STEP_DELETE = 5;
+  // Advisory: ok when the bucket keeps old object versions. A failure here never fails the
+  // verification (`VerifyStorageTargetResponse.ok` reads only steps 1 to 5).
+  STORAGE_VERIFY_STEP_VERSIONING = 6;
 }
 message StorageVerifyCheck {
   StorageVerifyStep step = 1;
   bool ok = 2;
   uint32 latency_ms = 3;
   string message = 4;                  // sanitised
+  // The S3 permission the key lacks when the step was refused (`s3:PutObject`, `s3:GetObject`,
+  // `s3:DeleteObject`, `s3:GetBucketVersioning`); empty otherwise.
+  string needs = 5;
 }
 message VerifyStorageTargetRequest {
   string id = 1;
