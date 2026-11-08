@@ -28,6 +28,11 @@ why. `asc.worktree.link` is `copy` (the default) or `symlink`, and applies to ev
 of the repository: `worktree add`, `switch`, `checkout`, `restore`, `reset` and the rest. It has
 no effect on a virtual worktree, which keeps no copies to share.
 
+`asc worktree convert --plain` turns a virtual worktree into a plain one. It stops serving the
+worktree and takes the virtual marks off the files on disk, keeping your edits, new files and
+deletions. Then it writes the other tracked files from the object store. If it stops part way
+(a crash, a full disk), run it again: it goes on from where it stopped.
+
 ## How link mode works
 
 * Each unchanged file in the worktree is a symbolic link to
