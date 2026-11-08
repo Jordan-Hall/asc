@@ -195,7 +195,16 @@ fn virtual_worktree_add_is_refused_without_the_daemon_and_leaves_nothing() {
     ok(
         &sb,
         &ws,
-        &["worktree", "add", "-q", "-b", "w1", wt.to_str().unwrap()],
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--mode",
+            "plain",
+            "-b",
+            "w1",
+            wt.to_str().unwrap(),
+        ],
     );
     assert_eq!(
         std::fs::read_to_string(wt.join("a.txt")).unwrap(),
@@ -245,6 +254,14 @@ mod projfs {
         let parent = sb.dir("work");
         ok(sb, &parent, &["clone", "-q", "--mode", "virtual", url, "v"]);
         parent.join("v")
+    }
+
+    /// Whether `dir` is a ProjFS virtualization root (it carries a reparse point).
+    fn is_virtual_root(dir: &Path) -> bool {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        std::fs::symlink_metadata(dir).unwrap().file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT
+            != 0
     }
 
     /// The hydrations the daemon reports per path (`asc debug hydrations --json`, one row per path).
@@ -343,6 +360,43 @@ mod projfs {
             &["worktree", "remove", "--force", wt.to_str().unwrap()],
         );
         assert!(!wt.exists());
+    }
+
+    #[test]
+    #[ignore = "needs Windows with ProjFS"]
+    fn a_worktree_is_virtual_by_default_and_the_config_can_make_it_plain() {
+        let sb = Virtual::new();
+        let url = seed(&sb);
+        let ws = virtual_clone(&sb, &url);
+        let wt = sb.dir("wts").join("d1");
+        ok(
+            &sb,
+            &ws,
+            &["worktree", "add", "-q", "-b", "d1", wt.to_str().unwrap()],
+        );
+        assert_eq!(
+            std::fs::read_to_string(wt.join("a.txt")).unwrap(),
+            "a
+"
+        );
+        assert!(is_virtual_root(&wt), "the default worktree is not virtual");
+
+        ok(&sb, &ws, &["config", "asc.worktree.mode", "plain"]);
+        let plain = sb.dir("wts").join("d2");
+        ok(
+            &sb,
+            &ws,
+            &["worktree", "add", "-q", "-b", "d2", plain.to_str().unwrap()],
+        );
+        assert_eq!(
+            std::fs::read_to_string(plain.join("a.txt")).unwrap(),
+            "a
+"
+        );
+        assert!(
+            !is_virtual_root(&plain),
+            "asc.worktree.mode plain made a virtual worktree"
+        );
     }
 
     #[test]
