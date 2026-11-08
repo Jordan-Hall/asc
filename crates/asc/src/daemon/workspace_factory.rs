@@ -4,14 +4,18 @@
 //! * Virtual workspaces are offered only once an OS backend (ProjFS or FUSE, behind the
 //!   `vfs-projfs` and `vfs-fuse` features) has registered itself with
 //!   [`register_virtual_backend`] and the daemon is not disabled by `ASC_NO_DAEMON`.
-//! * [`convert`] is `worktree convert --plain`: unmount, materialise in place through U18, set
-//!   `workspaces.mode = plain` and leave an index with real stat, so `status` reads the same
-//!   before and after. It never needs the daemon: a daemon that is down has nothing mounted.
+//! * [`convert`] is `worktree convert --plain`: unmount, unvirtualize the root, materialise in
+//!   place through U18, set `workspaces.mode = plain` and leave an index with real stat, so
+//!   `status` reads the same before and after. It never needs the daemon: a daemon that is down
+//!   has nothing mounted.
 //!
-//! Conversion keeps every file that holds local edits (a hydrated file whose content differs
-//! from HEAD) and rewrites everything else: absent files and unhydrated placeholders (which
-//! cannot be read once the provider is gone) are written from the object store. A file that
-//! cannot be reached without crossing a symlink is outside the work tree and is not touched.
+//! Once the provider is gone no placeholder can be opened (os error 369), so before anything is
+//! read the root is turned back into a plain directory without the provider
+//! (`asc_vfs::projfs::unvirtualize`): placeholder files are dropped, placeholder directories
+//! become plain ones, and tombstones (the user's deletions) are removed and reported. Conversion
+//! then keeps every full file that holds local edits, keeps every deletion, and writes everything
+//! else from the object store. A file that cannot be reached without crossing a symlink is
+//! outside the work tree and is not touched.
 
 use std::fs;
 use std::io::Read;
@@ -123,6 +127,9 @@ pub trait Mounts: Send + Sync {
     fn virtual_available(&self) -> bool;
     /// Stops serving `ws`. A workspace the daemon does not host is not an error.
     async fn unmount(&self, ws: WorkspaceId) -> SinkResult;
+    /// Turns the stopped virtualization root `root` back into a plain directory, returning the
+    /// items the user deleted while it was virtual as `/`-separated root-relative paths.
+    fn unvirtualize(&self, root: &Path) -> Result<Vec<String>, SinkError>;
 }
 
 /// The mounts of the running daemon, reached over IPC.
@@ -158,6 +165,21 @@ impl Mounts for DaemonMounts {
                     Ok(Err(s)) => Err(format!("unmount: {}", s.message()).into()),
                 }
             }
+        }
+    }
+
+    fn unvirtualize(&self, root: &Path) -> Result<Vec<String>, SinkError> {
+        #[cfg(all(windows, feature = "vfs-projfs"))]
+        {
+            let done = asc_vfs::projfs::unvirtualize(root)
+                .map_err(|e| format!("{}: {e}", root.display()))?;
+            Ok(done.deleted)
+        }
+        #[cfg(not(all(windows, feature = "vfs-projfs")))]
+        {
+            // No virtual backend on this build: the root was never virtualized.
+            let _ = root;
+            Ok(Vec::new())
         }
     }
 }
@@ -224,6 +246,12 @@ pub(crate) async fn convert(
 ) -> SinkResult {
     mounts.unmount(ws.ws.id).await?;
     let root = PathBuf::from(&ws.ws.mount);
+    // Nothing under the root may be opened before it is plain again.
+    let deleted = mounts
+        .unvirtualize(&root)?
+        .into_iter()
+        .map(|p| RepoPath::new(p.into_bytes()).map_err(|e| e.to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
     restore_gitfile(&root, &home.gitdir(ws.ws.id))?;
     // The gate checks ownership, `safe.directory` and the registration before anything is read.
     let ctx = Ctx::open_with(Program::Asc, env, root, gate)
@@ -233,7 +261,7 @@ pub(crate) async fn convert(
     if opened.workspace.ws.id != ws.ws.id {
         return Err("the directory belongs to another workspace".into());
     }
-    materialise(&ctx).await.map_err(text)?;
+    materialise(&ctx, &deleted).await.map_err(text)?;
     workspaces::set_mode(&opened.db, ws.ws.id, Mode::Plain)
         .await
         .map_err(|e| e.to_string())?;
@@ -300,9 +328,9 @@ fn modified(gate: &SafeRoot, path: &RepoPath, size: u64, git: &asc_core::id::Git
     !hasher.finalize().is_ok_and(|oid| oid == *git)
 }
 
-/// Writes HEAD's tree into the work tree where the work tree does not already hold edits, with
-/// real stat in the index.
-async fn materialise(ctx: &Ctx) -> Result<(), CliError> {
+/// Writes HEAD's tree into the work tree where the work tree does not already hold edits and the
+/// user did not delete the path (`deleted`, files or directories), with real stat in the index.
+async fn materialise(ctx: &Ctx, deleted: &[RepoPath]) -> Result<(), CliError> {
     let ws = ctx.ws()?;
     let head = ws.head_commit().await?;
     let tree = root_of(ws, head).await?;
@@ -315,6 +343,9 @@ async fn materialise(ctx: &Ctx) -> Result<(), CliError> {
     for (path, change) in &all {
         if gate.resolve(path).is_none() {
             continue; // Behind a link: outside the work tree.
+        }
+        if deleted.iter().any(|d| d == path || path.starts_with_dir(d)) {
+            continue; // The user's deletion stays; its index entry stays stat-dirty.
         }
         if let Change::Write {
             kind: Kind::File | Kind::Exec,
@@ -345,8 +376,13 @@ mod tests {
 
     use crate::cli::common::support::Fixture;
 
+    /// Records unmounts and unvirtualized roots; reports `deleted` as the user's deletions.
     #[derive(Default)]
-    struct Recording(Mutex<Vec<WorkspaceId>>);
+    struct Recording {
+        unmounted: Mutex<Vec<WorkspaceId>>,
+        unvirtualized: Mutex<Vec<PathBuf>>,
+        deleted: Vec<String>,
+    }
 
     #[async_trait]
     impl Mounts for Recording {
@@ -354,8 +390,16 @@ mod tests {
             true
         }
         async fn unmount(&self, ws: WorkspaceId) -> SinkResult {
-            self.0.lock().unwrap().push(ws);
+            self.unmounted.lock().unwrap().push(ws);
             Ok(())
+        }
+        fn unvirtualize(&self, root: &Path) -> Result<Vec<String>, SinkError> {
+            assert!(
+                !self.unmounted.lock().unwrap().is_empty(),
+                "the root is unvirtualized only once the provider has stopped"
+            );
+            self.unvirtualized.lock().unwrap().push(root.to_path_buf());
+            Ok(self.deleted.clone())
         }
     }
 
@@ -376,21 +420,30 @@ mod tests {
                     ("a.txt", b"alpha"),
                     ("keep.txt", b"original"),
                     ("d/c.txt", b"deep"),
+                    ("gone.txt", b"deleted by the user"),
+                    ("gonedir/x.txt", b"in a deleted directory"),
                 ],
             )
             .await;
         f.set_branch("master", a).await;
         f.checkout_branch("master", Some(a)).await;
-        // A virtual workspace as the provider leaves it after unmount: no placeholders readable,
-        // one hydrated file with a local edit, no gitfile.
+        // A virtual workspace as unvirtualize leaves it: the placeholders dropped, one full file
+        // with a local edit, two deletions reported from tombstones, no gitfile.
         workspaces::set_mode(&f.db, f.ws, Mode::Virtual)
             .await
             .unwrap();
         fs::write(f.root.join("keep.txt"), b"edited by the user").unwrap();
+        // Whatever the checkout left on disk goes, as unvirtualize leaves it.
+        let _ = fs::remove_file(f.root.join("a.txt"));
+        let _ = fs::remove_file(f.root.join("gone.txt"));
+        let _ = fs::remove_dir_all(f.root.join("gonedir"));
         fs::remove_file(f.root.join(".git")).unwrap();
 
         let ws = workspaces::get(&f.db, f.ws).await.unwrap().unwrap();
-        let mounts = Recording::default();
+        let mounts = Recording {
+            deleted: vec!["gone.txt".into(), "gonedir".into()],
+            ..Recording::default()
+        };
         let safe = SafeDirectory::default();
         let home = || Ok(f.home.clone());
         let gate = Gate {
@@ -403,9 +456,13 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            *mounts.0.lock().unwrap(),
+            *mounts.unmounted.lock().unwrap(),
             [f.ws],
             "the workspace is unmounted first"
+        );
+        assert_eq!(
+            *mounts.unvirtualized.lock().unwrap(),
+            [PathBuf::from(&ws.ws.mount)]
         );
         let ws = workspaces::get(&f.db, f.ws).await.unwrap().unwrap();
         assert_eq!(ws.ws.mode, Mode::Plain);
@@ -415,6 +472,9 @@ mod tests {
             fs::read(f.root.join("keep.txt")).unwrap(),
             b"edited by the user"
         );
+        // The user's deletions survive the conversion.
+        assert!(!f.root.join("gone.txt").exists());
+        assert!(!f.root.join("gonedir").exists());
 
         // The index carries real stat for what was written, so `status` has nothing to hash.
         let index = IndexFile::read_or_empty(&f.home.gitdir(f.ws).join("index")).unwrap();
