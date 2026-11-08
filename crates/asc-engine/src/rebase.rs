@@ -426,7 +426,12 @@ async fn squash_makes_one_changeset_with_the_last_tree_and_every_message() {
         .map(|(p, _)| p.to_string())
         .collect();
     assert_eq!(paths, ["a", "b", "c", "d"]);
-    let keys: Vec<_> = got.extra.as_slice().iter().map(|(k, _)| k.clone()).collect();
+    let keys: Vec<_> = got
+        .extra
+        .as_slice()
+        .iter()
+        .map(|(k, _)| k.clone())
+        .collect();
     assert_eq!(keys, [b"asc.snapshot".to_vec()]);
     assert_eq!(e.squash(&[], base).await.unwrap(), base);
 }
