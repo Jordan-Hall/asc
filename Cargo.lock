@@ -510,6 +510,7 @@ dependencies = [
 name = "asc-serve"
 version = "0.1.0"
 dependencies = [
+ "aho-corasick",
  "asc-ci",
  "asc-codeintel",
  "asc-core",

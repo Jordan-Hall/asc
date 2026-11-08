@@ -49,6 +49,8 @@ axum = { workspace = true }
 quick_cache = { workspace = true }
 base64 = { workspace = true }
 regex = { workspace = true }
+# Every exact secret found in one linear pass, overlaps included (agents/mask.rs).
+aho-corasick = { workspace = true }
 gix-attributes = { workspace = true }
 bstr = { workspace = true }
 # Unified diffs of an agent's uncommitted changes (agents/workspace.rs).

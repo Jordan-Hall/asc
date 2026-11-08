@@ -537,6 +537,23 @@ impl RuleSet {
         builtin().iter().chain(self.custom.iter())
     }
 
+    /// Every range of `data` a rule matches, for masking: no binary or size check and no cap, overlaps kept (the
+    /// caller merges them). Each rule is one linear pass of its compiled pattern.
+    pub fn ranges(&self, data: &[u8]) -> Vec<Range<usize>> {
+        let mut out = Vec::new();
+        for rule in self.rules() {
+            for caps in rule.re.captures_iter(data) {
+                let Some(m) = caps.get(rule.group).or_else(|| caps.get(0)) else {
+                    continue;
+                };
+                if rule.accepts(&data[m.range()]) {
+                    out.push(m.range());
+                }
+            }
+        }
+        out
+    }
+
     /// Scans one file's bytes. A binary or oversized file reports `skipped` and no hits.
     pub fn scan(&self, data: &[u8]) -> Scanned {
         if data.len() > MAX_SCAN_FILE {

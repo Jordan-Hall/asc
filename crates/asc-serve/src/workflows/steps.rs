@@ -711,6 +711,12 @@ impl WorkflowsHub {
             admin: Default::default(),
         };
         let data = tail(output, crate::ci::MAX_APPEND);
+        // The output was masked with the step's own secrets; the repository's others are masked here as for any
+        // append. When they cannot be opened the rules alone apply, as the step already held what it could print.
+        let masker = match self.secrets.open_all(&run.repo).await {
+            Ok(values) => Masker::new(values.iter().map(|v| v.to_string())),
+            Err(_) => Masker::new([]),
+        };
         let _ = reviews
             .ci_append_log(
                 &ctx,
@@ -720,6 +726,7 @@ impl WorkflowsHub {
                     job_id,
                     data: bytes::Bytes::from(data.into_bytes()),
                 },
+                &masker,
             )
             .await;
     }

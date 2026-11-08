@@ -290,11 +290,13 @@ impl Reviews {
         })
     }
 
-    /// `Ci.JobLog`.
+    /// `Ci.JobLog`. The bytes are masked by `masker` with the stored bytes around them as context, so no read,
+    /// however its window is placed, shows part of a secret; the offsets stay those of the stored bytes.
     pub async fn ci_job_log(
         &self,
         ctx: &CallCtx,
         req: wire::JobLogRequest,
+        masker: &Masker,
     ) -> Result<wire::JobLogResponse, Status> {
         let (run, job) = (id_of(req.run_id)?, id_of(req.job_id)?);
         let max = match req.max_bytes {
@@ -338,9 +340,23 @@ impl Reviews {
                 offset = start + nl as u64 + 1;
             }
         }
+        let next_offset = offset + buf.len() as u64;
+        let margin = masker.margin() as u64;
+        let cs = offset.saturating_sub(margin);
+        let context = read_log(
+            &mut conn,
+            &ns,
+            job,
+            cs,
+            size.min(next_offset.saturating_add(margin)),
+        )
+        .await
+        .map_err(sql)?;
+        let w = (offset - cs) as usize;
+        let data = masker.mask_window(&context, w..w + buf.len());
         Ok(wire::JobLogResponse {
-            next_offset: offset + buf.len() as u64,
-            data: Bytes::from(buf),
+            next_offset,
+            data: Bytes::from(data),
             offset,
             size,
             truncated: offset > 0,
@@ -499,11 +515,13 @@ impl Reviews {
         Ok(run_id)
     }
 
-    /// `Ci.AppendJobLog`.
+    /// `Ci.AppendJobLog`. The bytes are masked by `masker` before they are stored, with the end of the stored log
+    /// as context, so a secret written across two appends is masked too.
     pub async fn ci_append_log(
         &self,
         ctx: &CallCtx,
         req: wire::AppendJobLogRequest,
+        masker: &Masker,
     ) -> Result<wire::AppendJobLogResponse, Status> {
         let (run, job) = (id_of(req.run_id)?, id_of(req.job_id)?);
         if req.data.is_empty() || req.data.len() > MAX_APPEND {
@@ -516,7 +534,7 @@ impl Reviews {
             .ok_or_else(|| Status::invalid_argument("mutating calls need x-asc-op-id"))?;
         let entry = self.open(ctx).await?;
         let (size, dropped) =
-            retry_conflict(|| self.try_append(&entry, run, job, &req.data, op_id)).await?;
+            retry_conflict(|| self.try_append(&entry, run, job, &req.data, op_id, masker)).await?;
         Ok(wire::AppendJobLogResponse {
             size: u64::try_from(size).unwrap_or(0),
             dropped,
@@ -530,6 +548,7 @@ impl Reviews {
         job: i64,
         data: &[u8],
         op_id: Uuid,
+        masker: &Masker,
     ) -> Result<(i64, bool), WriteError> {
         let nsb = entry.ns.as_bytes().to_vec();
         // A retry of a call that already committed answers with the first result.
@@ -559,6 +578,18 @@ impl Reviews {
         .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(|| Status::not_found("unknown job"))?;
+        let end = u64::try_from(size).unwrap_or(0);
+        let mut context = read_log(
+            &mut tx,
+            &nsb,
+            job,
+            end.saturating_sub(masker.margin() as u64),
+            end,
+        )
+        .await?;
+        let w = context.len();
+        context.extend_from_slice(data);
+        let data = masker.mask_window(&context, w..context.len());
         let len = i64::try_from(data.len()).unwrap_or(i64::MAX);
         let dropped = size + len > MAX_LOG;
         let size = if dropped {
@@ -570,7 +601,7 @@ impl Reviews {
             .bind(nsb.clone())
             .bind(job)
             .bind(size)
-            .bind(data.to_vec())
+            .bind(data)
             .execute(&mut *tx)
             .await?;
             sqlx::query("UPDATE check_jobs SET log_size = $3 WHERE ns = $1 AND id = $2")
@@ -742,21 +773,20 @@ impl CiService {
     }
 
     /// The masker of `ctx`'s repository: its secret values and the built-in credential rules. When the values
-    /// cannot be opened, `strict` refuses (an append) and otherwise the rules alone apply (a read; what was stored
-    /// was masked when it was appended).
-    async fn masker(&self, ctx: &CallCtx, strict: bool) -> Result<Masker, Status> {
+    /// cannot be opened the call is refused: a read would show a secret set after its line was stored, and an
+    /// append would store one.
+    async fn masker(&self, ctx: &CallCtx) -> Result<Masker, Status> {
         let Some(secrets) = &self.secrets else {
             return Ok(Masker::new([]));
         };
         match secrets.open_all(ctx.repo.as_str()).await {
             Ok(values) => Ok(Masker::new(values.iter().map(|v| v.to_string()))),
-            Err(e) if strict => {
+            Err(e) => {
                 tracing::warn!(repo = %ctx.repo.as_str(), error = ?e, "ci log: the repository's secrets could not be opened");
                 Err(Status::unavailable(
                     "the repository's secrets cannot be read, so the log cannot be checked for them; try again",
                 ))
             }
-            Err(_) => Ok(Masker::new([])),
         }
     }
 
@@ -793,11 +823,11 @@ impl Ci for CiService {
             .env
             .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
             .await?;
-        let mut resp = self.hub.ci_job_log(&ctx, msg).await?;
-        // The offsets stay those of the stored bytes, so a reader that follows the log is not thrown off.
-        let masker = self.masker(&ctx, false).await?;
-        resp.data = Bytes::from(masker.mask_bytes(&resp.data));
-        Ok(Response::new(resp))
+        let masker = self.masker(&ctx).await?;
+        self.hub
+            .ci_job_log(&ctx, msg, &masker)
+            .await
+            .map(Response::new)
     }
 
     async fn report_run(
@@ -816,16 +846,16 @@ impl Ci for CiService {
         &self,
         request: Request<wire::AppendJobLogRequest>,
     ) -> Result<Response<wire::AppendJobLogResponse>, Status> {
-        let (meta, ext, mut msg) = request.into_parts();
+        let (meta, ext, msg) = request.into_parts();
         let ctx = self
             .env
             .context(&meta, &ext, msg.repo.as_ref(), Access::Admin, true)
             .await?;
-        if !msg.data.is_empty() && msg.data.len() <= MAX_APPEND {
-            let masker = self.masker(&ctx, true).await?;
-            msg.data = Bytes::from(masker.mask_bytes(&msg.data));
-        }
-        self.hub.ci_append_log(&ctx, msg).await.map(Response::new)
+        let masker = self.masker(&ctx).await?;
+        self.hub
+            .ci_append_log(&ctx, msg, &masker)
+            .await
+            .map(Response::new)
     }
     async fn stats(
         &self,
