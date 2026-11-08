@@ -14,6 +14,10 @@ pub const ENV_BRANCHLESS: &str = "ASC_BRANCHLESS";
 pub const KEY_BRANCHLESS: &str = "asc.branchless";
 pub const KEY_CLOUD: &str = "asc.cloud";
 pub const KEY_CLOUD_WORKSPACE: &str = "asc.cloud.workspace";
+/// The name this machine reports its drafts under (SPEC §21.3.9); the host name when unset.
+pub const KEY_CLOUD_DEVICE: &str = "asc.cloud.device";
+/// Longest `asc.cloud.device`.
+pub const MAX_DEVICE: usize = 64;
 pub const KEY_PUSH_REVIEW: &str = "asc.push.review";
 pub const KEY_HIDDEN_DAYS: &str = "asc.draft.hiddenDays";
 pub const KEY_BRANCH_TEMPLATE: &str = "asc.stack.branchTemplate";
@@ -61,6 +65,8 @@ pub struct Settings {
     pub branchless: bool,
     pub cloud: CloudSetting,
     pub workspace: Workspace,
+    /// `asc.cloud.device`; `None` means the host name.
+    pub device: Option<String>,
     pub push_review: PushReview,
     pub hidden_days: u32,
 }
@@ -71,6 +77,7 @@ impl Default for Settings {
             branchless: true,
             cloud: CloudSetting::Auto,
             workspace: Workspace::Default,
+            device: None,
             push_review: PushReview::Draft,
             hidden_days: DEFAULT_HIDDEN_DAYS,
         }
@@ -134,6 +141,19 @@ impl Settings {
                     ));
                 }
             };
+        }
+        if let Some(v) = config.get(KEY_CLOUD_DEVICE) {
+            let ok = v.len() <= MAX_DEVICE
+                && v.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+            if !ok {
+                return Err(bad(
+                    KEY_CLOUD_DEVICE,
+                    &v,
+                    "up to 64 letters, digits, '-', '_' and '.'",
+                ));
+            }
+            s.device = (!v.is_empty()).then_some(v);
         }
         if let Some(v) = config.get(KEY_PUSH_REVIEW) {
             s.push_review = match v.to_ascii_lowercase().as_str() {

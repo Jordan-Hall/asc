@@ -22,6 +22,12 @@
 //!   identity; the added heads must already be indexed (ingested with a valid `m/` object). The
 //!   server stamps `added`; the client's `added`, `hidden_at` and `change` are ignored.
 //! * `cloud_ws` has one column beyond SPEC §21.2.3, `heads`, the count of its head rows.
+//! * `ReportDevice` (SPEC §21.3.9) replaces every `cloud_device_drafts` row of one device in one
+//!   transaction, so a retry is the same report and needs no op id. It keeps [`MAX_DEVICES`] devices
+//!   per workspace (the least recently reported goes) and drops reports older than
+//!   [`DEVICE_TTL_S`]. `GetWorkspace(include_devices)` names the devices of each head and, on its
+//!   first page, lists the reported drafts that are not heads of the workspace; it always answers
+//!   in full, as a report does not move the workspace version.
 
 use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -63,6 +69,12 @@ pub const MAX_LIST_PAGE: usize = 200;
 pub const MAX_NAME: usize = 64;
 /// The name used when a request leaves it empty.
 pub const DEFAULT_NAME: &str = "default";
+/// Drafts in one `ReportDevice`, at most.
+pub const MAX_REPORT: usize = 1_000;
+/// Devices whose reports a workspace keeps.
+pub const MAX_DEVICES: i64 = 8;
+/// Age after which a device report is dropped: 30 days.
+pub const DEVICE_TTL_S: i64 = 30 * 86_400;
 
 /// Marks an `op_results` row as the result of `UpdateWorkspace`: the tag, then the version.
 const OP_TAG: &[u8; 3] = b"cw1";
@@ -102,6 +114,20 @@ pub fn workspace_name(raw: &str) -> Result<&str, Status> {
 }
 
 /// Which user a request names. `Ok(None)` is the caller (and the caller has no user identity).
+/// A device name: `[A-Za-z0-9._-]{1,64}`.
+pub fn device_name(raw: &str) -> Result<&str, Status> {
+    let ok = !raw.is_empty()
+        && raw.len() <= MAX_NAME
+        && raw
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'));
+    if ok {
+        Ok(raw)
+    } else {
+        Err(Status::invalid_argument("invalid device name"))
+    }
+}
+
 pub fn parse_owner(principal_id: &str, raw: &str) -> Result<Option<i64>, Status> {
     let me = UserIdentity::parse(principal_id).filter(UserIdentity::is_user);
     if raw.is_empty() {
@@ -302,10 +328,22 @@ impl CloudRpc {
         let after = parse_page_token(&req.page_token)?;
         let (entry, ids) = self.open(ctx).await?;
         let mut conn = self.registry.pool().acquire().await.map_err(sql)?;
-        let Some((version, _)) = Self::row(&mut conn, &entry, owner, name).await? else {
-            return Ok(wire::GetWorkspaceResponse::default());
+        let devices = if req.include_devices {
+            Some(Self::device_rows(&mut conn, &entry, owner, name).await?)
+        } else {
+            None
         };
-        if req.since_version == version && after.is_none() {
+        let Some((version, _)) = Self::row(&mut conn, &entry, owner, name).await? else {
+            // No workspace yet: every reported draft is local.
+            return Ok(wire::GetWorkspaceResponse {
+                local: match (&devices, &after) {
+                    (Some(d), None) => d.iter().map(DeviceRow::local).collect(),
+                    _ => Vec::new(),
+                },
+                ..Default::default()
+            });
+        };
+        if req.since_version == version && after.is_none() && devices.is_none() {
             return Ok(wire::GetWorkspaceResponse {
                 version,
                 ..Default::default()
@@ -368,8 +406,24 @@ impl CloudRpc {
                     .try_get::<Option<i64>, _>("hidden_at")
                     .map_err(sql)?
                     .unwrap_or(0),
+                devices: devices
+                    .iter()
+                    .flatten()
+                    .filter(|d| d.cs == cs)
+                    .map(|d| d.device.clone())
+                    .collect(),
             });
         }
+        let local = match (&devices, &after) {
+            (Some(d), None) => {
+                let heads = Self::head_set(&mut conn, &entry, owner, name).await?;
+                d.iter()
+                    .filter(|d| !heads.contains(&d.cs))
+                    .map(DeviceRow::local)
+                    .collect()
+            }
+            _ => Vec::new(),
+        };
         let omitted = match (cutoff, &after) {
             (Some(c), None) => {
                 let hidden = if req.include_hidden {
@@ -401,6 +455,169 @@ impl CloudRpc {
                 (true, Some(cs)) => page_token(cs),
                 _ => String::new(),
             },
+            local,
+        })
+    }
+
+    /// The live device reports of a workspace, newest draft first.
+    async fn device_rows(
+        conn: &mut AnyConnection,
+        entry: &RepoEntry,
+        owner: i64,
+        name: &str,
+    ) -> Result<Vec<DeviceRow>, Status> {
+        let rows = sqlx::query(
+            "SELECT device, cs, change, added, state, reported_at FROM cloud_device_drafts \
+             WHERE ns = $1 AND owner = $2 AND name = $3 AND reported_at >= $4 \
+             ORDER BY added DESC, device, cs",
+        )
+        .bind(entry.ns.as_bytes().to_vec())
+        .bind(owner)
+        .bind(name.to_owned())
+        .bind(now().saturating_sub(DEVICE_TTL_S))
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(sql)?;
+        rows.iter()
+            .map(|r| {
+                Ok(DeviceRow {
+                    device: r.try_get("device").map_err(sql)?,
+                    cs: r.try_get("cs").map_err(sql)?,
+                    change: r.try_get("change").map_err(sql)?,
+                    added: r.try_get("added").map_err(sql)?,
+                    state: i32::try_from(r.try_get::<i64, _>("state").map_err(sql)?)
+                        .unwrap_or_default(),
+                    reported_at: r.try_get("reported_at").map_err(sql)?,
+                })
+            })
+            .collect()
+    }
+
+    /// Every head of a workspace, visible or hidden, by native changeset id.
+    async fn head_set(
+        conn: &mut AnyConnection,
+        entry: &RepoEntry,
+        owner: i64,
+        name: &str,
+    ) -> Result<std::collections::HashSet<Vec<u8>>, Status> {
+        let rows: Vec<Vec<u8>> = sqlx::query_scalar(
+            "SELECT cs FROM cloud_heads WHERE ns = $1 AND owner = $2 AND name = $3",
+        )
+        .bind(entry.ns.as_bytes().to_vec())
+        .bind(owner)
+        .bind(name.to_owned())
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(sql)?;
+        Ok(rows.into_iter().collect())
+    }
+
+    /// Replaces the report of one device (SPEC §21.3.9); returns the drafts kept.
+    pub async fn report_device(
+        &self,
+        ctx: &CallCtx,
+        owner: i64,
+        req: wire::ReportDeviceRequest,
+    ) -> Result<wire::ReportDeviceResponse, Status> {
+        let name = workspace_name(&req.name)?.to_owned();
+        let device = device_name(&req.device)?.to_owned();
+        if req.drafts.len() > MAX_REPORT {
+            return Err(Status::invalid_argument("too many drafts"));
+        }
+        let mut drafts: Vec<(Vec<u8>, Vec<u8>, i64, i64)> = Vec::with_capacity(req.drafts.len());
+        let mut seen = std::collections::HashSet::new();
+        for d in &req.drafts {
+            if d.cs.len() != 32 || d.change.len() != 16 {
+                return Err(Status::invalid_argument(
+                    "a draft needs a native changeset id and a change id",
+                ));
+            }
+            if d.added < 0 {
+                return Err(Status::invalid_argument("added is negative"));
+            }
+            let state = wire::LocalDraftState::try_from(d.state)
+                .ok()
+                .filter(|s| *s != wire::LocalDraftState::Unspecified)
+                .ok_or_else(|| Status::invalid_argument("unknown draft state"))?;
+            if seen.insert(d.cs.clone()) {
+                drafts.push((
+                    d.cs.to_vec(),
+                    d.change.to_vec(),
+                    d.added,
+                    i64::from(i32::from(state)),
+                ));
+            }
+        }
+        let (entry, _) = self.open(ctx).await?;
+        if !self.cloud_enabled(&entry).await? {
+            return Err(Status::failed_precondition(
+                "the commit cloud is off for this repository",
+            ));
+        }
+        let ns = entry.ns.as_bytes().to_vec();
+        let at = now();
+        let mut tx = self.registry.pool().begin().await.map_err(sql)?;
+        sqlx::query(
+            "DELETE FROM cloud_device_drafts WHERE ns = $1 AND owner = $2 AND name = $3 \
+             AND (device = $4 OR reported_at < $5)",
+        )
+        .bind(ns.clone())
+        .bind(owner)
+        .bind(name.clone())
+        .bind(device.clone())
+        .bind(at.saturating_sub(DEVICE_TTL_S))
+        .execute(&mut *tx)
+        .await
+        .map_err(sql)?;
+        for (cs, change, added, state) in &drafts {
+            sqlx::query(
+                "INSERT INTO cloud_device_drafts \
+                 (ns, owner, name, device, cs, change, added, state, reported_at) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+            )
+            .bind(ns.clone())
+            .bind(owner)
+            .bind(name.clone())
+            .bind(device.clone())
+            .bind(cs.clone())
+            .bind(change.clone())
+            .bind(*added)
+            .bind(*state)
+            .bind(at)
+            .execute(&mut *tx)
+            .await
+            .map_err(sql)?;
+        }
+        // Keep the devices reported most recently; this one counts as the newest.
+        let others: Vec<String> = sqlx::query_scalar(
+            "SELECT device FROM cloud_device_drafts \
+             WHERE ns = $1 AND owner = $2 AND name = $3 AND device <> $4 \
+             GROUP BY device ORDER BY MAX(reported_at) DESC, device",
+        )
+        .bind(ns.clone())
+        .bind(owner)
+        .bind(name.clone())
+        .bind(device.clone())
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(sql)?;
+        let keep = usize::try_from(MAX_DEVICES - 1).unwrap_or(0);
+        for old in others.iter().skip(keep) {
+            sqlx::query(
+                "DELETE FROM cloud_device_drafts \
+                 WHERE ns = $1 AND owner = $2 AND name = $3 AND device = $4",
+            )
+            .bind(ns.clone())
+            .bind(owner)
+            .bind(name.clone())
+            .bind(old.clone())
+            .execute(&mut *tx)
+            .await
+            .map_err(sql)?;
+        }
+        tx.commit().await.map_err(sql)?;
+        Ok(wire::ReportDeviceResponse {
+            kept: u32::try_from(drafts.len()).unwrap_or(u32::MAX),
         })
     }
 
@@ -747,6 +964,30 @@ impl CloudRpc {
 // ------------------------------------------------------------------------------ service
 
 /// The `asc.v1.Cloud` tonic service.
+/// One reported draft of one device.
+struct DeviceRow {
+    device: String,
+    cs: Vec<u8>,
+    change: Vec<u8>,
+    added: i64,
+    state: i32,
+    reported_at: i64,
+}
+
+impl DeviceRow {
+    /// The draft as `GetWorkspace.local` lists it: no changeset id, as the server holds no object.
+    fn local(&self) -> wire::LocalDraft {
+        wire::LocalDraft {
+            cs: Bytes::new(),
+            change: Bytes::from(self.change.clone()),
+            added: self.added,
+            state: self.state,
+            device: self.device.clone(),
+            reported_at: self.reported_at,
+        }
+    }
+}
+
 pub struct CloudService {
     rpc: Arc<CloudRpc>,
     authorizer: Arc<dyn Authorizer>,
@@ -900,6 +1141,23 @@ impl Cloud for CloudService {
             .map(Response::new)
     }
 
+    async fn report_device(
+        &self,
+        request: Request<wire::ReportDeviceRequest>,
+    ) -> Result<Response<wire::ReportDeviceResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        let ctx = self
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
+            .await?;
+        // Only the owner reports their devices, and only a verified user identity is an owner.
+        let owner = refpolicy::owner_of(&ctx.principal)
+            .ok_or_else(|| Status::permission_denied("the commit cloud needs a user identity"))?;
+        self.rpc
+            .report_device(&ctx, owner, msg)
+            .await
+            .map(Response::new)
+    }
+
     async fn purge(
         &self,
         request: Request<wire::PurgeRequest>,
@@ -1019,6 +1277,7 @@ mod tests {
             labels: labels.iter().map(|s| (*s).to_owned()).collect(),
             added: 5,
             hidden_at: 9,
+            devices: Vec::new(),
         }
     }
 
@@ -1433,5 +1692,216 @@ mod tests {
         assert_eq!(e.code(), tonic::Code::FailedPrecondition);
         // Reads still work.
         assert_eq!(get(&f, ALICE, "", "w").await.heads.len(), 5);
+    }
+
+    fn local(
+        cs: ChangesetId,
+        change: u8,
+        added: i64,
+        state: wire::LocalDraftState,
+    ) -> wire::LocalDraft {
+        wire::LocalDraft {
+            cs: cs_bytes(cs),
+            change: Bytes::copy_from_slice(&[change; 16]),
+            added,
+            state: state.into(),
+            ..Default::default()
+        }
+    }
+
+    async fn report(
+        f: &Fx,
+        token: &str,
+        device: &str,
+        drafts: Vec<wire::LocalDraft>,
+    ) -> Result<u32, Status> {
+        f.svc
+            .report_device(req(
+                wire::ReportDeviceRequest {
+                    repo: repo_ref(),
+                    name: String::new(),
+                    device: device.into(),
+                    drafts,
+                },
+                token,
+                false,
+            ))
+            .await
+            .map(|r| r.into_inner().kept)
+    }
+
+    async fn located(f: &Fx, token: &str, owner: &str) -> wire::GetWorkspaceResponse {
+        f.svc
+            .get_workspace(req(
+                wire::GetWorkspaceRequest {
+                    repo: repo_ref(),
+                    owner: owner.into(),
+                    include_devices: true,
+                    since_version: 1,
+                    ..Default::default()
+                },
+                token,
+                false,
+            ))
+            .await
+            .unwrap()
+            .into_inner()
+    }
+
+    #[tokio::test]
+    async fn device_reports_say_where_each_draft_is() {
+        use wire::LocalDraftState as S;
+        let f = fx().await;
+        // Before any workspace exists, every reported draft is local.
+        let lone = ChangesetId::from_bytes([0xab; 32]);
+        assert_eq!(
+            report(&f, ALICE, "laptop", vec![local(lone, 7, 50, S::TooLarge)])
+                .await
+                .unwrap(),
+            1
+        );
+        let g = located(&f, ALICE, "").await;
+        assert_eq!((g.version, g.heads.len(), g.local.len()), (0, 0, 1));
+        assert_eq!(g.local[0].device, "laptop");
+        assert_eq!(g.local[0].state, S::TooLarge as i32);
+        assert!(
+            g.local[0].cs.is_empty(),
+            "no object id for a draft the server lacks"
+        );
+        assert_eq!(g.local[0].change.as_ref(), &[7u8; 16]);
+        assert!(g.local[0].reported_at > 100);
+
+        update(&f, ALICE, upd("", 0, vec![head(f.css[0], &[])]))
+            .await
+            .unwrap();
+        // A second report of the same device replaces the first; a duplicate cs counts once.
+        let two = vec![
+            local(f.css[0], 1, 10, S::Uploaded),
+            local(f.css[0], 1, 10, S::Uploaded),
+            local(lone, 7, 60, S::Waiting),
+        ];
+        assert_eq!(report(&f, ALICE, "laptop", two).await.unwrap(), 2);
+        assert_eq!(
+            report(&f, ALICE, "desk", vec![local(f.css[0], 1, 10, S::Uploaded)])
+                .await
+                .unwrap(),
+            1
+        );
+        // since_version is the current version, yet the devices are answered in full.
+        let g = located(&f, ALICE, "").await;
+        assert_eq!(g.heads.len(), 1);
+        let mut devices = g.heads[0].devices.clone();
+        devices.sort();
+        assert_eq!(devices, ["desk", "laptop"]);
+        assert_eq!(g.local.len(), 1);
+        assert_eq!(
+            (g.local[0].state, g.local[0].added),
+            (S::Waiting as i32, 60)
+        );
+        // Without include_devices nothing changes for an old reader.
+        let plain = get(&f, ALICE, "", "").await;
+        assert!(plain.local.is_empty() && plain.heads[0].devices.is_empty());
+        // Another user's locations need repo write, as their workspace does.
+        assert_eq!(located(&f, WRITER, "42").await.local.len(), 1);
+        let e = f
+            .svc
+            .get_workspace(req(
+                wire::GetWorkspaceRequest {
+                    repo: repo_ref(),
+                    owner: "42".into(),
+                    include_devices: true,
+                    ..Default::default()
+                },
+                BOB,
+                false,
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), tonic::Code::PermissionDenied);
+        // Bob's report lands in Bob's workspace only.
+        report(&f, BOB, "laptop", vec![local(lone, 9, 1, S::Failed)])
+            .await
+            .unwrap();
+        assert_eq!(located(&f, ALICE, "").await.local.len(), 1);
+        // An empty report clears the device.
+        assert_eq!(report(&f, ALICE, "laptop", vec![]).await.unwrap(), 0);
+        let g = located(&f, ALICE, "").await;
+        assert_eq!(g.heads[0].devices, ["desk"]);
+        assert!(g.local.is_empty());
+    }
+
+    #[tokio::test]
+    async fn device_reports_are_bounded_and_validated() {
+        use wire::LocalDraftState as S;
+        let f = fx().await;
+        let cs = ChangesetId::from_bytes([1; 32]);
+        for bad in ["", "a b", "lap/top", &"d".repeat(65)] {
+            let e = report(&f, ALICE, bad, vec![]).await.unwrap_err();
+            assert_eq!(e.code(), tonic::Code::InvalidArgument, "{bad:?}");
+        }
+        let short = wire::LocalDraft {
+            cs: Bytes::from_static(&[1; 20]),
+            ..local(cs, 1, 1, S::Waiting)
+        };
+        let no_state = local(cs, 1, 1, S::Unspecified);
+        let unknown = wire::LocalDraft {
+            state: 99,
+            ..local(cs, 1, 1, S::Waiting)
+        };
+        let negative = local(cs, 1, -1, S::Waiting);
+        for d in [short, no_state, unknown, negative] {
+            let e = report(&f, ALICE, "laptop", vec![d]).await.unwrap_err();
+            assert_eq!(e.code(), tonic::Code::InvalidArgument);
+        }
+        let many = (0..=MAX_REPORT)
+            .map(|i| {
+                let mut b = [0u8; 32];
+                b[..8].copy_from_slice(&(i as u64).to_be_bytes());
+                local(ChangesetId::from_bytes(b), 1, 1, S::Waiting)
+            })
+            .collect();
+        assert_eq!(
+            report(&f, ALICE, "laptop", many).await.unwrap_err().code(),
+            tonic::Code::InvalidArgument
+        );
+        // Nine devices: the least recently reported is dropped.
+        for n in 0..9 {
+            sqlx::query("UPDATE cloud_device_drafts SET reported_at = reported_at - 10")
+                .execute(f.reg.pool())
+                .await
+                .unwrap();
+            report(
+                &f,
+                ALICE,
+                &format!("d{n}"),
+                vec![local(cs, 1, 1, S::Waiting)],
+            )
+            .await
+            .unwrap();
+        }
+        let g = located(&f, ALICE, "").await;
+        let mut devices: Vec<&str> = g.local.iter().map(|d| d.device.as_str()).collect();
+        devices.sort_unstable();
+        assert_eq!(devices, ["d1", "d2", "d3", "d4", "d5", "d6", "d7", "d8"]);
+        // A report older than 30 days is not shown and is dropped by the next report.
+        sqlx::query("UPDATE cloud_device_drafts SET reported_at = 1 WHERE device = 'd1'")
+            .execute(f.reg.pool())
+            .await
+            .unwrap();
+        assert_eq!(located(&f, ALICE, "").await.local.len(), 7);
+        report(&f, ALICE, "d2", vec![]).await.unwrap();
+        let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cloud_device_drafts")
+            .fetch_one(f.reg.pool())
+            .await
+            .unwrap();
+        assert_eq!(left, 6, "d1 expired and d2 emptied");
+        // With the cloud off a report is refused.
+        sqlx::query("UPDATE repos SET cloud = FALSE WHERE id = $1")
+            .bind(f.e.key.0)
+            .execute(f.reg.pool())
+            .await
+            .unwrap();
+        let e = report(&f, ALICE, "laptop", vec![]).await.unwrap_err();
+        assert_eq!(e.code(), tonic::Code::FailedPrecondition);
     }
 }

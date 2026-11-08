@@ -374,6 +374,28 @@ impl Drafts {
         rows.iter().map(queue_of).collect()
     }
 
+    /// The queue state of every queued changeset, at most `n` rows.
+    pub async fn queue_states(
+        &self,
+        db: &StateDb,
+        n: usize,
+    ) -> Result<Vec<(ChangesetId, QueueState)>> {
+        let rows =
+            sqlx::query("SELECT cs, state FROM cloud_queue WHERE repo_id = ? ORDER BY cs LIMIT ?")
+                .bind(self.repo.0)
+                .bind(limit(n))
+                .fetch_all(db.pool())
+                .await?;
+        rows.iter()
+            .map(|r| {
+                Ok((
+                    ChangesetId::from_bytes(fixed(r.try_get("cs")?, "cloud_queue.cs")?),
+                    QueueState::from_i64(r.try_get("state")?)?,
+                ))
+            })
+            .collect()
+    }
+
     /// Number of queue rows (any state).
     pub async fn queue_len(&self, db: &StateDb) -> Result<usize> {
         let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cloud_queue WHERE repo_id = ?")

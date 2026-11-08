@@ -48,7 +48,7 @@ use crate::cli::common::{CliError, Ctx, Result, WsCtx};
 use crate::cli::output::Output;
 use crate::cli::pager::PagerWant;
 use crate::daemon::cloud::{
-    Clock, CloudSync, Facts, Gate, RpcCloudStore, StateRows, SystemClock, gate, workspace_name,
+    Clock, CloudSync, Facts, Gate, RpcCloudStore, StateRows, SystemClock, device_name, gate, workspace_name,
 };
 use crate::daemon::scheduler::parse_size;
 use crate::native::NativeSpec;
@@ -539,8 +539,12 @@ async fn upload(ctx: &Ctx, link: &Link, s: &Settings, job: Job) -> Result<Upload
     let syncer = CloudSync::new(
         rows.clone(),
         RpcCloudStore::new(link.wire(), name.clone()),
-        name,
+        name.clone(),
         Arc::new(SystemClock),
+    )
+    .with_reporter(
+        device_name(s.device.as_deref()),
+        Arc::new(RpcCloudStore::new(link.wire(), name)),
     );
     let patterns = ctx.config.get_all("asc.cloud.denyPaths");
     let deny = if patterns.is_empty() {
@@ -877,6 +881,7 @@ pub(crate) async fn workspaces(
                         max_age_s: age,
                         include_hidden: all,
                         page_token: token.clone(),
+                        include_devices: false,
                     },
                     None,
                 ))

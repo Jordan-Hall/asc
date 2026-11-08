@@ -30,7 +30,7 @@ use tonic::codec::CompressionEncoding;
 
 use super::{
     Clock, CloudSync, Due, FEATURE_CLOUD, Facts, Phase, RpcCloudStore, StateRows, Step,
-    SystemClock, Uplink, Uplinks, note, repos_of, tracing_note, workspace_name,
+    SystemClock, Uplink, Uplinks, device_name, note, repos_of, tracing_note, workspace_name,
 };
 use crate::branchless::mode::{CloudSetting, RepoPolicy, Settings as ModeSettings};
 use crate::cli::common::{Ctx, Gate, WsCtx};
@@ -281,13 +281,18 @@ impl Inner {
     }
 
     fn syncer(&self, rows: StateRows) -> Result<CloudSync<RpcCloudStore>, String> {
-        let name = workspace_name(&self.fresh_settings()?.workspace);
+        let settings = self.fresh_settings()?;
+        let name = workspace_name(&settings.workspace);
         let wire = self.remote.session().wire.clone();
         Ok(CloudSync::new(
             rows,
-            RpcCloudStore::new(wire, name.clone()),
-            name,
+            RpcCloudStore::new(wire.clone(), name.clone()),
+            name.clone(),
             self.clock.clone(),
+        )
+        .with_reporter(
+            device_name(settings.device.as_deref()),
+            Arc::new(RpcCloudStore::new(wire, name)),
         ))
     }
 

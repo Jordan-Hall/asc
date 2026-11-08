@@ -247,7 +247,11 @@ const TABLE: &[(&str, Class, &[&str])] = &[
         ],
     ),
     ("Cloud", Class::Cheap, &["GetWorkspace", "ListWorkspaces"]),
-    ("Cloud", Class::Background, &["Purge", "UpdateWorkspace"]),
+    (
+        "Cloud",
+        Class::Background,
+        &["Purge", "ReportDevice", "UpdateWorkspace"],
+    ),
     (
         "Insights",
         Class::Expensive,

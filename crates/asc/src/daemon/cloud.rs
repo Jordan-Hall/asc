@@ -227,11 +227,30 @@ pub fn workspace_name(setting: &mode::Workspace) -> String {
     let raw = match setting {
         mode::Workspace::Default => "default".to_owned(),
         mode::Workspace::Named(n) => n.clone(),
-        mode::Workspace::Host => std::env::var("COMPUTERNAME")
-            .or_else(|_| std::env::var("HOSTNAME"))
-            .or_else(|_| std::env::var("HOST"))
-            .unwrap_or_default(),
+        mode::Workspace::Host => host_name(),
     };
+    name_or(&raw, "default")
+}
+
+/// The host name from the environment, empty when none is set.
+fn host_name() -> String {
+    std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .or_else(|_| std::env::var("HOST"))
+        .unwrap_or_default()
+}
+
+/// The name this machine reports its drafts under: `asc.cloud.device`, else the host name, else
+/// `device`; always `[A-Za-z0-9._-]{1,64}` (SPEC §21.3.9).
+pub fn device_name(setting: Option<&str>) -> String {
+    name_or(
+        setting.map_or_else(host_name, str::to_owned).as_str(),
+        "device",
+    )
+}
+
+/// `raw` with every character outside `[A-Za-z0-9._-]` made `-`, cut to 64; `fallback` if empty.
+fn name_or(raw: &str, fallback: &str) -> String {
     let clean: String = raw
         .chars()
         .map(|c| {
@@ -244,7 +263,7 @@ pub fn workspace_name(setting: &mode::Workspace) -> String {
         .take(64)
         .collect();
     if clean.is_empty() {
-        "default".to_owned()
+        fallback.to_owned()
     } else {
         clean
     }
@@ -418,6 +437,23 @@ fn to_wire_ids(v: &[ChangesetId]) -> Vec<asc_rpc::ModeId<ChangesetId>> {
     v.iter().map(|&c| asc_rpc::ModeId::Asc(c)).collect()
 }
 
+/// Sends the report of one device (SPEC §21.3.9).
+#[async_trait]
+pub trait DeviceReporter: Send + Sync {
+    async fn report(&self, report: &wire_cloud::DeviceReport) -> Result<(), StoreError>;
+}
+
+#[async_trait]
+impl DeviceReporter for RpcCloudStore {
+    async fn report(&self, report: &wire_cloud::DeviceReport) -> Result<(), StoreError> {
+        self.stub()
+            .report_device(self.wire.request(report.to_request(self.repo_ref()), None))
+            .await
+            .map(|_| ())
+            .map_err(|s| StoreError::Other(note(&CallError::from(s).to_string())))
+    }
+}
+
 #[async_trait]
 impl CloudStore for RpcCloudStore {
     async fn get(&self) -> Result<CloudDoc, StoreError> {
@@ -433,6 +469,7 @@ impl CloudStore for RpcCloudStore {
                 max_age_s: 0,
                 include_hidden: true,
                 page_token: token.clone(),
+                include_devices: false,
             };
             let got = self
                 .stub()
@@ -500,6 +537,7 @@ pub struct CloudSync<S: CloudStore> {
     store: S,
     ws_name: String,
     clock: Arc<dyn Clock>,
+    reporter: Option<(String, Arc<dyn DeviceReporter>)>,
 }
 
 impl<S: CloudStore> CloudSync<S> {
@@ -509,7 +547,54 @@ impl<S: CloudStore> CloudSync<S> {
             store,
             ws_name,
             clock,
+            reporter: None,
         }
+    }
+
+    /// After each sync, report the visible drafts of this machine as `device` (SPEC §21.3.9).
+    #[must_use]
+    pub fn with_reporter(mut self, device: String, reporter: Arc<dyn DeviceReporter>) -> Self {
+        self.reporter = Some((device, reporter));
+        self
+    }
+
+    /// The report of this machine: each visible draft and why it is or is not in the workspace.
+    /// `base` is the workspace as the sync just left it.
+    async fn device_report(
+        &self,
+        device: &str,
+        visible: &[drafts::DraftHead],
+        base: &[ChangesetId],
+    ) -> Result<wire_cloud::DeviceReport, String> {
+        let queued: HashMap<ChangesetId, drafts::QueueState> = self
+            .rows
+            .drafts
+            .queue_states(&self.rows.db, drafts::MAX_BATCH)
+            .await
+            .map_err(|e| note(&e.to_string()))?
+            .into_iter()
+            .collect();
+        let base: BTreeSet<ChangesetId> = base.iter().copied().collect();
+        let drafts = visible
+            .iter()
+            .map(|h| wire_cloud::DeviceDraft {
+                cs: h.cs,
+                change: h.change,
+                added: h.added,
+                state: match (base.contains(&h.cs), queued.get(&h.cs)) {
+                    (true, _) => wire_cloud::DraftState::Uploaded,
+                    (false, Some(drafts::QueueState::Pending)) => wire_cloud::DraftState::Waiting,
+                    (false, Some(drafts::QueueState::Failed)) => wire_cloud::DraftState::Failed,
+                    (false, Some(drafts::QueueState::TooLarge)) => wire_cloud::DraftState::TooLarge,
+                    (false, None) => wire_cloud::DraftState::NotQueued,
+                },
+            })
+            .collect();
+        Ok(wire_cloud::DeviceReport {
+            name: self.ws_name.clone(),
+            device: device.to_owned(),
+            drafts,
+        })
     }
 
     /// One sync. A remote head that is new here is not added to the local rows (its objects and
@@ -587,6 +672,17 @@ impl<S: CloudStore> CloudSync<S> {
         // Drafts that changed on another device wake the live driver (SPEC §21.3.8).
         if !out.local.add.is_empty() || !out.local.hide.is_empty() || !out.local.unhide.is_empty() {
             cloud_wake().notify(self.rows.repo);
+        }
+        // The report only tells the hub where a draft is; a server without it, or a failure,
+        // leaves the sync as it was.
+        if let Some((device, reporter)) = &self.reporter {
+            let sent = match self.device_report(device, &visible, &base).await {
+                Ok(report) => reporter.report(&report).await.map_err(|e| e.to_string()),
+                Err(e) => Err(e),
+            };
+            if let Err(e) = sent {
+                tracing_note(self.rows.repo, &format!("device report: {e}"));
+            }
         }
         Ok(out.version)
     }

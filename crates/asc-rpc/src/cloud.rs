@@ -106,6 +106,75 @@ impl From<&CloudHead> for pb::CloudHead {
             labels: h.labels.iter().map(|l| l.0.clone()).collect(),
             added: h.added,
             hidden_at: h.hidden_at,
+            devices: Vec::new(),
+        }
+    }
+}
+
+/// Why a draft a device holds is or is not in the workspace (`asc.v1.LocalDraftState`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DraftState {
+    Uploaded,
+    Waiting,
+    Failed,
+    TooLarge,
+    NotQueued,
+}
+
+impl From<DraftState> for pb::LocalDraftState {
+    fn from(s: DraftState) -> Self {
+        match s {
+            DraftState::Uploaded => Self::Uploaded,
+            DraftState::Waiting => Self::Waiting,
+            DraftState::Failed => Self::Failed,
+            DraftState::TooLarge => Self::TooLarge,
+            DraftState::NotQueued => Self::NotQueued,
+        }
+    }
+}
+
+/// One visible draft of a device, as `ReportDevice` sends it: metadata only.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeviceDraft {
+    pub cs: ChangesetId,
+    pub change: ChangeId,
+    pub added: i64,
+    pub state: DraftState,
+}
+
+/// Most drafts in one `ReportDevice`.
+pub const MAX_REPORT: usize = 1_000;
+
+/// A `ReportDeviceRequest`: the visible drafts of `device` in workspace `name`, the newest
+/// [`MAX_REPORT`] when there are more.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeviceReport {
+    pub name: String,
+    pub device: String,
+    pub drafts: Vec<DeviceDraft>,
+}
+
+impl DeviceReport {
+    /// The request for `repo`; changeset ids are native whatever the id mode.
+    pub fn to_request(&self, repo: pb::RepoRef) -> pb::ReportDeviceRequest {
+        let mut newest: Vec<&DeviceDraft> = self.drafts.iter().collect();
+        newest.sort_by(|a, b| b.added.cmp(&a.added).then(a.cs.cmp(&b.cs)));
+        newest.truncate(MAX_REPORT);
+        pb::ReportDeviceRequest {
+            repo: Some(repo),
+            name: self.name.clone(),
+            device: self.device.clone(),
+            drafts: newest
+                .into_iter()
+                .map(|d| pb::LocalDraft {
+                    cs: Bytes::copy_from_slice(d.cs.as_bytes()),
+                    change: Bytes::copy_from_slice(d.change.as_bytes()),
+                    added: d.added,
+                    state: pb::LocalDraftState::from(d.state).into(),
+                    device: String::new(),
+                    reported_at: 0,
+                })
+                .collect(),
         }
     }
 }
@@ -227,7 +296,39 @@ mod tests {
             labels: vec!["feat/a-b.c_d".into()],
             added: 5,
             hidden_at: 0,
+            devices: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_device_report_sends_the_newest_drafts_with_native_ids() {
+        let d = |n: u8, added: i64| DeviceDraft {
+            cs: ChangesetId::from_bytes([n; 32]),
+            change: ChangeId::from_bytes([n; 16]),
+            added,
+            state: DraftState::Waiting,
+        };
+        let mut drafts: Vec<DeviceDraft> = (0..=255u8).map(|n| d(n, i64::from(n))).collect();
+        for extra in 0..1_000i64 {
+            drafts.push(d(0, -1 - extra));
+        }
+        let r = DeviceReport {
+            name: "default".into(),
+            device: "laptop".into(),
+            drafts,
+        }
+        .to_request(pb::RepoRef::default());
+        assert_eq!(r.drafts.len(), MAX_REPORT);
+        assert_eq!(r.drafts[0].added, 255, "newest first");
+        assert_eq!(r.drafts[0].cs.as_ref(), &[255u8; 32]);
+        assert_eq!(r.drafts[0].change.as_ref(), &[255u8; 16]);
+        assert_eq!(r.drafts[0].state, pb::LocalDraftState::Waiting as i32);
+        assert_eq!((r.device.as_str(), r.name.as_str()), ("laptop", "default"));
+        assert!(
+            r.drafts
+                .iter()
+                .all(|x| x.device.is_empty() && x.reported_at == 0)
+        );
     }
 
     #[test]
@@ -307,6 +408,7 @@ mod tests {
             removed: vec![cs(9)],
             omitted: 4,
             next_page_token: "t".into(),
+            local: Vec::new(),
         };
         let w = Workspace::from_response(&r, IdMode::Asc).unwrap();
         assert_eq!(

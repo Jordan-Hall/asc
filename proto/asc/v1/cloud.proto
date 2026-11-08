@@ -9,17 +9,21 @@ service Cloud {
   rpc UpdateWorkspace(UpdateWorkspaceRequest) returns (UpdateWorkspaceResponse); // background, x-asc-op-id
   rpc ListWorkspaces(ListWorkspacesRequest) returns (ListWorkspacesResponse);    // cheap, paged
   rpc Purge(PurgeRequest) returns (PurgeResponse);                               // owner (own unsubmitted drafts) or admin
+  rpc ReportDevice(ReportDeviceRequest) returns (ReportDeviceResponse);          // owner; replaces the device's report
 }
 
 // `change` is response only: the server derives it from the `m/` object of `cs` and ignores the client value.
 // `labels` are at most 8, each at most 64 bytes of [A-Za-z0-9._/-], else INVALID_ARGUMENT. Untrusted text.
-message CloudHead { bytes cs = 1; bytes change = 2; repeated string labels = 3; int64 added = 4; int64 hidden_at = 5; }
+message CloudHead { bytes cs = 1; bytes change = 2; repeated string labels = 3; int64 added = 4; int64 hidden_at = 5;
+  repeated string devices = 6; }   // response only: the devices whose last report holds this head too
 
 // `owner` empty means the caller; reading another user's workspace needs repo write (§21.2.5).
 message GetWorkspaceRequest { RepoRef repo = 1; string owner = 2; string name = 3;
-  uint64 since_version = 4; int64 max_age_s = 5; bool include_hidden = 6; string page_token = 7; }
+  uint64 since_version = 4; int64 max_age_s = 5; bool include_hidden = 6; string page_token = 7;
+  bool include_devices = 8; }   // fill CloudHead.devices and, on the first page, `local`
 message GetWorkspaceResponse { uint64 version = 1; repeated CloudHead heads = 2; repeated bytes removed = 3;
-  uint32 omitted = 4; string next_page_token = 5; }
+  uint32 omitted = 4; string next_page_token = 5;
+  repeated LocalDraft local = 6; }   // drafts a device reported that are not in the workspace
 
 message UpdateWorkspaceRequest { RepoRef repo = 1; string name = 2; uint64 base_version = 3;
   repeated CloudHead add = 4; repeated bytes remove = 5; repeated bytes hide = 6; repeated bytes unhide = 7; }
@@ -34,3 +38,22 @@ message ListWorkspacesResponse { repeated WorkspaceInfo workspaces = 1; string n
 // `unacked_tiers` names cache tiers that have not yet acknowledged the eviction.
 message PurgeRequest { RepoRef repo = 1; repeated bytes cs = 2; }
 message PurgeResponse { uint32 purged = 1; repeated bytes refused = 2; repeated string unacked_tiers = 3; }
+
+// Where a draft is (SPEC §21.3.9). A client tells the server which visible drafts one device holds and why
+// each one that is not in the workspace stayed local, so the owner sees on the hub what is only on a laptop.
+// Only metadata is sent: the change id, when the draft was made and its upload state; never content.
+enum LocalDraftState {
+  LOCAL_DRAFT_STATE_UNSPECIFIED = 0;
+  LOCAL_DRAFT_STATE_UPLOADED = 1;    // in the workspace
+  LOCAL_DRAFT_STATE_WAITING = 2;     // queued for upload
+  LOCAL_DRAFT_STATE_FAILED = 3;      // the upload failed and is parked
+  LOCAL_DRAFT_STATE_TOO_LARGE = 4;   // over the upload size limit
+  LOCAL_DRAFT_STATE_NOT_QUEUED = 5;  // not in the upload queue: it was full, or the draft predates the cloud
+}
+// `cs` is the native changeset id (32 bytes) in a report; in GetWorkspace.local it is empty, as the server
+// holds no object for it. `device` is response only.
+message LocalDraft { bytes cs = 1; bytes change = 2; int64 added = 3; LocalDraftState state = 4;
+  string device = 5; int64 reported_at = 6; }
+// `device` is [A-Za-z0-9._-]{1,64}; `drafts` at most 1,000 (the newest). Needs the cloud flag of the repository.
+message ReportDeviceRequest { RepoRef repo = 1; string name = 2; string device = 3; repeated LocalDraft drafts = 4; }
+message ReportDeviceResponse { uint32 kept = 1; }
