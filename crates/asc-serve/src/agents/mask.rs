@@ -47,28 +47,51 @@ impl Masker {
 
     /// `text` with every secret replaced, cut to [`MAX_EVENT_TEXT`] bytes.
     pub fn mask(&self, text: &str) -> String {
-        let mut s = text.to_owned();
+        let out = self.mask_bytes(text.as_bytes());
+        truncate(String::from_utf8_lossy(&out).into_owned(), MAX_EVENT_TEXT)
+    }
+
+    /// `data` with every secret replaced and nothing cut; bytes that are not UTF-8 are kept as they are.
+    pub fn mask_bytes(&self, data: &[u8]) -> Vec<u8> {
+        let mut s = data.to_vec();
         for e in &self.exact {
-            if s.contains(e.as_str()) {
-                s = s.replace(e.as_str(), MASK);
-            }
+            s = replace_all(&s, e.as_bytes());
         }
-        let mut out = String::with_capacity(s.len());
-        let bytes = s.as_bytes();
-        let scanned = self.rules.scan(bytes);
+        let scanned = self.rules.scan(&s);
+        let mut out = Vec::with_capacity(s.len());
         let mut at = 0;
         for hit in &scanned.hits {
             let r = &hit.value;
-            if r.start < at || r.end > bytes.len() {
+            if r.start < at || r.end > s.len() {
                 continue;
             }
-            out.push_str(&String::from_utf8_lossy(&bytes[at..r.start]));
-            out.push_str(MASK);
+            out.extend_from_slice(&s[at..r.start]);
+            out.extend_from_slice(MASK.as_bytes());
             at = r.end;
         }
-        out.push_str(&String::from_utf8_lossy(&bytes[at..]));
-        truncate(out, MAX_EVENT_TEXT)
+        out.extend_from_slice(&s[at..]);
+        out
     }
+}
+
+/// `hay` with every occurrence of `needle` (not empty) replaced by [`MASK`].
+fn replace_all(hay: &[u8], needle: &[u8]) -> Vec<u8> {
+    if needle.is_empty() || hay.len() < needle.len() {
+        return hay.to_vec();
+    }
+    let mut out = Vec::with_capacity(hay.len());
+    let mut at = 0;
+    while at + needle.len() <= hay.len() {
+        if &hay[at..at + needle.len()] == needle {
+            out.extend_from_slice(MASK.as_bytes());
+            at += needle.len();
+        } else {
+            out.push(hay[at]);
+            at += 1;
+        }
+    }
+    out.extend_from_slice(&hay[at..]);
+    out
 }
 
 /// Cuts `s` to at most `max` bytes at a character boundary, saying so.
@@ -120,5 +143,29 @@ mod tests {
         m.add("tiny");
         assert_eq!(m.exact.len(), 1);
         assert_eq!(m.mask("x a-late-secret-value y tiny"), "x *** y tiny");
+    }
+
+    #[test]
+    fn bytes_are_masked_whole_and_other_bytes_kept() {
+        let m = Masker::new(["a-step-secret".to_owned()]);
+        let mut log = b"\xff start a-step-secreta-step-secret end ".to_vec();
+        log.extend(std::iter::repeat_n(b'x', MAX_EVENT_TEXT * 2));
+        let out = m.mask_bytes(&log);
+        assert!(
+            out.starts_with(b"\xff start ****** end "),
+            "{:?}",
+            &out[..24]
+        );
+        assert_eq!(
+            out.len(),
+            log.len() - 2 * ("a-step-secret".len() - MASK.len()),
+            "nothing is cut"
+        );
+        assert_eq!(
+            m.mask_bytes(b"a-step-secre"),
+            b"a-step-secre",
+            "a prefix is not the secret"
+        );
+        assert_eq!(replace_all(b"abc", b""), b"abc");
     }
 }

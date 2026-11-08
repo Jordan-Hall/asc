@@ -363,7 +363,9 @@ pub fn build_grpc(ext: &Extensions, authorizer: Arc<dyn Authorizer>, info: Serve
                     .into_service(),
             )
             .add_service(
-                ci::rpc::CiService::new(h.clone(), guarded.clone(), info.clone()).into_service(),
+                ci::rpc::CiService::new(h.clone(), guarded.clone(), info.clone())
+                    .with_secrets(ext.workflows.get().map(|w| w.secrets.clone()))
+                    .into_service(),
             )
             .add_service(
                 queue::rpc::QueueService::new(h.clone(), guarded.clone(), info.clone())

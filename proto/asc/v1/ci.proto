@@ -110,7 +110,9 @@ message ReportRunResponse {
   CiRun run = 1;
 }
 
-// `dropped` is true when the job's log is full and these bytes were not kept.
+// `dropped` is true when the job's log is full and these bytes were not kept. The repository's secret values and
+// recognised credentials are replaced with `***` before the bytes are stored, and again when the log is read; an
+// append the server cannot check (a locked vault) is refused with UNAVAILABLE.
 message AppendJobLogRequest {
   RepoRef repo = 1;
   uint64 run_id = 2;

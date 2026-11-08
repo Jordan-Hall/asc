@@ -27,11 +27,13 @@ use super::{
     DEFAULT_LOG, DEFAULT_PAGE, MAX_APPEND, MAX_JOBS, MAX_LOG, MAX_LOG_READ, MAX_PAGE, MAX_RUNS,
     is_terminal,
 };
+use crate::agents::mask::Masker;
 use crate::registry::RepoEntry;
 use crate::review::{
     Env, Reviews, WriteError, after_token, change_of, next_id, now, page_limit, parse_after,
     placeholders, retry_conflict, sql, store,
 };
+use crate::workflows::secrets::Secrets;
 
 /// Marks an `op_results` row as the result of `AppendJobLog`: the tag, then the log size.
 const OP_TAG: &[u8; 3] = b"cl1";
@@ -720,6 +722,7 @@ async fn read_log(
 pub struct CiService {
     hub: Arc<Reviews>,
     env: Env,
+    secrets: Option<Secrets>,
 }
 
 impl CiService {
@@ -727,6 +730,33 @@ impl CiService {
         Self {
             hub,
             env: Env { authorizer, info },
+            secrets: None,
+        }
+    }
+
+    /// The repositories' workflow secrets, whose values are masked in every job log (docs/SPEC.md, "Secrets in job logs").
+    #[must_use]
+    pub fn with_secrets(mut self, secrets: Option<Secrets>) -> Self {
+        self.secrets = secrets;
+        self
+    }
+
+    /// The masker of `ctx`'s repository: its secret values and the built-in credential rules. When the values
+    /// cannot be opened, `strict` refuses (an append) and otherwise the rules alone apply (a read; what was stored
+    /// was masked when it was appended).
+    async fn masker(&self, ctx: &CallCtx, strict: bool) -> Result<Masker, Status> {
+        let Some(secrets) = &self.secrets else {
+            return Ok(Masker::new([]));
+        };
+        match secrets.open_all(ctx.repo.as_str()).await {
+            Ok(values) => Ok(Masker::new(values.iter().map(|v| v.to_string()))),
+            Err(e) if strict => {
+                tracing::warn!(repo = %ctx.repo.as_str(), error = ?e, "ci log: the repository's secrets could not be opened");
+                Err(Status::unavailable(
+                    "the repository's secrets cannot be read, so the log cannot be checked for them; try again",
+                ))
+            }
+            Err(_) => Ok(Masker::new([])),
         }
     }
 
@@ -763,7 +793,11 @@ impl Ci for CiService {
             .env
             .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
             .await?;
-        self.hub.ci_job_log(&ctx, msg).await.map(Response::new)
+        let mut resp = self.hub.ci_job_log(&ctx, msg).await?;
+        // The offsets stay those of the stored bytes, so a reader that follows the log is not thrown off.
+        let masker = self.masker(&ctx, false).await?;
+        resp.data = Bytes::from(masker.mask_bytes(&resp.data));
+        Ok(Response::new(resp))
     }
 
     async fn report_run(
@@ -782,11 +816,15 @@ impl Ci for CiService {
         &self,
         request: Request<wire::AppendJobLogRequest>,
     ) -> Result<Response<wire::AppendJobLogResponse>, Status> {
-        let (meta, ext, msg) = request.into_parts();
+        let (meta, ext, mut msg) = request.into_parts();
         let ctx = self
             .env
             .context(&meta, &ext, msg.repo.as_ref(), Access::Admin, true)
             .await?;
+        if !msg.data.is_empty() && msg.data.len() <= MAX_APPEND {
+            let masker = self.masker(&ctx, true).await?;
+            msg.data = Bytes::from(masker.mask_bytes(&msg.data));
+        }
         self.hub.ci_append_log(&ctx, msg).await.map(Response::new)
     }
     async fn stats(

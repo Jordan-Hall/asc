@@ -208,6 +208,26 @@ impl Secrets {
         Ok(r.rows_affected() == 1)
     }
 
+    /// Every value of the repository, to keep them out of what a run prints (`Ci.AppendJobLog`). At most
+    /// [`MAX_PER_REPO`] values.
+    pub async fn open_all(&self, repo: &str) -> Result<Vec<Zeroizing<String>>, SecretError> {
+        let repo = repo.to_ascii_lowercase();
+        let rows = sqlx::query("SELECT name, sealed FROM workflow_secrets WHERE repo = $1")
+            .bind(repo.clone())
+            .fetch_all(&self.pool)
+            .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for r in &rows {
+            let name: String = r.try_get("name")?;
+            let sealed: Vec<u8> = r.try_get("sealed")?;
+            let plain = self.vault.open(&ctx(&repo, &name), &sealed)?;
+            let text = String::from_utf8(plain.to_vec())
+                .map_err(|_| SecretError::Vault(VaultError::Corrupt))?;
+            out.push(Zeroizing::new(text));
+        }
+        Ok(out)
+    }
+
     /// The plaintext, for the one process that needs it. `None`: no such secret.
     pub async fn open(
         &self,
