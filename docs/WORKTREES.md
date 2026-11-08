@@ -31,7 +31,9 @@ no effect on a virtual worktree, which keeps no copies to share.
 `asc worktree convert --plain` turns a virtual worktree into a plain one. It stops serving the
 worktree and takes the virtual marks off the files on disk, keeping your edits, new files and
 deletions. It asks the daemon for the deletions before the worktree stops being served, because
-Windows can hide a deleted file from a folder listing. Then it writes the other tracked files from the object store. If it stops part way
+Windows can hide a deleted file from a folder listing and from a lookup by its name. The daemon
+remembers each file and folder you delete or move away while it serves the worktree, and also
+looks for deleted files on disk. Then it writes the other tracked files from the object store. If it stops part way
 (a crash, a full disk), run it again: it goes on from where it stopped.
 
 ## How link mode works
