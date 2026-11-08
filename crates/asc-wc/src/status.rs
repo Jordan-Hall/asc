@@ -937,7 +937,9 @@ mod tests {
     /// A fixture whose checkouts link into a shared area, and that area.
     fn linked() -> (Fixture, PathBuf) {
         let mut fx = Fixture::new();
-        let area = fx._dir.path().join("home").join(crate::shared::AREA);
+        let areas = fx._dir.path().join("home").join(crate::shared::AREA);
+        crate::shared::trust_area(&areas);
+        let area = areas.join(asc_state::RepoId::new().to_string());
         fx.shared = Some(area.clone());
         (fx, area)
     }

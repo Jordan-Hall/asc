@@ -151,7 +151,9 @@ impl Overlay {
             let Some(abs) = safe.resolve(path) else {
                 continue;
             };
-            let Ok(meta) = asc_wc::shared::metadata(&abs) else {
+            // Not `asc_wc::shared::metadata`: a link, a link-mode file included, is never read
+            // into the overlay, so a planted link cannot pull another repository's file in.
+            let Ok(meta) = std::fs::symlink_metadata(&abs) else {
                 continue;
             };
             if is_link(&meta) || !meta.is_file() || meta.len() > skip::MAX_BYTES as u64 {

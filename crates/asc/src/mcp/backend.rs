@@ -103,6 +103,8 @@ struct Inner {
     root: PathBuf,
     ws_id: String,
     sources: IgnoreSources,
+    /// The repository's shared blob area (link-mode files point into it).
+    area: PathBuf,
     route: Route,
     pool: DescriptorPool,
     /// The write level the user granted, and whether this workspace uploads drafts at once.
@@ -146,6 +148,7 @@ impl LocalBackend {
                 root: ws.projection.toplevel().to_path_buf(),
                 ws_id: ws.workspace.ws.id.to_string(),
                 sources: crate::cli::check_ignore::ignore_sources(ctx, ws),
+                area: ws.home.shared_blobs(ws.repo.repo.id),
                 route,
                 pool,
                 write: WriteLevel::None,
@@ -188,6 +191,7 @@ impl LocalBackend {
     #[must_use]
     pub fn gate(&self) -> Gate {
         Gate::new(self.inner.root.clone(), self.inner.sources.clone())
+            .with_area(Some(self.inner.area.clone()))
     }
 
     /// The daemon channel with the launch workspace mounted, for `Workspace.Watch` (M11).
@@ -441,7 +445,8 @@ impl Inner {
         let Some(wanted) = args.get("worktree").and_then(Value::as_str) else {
             return Ok(Target {
                 ws_id: self.ws_id.clone(),
-                gate: Gate::new(self.root.clone(), self.sources.clone()),
+                gate: Gate::new(self.root.clone(), self.sources.clone())
+                    .with_area(Some(self.area.clone())),
             });
         };
         let wanted_canon = std::fs::canonicalize(wanted)
@@ -450,7 +455,7 @@ impl Inner {
             if std::fs::canonicalize(&path).is_ok_and(|p| p == wanted_canon) {
                 return Ok(Target {
                     ws_id,
-                    gate: Gate::new(path, self.sources.clone()),
+                    gate: Gate::new(path, self.sources.clone()).with_area(Some(self.area.clone())),
                 });
             }
         }
@@ -722,7 +727,9 @@ impl Inner {
                 "search needs an asc server: this repository has no origin",
             ));
         };
-        let gate = Arc::new(Gate::new(self.root.clone(), self.sources.clone()));
+        let gate = Arc::new(
+            Gate::new(self.root.clone(), self.sources.clone()).with_area(Some(self.area.clone())),
+        );
         check_paths(&gate, "search", args)?;
         // The outline of a file takes its path as the query.
         if args.get("mode").and_then(Value::as_str) == Some("symbol")
@@ -823,9 +830,10 @@ impl Inner {
                 .gate
                 .check(path, Disk::Worktree, false)
                 .map_err(|r| refusal(&r))?;
+            let opened = t.gate.open(&abs);
             let read = tokio::task::spawn_blocking(move || -> std::io::Result<(Vec<u8>, u64)> {
                 use std::io::Read as _;
-                let f = Gate::open(&abs)?;
+                let f = opened?;
                 let len = f.metadata()?.len();
                 let mut buf = Vec::new();
                 f.take(MAX_FILE as u64 + 1).read_to_end(&mut buf)?;

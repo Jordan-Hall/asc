@@ -424,7 +424,7 @@ impl WcParts {
             // A virtual work tree is served from the store: there is nothing to link.
             _ if projected.is_some() => None,
             None | Some("copy") => None,
-            Some("symlink") => Some(ws.home.shared_blobs()),
+            Some("symlink") => Some(ws.home.shared_blobs(ws.repo.repo.id)),
             Some(other) => {
                 return Err(fatal(format!(
                     "asc: invalid asc.worktree.link '{other}'; use copy or symlink"

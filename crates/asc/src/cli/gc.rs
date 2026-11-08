@@ -174,7 +174,7 @@ fn shared_grace(ctx: &Ctx) -> Result<std::time::Duration> {
 /// Prunes the shared blob area down to the files that links in registered plain workspaces name.
 async fn prune_shared(ctx: &Ctx, home: &AscHome, local: &LocalArgs) -> Result<()> {
     let grace = shared_grace(ctx)?;
-    let area = home.shared_blobs();
+    let area = home.shared_blob_areas();
     if !area.is_dir() {
         return Ok(());
     }

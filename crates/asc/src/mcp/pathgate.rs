@@ -13,6 +13,10 @@
 //!
 //! [`Gate::open`] opens the final file with the platform's no-follow flag and re-checks what was
 //! opened, so a link swapped in after [`Gate::check`] is still not read through.
+//!
+//! The one link the gate reads through is a link-mode file (`asc.worktree.link = symlink`) into
+//! this repository's own shared area ([`Gate::with_area`]): a link into another repository's area,
+//! or into any area when the gate has none, is refused like any other link.
 
 use std::fs::{self, File, OpenOptions};
 use std::io;
@@ -75,6 +79,8 @@ pub enum Disk {
 pub struct Gate {
     root: PathBuf,
     sources: IgnoreSources,
+    /// The repository's shared blob area: links into it are its link-mode files.
+    area: Option<PathBuf>,
 }
 
 fn invalid(p: &str) -> Refusal {
@@ -155,7 +161,27 @@ impl Gate {
     #[must_use]
     pub fn new(root: PathBuf, mut sources: IgnoreSources) -> Self {
         sources.local_exclude = root.join(".asc/info/exclude");
-        Self { root, sources }
+        Self {
+            root,
+            sources,
+            area: None,
+        }
+    }
+
+    /// The gate with `area` (`<home>/shared-blobs/<repo-id>`) as the repository's shared blob
+    /// area: a link-mode file linking into it reads as the file it points to.
+    #[must_use]
+    pub fn with_area(mut self, area: Option<PathBuf>) -> Self {
+        self.area = area;
+        self
+    }
+
+    /// The target of the link-mode file at `abs`, if it links into this repository's area.
+    fn shared_target(&self, abs: &Path) -> Option<PathBuf> {
+        let area = self.area.as_deref()?;
+        let target = asc_wc::shared::link_target(abs)?;
+        let (_, _, of) = asc_wc::shared::area_of_target(&target)?;
+        (of == area).then_some(target)
     }
 
     /// The worktree root.
@@ -189,9 +215,7 @@ impl Gate {
             if on_disk {
                 match fs::symlink_metadata(&cur) {
                     // A link-mode file (`asc.worktree.link`) is the shared file it points to.
-                    Ok(m)
-                        if is_link(&m) && !(last && asc_wc::shared::link_blob(&cur).is_some()) =>
-                    {
+                    Ok(m) if is_link(&m) && !(last && self.shared_target(&cur).is_some()) => {
                         return Err(Refusal::Link(shown(&rel)));
                     }
                     Ok(m) => is_dir = m.is_dir(),
@@ -225,12 +249,10 @@ impl Gate {
     ///
     /// # Errors
     /// An I/O error, or `InvalidInput` when the opened object is a link or not a regular file.
-    pub fn open(abs: &Path) -> io::Result<File> {
-        // A link-mode file opens as the shared file it points to, itself never a link.
-        let target = match asc_wc::shared::link_blob(abs) {
-            Some(_) => Some(fs::read_link(abs)?),
-            None => None,
-        };
+    pub fn open(&self, abs: &Path) -> io::Result<File> {
+        // A link-mode file of this repository opens as the shared file it points to, itself
+        // never a link.
+        let target = self.shared_target(abs);
         let abs = target.as_deref().unwrap_or(abs);
         let mut o = OpenOptions::new();
         o.read(true);
@@ -351,7 +373,39 @@ mod tests {
             g.check("filelink", Disk::Worktree, false),
             Err(Refusal::Link(_))
         ));
-        assert!(Gate::open(&t.path().join("filelink")).is_err());
+        assert!(g.open(&t.path().join("filelink")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_this_repositorys_link_mode_files_are_read_through() {
+        use std::io::Read as _;
+        let t = tempfile::tempdir().unwrap();
+        let h = tempfile::tempdir().unwrap();
+        let home = asc_state::AscHome::open(h.path().join("home")).unwrap();
+        let (mine, theirs) = (asc_state::RepoId::new(), asc_state::RepoId::new());
+        let oid = asc_core::id::GitOid::from_bytes([1; 20]);
+        for (repo, name, data) in [(mine, "mine.txt", "m"), (theirs, "theirs.txt", "t")] {
+            let file = asc_wc::shared::path_in(&home.shared_blobs(repo), oid, false);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(&file, data).unwrap();
+            std::os::unix::fs::symlink(&file, t.path().join(name)).unwrap();
+        }
+        let g = gate(t.path()).with_area(Some(home.shared_blobs(mine)));
+        let abs = g.check("mine.txt", Disk::Worktree, false).unwrap();
+        let mut got = String::new();
+        g.open(&abs).unwrap().read_to_string(&mut got).unwrap();
+        assert_eq!(got, "m");
+        assert!(matches!(
+            g.check("theirs.txt", Disk::Worktree, false),
+            Err(Refusal::Link(_))
+        ));
+        assert!(g.open(&t.path().join("theirs.txt")).is_err());
+        // A gate without an area reads through no link.
+        assert!(matches!(
+            gate(t.path()).check("mine.txt", Disk::Worktree, false),
+            Err(Refusal::Link(_))
+        ));
     }
 
     #[cfg(windows)]

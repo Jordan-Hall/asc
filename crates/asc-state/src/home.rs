@@ -9,8 +9,8 @@ use uuid::Uuid;
 
 /// Object classes with a directory under `cache/` and `store/` (SPEC §3.1).
 const OBJECT_DIRS: [&str; 9] = ["f", "l", "k", "t", "c", "g", "o", "m", "d"];
-/// The directory, under the home, of the shared blob area (`asc.worktree.link = symlink`). It is
-/// created on first use.
+/// The directory, under the home, of the shared blob areas (`asc.worktree.link = symlink`), one
+/// per repository. It is created on first use.
 pub const SHARED_BLOBS: &str = "shared-blobs";
 /// Top-level directories created with the home.
 const TOP_DIRS: [&str; 10] = [
@@ -117,8 +117,10 @@ impl AscHome {
         Self::open(root.to_owned())
     }
 
-    /// Uses `root` as the home, creating the layout.
+    /// Uses `root` as the home, creating the layout. The home's shared blob areas become trusted
+    /// for this process ([`crate::shared_blob::trust_area`]).
     pub fn open(root: PathBuf) -> Result<Self, HomeError> {
+        let root = std::path::absolute(&root).unwrap_or(root);
         let create = |path: PathBuf| {
             std::fs::create_dir_all(&path).map_err(|source| HomeError::Create { path, source })
         };
@@ -131,6 +133,7 @@ impl AscHome {
                 create(root.join(tier).join(class))?;
             }
         }
+        crate::shared_blob::trust_area(&root.join(SHARED_BLOBS));
         Ok(Self { root })
     }
 
@@ -154,9 +157,16 @@ impl AscHome {
         self.root.join("tmp")
     }
 
-    /// The shared blob area that link-mode checkouts point into (`asc.worktree.link`).
-    pub fn shared_blobs(&self) -> PathBuf {
+    /// The directory holding every repository's shared blob area (`asc.worktree.link`).
+    pub fn shared_blob_areas(&self) -> PathBuf {
         self.root.join(SHARED_BLOBS)
+    }
+
+    /// `shared-blobs/<id>/`: the shared blob area that link-mode checkouts of `repo` point into.
+    /// Each repository has its own, so a link in one repository's work tree never reads as a file
+    /// of another's.
+    pub fn shared_blobs(&self, repo: RepoId) -> PathBuf {
+        self.shared_blob_areas().join(repo.to_string())
     }
 
     pub fn run(&self) -> PathBuf {

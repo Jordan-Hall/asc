@@ -852,7 +852,9 @@ mod tests {
     #[tokio::test]
     async fn a_committed_link_into_a_shared_area_is_never_made() {
         let fx = Fixture::new();
-        let area = fx._dir.path().join(shared::AREA);
+        let areas = fx._dir.path().join(shared::AREA);
+        shared::trust_area(&areas);
+        let area = areas.join(asc_state::RepoId::new().to_string());
         let target = shared::path_in(&area, blob_oid(b"secret"), false);
         let text = target.to_string_lossy().into_owned();
         let to = fx.tree(&[("evil", Kind::Symlink, text.as_bytes())]).await;
@@ -867,7 +869,9 @@ mod tests {
     #[tokio::test]
     async fn linked_executables_have_their_own_shared_copy() {
         let mut fx = Fixture::new();
-        let area = fx._dir.path().join(shared::AREA);
+        let areas = fx._dir.path().join(shared::AREA);
+        shared::trust_area(&areas);
+        let area = areas.join(asc_state::RepoId::new().to_string());
         fx.shared = Some(area.clone());
         let to = fx.tree(&t1()).await;
         checkout(&fx.wc(), fx.empty(), to, Mode::Safe)

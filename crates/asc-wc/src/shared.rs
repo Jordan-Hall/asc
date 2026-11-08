@@ -1,11 +1,12 @@
 //! Shared blob links (`asc.worktree.link = symlink`).
 //!
-//! A plain checkout in link mode keeps one copy of each unchanged file per machine, in the
-//! shared area `<asc home>/shared-blobs/`, and puts a symbolic link to it in the work tree. The
-//! area is content-addressed by git blob id: `ab/cdef…` for a regular file and `ab/cdef….x` for
-//! an executable one. A link into the area therefore names the blob it stands for, and every
-//! work-tree reader takes such a link as the regular file it points to ([`metadata`],
-//! [`link_blob`]); status reads the blob id from the link without opening the file.
+//! A plain checkout in link mode keeps one copy of each unchanged file per machine, in its
+//! repository's shared area `<asc home>/shared-blobs/<repo-id>/`, and puts a symbolic link to it
+//! in the work tree. The area is content-addressed by git blob id: `ab/cdef…` for a regular file
+//! and `ab/cdef….x` for an executable one. A link into a trusted area therefore names the blob it
+//! stands for, and every work-tree reader takes such a link as the regular file it points to
+//! ([`metadata`], [`link_blob`]); status reads the blob id from the link without opening the file.
+//! See [`asc_state::shared_blob`] for what makes a link trusted.
 //!
 //! Area files are read-only and carry the fixed modification time [`SEALED`]. A write through a
 //! link (an editor that saves in place and overrides the read-only bit) changes that time, so
@@ -23,7 +24,8 @@ use std::time::{Duration, SystemTime};
 use asc_core::id::GitOid;
 
 pub use asc_state::shared_blob::{
-    AREA, blob_of_target, link_blob, metadata, names_area_file, path_in,
+    AREA, area_of_target, blob_of_target, link_blob, link_target, metadata, names_area_file,
+    path_in, shaped_like_area_file, trust_area,
 };
 
 /// The modification time of every sealed area file: 2000-01-01T00:00:00Z.
@@ -94,21 +96,42 @@ pub struct Pruned {
     pub bytes: u64,
 }
 
-/// Removes the area files under `area` that no link in `used` names and that are older than
-/// `grace` (a checkout may have sealed a file and not yet linked it). With `remove` false it only
-/// counts them.
+/// Removes the area files under `areas` (a home's `shared-blobs` directory, one area per
+/// repository) that no link in `used` names and that are older than `grace` (a checkout may have
+/// sealed a file and not yet linked it). With `remove` false it only counts them.
 pub fn prune(
-    area: &Path,
+    areas: &Path,
     used: &std::collections::HashSet<PathBuf>,
     grace: Duration,
     remove: bool,
 ) -> io::Result<Pruned> {
     let mut out = Pruned::default();
-    let Ok(fans) = fs::read_dir(area) else {
+    let Ok(repos) = fs::read_dir(areas) else {
         return Ok(out);
     };
     let now = SystemTime::now();
-    for fan in fans {
+    for repo in repos {
+        let repo = repo?;
+        if !repo.file_type()?.is_dir() {
+            continue;
+        }
+        prune_area(&repo.path(), used, grace, remove, now, &mut out)?;
+        if remove {
+            let _ = fs::remove_dir(repo.path());
+        }
+    }
+    Ok(out)
+}
+
+fn prune_area(
+    area: &Path,
+    used: &std::collections::HashSet<PathBuf>,
+    grace: Duration,
+    remove: bool,
+    now: SystemTime,
+    out: &mut Pruned,
+) -> io::Result<()> {
+    for fan in fs::read_dir(area)? {
         let fan = fan?;
         if !fan.file_type()?.is_dir() {
             continue;
@@ -137,12 +160,13 @@ pub fn prune(
             let _ = fs::remove_dir(fan.path());
         }
     }
-    Ok(out)
+    Ok(())
 }
 
-/// Adds to `used` the area file of every shared link under the work tree `root`. The walk never
-/// follows a link and skips `.git`; an unreadable directory is an error, so a caller never prunes
-/// on a partial view.
+/// Adds to `used` the area file of every link under the work tree `root` whose target has the shape
+/// of an area file (trusted or not, so nothing a link could name is pruned). The walk never follows
+/// a link and skips `.git`; an unreadable directory is an error, so a caller never prunes on a
+/// partial view.
 pub fn links_under(root: &Path, used: &mut std::collections::HashSet<PathBuf>) -> io::Result<()> {
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -156,7 +180,7 @@ pub fn links_under(root: &Path, used: &mut std::collections::HashSet<PathBuf>) -
                 }
             } else if kind.is_symlink()
                 && let Ok(target) = fs::read_link(&p)
-                && blob_of_target(&target).is_some()
+                && shaped_like_area_file(&target)
             {
                 used.insert(target);
             }
@@ -199,10 +223,18 @@ mod tests {
         GitOid::from_bytes([b; 20])
     }
 
+    /// A trusted `shared-blobs` directory under `dir` and one repository area in it.
+    fn areas(dir: &Path) -> (PathBuf, PathBuf) {
+        let areas = dir.join(AREA);
+        trust_area(&areas);
+        let area = areas.join(asc_state::home::RepoId::new().to_string());
+        (areas, area)
+    }
+
     #[test]
     fn a_sealed_link_reads_as_its_file_and_an_edit_breaks_the_seal() {
         let d = tempfile::tempdir().unwrap();
-        let area = d.path().join(AREA);
+        let (_, area) = areas(d.path());
         let target = path_in(&area, oid(7), false);
         fs::create_dir_all(target.parent().unwrap()).unwrap();
         fs::write(&target, b"shared\n").unwrap();
@@ -230,9 +262,49 @@ mod tests {
     }
 
     #[test]
+    fn a_link_into_an_untrusted_area_or_to_a_link_is_not_a_shared_file() {
+        let d = tempfile::tempdir().unwrap();
+        let fake = d
+            .path()
+            .join("fake")
+            .join(AREA)
+            .join("0190a000-0000-7000-8000-000000000000");
+        let target = path_in(&fake, oid(5), false);
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(
+            &target, b"secret
+",
+        )
+        .unwrap();
+        let link = d.path().join("w.txt");
+        if make_link(&target, &link).is_err() {
+            // No symlink rights here (Windows without Developer Mode).
+            return;
+        }
+        assert_eq!(link_blob(&link), None);
+        assert!(metadata(&link).unwrap().file_type().is_symlink());
+
+        // A trusted area name whose "file" is itself a link to something else.
+        let (_, area) = areas(d.path());
+        let hop = path_in(&area, oid(6), false);
+        fs::create_dir_all(hop.parent().unwrap()).unwrap();
+        make_link(&d.path().join("elsewhere"), &hop).unwrap();
+        fs::write(
+            d.path().join("elsewhere"),
+            b"other
+",
+        )
+        .unwrap();
+        let link2 = d.path().join("w2.txt");
+        make_link(&hop, &link2).unwrap();
+        assert_eq!(link_blob(&link2), None);
+        assert!(metadata(&link2).unwrap().file_type().is_symlink());
+    }
+
+    #[test]
     fn links_under_finds_shared_links_only() {
         let d = tempfile::tempdir().unwrap();
-        let area = d.path().join(AREA);
+        let (_, area) = areas(d.path());
         let target = path_in(&area, oid(3), false);
         fs::create_dir_all(target.parent().unwrap()).unwrap();
         fs::write(&target, b"x").unwrap();
@@ -254,7 +326,7 @@ mod tests {
     #[test]
     fn prune_keeps_used_and_young_files() {
         let d = tempfile::tempdir().unwrap();
-        let area = d.path().join(AREA);
+        let (all, area) = areas(d.path());
         let (used, old) = (path_in(&area, oid(1), false), path_in(&area, oid(2), false));
         for p in [&used, &old] {
             fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -262,12 +334,12 @@ mod tests {
             seal(p, false).unwrap();
         }
         let keep: std::collections::HashSet<_> = [used.clone()].into();
-        let young = prune(&area, &keep, Duration::from_secs(3600), true).unwrap();
+        let young = prune(&all, &keep, Duration::from_secs(3600), true).unwrap();
         assert_eq!(young, Pruned::default());
-        let counted = prune(&area, &keep, Duration::ZERO, false).unwrap();
+        let counted = prune(&all, &keep, Duration::ZERO, false).unwrap();
         assert_eq!(counted, Pruned { files: 1, bytes: 1 });
         assert!(old.exists());
-        let done = prune(&area, &keep, Duration::ZERO, true).unwrap();
+        let done = prune(&all, &keep, Duration::ZERO, true).unwrap();
         assert_eq!(done, Pruned { files: 1, bytes: 1 });
         assert!(used.exists());
         assert!(!old.exists());
