@@ -48,14 +48,26 @@ fn verbatim(p: &Path) -> PathBuf {
     }
 }
 
+/// The error of `op` on `p`, naming both, with the OS error kind kept.
+fn at(op: &str, p: &Path) -> impl FnOnce(io::Error) -> io::Error {
+    let what = format!("{op} '{}'", p.display());
+    move |e| io::Error::new(e.kind(), format!("{what}: {e}"))
+}
+
 /// Clears the attributes (read-only included) of `w` and removes the file or empty directory.
 fn remove(w: &[u16], p: &Path, dir: bool) -> io::Result<()> {
-    ffi::set_attributes(w, FILE_ATTRIBUTE_NORMAL)?;
+    ffi::set_attributes(w, FILE_ATTRIBUTE_NORMAL).map_err(at("clear the attributes of", p))?;
     if dir {
         std::fs::remove_dir_all(p)
     } else {
         std::fs::remove_file(p)
     }
+    .map_err(at("remove", p))
+}
+
+/// Deletes the ProjFS reparse point of `w`.
+fn unmark(w: &[u16], p: &Path, tag: u32) -> io::Result<()> {
+    ffi::delete_reparse_point(w, tag).map_err(at("delete the reparse point of", p))
 }
 
 /// Unvirtualizes the root at the absolute `root`; see the module comment. A root that is not
@@ -65,7 +77,8 @@ pub fn unvirtualize(root: &Path) -> io::Result<Unvirtualized> {
     let mut out = Unvirtualized::default();
     let mut stack: Vec<(PathBuf, String)> = vec![(root.clone(), String::new())];
     while let Some((dir, rel)) = stack.pop() {
-        let (entries, _) = ffi::read_dir_on_disk(&ffi::path_to_wide(&dir), usize::MAX)?;
+        let (entries, _) = ffi::read_dir_on_disk(&ffi::path_to_wide(&dir), usize::MAX)
+            .map_err(at("list", &dir))?;
         for e in entries {
             let abs = dir.join(&e.name);
             let child = if rel.is_empty() {
@@ -76,12 +89,12 @@ pub fn unvirtualize(root: &Path) -> io::Result<Unvirtualized> {
             let w = ffi::path_to_wide(&abs);
             match e.tag {
                 IO_REPARSE_TAG_PROJFS_TOMBSTONE => {
-                    ffi::delete_reparse_point(&w, e.tag)?;
+                    unmark(&w, &abs, e.tag)?;
                     remove(&w, &abs, e.is_dir())?;
                     out.deleted.push(child);
                 }
                 IO_REPARSE_TAG_PROJFS => {
-                    ffi::delete_reparse_point(&w, e.tag)?;
+                    unmark(&w, &abs, e.tag)?;
                     if e.is_dir() {
                         stack.push((abs, child));
                     } else {
@@ -96,7 +109,7 @@ pub fn unvirtualize(root: &Path) -> io::Result<Unvirtualized> {
     }
     match ffi::delete_reparse_point(&ffi::path_to_wide(&root), IO_REPARSE_TAG_PROJFS) {
         Err(e) if matches!(e.raw_os_error(), Some(NOT_A_REPARSE_POINT | TAG_MISMATCH)) => {}
-        r => r?,
+        r => r.map_err(at("delete the reparse point of", &root))?,
     }
     out.deleted.sort();
     Ok(out)
