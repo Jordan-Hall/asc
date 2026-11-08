@@ -5,7 +5,10 @@
 //! ([`crate::branchless::local_gc`]): objects reachable only from hidden drafts older than
 //! `asc.draft.hiddenDays`. With `--store <url>` the command collects a bucket-mode repository instead
 //! ([`super::gc_store`]). `--dry-run` reports what an eviction would free and changes nothing.
-//! Git's `--auto` and `--quiet` are accepted; git's other gc flags (`--prune`, `--aggressive`,
+//! The shared blob area of link-mode checkouts (`asc.worktree.link = symlink`) loses every file no
+//! link in a registered plain workspace names; a file sealed in the last hour (`asc.gc.sharedGrace`) is kept, as a
+//! checkout may not have linked it yet, and nothing is pruned while a plain workspace's directory
+//! cannot be read. Git's `--auto` and `--quiet` are accepted; git's other gc flags (`--prune`, `--aggressive`,
 //! ...) have nothing to do in a layout without loose objects or packs and are refused.
 
 use std::ffi::OsString;
@@ -13,6 +16,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use asc_state::AscHome;
+use asc_state::state::{StateDb, workspaces};
 use asc_store::cachedir::CacheDir;
 
 use super::common::{CliError, Ctx, Result};
@@ -137,6 +141,89 @@ async fn expire_drafts(ctx: &Ctx, local: &LocalArgs) -> Result<()> {
     Ok(())
 }
 
+/// A shared area file younger than this is kept: a running checkout may not have linked it yet.
+const SHARED_GRACE: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// A duration such as `90s` or `2h` in seconds; unlike a `--ttl`, zero (`0`, `0s`) is allowed.
+fn zero_or_ttl(t: &str) -> Option<u64> {
+    let digits = t.trim_end_matches(['s', 'm', 'h', 'd', 'w']);
+    if !digits.is_empty() && t.len() - digits.len() <= 1 && digits.bytes().all(|b| b == b'0') {
+        return Some(0);
+    }
+    asc_wc::worktree::parse_ttl(t)
+}
+
+/// `asc.gc.sharedGrace` (`0s`, `30m`, `2h`, ...), else [`SHARED_GRACE`].
+fn shared_grace(ctx: &Ctx) -> Result<std::time::Duration> {
+    let text = ctx
+        .config
+        .get("asc.gc.sharedgrace")
+        .or_else(|| ctx.config.get("asc.gc.sharedGrace"));
+    match text {
+        None => Ok(SHARED_GRACE),
+        Some(t) => zero_or_ttl(t.trim())
+            .map(std::time::Duration::from_secs)
+            .ok_or_else(|| {
+                CliError::Fatal(format!(
+                    "asc: invalid asc.gc.sharedGrace '{t}'; use a number and s, m, h, d or w"
+                ))
+            }),
+    }
+}
+
+/// Prunes the shared blob area down to the files that links in registered plain workspaces name.
+async fn prune_shared(ctx: &Ctx, home: &AscHome, local: &LocalArgs) -> Result<()> {
+    let grace = shared_grace(ctx)?;
+    let area = home.shared_blobs();
+    if !area.is_dir() {
+        return Ok(());
+    }
+    let opened;
+    let db = match ctx.ws_opt() {
+        Some(ws) => &ws.db,
+        None => {
+            opened = StateDb::open(home).await?;
+            &opened
+        }
+    };
+    let mut used = std::collections::HashSet::new();
+    for w in workspaces::list(db, None).await? {
+        if w.ws.mode != workspaces::Mode::Plain {
+            continue;
+        }
+        let mount = PathBuf::from(&w.ws.mount);
+        if let Err(e) = asc_wc::shared::links_under(&mount, &mut used) {
+            if !local.quiet {
+                println!(
+                    "shared: kept every file; cannot read workspace {}: {e}",
+                    mount.display()
+                );
+            }
+            return Ok(());
+        }
+    }
+    let done = asc_wc::shared::prune(&area, &used, grace, !local.dry_run)
+        .map_err(|e| CliError::Fatal(format!("asc: cannot prune {}: {e}", area.display())))?;
+    if !local.quiet {
+        if local.dry_run {
+            println!(
+                "shared: would remove {} unlinked files ({}); {} linked; nothing was deleted",
+                done.files,
+                human(done.bytes),
+                used.len()
+            );
+        } else {
+            println!(
+                "shared: removed {} unlinked files ({}); {} linked",
+                done.files,
+                human(done.bytes),
+                used.len()
+            );
+        }
+    }
+    Ok(())
+}
+
 pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
     if has_store_flag(&args.rest) {
         let default_days = ctx
@@ -176,6 +263,7 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
             );
         }
         expire_drafts(ctx, &local).await?;
+        prune_shared(ctx, &home, &local).await?;
         return Ok(ExitCode::SUCCESS);
     }
     let cache = CacheDir::open(&root, home.tmp()).map_err(CliError::Objects)?;
@@ -193,6 +281,7 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
         );
     }
     expire_drafts(ctx, &local).await?;
+    prune_shared(ctx, &home, &local).await?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -215,6 +304,16 @@ mod tests {
         );
         assert!(parse_local(&os(&["--prune=now"])).is_err());
         assert!(parse_local(&os(&["--dry-run=yes"])).is_err());
+    }
+
+    #[test]
+    fn shared_grace_accepts_zero() {
+        assert_eq!(zero_or_ttl("0"), Some(0));
+        assert_eq!(zero_or_ttl("0s"), Some(0));
+        assert_eq!(zero_or_ttl("2h"), Some(7200));
+        assert_eq!(zero_or_ttl("0ss"), None);
+        assert_eq!(zero_or_ttl("s"), None);
+        assert_eq!(zero_or_ttl("soon"), None);
     }
 
     #[test]
