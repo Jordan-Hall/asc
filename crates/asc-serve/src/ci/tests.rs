@@ -445,7 +445,29 @@ async fn secrets_are_masked_in_what_is_appended_and_what_is_read() {
         "the offsets are those of the stored bytes"
     );
 
-    // A locked vault refuses an append rather than store what it cannot check; a read still answers.
+    // However a reader places its windows, small follows or small tails, no part of a secret is shown.
+    for max in 1..=4u32 {
+        let mut followed = log(&f, run, j, 1, 0).await.data.to_vec();
+        let mut at = 1;
+        while at < all.size {
+            let page = log(&f, run, j, max, at).await;
+            followed.extend_from_slice(&page.data);
+            at = page.next_offset.max(at + 1);
+        }
+        let tail = log(&f, run, j, max, 0).await.data;
+        for seen in [&followed[..], &tail[..]] {
+            for part in ["0123", "late-", "deploy-t", "6789", "abcdef"] {
+                assert!(
+                    !seen.windows(part.len()).any(|w| w == part.as_bytes()),
+                    "max {max}: {part} in {}",
+                    String::from_utf8_lossy(seen)
+                );
+            }
+        }
+    }
+
+    // A locked vault refuses an append rather than store what it cannot check, and a read rather than show a
+    // secret set after its line was stored.
     let locked = Secrets::new(
         pool.clone(),
         crate::vault::Vault::locked("test", pool.clone()),
@@ -455,11 +477,58 @@ async fn secrets_are_masked_in_what_is_appended_and_what_is_read() {
         code(&append(&f, run, j, b"x\n").await.unwrap_err()),
         tonic::Code::Unavailable
     );
+    let read = f.ci.job_log(req(
+        wire::JobLogRequest {
+            repo: repo_ref(),
+            run_id: run,
+            job_id: j,
+            max_bytes: 0,
+            since_offset: 0,
+        },
+        BOB,
+        false,
+    ));
+    assert_eq!(code(&read.await.unwrap_err()), tonic::Code::Unavailable);
+    f.ci = svc(Some(secrets.clone()));
     assert_eq!(
         log(&f, run, j, 0, 0).await.size,
         all.size,
         "the refused append stored nothing"
     );
+}
+
+#[tokio::test]
+async fn overlapping_secrets_binary_logs_and_many_credentials_are_masked() {
+    use crate::workflows::secrets::Secrets;
+    use zeroize::Zeroizing;
+    let mut f = fx().await;
+    let dir = tempfile::tempdir().unwrap();
+    let pool = f.reg.pool().clone();
+    let vault = crate::vault::Vault::open_file(dir.path().join("vault.keys"), pool.clone());
+    let secrets = Secrets::new(pool.clone(), vault);
+    for (name, value) in [("A", "abcdef12"), ("B", "def12345")] {
+        let value = Zeroizing::new(value.to_owned());
+        secrets.set("o/r", name, &value, "45:root").await.unwrap();
+    }
+    f.ci = crate::ci::rpc::CiService::new(f.hub.clone(), f.auth.clone(), Default::default())
+        .with_secrets(Some(secrets));
+    let r = report(
+        &f,
+        run_req("3", 1, C::Running, vec![job("build", C::Running)]),
+    )
+    .await
+    .unwrap();
+    let (run, j) = (r.id, r.jobs[0].id);
+    let mut data = b"\0bin x abcdef12345 y\n".to_vec();
+    for _ in 0..100 {
+        data.extend_from_slice(b"key AKIAIOSFODNN7EXAMPLE\n");
+    }
+    append(&f, run, j, &data).await.unwrap();
+    let text = log(&f, run, j, 0, 0).await.data;
+    let text = String::from_utf8_lossy(&text);
+    assert!(text.starts_with("\0bin x *** y\n"), "{text}");
+    assert!(!text.contains("AKIA") && !text.contains("2345"), "{text}");
+    assert_eq!(text.matches("key ***").count(), 100);
 }
 
 #[tokio::test]
