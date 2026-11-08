@@ -624,13 +624,14 @@ They need no more than repo read and count one repository only. A forwarded clai
 | `[review] dismiss` | admin | who may dismiss another person's verdict on a change: `admin`, `maintainer` (an admin or a member of the `maintainer` role) or `write` (anyone with write access); never an author or agent of the change; a dismissal names the version |
 | `[merge] queue`, `revalidate` | false, true | as before |
 | `[merge] batch` | 1 | entries the queue tests and lands together, 1 to 20 (read by the queue worker of the host; recorded and returned here) |
+| `[merge] strategy` | rebase | how a land onto the default branch writes the stack: `rebase` moves each changeset onto the tip and merges file contents where the server allows it; `rebase-disjoint` moves them only when no path overlaps; `fast-forward` lands only a stack already on the tip and otherwise refuses with `NEEDS_CLIENT_REBASE`; `squash` rebases like `rebase`, then writes the stack as one changeset (the tree of the last, the author of the first, every message joined). Other branches always rebase. An organisation strategy wins. A squash needs every pushed changeset of the stack approved and is attested as signed only when every one of them was |
 | `[merge] post_merge_checks` | false | the checks of the policy run again on the landed tip (recorded and returned; the host runs them) |
 | `[stacks] max_depth` | none | the longest stack that may be queued, 1 to 100; a longer one is refused with `QUEUE_STACK_TOO_LONG` |
 | `[stacks] cleanup_days` | server setting | days after the last change of a stack lands before its refs are removed, 1 to 3650; the landed-ref reaper (`reftl.rs`) uses it in place of `[cloud] landed_ref_days` for this repository, and a repository that sets it is cleaned even when the server setting is 0 |
 | `[stacks] restack_on_main_move` | false | the host restacks open stacks when the default branch moves (recorded and returned; the host acts, the server does not restack by itself because a restack rewrites a person's refs and needs `Stacks.Restack` with that person's right) |
 | `[stacks] collaborators_may_push` | false | people with write access who did not start a stack may push onto it (recorded and returned; the host enforces) |
 
-A value out of range, or an unknown key in these sections, makes the file invalid with the key named. `strategy = "squash"` is not part of this change.
+A value out of range, or an unknown key in these sections, makes the file invalid with the key named.
 
 ## 26. Scheduled backups
 
