@@ -295,6 +295,143 @@ async fn a_remote_head_not_yet_pulled_is_not_read_back_as_a_local_removal() {
     );
 }
 
+// ------------------------------------------------------------------------------ device reports
+
+#[derive(Default)]
+struct FakeReporter {
+    sent: Mutex<Vec<wire_cloud::DeviceReport>>,
+    fail: bool,
+}
+
+#[async_trait]
+impl DeviceReporter for FakeReporter {
+    async fn report(&self, report: &wire_cloud::DeviceReport) -> Result<(), StoreError> {
+        self.sent.lock().unwrap().push(report.clone());
+        if self.fail {
+            return Err(StoreError::Other("unimplemented".into()));
+        }
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn the_device_report_says_why_each_draft_is_or_is_not_in_the_workspace() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db, repo) = open_db(&dir).await;
+    for n in 1..=5 {
+        enqueue(&db, repo, cs(n), ch(n), i64::from(n) * 10).await;
+    }
+    let rows = StateRows::new(db.clone(), repo);
+    rows.set_state(cs(3), EngineQueueState::Held).await.unwrap();
+    rows.set_state(cs(4), EngineQueueState::TooLarge)
+        .await
+        .unwrap();
+    rows.delete(cs(5)).await.unwrap();
+    let sync = CloudSync::new(
+        rows.clone(),
+        FakeStore::default(),
+        "host".into(),
+        Arc::new(Fixed(500)),
+    );
+    let visible = rows.drafts().visible(&db, drafts::MAX_BATCH).await.unwrap();
+
+    let report = sync
+        .device_report("laptop", &visible, &[cs(1)])
+        .await
+        .unwrap();
+    assert_eq!(
+        (report.name.as_str(), report.device.as_str()),
+        ("host", "laptop")
+    );
+    let mut states: Vec<(ChangesetId, ChangeId, i64, wire_cloud::DraftState)> = report
+        .drafts
+        .iter()
+        .map(|d| (d.cs, d.change, d.added, d.state))
+        .collect();
+    states.sort_by_key(|s| s.2);
+    assert_eq!(
+        states,
+        [
+            (cs(1), ch(1), 10, wire_cloud::DraftState::Uploaded),
+            (cs(2), ch(2), 20, wire_cloud::DraftState::Waiting),
+            (cs(3), ch(3), 30, wire_cloud::DraftState::Failed),
+            (cs(4), ch(4), 40, wire_cloud::DraftState::TooLarge),
+            (cs(5), ch(5), 50, wire_cloud::DraftState::NotQueued),
+        ]
+    );
+    // A head in the base is uploaded whatever its queue row says.
+    let all = sync
+        .device_report("laptop", &visible, &[cs(2), cs(3), cs(4), cs(5)])
+        .await
+        .unwrap();
+    assert!(
+        all.drafts
+            .iter()
+            .filter(|d| d.cs != cs(1))
+            .all(|d| d.state == wire_cloud::DraftState::Uploaded)
+    );
+}
+
+#[tokio::test]
+async fn each_sync_reports_this_device_and_a_failed_report_does_not_fail_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db, repo) = open_db(&dir).await;
+    enqueue(&db, repo, cs(1), ch(1), 10).await;
+    let rows = StateRows::new(db.clone(), repo);
+
+    let reporter = Arc::new(FakeReporter::default());
+    let sync = CloudSync::new(
+        rows.clone(),
+        FakeStore::default(),
+        "default".into(),
+        Arc::new(Fixed(500)),
+    )
+    .with_reporter("desk".into(), reporter.clone());
+    sync.run().await.unwrap();
+    {
+        let sent = reporter.sent.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(
+            (sent[0].name.as_str(), sent[0].device.as_str()),
+            ("default", "desk")
+        );
+        assert_eq!(
+            sent[0]
+                .drafts
+                .iter()
+                .map(|d| (d.cs, d.state))
+                .collect::<Vec<_>>(),
+            [(cs(1), wire_cloud::DraftState::Uploaded)],
+            "the head the sync just put in the workspace"
+        );
+    }
+
+    let failing = Arc::new(FakeReporter {
+        fail: true,
+        ..FakeReporter::default()
+    });
+    let sync = CloudSync::new(
+        rows.clone(),
+        FakeStore::default(),
+        "default".into(),
+        Arc::new(Fixed(600)),
+    )
+    .with_reporter("desk".into(), failing.clone());
+    assert!(sync.run().await.is_ok(), "the sync still succeeds");
+    assert_eq!(failing.sent.lock().unwrap().len(), 1);
+    let state = rows.drafts().cloud_state(&db).await.unwrap().unwrap();
+    assert_eq!(state.last_sync, 600);
+
+    // Without a reporter nothing is sent.
+    let quiet = CloudSync::new(
+        rows,
+        FakeStore::default(),
+        "default".into(),
+        Arc::new(Fixed(700)),
+    );
+    quiet.run().await.unwrap();
+}
+
 #[tokio::test]
 async fn a_head_hidden_on_another_machine_is_hidden_here_and_stays_recoverable() {
     let dir = tempfile::tempdir().unwrap();
