@@ -1953,4 +1953,46 @@ mod tests {
         .unwrap();
         assert_eq!(names, 3, "a, c and d");
     }
+
+    #[tokio::test]
+    async fn concurrent_reports_under_new_names_do_not_pass_the_limit_together() {
+        use wire::LocalDraftState as S;
+        let f = Arc::new(
+            fx_with(Limits {
+                max_workspaces_per_user: 2,
+                ..Limits::default()
+            })
+            .await,
+        );
+        let cs = ChangesetId::from_bytes([4; 32]);
+        let tasks: Vec<_> = (0..8)
+            .map(|i| {
+                let f = f.clone();
+                tokio::spawn(async move {
+                    report_in(
+                        &f,
+                        ALICE,
+                        &format!("n{i}"),
+                        "laptop",
+                        vec![local(cs, 1, 1, S::Waiting)],
+                    )
+                    .await
+                    .is_ok()
+                })
+            })
+            .collect();
+        let mut ok = 0;
+        for t in tasks {
+            if t.await.unwrap() {
+                ok += 1;
+            }
+        }
+        let names: i64 = sqlx::query_scalar(
+            "SELECT COUNT(DISTINCT name) FROM cloud_device_drafts WHERE owner = 42",
+        )
+        .fetch_one(f.reg.pool())
+        .await
+        .unwrap();
+        assert!(ok <= 2 && names <= 2, "{ok} accepted, {names} names");
+    }
 }
