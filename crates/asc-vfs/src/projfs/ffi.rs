@@ -490,7 +490,9 @@ pub const IO_REPARSE_TAG_PROJFS: u32 = 0x9000_001C;
 /// `IO_REPARSE_TAG_PROJFS_TOMBSTONE`: the marker ProjFS leaves where a projected item was deleted.
 pub const IO_REPARSE_TAG_PROJFS_TOMBSTONE: u32 = 0xA000_001F;
 
-const GENERIC_WRITE: u32 = 0x4000_0000;
+/// The right `FSCTL_DELETE_REPARSE_POINT` needs. A wider right (`GENERIC_WRITE`, `FILE_WRITE_DATA`)
+/// is refused by the ProjFS filter with error 369 once the provider has stopped, root included.
+const FILE_WRITE_ATTRIBUTES: u32 = 0x100;
 const FILE_SHARE_ALL: u32 = 0x1 | 0x2 | 0x4;
 const OPEN_EXISTING: u32 = 3;
 const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
@@ -531,7 +533,7 @@ pub fn delete_reparse_point(path: &[u16], tag: u32) -> std::io::Result<()> {
     let h = unsafe {
         CreateFileW(
             path.as_ptr(),
-            GENERIC_WRITE,
+            FILE_WRITE_ATTRIBUTES,
             FILE_SHARE_ALL,
             std::ptr::null(),
             OPEN_EXISTING,
