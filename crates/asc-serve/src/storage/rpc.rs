@@ -634,6 +634,21 @@ impl Storage for StorageService {
         }))
     }
 
+    async fn get_repo_usage(
+        &self,
+        request: Request<wire::GetRepoStorageUsageRequest>,
+    ) -> Result<Response<wire::GetRepoStorageUsageResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        let caller = self.caller(&ext, &meta).await?;
+        let repo = repo_name(msg.repo.as_ref())?;
+        let r = self
+            .svc
+            .repo_usage(&caller, &repo, msg.refresh)
+            .await
+            .map_err(status_of)?;
+        Ok(Response::new(usage_pb(&r)))
+    }
+
     async fn cancel_migration(
         &self,
         request: Request<wire::CancelStorageMigrationRequest>,
@@ -785,6 +800,37 @@ impl VaultSvc for VaultService {
         Ok(Response::new(wire::GetVaultRotationResponse {
             rotation: Some(rotation_pb(&r)),
         }))
+    }
+}
+
+fn usage_kind_pb(k: super::usage::Kind) -> wire::StorageUsageKind {
+    use super::usage::Kind;
+    match k {
+        Kind::History => wire::StorageUsageKind::History,
+        Kind::Files => wire::StorageUsageKind::Files,
+        Kind::LargeFiles => wire::StorageUsageKind::LargeFiles,
+        Kind::Indexes => wire::StorageUsageKind::Indexes,
+        Kind::Ci => wire::StorageUsageKind::Ci,
+        Kind::Other => wire::StorageUsageKind::Other,
+    }
+}
+
+fn usage_pb(r: &super::usage::Report) -> wire::GetRepoStorageUsageResponse {
+    wire::GetRepoStorageUsageResponse {
+        rows: r
+            .kinds
+            .iter()
+            .map(|(k, t)| wire::StorageUsageRow {
+                kind: usage_kind_pb(*k).into(),
+                bytes: t.bytes,
+                objects: t.objects,
+            })
+            .collect(),
+        total_bytes: r.total(),
+        computed_at: r.computed_at,
+        computing: r.computing,
+        read_this_month: r.read_bytes,
+        month: r.month.clone(),
     }
 }
 

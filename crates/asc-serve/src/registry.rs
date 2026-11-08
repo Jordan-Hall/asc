@@ -193,6 +193,8 @@ pub struct Registry {
     /// `[import]`: how imports batch their writes.
     import: std::sync::OnceLock<asc_git::import::ImportPolicy>,
     layers: Mutex<std::collections::HashMap<Ns, Arc<asc_store::pack::PackLayer>>>,
+    /// Counts the bytes read from each namespace (`Storage.GetRepoUsage`). Unset, reads are not counted.
+    meter: std::sync::OnceLock<Arc<crate::storage::usage::ReadMeter>>,
 }
 
 impl Registry {
@@ -217,6 +219,7 @@ impl Registry {
             pack: std::sync::OnceLock::new(),
             import: std::sync::OnceLock::new(),
             layers: Mutex::default(),
+            meter: std::sync::OnceLock::new(),
         })
     }
 
@@ -238,7 +241,16 @@ impl Registry {
         store: Arc<dyn ObjectStore>,
         root: Path,
     ) -> BucketObjects {
+        let store: Arc<dyn ObjectStore> = match self.meter.get() {
+            Some(m) => Arc::new(crate::storage::usage::Metered::new(store, ns, m.clone())),
+            None => store,
+        };
         BucketObjects::new(store, root).with_packs(self.pack_layer(ns))
+    }
+
+    /// Installs the read meter, once. False when one is already installed.
+    pub fn set_meter(&self, meter: Arc<crate::storage::usage::ReadMeter>) -> bool {
+        self.meter.set(meter).is_ok()
     }
 
     /// The one pack layer of a namespace, shared by every handle on it, so what it has learned

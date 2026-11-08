@@ -192,6 +192,10 @@ pub struct Service {
     pub audit: Arc<dyn Audit>,
     pub authority: Arc<dyn Authority>,
     pub cfg: StorageConfig,
+    /// Bytes read per repository, shared with the registry's stores.
+    pub meter: Arc<super::usage::ReadMeter>,
+    /// The usage scans running.
+    pub scans: Arc<super::usage::Scans>,
 }
 
 impl Service {
@@ -890,6 +894,59 @@ impl Service {
             None
         };
         Ok((rows, next))
+    }
+
+    /// What the repository stores by kind and what was read from it this month. Answers with the
+    /// last scan and starts a new one in the background when none exists, when it is a day old,
+    /// or on `refresh` (at most every five minutes). Counted reads are recorded first.
+    pub async fn repo_usage(
+        &self,
+        caller: &Caller,
+        repo: &str,
+        refresh: bool,
+    ) -> Result<super::usage::Report, StorageError> {
+        use super::usage;
+        let (repo_id, ns) = self.repo_row(caller, repo).await?;
+        let at = now();
+        if let Err(e) = self.meter.flush(&self.db.pool, at).await {
+            tracing::warn!(error = %e, "could not record storage reads");
+        }
+        // Asked before the load: a scan that ends after it is reported as running, so a result
+        // answered as settled is never older than the last finished scan.
+        let was_running = self.scans.running(ns);
+        let mut report = usage::load(&self.db.pool, ns, at).await?;
+        // Reads a failed flush kept are still the month's.
+        report.read_bytes = report.read_bytes.saturating_add(self.meter.pending(ns));
+        let mut started = false;
+        if !was_running
+            && usage::wants_scan(report.computed_at, refresh, at)
+            && self.scans.claim(ns)
+        {
+            started = true;
+            let place = match self.router.place(repo_id, ns).await {
+                Ok(p) => p,
+                Err(e) => {
+                    self.scans.release(ns);
+                    return Err(e.into());
+                }
+            };
+            let pool = self.db.pool.clone();
+            let scans = self.scans.clone();
+            tokio::spawn(async move {
+                let (store, root) = place;
+                match usage::scan(&pool, ns, store.as_ref(), &root).await {
+                    Ok(kinds) => {
+                        if let Err(e) = usage::save(&pool, ns, &kinds, now()).await {
+                            tracing::warn!(error = %e, "could not record storage usage");
+                        }
+                    }
+                    Err(e) => tracing::warn!(error = %e, "storage usage scan failed"),
+                }
+                scans.release(ns);
+            });
+        }
+        report.computing = was_running || started;
+        Ok(report)
     }
 
     /// Idempotent: a migration that ended, or already switched, comes back unchanged.

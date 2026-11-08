@@ -28,6 +28,7 @@ service Storage {
   rpc GetMigration(GetStorageMigrationRequest) returns (GetStorageMigrationResponse);
   rpc ListMigrations(ListStorageMigrationsRequest) returns (ListStorageMigrationsResponse);
   rpc CancelMigration(CancelStorageMigrationRequest) returns (CancelStorageMigrationResponse);   // idempotent
+  rpc GetRepoUsage(GetRepoStorageUsageRequest) returns (GetRepoStorageUsageResponse);   // repo admin; cached, scanned in the background
 }
 
 enum StorageTargetState {
@@ -222,4 +223,32 @@ message CancelStorageMigrationRequest {
 }
 message CancelStorageMigrationResponse {
   StorageMigration migration = 1;
+}
+
+// What stored bytes are.
+enum StorageUsageKind {
+  STORAGE_USAGE_KIND_UNSPECIFIED = 0;
+  STORAGE_USAGE_KIND_HISTORY = 1;      // changesets, trees, tags, change metadata
+  STORAGE_USAGE_KIND_FILES = 2;        // whole files
+  STORAGE_USAGE_KIND_LARGE_FILES = 3;  // files stored in chunks
+  STORAGE_USAGE_KIND_INDEXES = 4;      // search and code intelligence
+  STORAGE_USAGE_KIND_CI = 5;           // CI artifacts and caches
+  STORAGE_USAGE_KIND_OTHER = 6;        // pack bytes no live object uses, anything else
+}
+message StorageUsageRow {
+  StorageUsageKind kind = 1;
+  uint64 bytes = 2;
+  uint64 objects = 3;
+}
+message GetRepoStorageUsageRequest {
+  RepoRef repo = 1;
+  bool refresh = 2;                    // scan again now; at most every 5 minutes
+}
+message GetRepoStorageUsageResponse {
+  repeated StorageUsageRow rows = 1;   // every kind, zero when none is stored
+  uint64 total_bytes = 2;
+  int64 computed_at = 3;               // unix seconds of the scan; 0 when none finished yet
+  bool computing = 4;                  // a scan is running
+  uint64 read_this_month = 5;          // bytes read from storage in `month`
+  string month = 6;                    // YYYY-MM, UTC
 }

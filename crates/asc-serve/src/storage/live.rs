@@ -645,6 +645,21 @@ impl Router {
     }
 
     /// The store and root of a namespace already routed on this process (`None`: the default).
+    /// Every place a repository's objects can be: its route, or the instance bucket.
+    pub async fn place(
+        &self,
+        repo_id: i64,
+        ns: Ns,
+    ) -> Result<(Arc<dyn ObjectStore>, Path), RouteError> {
+        Ok(match self.route(repo_id, ns).await? {
+            Some(r) => (r.store.clone(), r.root.clone()),
+            None => (
+                self.default_store.clone(),
+                self.default_root.clone().join("ns").join(ns.hex()),
+            ),
+        })
+    }
+
     pub fn namespace(&self, ns: Ns) -> Option<(Arc<dyn ObjectStore>, Path)> {
         let r = self.routes.read().ok()?;
         let c = r.get(ns.as_bytes())?;

@@ -29,6 +29,7 @@ pub mod routed;
 pub mod rpc;
 pub mod service;
 mod sigv4;
+pub mod usage;
 
 #[cfg(test)]
 mod fake_s3;
@@ -157,6 +158,7 @@ pub struct Byos {
     pub health: Arc<Health>,
     authority: Arc<dyn Authority>,
     audit: Arc<dyn Audit>,
+    meter: Arc<usage::ReadMeter>,
     health_interval: Duration,
 }
 
@@ -191,6 +193,10 @@ pub fn features(slot: &ByosSlot) -> Vec<String> {
 /// `ext`. Nothing runs until [`Byos::start`].
 pub fn register(ext: &Extensions, registry: &Arc<Registry>, parts: Parts) -> Arc<Byos> {
     let db = Db::new(registry.pool().clone());
+    let meter = Arc::new(usage::ReadMeter::default());
+    if !registry.set_meter(meter.clone()) {
+        tracing::warn!("a read meter was already installed");
+    }
     let (default_store, default_root) = registry.default_place();
     // Storage targets are the one place that may be told to accept a private address (`[storage] allow_private`).
     let guard = parts.guard.allowing_private(parts.cfg.allow_private);
@@ -235,6 +241,8 @@ pub fn register(ext: &Extensions, registry: &Arc<Registry>, parts: Parts) -> Arc
         audit: parts.audit.clone(),
         authority: authority.clone(),
         cfg: parts.cfg.clone(),
+        meter: meter.clone(),
+        scans: Arc::default(),
     });
     let byos = Arc::new(Byos {
         service,
@@ -244,6 +252,7 @@ pub fn register(ext: &Extensions, registry: &Arc<Registry>, parts: Parts) -> Arc
         health,
         authority,
         audit: parts.audit,
+        meter,
         health_interval: Duration::from_secs(parts.cfg.health_interval_secs),
     });
     if !ext.byos.set(byos.clone()) {
@@ -268,6 +277,18 @@ impl Byos {
         if !self.health_interval.is_zero() {
             self.health.spawn(self.health_interval);
         }
+        let meter = self.meter.clone();
+        let pool = self.service.db.pool.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(usage::FLUSH_EVERY);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tick.tick().await;
+                if let Err(e) = meter.flush(&pool, crate::ai::clock::now()).await {
+                    tracing::warn!(error = %e, "could not record storage reads");
+                }
+            }
+        });
         let router = self.router.clone();
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(ROUTE_REFRESH);
