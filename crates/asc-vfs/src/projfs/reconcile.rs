@@ -277,7 +277,66 @@ pub(crate) fn run(inner: &Inner) -> io::Result<Reconciled> {
     Ok(r.out)
 }
 
+/// Collects the user's deletions: every tombstone, listed or hidden from the on-disk listing.
+struct Tombstones<'a> {
+    inner: &'a Inner,
+    out: Vec<RepoPath>,
+}
+
+impl Visitor for Tombstones<'_> {
+    fn entry(&mut self, f: &Found) -> io::Result<bool> {
+        match f.bits {
+            Some(bits) if is_tombstone(bits) => {
+                self.out.push(f.path.clone());
+                Ok(false)
+            }
+            Some(_) => Ok(f.dir && !f.reparse),
+            None => Ok(false),
+        }
+    }
+
+    /// The filter may leave a tombstone out of the listing; a tracked child that is not listed
+    /// is asked for by name.
+    fn dir_done(&mut self, dir: Option<&RepoPath>, names: &HashSet<Vec<u8>>) -> io::Result<()> {
+        let listing = block(&self.inner.cfg.rt, self.inner.cfg.core.read_dir(dir))
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        let Some(listing) = listing else {
+            return Ok(());
+        };
+        for node in listing.entries {
+            if names.contains(&casefold(node.path.file_name().as_bytes())) {
+                continue;
+            }
+            if state_bits(self.inner, &node.path)?.is_some_and(is_tombstone) {
+                self.out.push(node.path);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The tombstones of the root, sorted; a directory tombstone is its own path.
+pub(crate) fn tombstones(inner: &Inner) -> io::Result<Vec<RepoPath>> {
+    let mut t = Tombstones {
+        inner,
+        out: Vec::new(),
+    };
+    walk(inner, None, &mut t)?;
+    t.out.sort();
+    t.out.dedup();
+    Ok(t.out)
+}
+
 impl ProjfsProvider {
+    /// The items the user deleted while the root was served (its tombstones), as root-relative
+    /// paths; a deleted directory is one path. Read while the provider runs, because the filter
+    /// can hide a tombstone from a listing and answers by name only for a served root
+    /// (`worktree convert --plain` keeps these deletions).
+    pub fn tombstones(&self) -> Result<Vec<RepoPath>> {
+        let inner = self.inner().ok_or(VfsError::NotMounted)?;
+        Ok(tombstones(&inner)?)
+    }
+
     /// Reconcile at start (SPEC §10.2 item 7): enumerates only on-disk entries, never descends
     /// into redirected names, and appends `modified`, `created` and `deleted` hints to the
     /// journal. A directory tombstone expands to every tracked path below it. The caller then

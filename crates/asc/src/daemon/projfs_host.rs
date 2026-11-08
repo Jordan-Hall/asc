@@ -530,6 +530,17 @@ impl Hosted for ProjfsHost {
         .await
     }
 
+    async fn tombstones(&self) -> Result<Vec<Vec<u8>>, HostError> {
+        let provider = self.provider.clone();
+        blocking(move || {
+            provider
+                .tombstones()
+                .map(|v| v.into_iter().map(|p| p.as_bytes().to_vec()).collect())
+                .map_err(vfs)
+        })
+        .await
+    }
+
     async fn unmount(&self) -> Result<(), HostError> {
         let provider = self.provider.clone();
         blocking(move || provider.unmount().map_err(vfs)).await

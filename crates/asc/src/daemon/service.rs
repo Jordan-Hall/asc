@@ -127,6 +127,11 @@ pub trait Hosted: Send + Sync {
     async fn dehydrate_idle(&self) -> Result<(u64, u64), HostError> {
         Ok((0, 0))
     }
+    /// The items the user deleted while the workspace was served, as root-relative paths (a
+    /// deleted directory is one path). Asked for just before a conversion unmounts.
+    async fn tombstones(&self) -> Result<Vec<Vec<u8>>, HostError> {
+        Ok(Vec::new())
+    }
     /// Stops serving. Called once.
     async fn unmount(&self) -> Result<(), HostError> {
         Ok(())
@@ -391,19 +396,41 @@ impl State {
 
     /// Stops hosting `id`. A workspace that is not mounted is not an error.
     pub async fn unmount(&self, id: WorkspaceId) -> Result<(), Status> {
+        self.unmount_listing(id, false).await.map(|_| ())
+    }
+
+    /// Stops hosting `id`; with `list_deleted`, first lists the items the user deleted while it
+    /// was served. A listing that fails leaves the workspace served and is the error, so a
+    /// conversion never loses a deletion.
+    pub async fn unmount_listing(
+        &self,
+        id: WorkspaceId,
+        list_deleted: bool,
+    ) -> Result<Vec<Vec<u8>>, Status> {
         let _serial = self.mount_gate.lock().await;
-        let Some(m) = lock(&self.mounts.map).remove(&id) else {
-            return Ok(());
+        let Some(m) = lock(&self.mounts.map).get(&id).cloned() else {
+            return Ok(Vec::new());
         };
-        lock(&self.mounts.fresh).retain(|f| *f != id);
         let _held = m.gate.lock().await;
+        let deleted = if list_deleted {
+            m.hosted
+                .tombstones()
+                .await
+                .inspect_err(|_| self.metrics.provider_error("tombstones"))
+                .map_err(Status::from)?
+        } else {
+            Vec::new()
+        };
+        lock(&self.mounts.map).remove(&id);
+        lock(&self.mounts.fresh).retain(|f| *f != id);
         let stopped = m.hosted.unmount().await;
         let _ = m.journal.flush().await;
         self.events
             .emit("info", "workspace.unmount", &[("ws", &id.to_string())]);
         stopped
             .inspect_err(|_| self.metrics.provider_error("unmount"))
-            .map_err(Status::from)
+            .map_err(Status::from)?;
+        Ok(deleted)
     }
 
     /// Mounts every virtual workspace that `state.db` registers (a daemon restart re-attaches
@@ -793,11 +820,16 @@ impl WorkspaceRpc for Service {
         // A daemon without state hosts nothing, so there is nothing to stop.
         let Some(state) = self.state.as_ref() else {
             parse_id(&req.get_ref().ws_id)?;
-            return Ok(Response::new(wire::UnmountResponse {}));
+            return Ok(Response::new(wire::UnmountResponse::default()));
         };
         state.mounts.touch();
-        state.unmount(parse_id(&req.get_ref().ws_id)?).await?;
-        Ok(Response::new(wire::UnmountResponse {}))
+        let req = req.into_inner();
+        let deleted = state
+            .unmount_listing(parse_id(&req.ws_id)?, req.list_deleted)
+            .await?;
+        Ok(Response::new(wire::UnmountResponse {
+            deleted: deleted.into_iter().map(Into::into).collect(),
+        }))
     }
 
     async fn switch(
@@ -1137,6 +1169,7 @@ mod tests {
         );
         svc.unmount(Request::new(wire::UnmountRequest {
             ws_id: WorkspaceId::new().to_string(),
+            ..Default::default()
         }))
         .await
         .unwrap();
@@ -1290,12 +1323,18 @@ mod tests {
             .await;
         assert_eq!(code(r), tonic::Code::FailedPrecondition);
 
-        svc.unmount(Request::new(wire::UnmountRequest { ws_id: id.clone() }))
-            .await
-            .unwrap();
-        svc.unmount(Request::new(wire::UnmountRequest { ws_id: id.clone() }))
-            .await
-            .unwrap();
+        svc.unmount(Request::new(wire::UnmountRequest {
+            ws_id: id.clone(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+        svc.unmount(Request::new(wire::UnmountRequest {
+            ws_id: id.clone(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
         assert!(f.state.mounts.is_empty());
         let r = svc
             .stats(Request::new(wire::StatsRequest { ws_id: id }))

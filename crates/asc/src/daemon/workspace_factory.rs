@@ -114,7 +114,11 @@ pub async fn mount_virtual(ws: WorkspaceId) -> Result<(), String> {
 
 /// Stops the daemon hosting `ws`, before its directory is deleted. No daemon, nothing mounted.
 pub async fn unmount_virtual(ws: WorkspaceId) -> Result<(), String> {
-    DaemonMounts.unmount(ws).await.map_err(|e| e.to_string())
+    DaemonMounts
+        .unmount(ws, false)
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 /// Longest wait for the daemon to start serving a new virtual workspace.
@@ -125,8 +129,10 @@ const MOUNT_WAIT: Duration = Duration::from_secs(120);
 pub trait Mounts: Send + Sync {
     /// Whether new workspaces may be virtual.
     fn virtual_available(&self) -> bool;
-    /// Stops serving `ws`. A workspace the daemon does not host is not an error.
-    async fn unmount(&self, ws: WorkspaceId) -> SinkResult;
+    /// Stops serving `ws`. A workspace the daemon does not host is not an error. With
+    /// `list_deleted`, first lists the items the user deleted while it was served, as
+    /// `/`-separated root-relative paths; a listing that fails leaves `ws` served.
+    async fn unmount(&self, ws: WorkspaceId, list_deleted: bool) -> Result<Vec<String>, SinkError>;
     /// Turns the stopped virtualization root `root` back into a plain directory, returning the
     /// items the user deleted while it was virtual as `/`-separated root-relative paths.
     fn unvirtualize(&self, root: &Path) -> Result<Vec<String>, SinkError>;
@@ -141,14 +147,14 @@ impl Mounts for DaemonMounts {
         backend_available() && !lifecycle::disabled(&|k| std::env::var_os(k))
     }
 
-    async fn unmount(&self, ws: WorkspaceId) -> SinkResult {
+    async fn unmount(&self, ws: WorkspaceId, list_deleted: bool) -> Result<Vec<String>, SinkError> {
         if lifecycle::disabled(&|k| std::env::var_os(k)) {
-            return Ok(());
+            return Ok(Vec::new());
         }
         let cfg = lifecycle::Config::for_home(&AscHome::locate()?)?;
         match lifecycle::probe(&cfg).await {
             // No daemon, nothing mounted.
-            Probe::Down => Ok(()),
+            Probe::Down => Ok(Vec::new()),
             Probe::Hung => {
                 Err("the daemon does not answer; run 'asc daemon stop' and retry".into())
             }
@@ -156,12 +162,21 @@ impl Mounts for DaemonMounts {
                 let mut client = WorkspaceClient::new(connect(&cfg.endpoint));
                 let ask = wire::UnmountRequest {
                     ws_id: ws.to_string(),
+                    list_deleted,
                 };
                 match tokio::time::timeout(cfg.stop_wait, client.unmount(ask)).await {
                     Err(_) => Err("the daemon did not unmount the workspace in time".into()),
-                    Ok(Ok(_)) => Ok(()),
+                    Ok(Ok(r)) => r
+                        .into_inner()
+                        .deleted
+                        .into_iter()
+                        .map(|p| {
+                            String::from_utf8(p.to_vec())
+                                .map_err(|_| "a deleted path is not UTF-8".into())
+                        })
+                        .collect(),
                     // The daemon serves no mounts (yet): there is nothing to stop.
-                    Ok(Err(s)) if s.code() == tonic::Code::Unimplemented => Ok(()),
+                    Ok(Err(s)) if s.code() == tonic::Code::Unimplemented => Ok(Vec::new()),
                     Ok(Err(s)) => Err(format!("unmount: {}", s.message()).into()),
                 }
             }
@@ -244,11 +259,16 @@ pub(crate) async fn convert(
     env: GitEnv,
     gate: &Gate<'_>,
 ) -> SinkResult {
-    mounts.unmount(ws.ws.id).await?;
+    // The provider lists the deletions before it stops: the ProjFS filter can leave a tombstone
+    // out of a directory listing and answers for one by name only while the root is served. The
+    // walk of the stopped root adds those it meets.
+    let mut deleted = mounts.unmount(ws.ws.id, true).await?;
     let root = PathBuf::from(&ws.ws.mount);
     // Nothing under the root may be opened before it is plain again.
-    let deleted = mounts
-        .unvirtualize(&root)?
+    deleted.extend(mounts.unvirtualize(&root)?);
+    deleted.sort();
+    deleted.dedup();
+    let deleted = deleted
         .into_iter()
         .map(|p| RepoPath::new(p.into_bytes()).map_err(|e| e.to_string()))
         .collect::<Result<Vec<_>, _>>()?;
@@ -376,11 +396,13 @@ mod tests {
 
     use crate::cli::common::support::Fixture;
 
-    /// Records unmounts and unvirtualized roots; reports `deleted` as the user's deletions.
+    /// Records unmounts (with whether the deletions were asked for) and unvirtualized roots;
+    /// reports `served` as the deletions the provider listed and `deleted` as those the walk met.
     #[derive(Default)]
     struct Recording {
-        unmounted: Mutex<Vec<WorkspaceId>>,
+        unmounted: Mutex<Vec<(WorkspaceId, bool)>>,
         unvirtualized: Mutex<Vec<PathBuf>>,
+        served: Vec<String>,
         deleted: Vec<String>,
     }
 
@@ -389,9 +411,17 @@ mod tests {
         fn virtual_available(&self) -> bool {
             true
         }
-        async fn unmount(&self, ws: WorkspaceId) -> SinkResult {
-            self.unmounted.lock().unwrap().push(ws);
-            Ok(())
+        async fn unmount(
+            &self,
+            ws: WorkspaceId,
+            list_deleted: bool,
+        ) -> Result<Vec<String>, SinkError> {
+            self.unmounted.lock().unwrap().push((ws, list_deleted));
+            Ok(if list_deleted {
+                self.served.clone()
+            } else {
+                Vec::new()
+            })
         }
         fn unvirtualize(&self, root: &Path) -> Result<Vec<String>, SinkError> {
             assert!(
@@ -457,8 +487,8 @@ mod tests {
 
         assert_eq!(
             *mounts.unmounted.lock().unwrap(),
-            [f.ws],
-            "the workspace is unmounted first"
+            [(f.ws, true)],
+            "the workspace is unmounted first, listing its deletions"
         );
         assert_eq!(
             *mounts.unvirtualized.lock().unwrap(),
