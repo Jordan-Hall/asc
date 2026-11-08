@@ -25,9 +25,11 @@ pub mod provider;
 pub mod reconcile;
 pub mod rename;
 pub mod switch;
+pub mod unvirtualize;
 
 pub use ffi::ProviderUnavailable;
 pub use provider::{Config, ProjfsProvider};
+pub use unvirtualize::{Unvirtualized, unvirtualize};
 
 /// The placeholder times of paths (SPEC §10.1).
 pub trait TimeSource: Send + Sync {

@@ -400,6 +400,8 @@ pub struct OnDisk {
     pub name: String,
     pub attributes: u32,
     pub size: u64,
+    /// The reparse tag when [`OnDisk::is_reparse`]; 0 otherwise.
+    pub tag: u32,
 }
 
 impl OnDisk {
@@ -458,6 +460,12 @@ pub fn read_dir_on_disk(dir: &[u16], max: usize) -> std::io::Result<(Vec<OnDisk>
                 name,
                 attributes: data.attributes,
                 size: (u64::from(data.size_high) << 32) | u64::from(data.size_low),
+                // `dwReserved0` holds the reparse tag of a reparse point.
+                tag: if data.attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                    data.reserved[0]
+                } else {
+                    0
+                },
             });
         }
         // SAFETY: `h` is a live find handle and `data` a valid buffer.
@@ -475,6 +483,86 @@ pub fn read_dir_on_disk(dir: &[u16], max: usize) -> std::io::Result<(Vec<OnDisk>
     // SAFETY: closing the handle opened above.
     unsafe { FindClose(h) };
     Ok((out, more))
+}
+
+/// `IO_REPARSE_TAG_PROJFS`: a placeholder file or directory, or the virtualization root.
+pub const IO_REPARSE_TAG_PROJFS: u32 = 0x9000_001C;
+/// `IO_REPARSE_TAG_PROJFS_TOMBSTONE`: the marker ProjFS leaves where a projected item was deleted.
+pub const IO_REPARSE_TAG_PROJFS_TOMBSTONE: u32 = 0xA000_001F;
+
+const GENERIC_WRITE: u32 = 0x4000_0000;
+const FILE_SHARE_ALL: u32 = 0x1 | 0x2 | 0x4;
+const OPEN_EXISTING: u32 = 3;
+const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+const FSCTL_DELETE_REPARSE_POINT: u32 = 0x0009_00AC;
+const INVALID_HANDLE: isize = -1;
+
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn CreateFileW(
+        name: Pcwstr,
+        access: u32,
+        share: u32,
+        security: *const c_void,
+        disposition: u32,
+        flags: u32,
+        template: isize,
+    ) -> isize;
+    fn DeviceIoControl(
+        h: isize,
+        code: u32,
+        input: *const c_void,
+        input_len: u32,
+        output: *mut c_void,
+        output_len: u32,
+        returned: *mut u32,
+        overlapped: *mut c_void,
+    ) -> i32;
+    fn CloseHandle(h: isize) -> i32;
+}
+
+/// Removes the reparse point tagged `tag` (a Microsoft tag, so the buffer is the bare header)
+/// from the file or directory at the NUL terminated wide `path`, without following it. The item
+/// stays where it is, as a plain file or directory; the provider is not involved.
+pub fn delete_reparse_point(path: &[u16], tag: u32) -> std::io::Result<()> {
+    assert_eq!(path.last(), Some(&0), "wide path must be NUL terminated");
+    // SAFETY: NUL terminated path; no security attributes or template.
+    let h = unsafe {
+        CreateFileW(
+            path.as_ptr(),
+            GENERIC_WRITE,
+            FILE_SHARE_ALL,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            0,
+        )
+    };
+    if h == INVALID_HANDLE {
+        return Err(std::io::Error::last_os_error());
+    }
+    // REPARSE_DATA_BUFFER header: ReparseTag, ReparseDataLength = 0, Reserved = 0.
+    let mut header = [0u8; 8];
+    header[..4].copy_from_slice(&tag.to_le_bytes());
+    let mut returned = 0u32;
+    // SAFETY: a live handle, an 8-byte input buffer, no output, synchronous.
+    let ok = unsafe {
+        DeviceIoControl(
+            h,
+            FSCTL_DELETE_REPARSE_POINT,
+            header.as_ptr().cast(),
+            header.len() as u32,
+            std::ptr::null_mut(),
+            0,
+            &mut returned,
+            std::ptr::null_mut(),
+        )
+    };
+    let err = (ok == 0).then(std::io::Error::last_os_error);
+    // SAFETY: closing the handle opened above.
+    unsafe { CloseHandle(h) };
+    err.map_or(Ok(()), Err)
 }
 
 /// Most UTF-16 units read from a path the OS hands to a callback (the NTFS limit).
