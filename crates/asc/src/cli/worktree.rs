@@ -6,6 +6,11 @@
 //! symlink or junction at the requested path; `workspaces.path` is the requested path and
 //! `workspaces.mount` the mount root. Output formats and errors follow git 2.55.
 //!
+//! `add` without `--mode` follows `asc.worktree.mode`: `auto` (the default) makes a virtual
+//! worktree where this machine can serve one, so an extra checkout takes no disk for unchanged
+//! files, and a plain one elsewhere. A plain worktree with `asc.worktree.link = symlink` links its
+//! unchanged files to shared copies ([`asc_wc::shared`]).
+//!
 //! Every path is untrusted: nothing follows a link below the enclosing workspace, removal never
 //! follows a link, and a directory is deleted only when its `.git` names the workspace.
 
@@ -479,6 +484,30 @@ async fn undo(ws: &WsCtx, made: &Made, path: &Path, mount: &Path, nested: bool) 
     }
 }
 
+/// Whether a new worktree is virtual: `--mode`, else `asc.worktree.mode`. `auto` (the default)
+/// is virtual where this machine can serve a virtual workspace, so extra checkouts take no disk
+/// for unchanged files, and plain elsewhere.
+fn pick_mode(
+    flag: Option<&str>,
+    config: Option<&str>,
+    virtual_available: bool,
+) -> std::result::Result<bool, String> {
+    match flag {
+        Some("plain") => return Ok(false),
+        Some("virtual") => return Ok(true),
+        Some(other) => return Err(format!("invalid --mode '{other}'; use virtual or plain")),
+        None => {}
+    }
+    match config.map(str::trim) {
+        None | Some("auto") => Ok(virtual_available),
+        Some("plain") => Ok(false),
+        Some("virtual") => Ok(true),
+        Some(other) => Err(format!(
+            "asc: invalid asc.worktree.mode '{other}'; use auto, virtual or plain"
+        )),
+    }
+}
+
 /// `worktree add`: see the module docs. The caller has parsed and validated the options.
 pub(crate) async fn add(ctx: &Ctx, o: AddOpts) -> Result<Added> {
     let ws = ctx.ws()?;
@@ -817,15 +846,12 @@ async fn add_command(ctx: &Ctx, argv: &[OsString]) -> Result<ExitCode> {
     } else {
         None
     };
-    let virtual_mode = match sc.value("--mode") {
-        None | Some("plain") => false,
-        Some("virtual") => true,
-        Some(other) => {
-            return Err(fatal(format!(
-                "invalid --mode '{other}'; use virtual or plain"
-            )));
-        }
-    };
+    let virtual_mode = pick_mode(
+        sc.value("--mode"),
+        ctx.config.get("asc.worktree.mode").as_deref(),
+        ext::workspace_factory().virtual_mode().is_some(),
+    )
+    .map_err(fatal)?;
     let (typed, start) = match sc.words.as_slice() {
         [p] => (p, None),
         [p, s] => (
@@ -1357,6 +1383,27 @@ mod tests {
 
     fn os(items: &[&str]) -> Vec<OsString> {
         items.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn the_mode_flag_beats_the_config_and_auto_follows_the_backend() {
+        assert_eq!(pick_mode(None, None, true), Ok(true));
+        assert_eq!(pick_mode(None, None, false), Ok(false));
+        assert_eq!(pick_mode(None, Some("auto"), true), Ok(true));
+        assert_eq!(pick_mode(None, Some("plain"), true), Ok(false));
+        assert_eq!(pick_mode(None, Some("virtual"), false), Ok(true));
+        assert_eq!(pick_mode(Some("plain"), Some("virtual"), true), Ok(false));
+        assert_eq!(pick_mode(Some("virtual"), Some("plain"), false), Ok(true));
+        assert!(
+            pick_mode(Some("sparse"), None, true)
+                .unwrap_err()
+                .contains("--mode 'sparse'")
+        );
+        assert!(
+            pick_mode(None, Some("lazy"), true)
+                .unwrap_err()
+                .contains("asc.worktree.mode 'lazy'")
+        );
     }
 
     const ADD: [Spec; 4] = [
