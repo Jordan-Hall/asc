@@ -640,6 +640,18 @@ mod tests {
     }
 
     #[test]
+    fn reparse_tags_match_winnt_h() {
+        assert_eq!(IO_REPARSE_TAG_PROJFS, 0x9000_001C);
+        assert_eq!(IO_REPARSE_TAG_PROJFS_TOMBSTONE, 0xA000_0022);
+        // A tombstone is a Microsoft name-surrogate tag; a placeholder is a directory tag.
+        assert_eq!(IO_REPARSE_TAG_PROJFS_TOMBSTONE & 0xF000_0000, 0xA000_0000);
+        assert_ne!(
+            IO_REPARSE_TAG_PROJFS_TOMBSTONE, 0xA000_001F,
+            "the WCI tombstone"
+        );
+    }
+
+    #[test]
     fn filetime_epoch() {
         assert_eq!(filetime(0), 116_444_736_000_000_000);
         assert_eq!(filetime(-i64::MAX), 0);
