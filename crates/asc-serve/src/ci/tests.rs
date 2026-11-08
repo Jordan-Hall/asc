@@ -377,6 +377,92 @@ async fn appends_are_idempotent_bounded_and_admin_only() {
 }
 
 #[tokio::test]
+async fn secrets_are_masked_in_what_is_appended_and_what_is_read() {
+    use crate::workflows::secrets::Secrets;
+    use zeroize::Zeroizing;
+    let mut f = fx().await;
+    let dir = tempfile::tempdir().unwrap();
+    let pool = f.reg.pool().clone();
+    let vault = crate::vault::Vault::open_file(dir.path().join("vault.keys"), pool.clone());
+    let secrets = Secrets::new(pool.clone(), vault);
+    let set = |name: &'static str, repo: &'static str, value: &'static str| {
+        let secrets = secrets.clone();
+        async move {
+            let value = Zeroizing::new(value.to_owned());
+            secrets.set(repo, name, &value, "45:root").await.unwrap();
+        }
+    };
+    set("DEPLOY", "o/r", "deploy-token-0123456789").await;
+    set("OTHER", "o/other", "other-repo-secret").await;
+    let (hub, auth) = (f.hub.clone(), f.auth.clone());
+    let svc = move |s: Option<Secrets>| {
+        crate::ci::rpc::CiService::new(hub.clone(), auth.clone(), Default::default())
+            .with_secrets(s)
+    };
+    f.ci = svc(Some(secrets.clone()));
+
+    let r = report(
+        &f,
+        run_req("9", 1, C::Running, vec![job("deploy", C::Running)]),
+    )
+    .await
+    .unwrap();
+    let (run, j) = (r.id, r.jobs[0].id);
+    let line =
+        b"push with deploy-token-0123456789 ok\nkey AKIAIOSFODNN7EXAMPLE\nother-repo-secret\n";
+    append(&f, run, j, line).await.unwrap();
+    let stored: Vec<Vec<u8>> = sqlx::query_scalar("SELECT data FROM check_job_logs WHERE job = $1")
+        .bind(i64::try_from(j).unwrap())
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        String::from_utf8(stored.concat()).unwrap(),
+        "push with *** ok\nkey ***\nother-repo-secret\n",
+        "the stored log holds neither this repository's secret nor a known credential; another repository's value is not this one's"
+    );
+
+    // A secret set after its line was stored, and one cut across two appends, are masked when the log is read.
+    f.ci = svc(None);
+    append(&f, run, j, b"late-secret-abcdef\nhalf deploy-tok")
+        .await
+        .unwrap();
+    append(&f, run, j, b"en-0123456789 end\n").await.unwrap();
+    set("LATE", "o/r", "late-secret-abcdef").await;
+    f.ci = svc(Some(secrets.clone()));
+    let all = log(&f, run, j, 0, 0).await;
+    let text = String::from_utf8(all.data.to_vec()).unwrap();
+    assert!(
+        !text.contains("late-secret-abcdef") && !text.contains("deploy-token-0123456789"),
+        "{text}"
+    );
+    assert!(
+        text.ends_with("other-repo-secret\n***\nhalf *** end\n"),
+        "{text}"
+    );
+    assert_eq!(
+        all.next_offset, all.size,
+        "the offsets are those of the stored bytes"
+    );
+
+    // A locked vault refuses an append rather than store what it cannot check; a read still answers.
+    let locked = Secrets::new(
+        pool.clone(),
+        crate::vault::Vault::locked("test", pool.clone()),
+    );
+    f.ci = svc(Some(locked));
+    assert_eq!(
+        code(&append(&f, run, j, b"x\n").await.unwrap_err()),
+        tonic::Code::Unavailable
+    );
+    assert_eq!(
+        log(&f, run, j, 0, 0).await.size,
+        all.size,
+        "the refused append stored nothing"
+    );
+}
+
+#[tokio::test]
 async fn a_full_log_drops_later_bytes() {
     let f = fx().await;
     let r = report(
