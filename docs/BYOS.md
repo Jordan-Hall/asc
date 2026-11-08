@@ -38,7 +38,7 @@ it is verified and enabled again. A target cannot be deleted or disabled while a
 | targets of a user | that user, signed in as themselves (not a deploy key or CI task) |
 | targets of a repository | anyone with admin on the repository |
 | targets of an organisation | the host application, which checks its own permissions first and then calls with its service credential |
-| `AssignRepo`, `StartMigration`, `CancelMigration`, migration reads | admin on the repository, and for a target, admin of the target's owner |
+| `AssignRepo`, `StartMigration`, `CancelMigration`, migration reads, `GetRepoUsage` | admin on the repository, and for a target, admin of the target's owner |
 | `Vault.*` | site administrator (the host application's service credential) |
 
 A call that names an owner and is not allowed answers `PERMISSION_DENIED`. A call that names an id (a target, a migration) and is not
@@ -149,6 +149,29 @@ Migrations hold a lease on their row and are picked up by any replica when the l
 
 Progress is visible through `GetMigration` and `ListMigrations`, in the log (`storage migration` lines), in the audit events
 (`storage.migration.started`, `storage.migration.finished`) and, in process, on `Engine::subscribe`.
+
+## Usage
+
+`GetRepoUsage` tells a repository's administrators what the repository keeps in storage and how much was read from it:
+
+| Kind | What it is |
+|---|---|
+| `history` | changesets, trees, tags, change metadata, git tree overrides |
+| `files` | files stored whole |
+| `large files` | files stored in chunks (chunk lists and chunks) |
+| `indexes` | search and code intelligence data |
+| `CI` | CI artifacts and caches (`actions/`) |
+| `other` | pack bytes no live object uses (they go at the next collection) and anything else |
+
+Stored bytes come from a listing of the repository's namespace wherever it is (its target, a fallback, the instance bucket).
+Objects inside packs are classified by the pack index. A listing can take a while for a large repository, so it runs in the
+background: the call answers with the last result (`computed_at`) and `computing` while a new one runs. A result is redone when
+there is none, when it is a day old, or when the caller asks (`refresh`), at most every five minutes. One repository has one scan
+at a time.
+
+Bytes read are the bytes the server fetched from storage for the repository (whole objects, ranges, pack reads), counted in
+process and written to the database every minute and before each answer. They are per UTC month (`month`, `YYYY-MM`); a metadata
+request (`HEAD`) and a write count nothing. They show the egress the owner's provider bills for this server's reads.
 
 ## Health
 

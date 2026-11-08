@@ -319,7 +319,8 @@ the `MergeQueue` service: its methods answer `UNIMPLEMENTED` from the router unt
 ## 9. Bring your own storage
 
 - **RPCs** (`storage.proto`, `storage.v1`): `Storage.CreateTarget`, `ListTargets`, `GetTarget`, `UpdateTarget`, `DeleteTarget`,
-  `VerifyTarget`, `SetEnabled`, `AssignRepo`, `StartMigration`, `GetMigration`, `ListMigrations`, `CancelMigration`.
+  `VerifyTarget`, `SetEnabled`, `AssignRepo`, `StartMigration`, `GetMigration`, `ListMigrations`, `CancelMigration`,
+  `GetRepoUsage`.
 - **Lifecycle:** `PENDING` on create or on any change of endpoint, bucket, prefix or credentials; `VerifyTarget` runs `resolve`, `connect`,
   `put`, `get`, `delete` (a random probe object under `<prefix>.asc-probe/`) and the advisory `versioning` read (never fails the
   verification) through the network guard (section 2) and sets `VERIFIED` or `FAILED`; a refused step names the S3 permission it
@@ -328,6 +329,10 @@ the `MergeQueue` service: its methods answer `UNIMPLEMENTED` from the router unt
 - **Migration:** copy every object of the repository to the target, read each back and compare the hash, switch the repository's
   storage pointer in one transaction, then (only if asked) delete the source; reads and writes stay available throughout; a failed or
   cancelled migration leaves the source authoritative. Writes during the copy go to both until the switch.
+- **Usage:** `GetRepoUsage` (repository admin) answers the stored bytes and objects by kind (`history`, `files`, `large files`,
+  `indexes`, `CI`, `other`), their total, when they were scanned, whether a scan is running, and the bytes read in the current UTC
+  month. The scan runs in the background and is kept in `storage_usage`; it is redone when missing, a day old, or on `refresh`
+  (at most every 5 minutes). Reads are counted per namespace in process and added to `storage_reads(ns, month)` every 60 s.
 - **Data:** `storage_targets(id, owner_kind, owner_name, name, endpoint, region, bucket, prefix, addressing, sealed_credentials, key_gen,
   state, last_error, verified_at, created, updated)`, `repo_storage(repo, target_id)`, `storage_migrations(...)`.
 - **Config:** `[storage] max_targets_per_owner` (64), `[storage] allow_user_targets` (default `true`), `[storage] allow_private`
@@ -901,6 +906,7 @@ Every method of the build-out services (98). A test keeps this list equal to the
 - `asc.v1.Storage/GetMigration`
 - `asc.v1.Storage/ListMigrations`
 - `asc.v1.Storage/CancelMigration` — idempotent
+- `asc.v1.Storage/GetRepoUsage` — repo admin; cached, scanned in the background
 
 **Vault** (`vault.proto`)
 
