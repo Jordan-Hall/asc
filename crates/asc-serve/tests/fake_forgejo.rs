@@ -152,12 +152,16 @@ mod forgejo {
                 ("repo", is_str),
                 ("mode", is_str),
                 ("ref", is_str),
+                ("area", is_str),
             ],
         )
         .ok_or(BAD)?;
         let s = |k: &str| o.get(k).and_then(Value::as_str).unwrap_or("");
         if !matches!(s("mode"), "read" | "write") {
             return Err("mode must be read or write");
+        }
+        if !matches!(s("area"), "" | "repository" | "changes" | "runs") {
+            return Err("area must be repository, changes or runs");
         }
         // An empty owner and repository together ask for the identity alone.
         if s("owner").is_empty() != s("repo").is_empty() {
@@ -697,6 +701,47 @@ mod forgejo {
                 .await
                 .unwrap_err(),
             AuthError::Unauthenticated
+        );
+    }
+
+    #[tokio::test]
+    async fn the_area_of_the_call_is_sent_and_keys_the_cache() {
+        use asc_serve::authz::area::{Area, scope};
+        let (fake, url) = start().await;
+        fake.with(|i| {
+            i.authz.insert(
+                ("pat".into(), "o/r".into()),
+                json!({"allowed": true, "user_id": 9, "username": "bob", "perm": "write",
+                       "deploy_key_id": 0, "is_actions_task": false}),
+            );
+        });
+        let authz = internal_authz(&url, Vec::new());
+        let t = tok("pat");
+        let read = |area| {
+            let authz = &authz;
+            let t = &t;
+            scope(area, async move {
+                authz.authorize(Some(t), "o/r", Access::Read).await.unwrap()
+            })
+        };
+        read(Area::Changes).await;
+        read(Area::Changes).await;
+        read(Area::Runs).await;
+        read(Area::Repository).await;
+        let bodies: Vec<Value> = fake
+            .calls("/api/internal/asc/authz")
+            .into_iter()
+            .map(|c| c.body)
+            .collect();
+        assert_eq!(
+            bodies,
+            vec![
+                json!({"token": "pat", "owner": "o", "repo": "r", "mode": "read", "area": "changes"}),
+                json!({"token": "pat", "owner": "o", "repo": "r", "mode": "read", "area": "runs"}),
+                json!({"token": "pat", "owner": "o", "repo": "r", "mode": "read"}),
+            ],
+            "one question per area: the second read of changes was answered from the cache, and \
+             the repository area sends no field"
         );
     }
 
