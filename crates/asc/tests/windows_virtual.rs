@@ -257,11 +257,33 @@ mod projfs {
     }
 
     /// Whether `dir` is a ProjFS virtualization root (it carries a reparse point).
+    /// Whether `dir` carries the ProjFS reparse point (`IO_REPARSE_TAG_PROJFS`), as
+    /// `fsutil reparsepoint query` reads it: the ProjFS filter keeps the reparse attribute of a
+    /// virtualization root out of ordinary metadata queries.
     fn is_virtual_root(dir: &Path) -> bool {
-        use std::os::windows::fs::MetadataExt;
-        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-        std::fs::symlink_metadata(dir).unwrap().file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT
-            != 0
+        let out = std::process::Command::new("fsutil")
+            .args(["reparsepoint", "query"])
+            .arg(dir)
+            .output()
+            .expect("spawn fsutil");
+        crate::text(&out.stdout)
+            .to_ascii_lowercase()
+            .contains("0x9000001c")
+    }
+
+    /// The mode asc recorded for the workspace at `dir` (`asc debug stats --json`).
+    fn recorded_mode(sb: &Sandbox, ws: &Path, dir: &Path) -> String {
+        let out = ok(sb, ws, &["debug", "stats", "--json"]);
+        let v: serde_json::Value = serde_json::from_str(&out).expect("json");
+        let key = |p: &str| p.trim_end_matches(['\\', '/']).to_ascii_lowercase();
+        let want = key(&dir.to_string_lossy());
+        v["workspaces"]
+            .as_array()
+            .expect("a workspaces array")
+            .iter()
+            .find(|w| key(w["path"].as_str().unwrap_or_default()) == want)
+            .map(|w| w["mode"].as_str().unwrap_or_default().to_owned())
+            .unwrap_or_else(|| panic!("no workspace at {}: {out}", dir.display()))
     }
 
     /// The hydrations the daemon reports per path (`asc debug hydrations --json`, one row per path).
@@ -379,6 +401,7 @@ mod projfs {
             "a
 "
         );
+        assert_eq!(recorded_mode(&sb, &ws, &wt), "virtual");
         assert!(is_virtual_root(&wt), "the default worktree is not virtual");
 
         ok(&sb, &ws, &["config", "asc.worktree.mode", "plain"]);
@@ -393,6 +416,7 @@ mod projfs {
             "a
 "
         );
+        assert_eq!(recorded_mode(&sb, &ws, &plain), "plain");
         assert!(
             !is_virtual_root(&plain),
             "asc.worktree.mode plain made a virtual worktree"
@@ -434,6 +458,8 @@ mod projfs {
         ok(&sb, &ws, &["worktree", "convert", "--plain"]);
         ok(&sb, &ws, &["daemon", "stop"]);
 
+        assert_eq!(recorded_mode(&sb, &ws, &ws), "plain");
+        assert!(!is_virtual_root(&ws), "the converted root is still virtual");
         assert!(!ws.join("a.txt").exists());
         assert_eq!(ok(&sb, &ws, &["status", "--porcelain"]), " D a.txt\n");
         assert_eq!(
