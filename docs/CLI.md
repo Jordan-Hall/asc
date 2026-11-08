@@ -45,7 +45,7 @@ Configuration keys are in [`CONFIG.md`](CONFIG.md). Getting started is in
 | `debug stats` | The size of the cache and the store and the bytes each workspace holds. | `asc debug stats --json` |
 | `debug hydrations` | Which processes made files download. `--by-process` groups them. | `asc debug hydrations --by-process` |
 | `debug trace` | Asks the running daemon for a diagnostic dump in its log directory and prints the path. | `asc debug trace` |
-| `gc` | Collects store garbage. `--dry-run` only reports; `--store <url>` collects a bucket. | `asc gc --dry-run` |
+| `gc` | Collects store garbage and removes shared copies no link-mode worktree uses ([`WORKTREES.md`](WORKTREES.md)). `--dry-run` only reports; `--store <url>` collects a bucket. | `asc gc --dry-run` |
 | `prefetch` | Downloads the files under a pathspec now, and `--history <n>` more history. | `asc prefetch src docs --history 500` |
 | `sparse-checkout`, `sparse` | Chooses the directories in the cone: `set`, `add`, `list`, `disable`. `sparse dehydrate` re-virtualises clean files. | `asc sparse set crates/asc docs` |
 | `import` | Imports git history into a repository. | `asc import --git ../old-repo --incremental` |
@@ -71,7 +71,7 @@ Configuration keys are in [`CONFIG.md`](CONFIG.md). Getting started is in
 | `tag` | Lists and creates tags. | `asc tag -a v1.2.0 -m "release 1.2.0"` |
 | `clean` | Removes untracked files. | `asc clean -n -d` |
 | `stash` | `push`, `pop`, `apply`, `list`, `show`, `drop`, `clear`, `branch`, `create`, `store`. | `asc stash push -u -m "wip"` |
-| `worktree` | `add`, `list`, `remove`, `prune`, `lock`, `unlock`, `move`, `convert --plain`. `add --ephemeral --ttl 7d` makes a throwaway one. | `asc worktree add ../review-1 topic` |
+| `worktree` | `add`, `list`, `remove`, `prune`, `lock`, `unlock`, `move`, `convert --plain`. `add --ephemeral --ttl 7d` makes a throwaway one. `add` makes a virtual worktree where it can (`--mode plain` or `asc.worktree.mode` to change); see [`WORKTREES.md`](WORKTREES.md). | `asc worktree add ../review-1 topic` |
 | `sparse-checkout` | See section 1. | `asc sparse-checkout list` |
 | `check-ignore` | Says which ignore rule matches a path. | `asc check-ignore -v target/debug` |
 | `check-attr` | Shows attributes of a path. | `asc check-attr -a src/lib.rs` |

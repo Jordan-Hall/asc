@@ -92,6 +92,16 @@ The daemon keeps a worktree current while you work. `asc live pause` stops it fo
 | `asc.live.maxStack` | `50` | Above this many changes nothing is restacked and a notice is raised. | `asc config --global asc.live.maxStack 20` |
 | `asc.live.maxFiles` | `5000` | Above this many changed paths nothing is restacked and a notice is raised. | `asc config --global asc.live.maxFiles 2000` |
 
+## Worktrees
+
+How extra checkouts keep unchanged files without a copy each; see [`WORKTREES.md`](WORKTREES.md).
+
+| Key | Default | Meaning | Example |
+|---|---|---|---|
+| `asc.worktree.mode` | `auto` | The mode of `asc worktree add` without `--mode`: `auto` (virtual where this machine can serve a virtual workspace, else plain), `virtual` or `plain`. | `asc config --global asc.worktree.mode plain` |
+| `asc.worktree.link` | `copy` | How plain checkouts write unchanged files: `copy` (a reflink where the file system can, else a copy) or `symlink` (a link to one read-only shared copy per machine). | `asc config asc.worktree.link symlink` |
+| `asc.gc.sharedGrace` | `1h` | `asc gc` keeps a shared copy younger than this even when no link names it. `0s` removes at once. | `asc config asc.gc.sharedGrace 10m` |
+
 ## Virtual file system (Windows)
 
 | Key | Default | Meaning | Example |

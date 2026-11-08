@@ -16,6 +16,7 @@ wins.
 | [`mcp.md`](mcp.md) | `asc mcp`: the tools an agent can call. Generated from the code. |
 | [`api.md`](api.md) | The `asc.v1` RPC services and how to call them with `asc api`. |
 | [`BYOS.md`](BYOS.md) | Keeping objects in a bucket you own. |
+| [`WORKTREES.md`](WORKTREES.md) | Extra worktrees without duplicate files: virtual, copy and link modes. |
 | [`agents/claude-code-worktrees.md`](agents/claude-code-worktrees.md) | Running Claude Code in asc worktrees. |
 
 ## Editor plugins and the web app
