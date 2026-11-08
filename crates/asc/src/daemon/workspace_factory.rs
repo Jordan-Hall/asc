@@ -470,8 +470,11 @@ mod tests {
         fs::remove_file(f.root.join(".git")).unwrap();
 
         let ws = workspaces::get(&f.db, f.ws).await.unwrap().unwrap();
+        // The provider lists a tombstone the walk of the stopped root does not meet, and the
+        // walk one the provider did not list; both deletions are kept.
         let mounts = Recording {
-            deleted: vec!["gone.txt".into(), "gonedir".into()],
+            served: vec!["gone.txt".into()],
+            deleted: vec!["gonedir".into()],
             ..Recording::default()
         };
         let safe = SafeDirectory::default();
