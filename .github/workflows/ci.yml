@@ -117,11 +117,17 @@ jobs:
         env:
           RUST_BACKTRACE: '1'
         # One test at a time, each with a limit, so a test that hangs is named and the others still report.
+        # The built test binary runs directly: going through cargo again would rebuild asc for every test.
         run: |
+          bin=$(cargo test -p asc --locked --test windows_virtual --no-run --message-format=json \
+            | jq -r 'select(.reason == "compiler-artifact" and .target.name == "windows_virtual" and .executable != null) | .executable')
+          bin=$(cygpath -u "$bin")
+          test -x "$bin" || { echo "::error::no windows_virtual test binary"; exit 1; }
+          cd crates/asc
           status=0
-          for t in $(cargo test -p asc --locked --test windows_virtual -- --include-ignored --list --format terse | sed -n 's/: test$//p'); do
+          for t in $("$bin" --include-ignored --list --format terse | sed -n 's/: test$//p'); do
             echo "::group::$t"
-            if ! timeout 300 cargo test -p asc --locked --test windows_virtual -- --include-ignored --exact --nocapture "$t"; then
+            if ! timeout 300 "$bin" --include-ignored --exact --nocapture "$t"; then
               echo "::error::$t failed or ran over 5 minutes"
               status=1
             fi
