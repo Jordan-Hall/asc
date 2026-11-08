@@ -992,6 +992,7 @@ Every method of the build-out services (98). A test keeps this list equal to the
 - `asc.v1.DepsService/SetConfig` — repo maintainer; mutating; never trunk
 - `asc.v1.DepsService/GetConfig` — repo read
 - `asc.v1.DepsService/Dismiss` — repo maintainer; mutating
+- `asc.v1.DepsService/ScanStatus` — repo read; the phase, steps and time left of a running scan
 - `asc.v1.Backups/ListBackups` — site admin
 - `asc.v1.Backups/ListTargets` — site admin
 - `asc.v1.Backups/RunBackup` — site admin

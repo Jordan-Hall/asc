@@ -80,6 +80,27 @@ from the OSV ecosystem name, such as `crates.io` or `npm`, to a count). Counts a
 version) triples, so a package named by several files counts once, and the per-ecosystem counts add up to the total.
 A scan recorded before these fields existed has the total and an empty map.
 
+## Progress
+
+`ScanStatus` says what the newest running scan of a repository is doing, so a client can draw a progress bar
+while `Scan` runs. Anyone who can read the repository may ask. A scan has three phases: `READING` (the server
+walks the revision and parses the manifests), `ADVISORIES` (it asks the advisory source) and `RECORDING` (it
+records the findings). Only the advisory phase has a known amount of work: one step for each package version
+asked, from the cache or from OSV, and one for each advisory record read. `done` and `total` count these steps,
+and `total` grows when the server knows which records it must read.
+
+`permille` is how far the scan is, from 0 to 1000: 0 while reading, 100 to 950 through the advisory steps, and
+950 while recording. `eta_seconds` is the estimated time left:
+
+* in the advisory phase, after at least one step, it is the rate of that phase so far;
+* otherwise it is how long the last finished scan of the same repository took on this process, less the time
+  this scan has run;
+* else it is 0, which means no estimate.
+
+`last_took_seconds` is that last duration. The state is kept in memory by the process that runs the scan. A
+restart forgets it, and behind a balancer that does not send a client back to the same process, `running` can be
+false while another process scans.
+
 ## Updates
 
 `ListUpdates` asks each registry (crates.io, npm, PyPI, the Go proxy, Maven Central, NuGet, Packagist,
@@ -289,7 +310,7 @@ workflows, whose secrets cannot be named `ASC_*`.
 
 | Call | Needs |
 |---|---|
-| `ListFindings`, `ListUpdates`, `GetConfig` | read |
+| `ListFindings`, `ListUpdates`, `GetConfig`, `ScanStatus` | read |
 | `Scan`, `ProposeUpdate`, `SetConfig`, `Dismiss` | write, and a maintainer of the policy or an administrator |
 
 Agent credentials reach none of them (every service an agent token is not named for is closed to it).
