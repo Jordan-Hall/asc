@@ -944,7 +944,7 @@ service Workspace {
   rpc ReadFile(WsReadFileRequest) returns (stream ReadFileResponse); // §24.4.2: a file at rev:path, a FileId or a stage (0-3) from the local store; offline; never reads the working tree [audit: ide-plugins-folded]
   rpc Ping(PingRequest) returns (PingResponse);                 // version, pid, uptime
   rpc Mount(MountRequest) returns (MountResponse);              // ws_id → starts provider
-  rpc Unmount(UnmountRequest) returns (UnmountResponse);
+  rpc Unmount(UnmountRequest) returns (UnmountResponse);          // ws_id, list_deleted → the paths the user deleted while served (convert --plain)
   rpc Switch(SwitchRequest) returns (SwitchResponse);           // ws_id, from_root, to_root, mode {SAFE|MERGE|FORCE}
   rpc Journal(JournalRequest) returns (JournalResponse);        // since token → paths + new token + fresh flag
   rpc ClearJournal(ClearJournalRequest) returns (ClearJournalResponse);
