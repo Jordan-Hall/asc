@@ -1708,3 +1708,65 @@ async fn readers_read_maintainers_write_and_nobody_else_does() {
     assert!(svc.dismiss(call(d, "alice-w", true)).await.is_ok());
     let _ = (DepSeverity::Low, CallCtx::clone);
 }
+
+#[tokio::test]
+async fn scan_status_says_what_a_running_scan_has_done() {
+    use super::osv::Query;
+    use super::progress::{Phase, Tick};
+
+    let h = setup().await;
+    h.mock.vuln(
+        Ecosystem::CratesIo,
+        "serde",
+        "1.0.100",
+        "RUSTSEC-1",
+        "1.0.200",
+        "HIGH",
+    );
+    h.trunk(&[(
+        "Cargo.lock",
+        lock(&[("serde", "1.0.100"), ("regex", "1.5.0")]).as_bytes(),
+    )])
+    .await;
+    let idle = h.hub.scan_status(&ctx(BOB)).await.unwrap();
+    assert!(!idle.running);
+    assert_eq!(idle.phase, wire::DepScanPhase::Unspecified as i32);
+    assert_eq!((idle.started_at, idle.eta_seconds), (0, 0));
+
+    // The lookup counts a step per package version asked and one per advisory record read.
+    let tick = Tick::default();
+    let queries: Vec<Query> = [("serde", "1.0.100"), ("regex", "1.5.0")]
+        .iter()
+        .map(|(n, v)| Query {
+            eco: Ecosystem::CratesIo,
+            name: (*n).into(),
+            version: (*v).into(),
+        })
+        .collect();
+    h.hub.osv.lookup_with(&queries, true, Some(&tick)).await;
+    assert_eq!(tick.get(), (3, 3), "two versions and one record");
+
+    // A scan in the advisory phase: the bar and the estimate come from its steps.
+    let key = h.hub.entry(&ctx(ALICE)).await.unwrap().key.0;
+    let g = h.hub.scans.start(key, T0);
+    g.phase(Phase::Advisories, T0);
+    g.tick().add_total(4);
+    g.tick().add_done(2);
+    h.clock.store(T0 + 10, Ordering::SeqCst);
+    let s = h.hub.scan_status(&ctx(BOB)).await.unwrap();
+    assert!(s.running);
+    assert_eq!(s.phase, wire::DepScanPhase::Advisories as i32);
+    assert_eq!((s.done, s.total, s.started_at), (2, 4, T0));
+    assert_eq!(s.permille, 525);
+    assert_eq!(s.eta_seconds, 10, "two steps in 10 s, two left");
+    drop(g);
+
+    // A finished scan leaves nothing running.
+    h.scan("", false).await;
+    let s = h.hub.scan_status(&ctx(BOB)).await.unwrap();
+    assert!(!s.running);
+    assert_eq!(
+        s.last_took_seconds, 0,
+        "the clock did not move during the scan"
+    );
+}
