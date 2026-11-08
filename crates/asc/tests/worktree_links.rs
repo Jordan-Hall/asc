@@ -95,7 +95,23 @@ fn linked_worktrees_share_one_copy_and_gc_prunes_unlinked_ones() {
         return;
     }
     let target = fs::read_link(&a1).unwrap();
-    assert!(target.starts_with(area(&sb)), "{}", target.display());
+    // `shared-blobs/<repo-id>/<fan>/<file>`: each repository has its own area.
+    let repo_area = target.parent().unwrap().parent().unwrap();
+    assert_eq!(
+        repo_area.parent().unwrap(),
+        area(&sb),
+        "{}",
+        target.display()
+    );
+    assert!(
+        repo_area
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .parse::<uuid::Uuid>()
+            .is_ok()
+    );
     assert!(fs::metadata(&target).unwrap().permissions().readonly());
     assert_eq!(ok(&sb, &w1, &["status", "--porcelain"]), "");
 
