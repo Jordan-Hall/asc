@@ -13,9 +13,13 @@ and `vault.proto`; the contract for the whole build-out is `docs/BUILDOUT.md`, s
    prefix, addressing (auto, path or virtual-host) and an access key pair (plus a session token for temporary credentials). The target
    starts `PENDING`. The key pair is accepted here and never returned: a target shows `access_key_hint` (`AKIA...WXYZ`) and `has_secret`.
 2. **Verify it** (`VerifyTarget`): the server resolves the endpoint, connects to the checked address, writes a random probe object under
-   `<prefix>/.asc-probe/`, reads it back, compares and deletes it. Each step is reported (`resolve`, `connect`, `put`, `get`, `delete`)
-   with a fixed phrase on failure. A target that passes is `VERIFIED`; one that fails is `FAILED` with `last_error`. Six verifications
-   per target per hour.
+   `<prefix>/.asc-probe/`, reads it back, compares and deletes it, then reads the bucket's versioning setting (a signed
+   `GET ?versioning`). Each step is reported (`resolve`, `connect`, `put`, `get`, `delete`, `versioning`) with a fixed phrase on
+   failure, and a step the provider refused names the permission the key lacks (`needs`: `s3:PutObject`, `s3:GetObject`,
+   `s3:DeleteObject`, `s3:GetBucketVersioning`). `versioning` is advisory: it is ok only when versioning is `Enabled`, and a bucket
+   without it (off or suspended, so an overwritten or deleted object cannot be recovered) or a key that may not read the setting is
+   reported but never fails the verification. A target that passes the first five steps is `VERIFIED`; one that fails is `FAILED`
+   with `last_error`. Six verifications per target per hour.
 3. **Enable it** (`SetEnabled`): only a verified target can be enabled.
 4. **Use it** for a repository, in one of two ways:
    * `AssignRepo`: new objects go to the target from now on. Objects stored before stay where they are and stay readable (the earlier

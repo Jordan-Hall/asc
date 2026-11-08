@@ -321,8 +321,9 @@ the `MergeQueue` service: its methods answer `UNIMPLEMENTED` from the router unt
 - **RPCs** (`storage.proto`, `storage.v1`): `Storage.CreateTarget`, `ListTargets`, `GetTarget`, `UpdateTarget`, `DeleteTarget`,
   `VerifyTarget`, `SetEnabled`, `AssignRepo`, `StartMigration`, `GetMigration`, `ListMigrations`, `CancelMigration`.
 - **Lifecycle:** `PENDING` on create or on any change of endpoint, bucket, prefix or credentials; `VerifyTarget` runs `resolve`, `connect`,
-  `put`, `get`, `delete` (a random probe object under `<prefix>.asc-probe/`) through the network guard (section 2) and sets `VERIFIED`
-  or `FAILED`; only `VERIFIED` can be enabled; a repository can be assigned only an `ENABLED` target of an owner the caller administers.
+  `put`, `get`, `delete` (a random probe object under `<prefix>.asc-probe/`) and the advisory `versioning` read (never fails the
+  verification) through the network guard (section 2) and sets `VERIFIED` or `FAILED`; a refused step names the S3 permission it
+  needs; only `VERIFIED` can be enabled; a repository can be assigned only an `ENABLED` target of an owner the caller administers.
   Verification is rate limited (6 per target per hour).
 - **Migration:** copy every object of the repository to the target, read each back and compare the hash, switch the repository's
   storage pointer in one transaction, then (only if asked) delete the source; reads and writes stay available throughout; a failed or
