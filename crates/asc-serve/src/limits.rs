@@ -1698,9 +1698,13 @@ where
             connect_addr(req.extensions()).map(|tcp| self.admission.client_ip(tcp, req.headers()));
         let scope = Peer::from_ip(peer);
         let path = req.uri().path();
+        let area = crate::authz::area::Area::of_path(path);
         let git = class_of(path).is_none();
         let Some(class) = class_of(path).or_else(|| git_class_of(path)) else {
-            return Box::pin(with_peer(scope, inner.call(req)));
+            return Box::pin(crate::authz::area::scope(
+                area,
+                with_peer(scope, inner.call(req)),
+            ));
         };
         // The size of the body is not known yet and the header cannot be trusted, so the call
         // costs one unit here and the body's real bytes are charged as they stream.
@@ -1727,18 +1731,21 @@ where
                     }),
                     None => req,
                 };
-                Box::pin(with_peer(scope, async move {
-                    let resp = inner.call(req).await?;
-                    Ok(resp.map(|body| {
-                        Body::new(Held {
-                            inner: body,
-                            meter,
-                            parked: None,
-                            pause: None,
-                            _permit: permit,
-                        })
-                    }))
-                }))
+                Box::pin(crate::authz::area::scope(
+                    area,
+                    with_peer(scope, async move {
+                        let resp = inner.call(req).await?;
+                        Ok(resp.map(|body| {
+                            Body::new(Held {
+                                inner: body,
+                                meter,
+                                parked: None,
+                                pause: None,
+                                _permit: permit,
+                            })
+                        }))
+                    }),
+                ))
             }
         }
     }
@@ -2248,6 +2255,47 @@ mod tests {
             assert_eq!(String::from_utf8_lossy(&body), want, "{path}");
         }
         assert_eq!(current_peer(), Peer::Unknown, "outside a request");
+    }
+
+    /// Answers with the area the authorizer would send through [`crate::authz::area::current`].
+    #[derive(Clone)]
+    struct SeesArea;
+
+    impl Service<Request<Body>> for SeesArea {
+        type Response = Response<Body>;
+        type Error = Infallible;
+        type Future = BoxFuture<'static, Result<Response<Body>, Infallible>>;
+
+        fn poll_ready(&mut self, _: &mut Context<'_>) -> Poll<Result<(), Infallible>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn call(&mut self, _: Request<Body>) -> Self::Future {
+            Box::pin(async {
+                Ok(Response::new(Body::from(format!(
+                    "{:?}",
+                    crate::authz::area::current()
+                ))))
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_handler_sees_the_area_of_its_service() {
+        let admission = Arc::new(Admission::new(&Limits::default()));
+        let mut svc = AdmissionLayer::new(admission).layer(SeesArea);
+        for (path, want) in [
+            ("/asc.v1.Stacks/List", "Changes"),
+            ("/asc.v1.Review/GetThread", "Changes"),
+            ("/asc.v1.Agents/ListRuns", "Runs"),
+            ("/asc.v1.Repo/Version", "Repository"),
+            ("/not-asc/at-all", "Repository"),
+        ] {
+            let req = request(path, "t", 7, Body::empty());
+            let resp = svc.call(req).await.unwrap();
+            let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
+            assert_eq!(String::from_utf8_lossy(&body), want, "{path}");
+        }
     }
 
     fn shed(resp: &Response<Body>) -> bool {
