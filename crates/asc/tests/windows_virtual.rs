@@ -364,6 +364,37 @@ mod projfs {
         );
     }
 
+    /// A hydrated clean file, a deleted file and a never-read file all come through the
+    /// conversion as plain files (or stay deleted), and the root lists without a provider.
+    #[test]
+    #[ignore = "needs Windows with ProjFS"]
+    fn convert_to_plain_keeps_deletions_and_leaves_a_plain_root() {
+        let sb = Virtual::new();
+        let url = seed(&sb);
+        let ws = virtual_clone(&sb, &url);
+        assert_eq!(
+            std::fs::read_to_string(ws.join("src").join("b.txt")).unwrap(),
+            "b\n"
+        );
+        std::fs::remove_file(ws.join("a.txt")).unwrap();
+        ok(&sb, &ws, &["worktree", "convert", "--plain"]);
+        ok(&sb, &ws, &["daemon", "stop"]);
+
+        assert!(!ws.join("a.txt").exists());
+        assert_eq!(ok(&sb, &ws, &["status", "--porcelain"]), " D a.txt\n");
+        assert_eq!(
+            std::fs::read_to_string(ws.join("src").join("b.txt")).unwrap(),
+            "b\n"
+        );
+        // No ProjFS reparse point is left: the root and its directories list with no provider.
+        let names: Vec<String> = std::fs::read_dir(&ws)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.iter().any(|n| n == "src"), "{names:?}");
+        assert_eq!(std::fs::read_dir(ws.join("src")).unwrap().count(), 1);
+    }
+
     #[test]
     #[ignore = "needs Windows with ProjFS"]
     fn tree_without_turbo_json_has_no_index_and_status_matches_git() {
