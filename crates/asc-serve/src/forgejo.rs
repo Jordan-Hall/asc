@@ -31,6 +31,7 @@ use sqlx::{AnyPool, Row};
 use url::Url;
 use uuid::Uuid;
 
+use crate::authz::area::{self, Area};
 use crate::authz::{
     HOST_SERVICE_PRINCIPAL, NEGATIVE_TTL, POSITIVE_TTL, UserIdentity, is_host_service,
 };
@@ -460,8 +461,10 @@ impl<'a> Login<'a> {
 /// Cache key: `(sha256(user NUL secret), repo, mode)` (SPEC §15.1). The user is empty for every
 /// non-Basic credential, so only a Basic user name separates two entries: the same password under
 /// another user name never shares an answer. Only the digest is kept, never the secret.
-type CacheKey = ([u8; 32], String, Access);
+type CacheKey = ([u8; 32], String, Access, Area);
 
+/// The key of a decision. The area of the call is part of it: a token's answer for code says
+/// nothing about its answer for stacks or runs.
 fn cache_key(login: Option<Login<'_>>, repo: &str, access: Access) -> CacheKey {
     let mut h = Sha256::new();
     if let Some(l) = login {
@@ -469,7 +472,12 @@ fn cache_key(login: Option<Login<'_>>, repo: &str, access: Access) -> CacheKey {
         h.update([0u8]);
         h.update(l.secret.expose().as_bytes());
     }
-    (h.finalize().into(), repo.to_owned(), access)
+    (
+        h.finalize().into(),
+        repo.to_owned(),
+        access,
+        area::current(),
+    )
 }
 
 /// Why a lookup produced no decision.
@@ -940,6 +948,10 @@ struct AuthzRequest<'a> {
     owner: &'a str,
     repo: &'a str,
     mode: &'static str,
+    /// The part of asc the call is for (`changes` or `runs`), so the hub holds a personal access
+    /// token to that scope; absent for the repository, the hub's default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    area: Option<&'static str>,
 }
 
 #[derive(Deserialize, Default)]
@@ -1130,6 +1142,7 @@ impl InternalAuthz {
             owner,
             repo: name,
             mode,
+            area: None,
         };
         let sent = async {
             let req = self
@@ -1173,6 +1186,7 @@ impl InternalAuthz {
             owner: "",
             repo: "",
             mode: "read",
+            area: None,
         };
         let req = self
             .client
@@ -1232,6 +1246,7 @@ impl InternalAuthz {
             owner,
             repo: name,
             mode,
+            area: area::current().wire(),
         };
         let req = self
             .client
