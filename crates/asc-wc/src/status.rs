@@ -23,6 +23,7 @@ use futures::TryStreamExt;
 use crate::ignore::IgnoreStack;
 use crate::plain::{Error, Result, Wc, fs_path};
 use crate::safe_path::is_link;
+use crate::shared;
 
 /// Bytes checked for NUL by git's binary heuristic.
 const BINARY_PROBE: usize = 8000;
@@ -175,6 +176,9 @@ pub(crate) fn probe(
     if meta.is_dir() {
         return Ok(Probe::Dir);
     }
+    if meta.file_type().is_symlink() && shared::link_blob(&abs).is_some() {
+        return shared_probe(&abs, eol, path);
+    }
     let symlink = meta.file_type().is_symlink();
     if !symlink && !meta.is_file() {
         return Ok(Probe::Other);
@@ -193,6 +197,27 @@ pub(crate) fn probe(
         hash_file(&abs, eol.eol(path))?
     };
     Ok(Probe::File { oid, symlink, exec })
+}
+
+/// A shared link (`asc.worktree.link`) as the regular file it stands for: the blob its name
+/// gives while the area file is sealed, else (written through) the hash of what it now holds.
+fn shared_probe(abs: &Path, eol: &dyn EolRules, path: &RepoPath) -> io::Result<Probe> {
+    let meta = match fs::metadata(abs) {
+        Ok(m) => m,
+        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => return Err(e),
+        // The area file is gone: nothing is there to read.
+        Err(_) => return Ok(Probe::Missing),
+    };
+    let exec = exec_bit(&meta);
+    let oid = match shared::sealed_blob(abs) {
+        Some((oid, _)) => oid,
+        None => hash_file(abs, eol.eol(path))?,
+    };
+    Ok(Probe::File {
+        oid,
+        symlink: false,
+        exec,
+    })
 }
 
 /// Whether every ancestor of `path` below `root` is a real directory, examined without
@@ -907,6 +932,122 @@ mod tests {
             compute(&fx.wc(), &db, &ws).await.unwrap(),
             Status::default()
         );
+    }
+
+    /// A fixture whose checkouts link into a shared area, and that area.
+    fn linked() -> (Fixture, PathBuf) {
+        let mut fx = Fixture::new();
+        let area = fx._dir.path().join("home").join(crate::shared::AREA);
+        fx.shared = Some(area.clone());
+        (fx, area)
+    }
+
+    #[tokio::test]
+    async fn a_linked_checkout_shares_one_copy_and_reads_clean() {
+        let (fx, area) = linked();
+        let tree = fx.tree(TREE).await;
+        checkout(&fx.wc(), fx.empty(), tree, Mode::Safe)
+            .await
+            .unwrap();
+        if crate::shared::link_blob(&fx.root.join("a.txt")).is_none() {
+            // No symlink rights here: link mode wrote plain files instead.
+            assert_eq!(fx.read("a.txt"), b"one\n");
+            return;
+        }
+        for (name, _, data) in TREE {
+            let abs = fx.root.join(name);
+            let (oid, exec) = crate::shared::sealed_blob(&abs).unwrap();
+            assert_eq!((oid, exec), (blob_oid(data), false), "{name}");
+            assert_eq!(fx.read(name), *data);
+            let target = fs::read_link(&abs).unwrap();
+            assert!(target.starts_with(&area));
+            assert!(fs::metadata(&target).unwrap().permissions().readonly());
+        }
+        let (db, ws) = workspace(&fx, tree).await;
+        // The ignore file is read through its link: build.log stays ignored.
+        fs::write(fx.root.join("build.log"), b"x").unwrap();
+        assert_eq!(
+            compute(&fx.wc(), &db, &ws).await.unwrap(),
+            Status::default()
+        );
+
+        // A second checkout of the same tree links to the same files.
+        let other = fx._dir.path().join("second");
+        fs::create_dir_all(&other).unwrap();
+        let index = fx._dir.path().join("second-index");
+        let mut wc = fx.wc();
+        wc.root = &other;
+        wc.index_path = &index;
+        checkout(&wc, fx.empty(), tree, Mode::Safe).await.unwrap();
+        assert_eq!(
+            fs::read_link(other.join("a.txt")).unwrap(),
+            fs::read_link(fx.root.join("a.txt")).unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn saving_over_a_link_is_an_edit_and_leaves_the_shared_copy() {
+        let (fx, _) = linked();
+        let tree = fx.tree(TREE).await;
+        checkout(&fx.wc(), fx.empty(), tree, Mode::Safe)
+            .await
+            .unwrap();
+        let abs = fx.root.join("a.txt");
+        let Some(target) = crate::shared::link_blob(&abs).map(|_| fs::read_link(&abs).unwrap())
+        else {
+            return;
+        };
+        let (db, ws) = workspace(&fx, tree).await;
+        // An editor that saves by replacing the file replaces the link.
+        fs::remove_file(&abs).unwrap();
+        fs::write(&abs, b"one, edited\n").unwrap();
+        let st = compute(&fx.wc(), &db, &ws).await.unwrap();
+        assert_eq!(from_status(&st), [".M a.txt"]);
+        assert_eq!(fs::read(&target).unwrap(), b"one\n");
+        // Restoring the file links it again.
+        let rest: Vec<_> = TREE.iter().copied().filter(|e| e.0 != "a.txt").collect();
+        let without = fx.tree(&rest).await;
+        checkout(&fx.wc(), without, tree, Mode::Force)
+            .await
+            .unwrap();
+        assert_eq!(fs::read_link(&abs).unwrap(), target);
+        assert_eq!(
+            compute(&fx.wc(), &db, &ws).await.unwrap(),
+            Status::default()
+        );
+    }
+
+    #[tokio::test]
+    async fn writing_through_a_link_shows_and_the_copy_is_not_reused() {
+        let (fx, _) = linked();
+        let tree = fx.tree(TREE).await;
+        checkout(&fx.wc(), fx.empty(), tree, Mode::Safe)
+            .await
+            .unwrap();
+        let abs = fx.root.join("a.txt");
+        let Some(target) = crate::shared::link_blob(&abs).map(|_| fs::read_link(&abs).unwrap())
+        else {
+            return;
+        };
+        let (db, ws) = workspace(&fx, tree).await;
+        // An editor that overrides the read-only bit and writes in place.
+        let mut perms = fs::metadata(&target).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+        fs::set_permissions(&target, perms).unwrap();
+        fs::write(&abs, b"one, written through\n").unwrap();
+        let st = compute(&fx.wc(), &db, &ws).await.unwrap();
+        assert_eq!(from_status(&st), [".M a.txt"]);
+        // A new checkout writes its own file rather than linking to the edited copy.
+        let other = fx._dir.path().join("second");
+        fs::create_dir_all(&other).unwrap();
+        let index = fx._dir.path().join("second-index");
+        let mut wc = fx.wc();
+        wc.root = &other;
+        wc.index_path = &index;
+        checkout(&wc, fx.empty(), tree, Mode::Safe).await.unwrap();
+        assert!(crate::shared::link_blob(&other.join("a.txt")).is_none());
+        assert_eq!(fs::read(other.join("a.txt")).unwrap(), b"one\n");
     }
 
     /// A provider that reports the listed paths as still holding the base tree's content.

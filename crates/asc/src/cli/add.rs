@@ -216,7 +216,7 @@ async fn execute(ctx: &Ctx, ws: &WsCtx, target: &mut Target, ops: Vec<Op>) -> Re
                 let abs = gate
                     .resolve(&path)
                     .ok_or_else(|| fail(&"beyond a symbolic link or not a valid name here"))?;
-                let meta = std::fs::symlink_metadata(&abs).map_err(|e| fail(&e))?;
+                let meta = asc_wc::shared::metadata(&abs).map_err(|e| fail(&e))?;
                 let symlink = meta.file_type().is_symlink();
                 let got: Ingested = if ita {
                     ingest(Cursor::new(Vec::new()))

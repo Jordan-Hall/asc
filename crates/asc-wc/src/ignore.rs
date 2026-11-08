@@ -35,10 +35,11 @@ const MAX_COMPARE: u64 = 1 << 20;
 const MAX_IGNORE_FILE: u64 = 1 << 20;
 
 /// Whether `path` is a regular file of at most [`MAX_IGNORE_FILE`] bytes, reached without a link
-/// at its end. Ignore files come from the repository, so a symlink or reparse point there (to a
+/// at its end (a link-mode file counts as the file it stands for). Ignore files come from the repository, so a symlink or reparse point there (to a
 /// secret or a network share) is never followed.
 fn real_file(path: &Path) -> bool {
-    fs::symlink_metadata(path)
+    // A link-mode file (`asc.worktree.link`) is the shared copy of a tracked file, not a link.
+    crate::shared::metadata(path)
         .is_ok_and(|m| !is_link(&m) && m.is_file() && m.len() <= MAX_IGNORE_FILE)
 }
 

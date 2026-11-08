@@ -2,7 +2,7 @@
 //! Without `-f` it refuses a file whose removal would lose content, with git's checks and text.
 
 use std::ffi::OsString;
-use std::fs;
+
 use std::io;
 use std::process::ExitCode;
 
@@ -116,7 +116,7 @@ fn locally_modified(
     let Some(abs) = gate.resolve(path) else {
         return Ok(false);
     };
-    let Ok(meta) = fs::symlink_metadata(&abs) else {
+    let Ok(meta) = asc_wc::shared::metadata(&abs) else {
         return Ok(false);
     };
     if meta.is_dir() {

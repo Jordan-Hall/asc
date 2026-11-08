@@ -88,7 +88,7 @@ pub async fn ingest_path(ws: &WsCtx, path: &RepoPath, prev: Option<Kind>) -> Res
     let Some(abs) = SafeRoot::new(ws.projection.toplevel()).resolve(path) else {
         return Ok(None);
     };
-    let meta = match fs::symlink_metadata(&abs) {
+    let meta = match asc_wc::shared::metadata(&abs) {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e.into()),
@@ -201,6 +201,7 @@ pub async fn stat_dirty_rows(
         ignore: &ignore,
         eol: &NoEol,
         projected: None,
+        shared: None,
     };
     let state = status::compute(&wc, &ws.db, &ws.workspace)
         .await

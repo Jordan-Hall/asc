@@ -234,7 +234,7 @@ fn hash_local(gate: &SafeRoot, path: &[u8], head: Option<Kind>) -> Result<Option
     let Some(abs) = gate.resolve(&rp) else {
         return Ok(None);
     };
-    let meta = match std::fs::symlink_metadata(&abs) {
+    let meta = match asc_wc::shared::metadata(&abs) {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(CliError::Io(e)),

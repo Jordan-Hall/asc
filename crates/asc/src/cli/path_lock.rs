@@ -357,7 +357,7 @@ fn walk(root: &Path, start: &str, f: &mut dyn FnMut(&str, &Path) -> Result<()>) 
         } else {
             root.join(&rel)
         };
-        let Ok(meta) = fs::symlink_metadata(&abs) else {
+        let Ok(meta) = asc_wc::shared::metadata(&abs) else {
             continue;
         };
         if meta.file_type().is_symlink() {

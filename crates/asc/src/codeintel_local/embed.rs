@@ -293,7 +293,7 @@ fn is_plain_dir(p: &Path) -> bool {
 }
 
 fn sha256_file(p: &Path) -> Result<String> {
-    let meta = std::fs::symlink_metadata(p)?;
+    let meta = asc_wc::shared::metadata(p)?;
     if !meta.is_file() || asc_wc::safe_path::is_link(&meta) {
         return Err(other("not a regular file"));
     }
@@ -408,7 +408,7 @@ impl Source {
         match self {
             Self::Dir(d) => {
                 let p = d.join(&rel);
-                let meta = std::fs::symlink_metadata(&p)?;
+                let meta = asc_wc::shared::metadata(&p)?;
                 if !meta.is_file() || asc_wc::safe_path::is_link(&meta) || meta.len() > max {
                     return Err(too_big());
                 }

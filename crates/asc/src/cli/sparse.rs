@@ -189,7 +189,7 @@ struct Reconciled {
 
 /// Whether the file on disk still is the tracked content of `entry`.
 async fn unchanged(ws: &WsCtx, abs: &std::path::Path, entry: &Entry) -> bool {
-    let Ok(meta) = std::fs::symlink_metadata(abs) else {
+    let Ok(meta) = asc_wc::shared::metadata(abs) else {
         return false;
     };
     match entry.kind {

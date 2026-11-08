@@ -235,7 +235,7 @@ pub fn read_work_file(gate: &SafeRoot, path: &RepoPath) -> Result<Option<(Vec<u8
     let Some(abs) = gate.resolve(path) else {
         return Ok(None);
     };
-    let Ok(meta) = std::fs::symlink_metadata(&abs) else {
+    let Ok(meta) = asc_wc::shared::metadata(&abs) else {
         return Ok(None);
     };
     if !meta.is_file() {

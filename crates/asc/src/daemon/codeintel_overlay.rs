@@ -151,7 +151,7 @@ impl Overlay {
             let Some(abs) = safe.resolve(path) else {
                 continue;
             };
-            let Ok(meta) = std::fs::symlink_metadata(&abs) else {
+            let Ok(meta) = asc_wc::shared::metadata(&abs) else {
                 continue;
             };
             if is_link(&meta) || !meta.is_file() || meta.len() > skip::MAX_BYTES as u64 {

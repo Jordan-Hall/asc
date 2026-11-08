@@ -199,7 +199,7 @@ async fn prepare(
     }
     let work = match env.gate.resolve(&path) {
         None => Work::Gone,
-        Some(abs) => match fs::symlink_metadata(&abs) {
+        Some(abs) => match asc_wc::shared::metadata(&abs) {
             Ok(m) if m.is_dir() => Work::Gone,
             Ok(m) => Work::Present(abs, m),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Work::Gone,

@@ -439,7 +439,7 @@ impl<'a> Applier<'a> {
         let Some(abs) = self.gate.resolve(&rp) else {
             return Ok(Pre::NoWork);
         };
-        let meta = match fs::symlink_metadata(&abs) {
+        let meta = match asc_wc::shared::metadata(&abs) {
             Ok(m) => m,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Pre::NoWork),
             Err(e) => return Err(format!("{}: {}", show(path), describe(&e))),

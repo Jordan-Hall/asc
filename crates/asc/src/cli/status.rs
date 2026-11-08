@@ -536,7 +536,7 @@ fn work_mode(gate: &SafeRoot, path: &RepoPath, index: Option<Side>, symlinks: bo
     let Some(abs) = gate.resolve(path) else {
         return 0;
     };
-    let Ok(meta) = std::fs::symlink_metadata(&abs) else {
+    let Ok(meta) = asc_wc::shared::metadata(&abs) else {
         return 0;
     };
     if meta.is_dir() {
@@ -663,6 +663,7 @@ async fn gather(ctx: &Ctx, ws: &WsCtx, o: &Opts) -> Result<Report> {
         ignore: &sources,
         eol: &NoEol,
         projected: projected.as_deref(),
+        shared: None,
     };
     let status = compute(&wc, &ws.db, &ws.workspace).await.map_err(wc_err)?;
 

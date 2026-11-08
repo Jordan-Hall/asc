@@ -626,7 +626,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         let Some(abs) = gate.resolve(path) else {
             continue;
         };
-        let Ok(meta) = fs::symlink_metadata(&abs) else {
+        let Ok(meta) = asc_wc::shared::metadata(&abs) else {
             continue;
         };
         if !meta.is_file() {

@@ -149,7 +149,7 @@ fn probe(
     let Some(abs) = gate.resolve(path) else {
         return Ok(Probe::Missing);
     };
-    let meta = match fs::symlink_metadata(&abs) {
+    let meta = match asc_wc::shared::metadata(&abs) {
         Ok(m) => m,
         Err(e) if e.kind() == io::ErrorKind::PermissionDenied => return Err(e),
         Err(_) => return Ok(Probe::Missing),

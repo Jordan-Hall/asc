@@ -3,7 +3,7 @@
 //! vouch for it, and its bytes are read only when the patch needs them.
 
 use std::collections::HashMap;
-use std::fs;
+
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -93,7 +93,7 @@ fn io_err(e: io::Error) -> diff::Error {
 
 /// The bytes at `abs`: a link's target, else the file.
 async fn read_local(abs: &Path) -> Result<Bytes, diff::Error> {
-    let meta = tokio::fs::symlink_metadata(abs).await.map_err(io_err)?;
+    let meta = asc_wc::shared::metadata(abs).map_err(io_err)?;
     if meta.file_type().is_symlink() {
         return link_target(abs).map(Bytes::from).map_err(io_err);
     }
@@ -190,7 +190,7 @@ impl WorkTree {
         let Some(abs) = self.gate.resolve(path) else {
             return Ok(Work::Missing);
         };
-        let meta = match fs::symlink_metadata(&abs) {
+        let meta = match asc_wc::shared::metadata(&abs) {
             Ok(m) => m,
             Err(e) if e.kind() == io::ErrorKind::PermissionDenied => return Err(e),
             Err(_) => return Ok(Work::Missing),

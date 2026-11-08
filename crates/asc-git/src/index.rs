@@ -583,7 +583,8 @@ pub struct PlainStat {
 impl StatSource for PlainStat {
     fn stat(&self, path: &RepoPath, entry: &Entry) -> FileStat {
         let rel = String::from_utf8_lossy(path.as_bytes()).into_owned();
-        let Ok(meta) = std::fs::symlink_metadata(self.root.join(rel)) else {
+        // A link-mode file is stat'd as the shared file it points to, as status reads it.
+        let Ok(meta) = asc_state::shared_blob::metadata(&self.root.join(rel)) else {
             return FileStat {
                 size: entry.size as u32,
                 ..FileStat::default()

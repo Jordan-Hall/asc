@@ -59,7 +59,8 @@ impl Redirections {
             Err(e) => return Err(e),
         }
         let path = root.join(FILE);
-        match std::fs::symlink_metadata(&path) {
+        // A link-mode file (`asc.worktree.link`) is the shared copy of a tracked file.
+        match crate::shared::metadata(&path) {
             Ok(m) if !is_link(&m) && m.is_file() => {
                 if m.len() > MAX_BYTES {
                     return Err(refuse("file is too large"));

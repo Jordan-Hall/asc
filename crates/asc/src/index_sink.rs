@@ -109,7 +109,7 @@ impl Trusted {
         };
         let before = self.inner.stat(path, entry);
         let regular =
-            std::fs::symlink_metadata(&file).is_ok_and(|m| m.is_file() && m.len() == entry.size);
+            asc_wc::shared::metadata(&file).is_ok_and(|m| m.is_file() && m.len() == entry.size);
         let matches =
             regular && std::fs::read(&file).is_ok_and(|bytes| blob_oid(&bytes) == entry.git);
         if matches && self.inner.stat(path, entry) == before {

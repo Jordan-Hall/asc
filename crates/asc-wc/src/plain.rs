@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use asc_core::codec::{CodecError, decode_envelope};
 use asc_core::content::{CHUNK_THRESHOLD, ChunkAssembler, ContentError};
-use asc_core::id::{FileId, TreeId};
+use asc_core::id::{FileId, GitOid, TreeId};
 use asc_core::object::{Change, ChunkList, Entry, Kind};
 use asc_core::path::{Name, RepoPath, checkout_safe};
 use asc_engine::Engine;
@@ -28,6 +28,7 @@ use asc_store::storeset::StoreSet;
 use crate::ignore::IgnoreSources;
 use crate::redirect::Redirections;
 use crate::safe_path::{Verified, case_collisions, is_link, remove_link, try_fs_path};
+use crate::shared;
 use crate::status::{self, EolRules, Probe};
 pub use crate::switch::Mode;
 use crate::switch::{Dirty, plan};
@@ -128,6 +129,9 @@ pub struct Wc<'a, O: Objects, R: Refs> {
     pub eol: &'a dyn EolRules,
     /// The provider's view of a virtual work tree; `None` for a plain one.
     pub projected: Option<&'a dyn Projected>,
+    /// `asc.worktree.link = symlink`: the shared blob area that unchanged regular files are
+    /// linked into (see [`crate::shared`]); `None` writes every file.
+    pub shared: Option<&'a Path>,
 }
 
 /// What a switch did.
@@ -433,10 +437,23 @@ async fn write_path<O: Objects, R: Refs>(
             fs::create_dir_all(&dest).map_err(io_at(&dest))
         }
         Change::Write {
-            kind, file, size, ..
+            kind,
+            file,
+            size,
+            git,
+            ..
         } => {
             let tmp = temp_beside(&dest);
-            let made = materialise(wc, *kind, *file, *size, &tmp).await;
+            let made = match wc.shared {
+                Some(area) if *kind != Kind::Symlink => {
+                    match link_shared(wc, area, *kind, *file, *size, *git, &tmp).await {
+                        Ok(true) => Ok(()),
+                        Ok(false) => materialise(wc, *kind, *file, *size, &tmp).await,
+                        Err(e) => Err(e),
+                    }
+                }
+                _ => materialise(wc, *kind, *file, *size, &tmp).await,
+            };
             if let Err(e) = made {
                 let _ = fs::remove_file(&tmp);
                 return Err(e);
@@ -480,7 +497,8 @@ async fn materialise<O: Objects, R: Refs>(
             .get(&ObjKey::File(file))
             .await?
             .ok_or(Error::MissingContent(file))?;
-        if wc.symlinks && make_symlink(&target, tmp).is_ok() {
+        // A committed link into a shared area would read as that area's file: never made.
+        if wc.symlinks && !shared::names_area_file(&target) && make_symlink(&target, tmp).is_ok() {
             return Ok(());
         }
         return fs::write(tmp, &target).map_err(io_at(tmp));
@@ -509,6 +527,60 @@ async fn materialise<O: Objects, R: Refs>(
         write_chunked(wc.store, file, tmp).await?;
     }
     set_mode(tmp, kind == Kind::Exec).map_err(io_at(tmp))
+}
+
+/// Links `tmp` to the sealed area file of blob `git`, writing and sealing that file first when
+/// the area lacks it. `false` when no link can be made here (no symlink rights, or an area file
+/// someone wrote through): the caller then writes the file itself.
+async fn link_shared<O: Objects, R: Refs>(
+    wc: &Wc<'_, O, R>,
+    area: &Path,
+    kind: Kind,
+    file: FileId,
+    size: u64,
+    git: GitOid,
+    tmp: &Path,
+) -> Result<bool> {
+    let exec = kind == Kind::Exec;
+    let target = shared::path_in(area, git, exec);
+    match fs::metadata(&target) {
+        Ok(m) if shared::is_sealed(&m) => {}
+        // Changed through a link: it holds someone's edit, so it is neither reused nor replaced.
+        Ok(_) => return Ok(false),
+        Err(_) => {
+            let fan = target
+                .parent()
+                .ok_or_else(|| io_at(&target)(io::ErrorKind::InvalidInput.into()))?;
+            fs::create_dir_all(fan).map_err(io_at(fan))?;
+            let part = temp_beside(&target);
+            let sealed = async {
+                materialise(wc, kind, file, size, &part).await?;
+                shared::seal(&part, exec).map_err(io_at(&part))?;
+                // Another checkout may have sealed the same blob meanwhile: either copy will do.
+                match fs::rename(&part, &target) {
+                    Err(_) if fs::metadata(&target).is_ok_and(|m| shared::is_sealed(&m)) => Ok(()),
+                    r => r.map_err(io_at(&target)),
+                }
+            }
+            .await;
+            if sealed.is_err() {
+                remove_sealed(&part);
+            }
+            sealed?;
+        }
+    }
+    Ok(shared::make_link(&target, tmp).is_ok())
+}
+
+/// Removes a part-written or sealed (read-only) file, ignoring failure.
+#[allow(clippy::permissions_set_readonly_false)] // Windows only: clears the read-only attribute.
+fn remove_sealed(path: &Path) {
+    if let Ok(m) = fs::metadata(path) {
+        let mut perms = m.permissions();
+        perms.set_readonly(false);
+        let _ = fs::set_permissions(path, perms);
+    }
+    let _ = fs::remove_file(path);
 }
 
 /// Streams the verified chunks of a chunked file into `tmp`.
@@ -624,6 +696,7 @@ pub(crate) mod testutil {
         pub ignore: IgnoreSources,
         pub sparse: Option<Sparse>,
         pub symlinks: bool,
+        pub shared: Option<PathBuf>,
     }
 
     impl Fixture {
@@ -652,6 +725,7 @@ pub(crate) mod testutil {
                 ignore,
                 sparse: None,
                 symlinks: true,
+                shared: None,
                 _dir: dir,
             }
         }
@@ -669,6 +743,7 @@ pub(crate) mod testutil {
                 ignore: &self.ignore,
                 eol: &NoEol,
                 projected: None,
+                shared: self.shared.as_deref(),
             }
         }
 
@@ -772,6 +847,55 @@ mod tests {
             let m = fs::metadata(fx.root.join("run.sh")).unwrap();
             assert_ne!(m.permissions().mode() & 0o111, 0);
         }
+    }
+
+    #[tokio::test]
+    async fn a_committed_link_into_a_shared_area_is_never_made() {
+        let fx = Fixture::new();
+        let area = fx._dir.path().join(shared::AREA);
+        let target = shared::path_in(&area, blob_oid(b"secret"), false);
+        let text = target.to_string_lossy().into_owned();
+        let to = fx.tree(&[("evil", Kind::Symlink, text.as_bytes())]).await;
+        checkout(&fx.wc(), fx.empty(), to, Mode::Safe)
+            .await
+            .unwrap();
+        let meta = fs::symlink_metadata(fx.root.join("evil")).unwrap();
+        assert!(!is_link(&meta));
+        assert_eq!(fx.read("evil"), text.as_bytes());
+    }
+
+    #[tokio::test]
+    async fn linked_executables_have_their_own_shared_copy() {
+        let mut fx = Fixture::new();
+        let area = fx._dir.path().join(shared::AREA);
+        fx.shared = Some(area.clone());
+        let to = fx.tree(&t1()).await;
+        checkout(&fx.wc(), fx.empty(), to, Mode::Safe)
+            .await
+            .unwrap();
+        let run = fx.root.join("run.sh");
+        let Some(blob) = shared::link_blob(&run) else {
+            // No symlink rights here: link mode wrote plain files instead.
+            assert_eq!(fx.read("run.sh"), b"#!/bin/sh\n");
+            return;
+        };
+        assert_eq!(blob, (blob_oid(b"#!/bin/sh\n"), true));
+        assert_eq!(
+            fs::read_link(&run).unwrap(),
+            shared::path_in(&area, blob.0, true)
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&run).unwrap().permissions().mode() & 0o777,
+                0o555
+            );
+        }
+        let idx = IndexFile::read(&fx.index).unwrap();
+        let e = idx.entries.iter().find(|e| e.path == p("run.sh")).unwrap();
+        // The stat cache holds the shared file's stat, as status reads it.
+        assert_eq!(u64::from(e.size), fs::metadata(&run).unwrap().len());
     }
 
     #[tokio::test]

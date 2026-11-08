@@ -172,7 +172,7 @@ async fn stage_file(
     let Some(abs) = gate.resolve(path) else {
         return Ok(None);
     };
-    let meta = match std::fs::symlink_metadata(&abs) {
+    let meta = match asc_wc::shared::metadata(&abs) {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e.into()),
@@ -241,6 +241,7 @@ async fn needing_update(ctx: &Ctx, ws: &WsCtx) -> Result<Vec<String>> {
         ignore: &sources,
         eol: &NoEol,
         projected: None,
+        shared: None,
     };
     let status = compute(&wc, &ws.db, &ws.workspace)
         .await

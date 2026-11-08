@@ -798,7 +798,12 @@ async fn write_file<O: Objects>(
         if data.len() as u64 != size || FileId::of(&data) != file {
             return Err(Error::BadContent(file));
         }
-        if kind == Kind::Symlink && symlinks && make_symlink(&data, dest).is_ok() {
+        // A committed link into a shared area would read as that area's file: never made.
+        if kind == Kind::Symlink
+            && symlinks
+            && !asc_state::shared_blob::names_area_file(&data)
+            && make_symlink(&data, dest).is_ok()
+        {
             return Ok(true);
         }
         create_new(dest, &data)?;

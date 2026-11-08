@@ -392,6 +392,8 @@ pub(crate) struct WcParts {
     root: PathBuf,
     index: PathBuf,
     projected: Option<Box<dyn Projected>>,
+    /// `asc.worktree.link = symlink`: the shared blob area a plain checkout links into.
+    shared: Option<PathBuf>,
 }
 
 impl WcParts {
@@ -417,6 +419,18 @@ impl WcParts {
             local_exclude: root.join(".asc").join("info").join("exclude"),
             common_exclude: ws.projection.common_dir().join("info").join("exclude"),
         };
+        let projected = super::projected::for_workspace(ws);
+        let shared = match ctx.config.get("asc.worktree.link").as_deref() {
+            // A virtual work tree is served from the store: there is nothing to link.
+            _ if projected.is_some() => None,
+            None | Some("copy") => None,
+            Some("symlink") => Some(ws.home.shared_blobs()),
+            Some(other) => {
+                return Err(fatal(format!(
+                    "asc: invalid asc.worktree.link '{other}'; use copy or symlink"
+                )));
+            }
+        };
         Ok(Self {
             store,
             redirections: Redirections::load(&root).unwrap_or_default(),
@@ -426,7 +440,8 @@ impl WcParts {
             ignore_case: ctx.ignore_case(),
             root,
             index,
-            projected: super::projected::for_workspace(ws),
+            projected,
+            shared,
         })
     }
 
@@ -446,6 +461,7 @@ impl WcParts {
             ignore: &self.ignore,
             eol: &NoEol,
             projected: self.projected.as_deref(),
+            shared: self.shared.as_deref(),
         }
     }
 }
@@ -609,7 +625,7 @@ fn differs(gate: &SafeRoot, path: &RepoPath, entry: &Entry) -> bool {
     let Some(abs) = gate.resolve(path) else {
         return true;
     };
-    let Ok(meta) = fs::symlink_metadata(&abs) else {
+    let Ok(meta) = asc_wc::shared::metadata(&abs) else {
         return true;
     };
     match entry.kind {

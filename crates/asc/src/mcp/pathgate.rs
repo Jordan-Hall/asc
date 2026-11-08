@@ -188,7 +188,12 @@ impl Gate {
             let mut is_dir = !last || dir_hint;
             if on_disk {
                 match fs::symlink_metadata(&cur) {
-                    Ok(m) if is_link(&m) => return Err(Refusal::Link(shown(&rel))),
+                    // A link-mode file (`asc.worktree.link`) is the shared file it points to.
+                    Ok(m)
+                        if is_link(&m) && !(last && asc_wc::shared::link_blob(&cur).is_some()) =>
+                    {
+                        return Err(Refusal::Link(shown(&rel)));
+                    }
                     Ok(m) => is_dir = m.is_dir(),
                     Err(e) if e.kind() == io::ErrorKind::NotFound => on_disk = false,
                     // Anything else (a permission error) is not a reason to read through it.
@@ -221,6 +226,12 @@ impl Gate {
     /// # Errors
     /// An I/O error, or `InvalidInput` when the opened object is a link or not a regular file.
     pub fn open(abs: &Path) -> io::Result<File> {
+        // A link-mode file opens as the shared file it points to, itself never a link.
+        let target = match asc_wc::shared::link_blob(abs) {
+            Some(_) => Some(fs::read_link(abs)?),
+            None => None,
+        };
+        let abs = target.as_deref().unwrap_or(abs);
         let mut o = OpenOptions::new();
         o.read(true);
         #[cfg(windows)]
