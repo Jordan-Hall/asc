@@ -75,6 +75,14 @@ as `authz.perm_version_changed`. `authenticate()` (who is this credential, with 
 `owner` and `repo`: the hub answers `allowed` with `user_id` and `username` when the credential authenticates, so no `read:user`
 scope is needed.
 
+**Token scopes by area.** Every RPC runs in the area of its service (`authz/area.rs`, set by the admission layer): `Changes`,
+`Stacks`, `Review`, `MergeQueue`, `Inbox` and `Projects` are `changes`, `Agents` and `AgentTokens` are `runs`, and everything else,
+git over HTTP and SSH included, is the repository. `asc serve` sends the area with each repository question (`"area": "changes"` or
+`"runs"`; nothing for the repository, the hub's default), so the hub holds a personal access token to the scope of that part on a
+direct connection to asc as it does in its own forwarder: a token with only `read:repository` reads code but not stacks. The area is
+part of the cache key, so an answer for code is never reused for stacks or runs. Identity questions and an agent token's
+`as_user_id` question send no area: they carry no personal access token.
+
 **Tokens with a hub.** Behind a hub (`auth.provider = "forgejo"`) the hub's own access tokens, with their scopes, are the credential:
 asc stores none of them. An agent token (`ascat_`) is the hub's scoped-token idea applied to one repository, one agent and a budget,
 and it is only as good as the person who made it: on every use the hub is asked (`as_user_id`, internal token only, the answer must
