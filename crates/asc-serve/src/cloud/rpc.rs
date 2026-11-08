@@ -557,6 +557,10 @@ impl CloudRpc {
         let ns = entry.ns.as_bytes().to_vec();
         let at = now();
         let mut tx = self.registry.pool().begin().await.map_err(sql)?;
+        // The workspace limit (§21.3.7) also bounds the names reports land under.
+        self.quota
+            .allow_report(&mut tx, entry.ns, owner, &name)
+            .await?;
         sqlx::query(
             "DELETE FROM cloud_device_drafts WHERE ns = $1 AND owner = $2 AND name = $3 \
              AND (device = $4 OR reported_at < $5)",
@@ -1715,11 +1719,21 @@ mod tests {
         device: &str,
         drafts: Vec<wire::LocalDraft>,
     ) -> Result<u32, Status> {
+        report_in(f, token, "", device, drafts).await
+    }
+
+    async fn report_in(
+        f: &Fx,
+        token: &str,
+        name: &str,
+        device: &str,
+        drafts: Vec<wire::LocalDraft>,
+    ) -> Result<u32, Status> {
         f.svc
             .report_device(req(
                 wire::ReportDeviceRequest {
                     repo: repo_ref(),
-                    name: String::new(),
+                    name: name.into(),
                     device: device.into(),
                     drafts,
                 },
@@ -1903,5 +1917,40 @@ mod tests {
             .unwrap();
         let e = report(&f, ALICE, "laptop", vec![]).await.unwrap_err();
         assert_eq!(e.code(), tonic::Code::FailedPrecondition);
+    }
+
+    #[tokio::test]
+    async fn reports_under_names_never_synced_are_bounded_by_the_workspace_limit() {
+        use wire::LocalDraftState as S;
+        let f = fx_with(Limits {
+            max_workspaces_per_user: 2,
+            ..Limits::default()
+        })
+        .await;
+        let cs = ChangesetId::from_bytes([3; 32]);
+        let one = || vec![local(cs, 1, 1, S::NotQueued)];
+        report_in(&f, ALICE, "a", "laptop", one()).await.unwrap();
+        report_in(&f, ALICE, "b", "laptop", one()).await.unwrap();
+        let e = report_in(&f, ALICE, "c", "laptop", one())
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), tonic::Code::ResourceExhausted);
+        assert!(rpc_code(&e).starts_with("CloudWorkspacesLimit"), "{e:?}");
+        // A name already reported, another device on it, and another user still report.
+        report_in(&f, ALICE, "a", "desk", one()).await.unwrap();
+        report_in(&f, BOB, "c", "laptop", one()).await.unwrap();
+        // A workspace that exists is already counted by the workspace quota.
+        update(&f, ALICE, upd("c", 0, vec![])).await.unwrap();
+        report_in(&f, ALICE, "c", "laptop", one()).await.unwrap();
+        // Clearing a name frees its slot.
+        report_in(&f, ALICE, "b", "laptop", vec![]).await.unwrap();
+        report_in(&f, ALICE, "d", "laptop", one()).await.unwrap();
+        let names: i64 = sqlx::query_scalar(
+            "SELECT COUNT(DISTINCT name) FROM cloud_device_drafts WHERE owner = 42",
+        )
+        .fetch_one(f.reg.pool())
+        .await
+        .unwrap();
+        assert_eq!(names, 3, "a, c and d");
     }
 }

@@ -186,6 +186,44 @@ impl Quota {
         Ok(())
     }
 
+    /// Lets `owner` report device drafts under `name` (SPEC §21.3.9). A workspace that exists is
+    /// already counted; a name not yet synced is allowed while the owner reports under fewer such
+    /// names than the workspace limit, so reports cannot grow without bound across names.
+    pub async fn allow_report(
+        &self,
+        conn: &mut AnyConnection,
+        ns: Ns,
+        owner: i64,
+        name: &str,
+    ) -> Result<(), Status> {
+        owner_ok(owner)?;
+        let ns = ns.as_bytes().to_vec();
+        let known: Option<i64> =
+            sqlx::query_scalar("SELECT 1 FROM cloud_ws WHERE ns = $1 AND owner = $2 AND name = $3")
+                .bind(ns.clone())
+                .bind(owner)
+                .bind(name)
+                .fetch_optional(&mut *conn)
+                .await
+                .map_err(|e| db("cloud_ws", &e))?;
+        if known.is_some() {
+            return Ok(());
+        }
+        let unsynced: i64 = sqlx::query_scalar(
+            "SELECT COUNT(DISTINCT d.name) FROM cloud_device_drafts d              WHERE d.ns = $1 AND d.owner = $2 AND d.name <> $3 AND NOT EXISTS              (SELECT 1 FROM cloud_ws w WHERE w.ns = d.ns AND w.owner = d.owner AND w.name = d.name)",
+        )
+        .bind(ns)
+        .bind(owner)
+        .bind(name)
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(|e| db("cloud_device_drafts", &e))?;
+        if unsynced >= i64::from(self.limits.max_workspaces_per_user) {
+            return Err(workspaces_limit());
+        }
+        Ok(())
+    }
+
     /// Uncounts a workspace that was deleted.
     pub async fn release_workspace(
         &self,
