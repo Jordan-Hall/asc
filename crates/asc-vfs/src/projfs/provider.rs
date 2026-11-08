@@ -2,7 +2,7 @@
 //! [`ProjfsProvider`] implements [`Provider`]; the switch, reconcile, dehydration and rename code
 //! live in `switch`, `reconcile`, `dehydrate` and `rename`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::ffi::c_void;
 use std::io;
 use std::os::windows::fs::MetadataExt;
@@ -69,6 +69,10 @@ pub(crate) struct Inner {
     /// Asynchronous `GetFileData` commands by id; the flag is set by the cancel callback.
     pub commands: Mutex<HashMap<i32, Arc<AtomicBool>>>,
     pub stopping: AtomicBool,
+    /// What the user deleted or moved away while this instance served the root, from the
+    /// notifications (see `notify::track`); `worktree convert --plain` keeps these deletions even
+    /// where the filter hides the tombstone from every listing.
+    pub deleted: Mutex<BTreeSet<RepoPath>>,
     inflight: Mutex<usize>,
     drained: Condvar,
 }
@@ -267,6 +271,7 @@ impl Provider for ProjfsProvider {
             sessions: Mutex::new(HashMap::new()),
             commands: Mutex::new(HashMap::new()),
             stopping: AtomicBool::new(false),
+            deleted: Mutex::new(BTreeSet::new()),
             inflight: Mutex::new(0),
             drained: Condvar::new(),
         });

@@ -16,7 +16,7 @@ use asc_wc::vstatus::MAX_WALK;
 use super::block;
 use super::ffi::{self, file_state as fs};
 use super::notify::is_redirected;
-use super::provider::{Inner, ProjfsProvider};
+use super::provider::{Inner, ProjfsProvider, lock};
 use crate::core::{Result, VfsError};
 
 /// Most entries one on-disk directory may list.
@@ -334,7 +334,21 @@ impl ProjfsProvider {
     /// (`worktree convert --plain` keeps these deletions).
     pub fn tombstones(&self) -> Result<Vec<RepoPath>> {
         let inner = self.inner().ok_or(VfsError::NotMounted)?;
-        Ok(tombstones(&inner)?)
+        let mut out = tombstones(&inner)?;
+        // What the notifications saw go and is still absent: the filter can hide a tombstone from
+        // the listing and from a lookup by name alike.
+        let heard: Vec<RepoPath> = lock(&inner.deleted).iter().cloned().collect();
+        for p in heard {
+            let absent = inner.safe.resolve(&p).is_some_and(|abs| {
+                matches!(std::fs::symlink_metadata(abs), Err(e) if e.kind() == io::ErrorKind::NotFound)
+            });
+            if absent {
+                out.push(p);
+            }
+        }
+        out.sort();
+        out.dedup();
+        Ok(out)
     }
 
     /// Reconcile at start (SPEC §10.2 item 7): enumerates only on-disk entries, never descends
