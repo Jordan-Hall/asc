@@ -8,7 +8,7 @@ This page tells you what each one does and what it costs.
 |---|---|---|---|
 | Virtual | Not on disk at all. A file is read from the shared local store the first time a program opens it. | Windows with ProjFS and the daemon running | the default for `asc worktree add` where it works (`asc.worktree.mode auto`) |
 | Plain, copy | A copy-on-write clone (reflink) of the stored file where the file system can clone, else a plain copy. | everywhere | the default elsewhere; `--mode plain` or `asc.worktree.mode plain` |
-| Plain, link | A symbolic link to one read-only copy per machine, in `<asc home>/shared-blobs/`. | everywhere symbolic links can be made | `asc config asc.worktree.link symlink` |
+| Plain, link | A symbolic link to one read-only copy per machine, in `<asc home>/shared-blobs/<repo-id>/`. | everywhere symbolic links can be made | `asc config asc.worktree.link symlink` |
 
 Reflinks cost no space on ReFS, APFS, Btrfs and XFS. On NTFS and ext4 a plain copy is a real copy,
 so link mode is what saves the space there.
@@ -30,9 +30,10 @@ no effect on a virtual worktree, which keeps no copies to share.
 
 ## How link mode works
 
-* Each unchanged file in the worktree is a symbolic link to `<asc home>/shared-blobs/ab/cdef…`,
-  named after the file's git blob id (`….x` for an executable file). Two worktrees that hold the
-  same file point at the same copy.
+* Each unchanged file in the worktree is a symbolic link to
+  `<asc home>/shared-blobs/<repo-id>/ab/cdef…`, named after the file's git blob id (`….x` for an
+  executable file). Two worktrees of one repository that hold the same file point at the same
+  copy. Each repository has its own area, so two repositories never share a copy.
 * Shared copies are read-only and carry a fixed modification time (2000-01-01). asc reads the
   link as the file it points to: `status`, `diff`, `add`, `commit`, `grep`, `blame` and the rest
   see a regular file. `status` reads the blob id from the link name, so a clean link costs no
@@ -45,9 +46,15 @@ no effect on a virtual worktree, which keeps no copies to share.
   then no longer matches, so `status` hashes the file and shows the edit, and no later checkout
   links to that copy again: it writes a plain file instead. Other worktrees that link to the
   changed copy show the same edit; restore them with `asc restore <path>`.
-* A committed symbolic link whose target is inside a shared area is never made as a link; it is
-  written as a text file that holds the target. A repository cannot use one to read another
+* asc reads a link as its file only when the link points into the shared area of an asc home it
+  opened and the area file is a regular file, not another link. Any other link, such as one into
+  a directory that only looks like an area, is an ordinary symbolic link.
+* A committed symbolic link whose target looks like a shared area file is never made as a link; it
+  is written as a text file that holds the target. A repository cannot use one to read another
   repository's files.
+* `asc mcp` reads through a link only into the area of the repository it serves. A link that an
+  agent makes into another repository's area is refused like any other link. The code index never
+  reads through links.
 * asc never uses hard links: an edit through a hard link would change the shared copy and
   nothing could tell.
 
