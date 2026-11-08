@@ -6,6 +6,7 @@ use std::sync::Arc;
 use asc_core::change::{ChangeId, ChangeMeta, RewriteOp};
 use asc_core::id::{ChangesetId, RefTarget};
 use asc_core::path::RefName;
+use asc_core::policy::Strategy;
 use asc_rpc::IdMode;
 use asc_rpc::auth::{Access, BearerToken, Credential, Principal, StaticTokens};
 use asc_rpc::server::{CallCtx, RefsHandler, RepoName, ServerInfo, status_rpc_error, wire};
@@ -2998,4 +2999,73 @@ async fn path_rules_bind_every_pushed_path_and_a_merge_carries_only_what_the_oth
     let err = force(BOB, revert).await.unwrap_err();
     assert_eq!(code(&err), "PATH_POLICY");
     assert_eq!(f.tip().await, merged);
+}
+
+#[tokio::test]
+async fn a_squash_lands_one_changeset_and_needs_every_change_of_the_stack_approved() {
+    let f = fx().await;
+    let a = commit(
+        &f.e,
+        &[],
+        &[
+            (
+                POLICY_PATH,
+                policy_text("[trunk]\nrequire_approvals = 1\n[merge]\nstrategy = \"squash\"\n")
+                    .as_bytes(),
+            ),
+            ("x", b"1"),
+        ],
+    )
+    .await;
+    f.set_master(a).await;
+    assert_eq!(
+        f.gate
+            .land_strategy(&f.e, "refs/heads/master")
+            .await
+            .unwrap(),
+        Strategy::Squash
+    );
+    // The strategy is trunk's: another branch rebases.
+    assert_eq!(
+        f.gate
+            .land_strategy(&f.e, "refs/heads/topic")
+            .await
+            .unwrap(),
+        Strategy::Rebase
+    );
+    let one = commit(&f.e, &[a], &[("one", b"1")]).await;
+    let two = commit(&f.e, &[one], &[("two", b"2")]).await;
+    f.register(one, 1, 1, ALICE).await;
+    f.register(two, 2, 1, ALICE).await;
+    f.review(2, 1, 0).await;
+    // The squashed changeset stands for both changes; the first has no approval.
+    let err = f.land(ALICE, two).await.unwrap_err();
+    assert_eq!(code(&err), "POLICY_DENIED");
+    let named = paths(&err);
+    assert_eq!(named.len(), 2, "{named:?}");
+    assert!(named[1].contains("(pushed as "), "{named:?}");
+    assert!(named[1].contains(&one.to_string()[..12]), "{named:?}");
+    f.review(1, 1, 0).await;
+    f.land(ALICE, two).await.unwrap();
+    let head = f.tip().await;
+    let cs = f.e.backend.engine().get_changeset(head).await.unwrap();
+    assert_eq!(cs.parents, [a]);
+    assert_eq!(
+        cs.root,
+        f.e.backend.engine().get_changeset(two).await.unwrap().root
+    );
+}
+
+#[tokio::test]
+async fn without_a_usable_policy_trunk_rebases() {
+    let f = fx().await;
+    let a = commit(&f.e, &[], &[("x", b"1")]).await;
+    f.set_master(a).await;
+    assert_eq!(
+        f.gate
+            .land_strategy(&f.e, "refs/heads/master")
+            .await
+            .unwrap(),
+        Strategy::Rebase
+    );
 }

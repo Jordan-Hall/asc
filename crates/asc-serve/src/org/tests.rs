@@ -317,7 +317,7 @@ async fn merge_defaults_are_validated_stored_and_resolved_against_a_repository()
             ..Default::default()
         },
         wire::MergeDefaults {
-            strategy: "squash".into(),
+            strategy: "octopus".into(),
             ..Default::default()
         },
         wire::MergeDefaults {
