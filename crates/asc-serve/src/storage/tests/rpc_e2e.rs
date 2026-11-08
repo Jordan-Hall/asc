@@ -470,7 +470,7 @@ async fn verify_enable_assign_and_migrate_over_the_wire() {
         .storage
         .list_migrations(req(
             wire::ListStorageMigrationsRequest {
-                repo,
+                repo: repo.clone(),
                 limit: 0,
                 page_token: String::new(),
             },
@@ -484,6 +484,42 @@ async fn verify_enable_assign_and_migrate_over_the_wire() {
         (listed.migrations.len(), listed.next_page_token.as_str()),
         (1, "")
     );
+    // The repository's usage: every kind answered, a scan running or done.
+    let mut usage = None;
+    for _ in 0..500 {
+        let u = w
+            .storage
+            .get_repo_usage(req(
+                wire::GetRepoStorageUsageRequest {
+                    repo: repo.clone(),
+                    refresh: false,
+                },
+                Some("alice-token"),
+                None,
+            ))
+            .await
+            .unwrap()
+            .into_inner();
+        if !u.computing {
+            usage = Some(u);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let usage = usage.expect("the usage scan finished");
+    assert_eq!(usage.rows.len(), 6);
+    let files = usage
+        .rows
+        .iter()
+        .find(|r| r.kind == wire::StorageUsageKind::Files as i32)
+        .unwrap();
+    assert_eq!(files.objects, 70, "{usage:?}");
+    assert_eq!(
+        usage.total_bytes,
+        usage.rows.iter().map(|r| r.bytes).sum::<u64>()
+    );
+    assert!(usage.computed_at > 0);
+    assert_eq!(usage.month.len(), 7);
     // Deleting the target now is refused with the dedicated code.
     let e = w
         .storage

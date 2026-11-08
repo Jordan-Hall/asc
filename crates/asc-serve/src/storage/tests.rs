@@ -383,6 +383,8 @@ async fn user_owned_targets_can_be_switched_off() {
         engine: f.svc.engine.clone(),
         audit: f.svc.audit.clone(),
         authority: f.svc.authority.clone(),
+        meter: f.svc.meter.clone(),
+        scans: f.svc.scans.clone(),
     };
     let err = svc
         .create_target(&alice(), f.fields("x"))
@@ -1277,6 +1279,8 @@ async fn a_locked_vault_refuses_to_seal_and_says_why() {
         audit: f.svc.audit.clone(),
         authority: f.svc.authority.clone(),
         cfg: f.svc.cfg.clone(),
+        meter: f.svc.meter.clone(),
+        scans: f.svc.scans.clone(),
     };
     let err = svc
         .create_target(&alice(), f.fields("x"))
@@ -2457,4 +2461,167 @@ async fn vault_calls_are_for_site_administrators_and_their_answers_stay_with_the
         .await
         .unwrap_err();
     assert_eq!(denied.code(), tonic::Code::PermissionDenied);
+}
+
+/// Calls `repo_usage` until no scan is running and returns the settled answer.
+async fn settled_usage(f: &Fx, refresh: bool) -> super::usage::Report {
+    let first = f
+        .svc
+        .repo_usage(&alice(), "acme/app", refresh)
+        .await
+        .unwrap();
+    for _ in 0..500 {
+        let r = f.svc.repo_usage(&alice(), "acme/app", false).await.unwrap();
+        if !r.computing {
+            return r;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the usage scan did not finish: {first:?}");
+}
+
+fn tally(r: &super::usage::Report, k: super::usage::Kind) -> super::usage::Tally {
+    r.kinds.iter().find(|(x, _)| *x == k).unwrap().1
+}
+
+#[tokio::test]
+async fn repo_usage_splits_stored_bytes_by_kind_and_counts_reads() {
+    use super::usage::Kind;
+    use object_store::ObjectStoreExt;
+    let f = fx().await;
+    let e = f.repo("acme/app").await;
+    let a = put_obj(&e, b"first file").await;
+    put_obj(&e, b"second file body").await;
+    // CI output, a derived index and a pack the index names only in part.
+    let (store, root) = f.registry.default_place();
+    let ns_root = root.join("ns").join(e.ns.hex());
+    for (p, n) in [
+        ("actions/run/1.log", 7usize),
+        ("d/search/x", 5),
+        ("pack/p1.pack", 100),
+    ] {
+        let mut path = ns_root.clone();
+        for part in p.split('/') {
+            path = path.join(part);
+        }
+        store
+            .put(&path, object_store::PutPayload::from(vec![0u8; n]))
+            .await
+            .unwrap();
+    }
+    for (class, id, len) in [(4i64, 1u8, 30i64), (5, 2, 20), (9, 3, 10)] {
+        sqlx::query(
+            "INSERT INTO pack_objects (ns, class, id, pack, off, len) VALUES ($1, $2, $3, $4, 0, $5)",
+        )
+        .bind(e.ns.as_bytes().to_vec())
+        .bind(class)
+        .bind(vec![id; 32])
+        .bind(vec![1u8; 16])
+        .bind(len)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    }
+    let got = e.objects.get_stored(&a).await.unwrap().unwrap();
+
+    let r = settled_usage(&f, false).await;
+    assert!(r.computed_at > 0);
+    assert_eq!(r.kinds.len(), Kind::ALL.len(), "every kind is answered");
+    let files = tally(&r, Kind::Files);
+    assert_eq!(files.objects, 2);
+    assert!(files.bytes >= 26, "{files:?}");
+    assert_eq!(
+        tally(&r, Kind::Ci),
+        super::usage::Tally {
+            bytes: 7,
+            objects: 1
+        }
+    );
+    assert_eq!(
+        tally(&r, Kind::Indexes),
+        super::usage::Tally {
+            bytes: 15,
+            objects: 2
+        }
+    );
+    assert_eq!(
+        tally(&r, Kind::History),
+        super::usage::Tally {
+            bytes: 50,
+            objects: 2
+        }
+    );
+    assert_eq!(
+        tally(&r, Kind::Other).bytes,
+        40,
+        "pack bytes no indexed object uses"
+    );
+    assert_eq!(tally(&r, Kind::LargeFiles), super::usage::Tally::default());
+    assert_eq!(r.total(), files.bytes + 7 + 15 + 50 + 40);
+    assert_eq!(r.month, crate::ai::clock::month(crate::ai::clock::now()));
+    assert!(
+        r.read_bytes >= got.len() as u64,
+        "the read was counted: {r:?}"
+    );
+
+    // Reads after the scan are counted without a new scan, and survive in the database.
+    let before = r.read_bytes;
+    e.objects.get_stored(&a).await.unwrap().unwrap();
+    let again = f.svc.repo_usage(&alice(), "acme/app", false).await.unwrap();
+    assert!(!again.computing, "a fresh result is not scanned again");
+    assert_eq!(again.computed_at, r.computed_at);
+    assert_eq!(again.read_bytes, before + got.len() as u64);
+    assert_eq!(f.svc.meter.pending(e.ns), 0, "the reads were written");
+
+    // Asked again within five minutes, the last scan stands.
+    let soon = f.svc.repo_usage(&alice(), "acme/app", true).await.unwrap();
+    assert!(!soon.computing);
+}
+
+#[tokio::test]
+async fn repo_usage_rescans_when_asked_after_the_pause_and_only_for_admins() {
+    let f = fx().await;
+    let e = f.repo("acme/app").await;
+    let r = settled_usage(&f, false).await;
+    assert_eq!(r.total(), 0, "an empty repository stores nothing");
+    assert!(r.computed_at > 0, "an empty result is still a result");
+    // Age the result past the pause, add a file and ask.
+    sqlx::query("UPDATE storage_usage SET computed_at = computed_at - $1 WHERE ns = $2")
+        .bind(super::usage::MIN_RESCAN)
+        .bind(e.ns.as_bytes().to_vec())
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    put_obj(&e, b"late").await;
+    let r = settled_usage(&f, true).await;
+    assert_eq!(tally(&r, super::usage::Kind::Files).objects, 1);
+
+    let err = f
+        .svc
+        .repo_usage(&bob(), "acme/app", false)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, StorageError::PermissionDenied(_)), "{err:?}");
+    let err = f
+        .svc
+        .repo_usage(&alice(), "acme/none", false)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, StorageError::NotFound(_)), "{err:?}");
+}
+
+#[tokio::test]
+async fn repo_usage_lists_a_routed_repository_in_its_target() {
+    let f = fx().await;
+    let v = f.enabled("t").await;
+    let e = f.repo("acme/app").await;
+    f.svc
+        .assign_repo(&alice(), "acme/app", &v.target.id)
+        .await
+        .unwrap();
+    let e2 = f.open("acme/app").await.unwrap();
+    put_obj(&e2, b"in the bucket").await;
+    let r = settled_usage(&f, false).await;
+    assert_eq!(tally(&r, super::usage::Kind::Files).objects, 1);
+    let _ = e;
 }
