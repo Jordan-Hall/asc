@@ -3119,7 +3119,7 @@ message ReportDeviceResponse { uint32 kept = 1; }
 
 **Read.** `GetWorkspace` with `include_devices` fills `CloudHead.devices` from live reports (newer than 30 days) and returns `local`: reported drafts whose `cs` is not a head of the workspace (visible or hidden), with `cs` empty. `since_version` is ignored so the locations are always whole; `local` comes on the first page only. Without the flag the response is unchanged. Reading another owner's locations needs the same access as their workspace (§21.2.5).
 
-**Bounds and privacy.** At most 8 devices × 1,000 drafts per workspace. Device names and change ids are the only client strings stored; the hub re-validates both and drops a bad one. Deleting the namespace removes the rows. A purged draft (§21.3.7) that a device still holds reads "removed from the hub" until that device drops it.
+**Bounds and privacy.** At most 8 devices × 1,000 drafts per workspace. A report under a name that is not yet a workspace (a device whose drafts have not uploaded) is allowed while the owner reports under fewer such names than `max_workspaces_per_user`, else `RESOURCE_EXHAUSTED` with `CLOUD_WORKSPACES_LIMIT`; a workspace that exists is counted by the workspace quota (§21.3.7). Device names and change ids are the only client strings stored; the hub re-validates both and drops a bad one. Deleting the namespace removes the rows. A purged draft (§21.3.7) that a device still holds reads "removed from the hub" until that device drops it.
 
 ### 21.4 Git DX mapping
 
