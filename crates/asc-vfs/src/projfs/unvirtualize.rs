@@ -1,7 +1,10 @@
 //! Turning a virtualization root back into a plain directory once its provider has stopped
-//! (`worktree convert --plain`). Nothing here asks the provider: with it gone, any open of a
-//! placeholder fails with `ERROR_FILE_SYSTEM_VIRTUALIZATION_UNAVAILABLE` (os error 369), so the
-//! walk lists only what is physically on disk and acts on the reparse tag of each entry:
+//! (`worktree convert --plain`). Nothing here asks the provider. While the root still carries its
+//! own reparse point, the ProjFS filter answers any open of a placeholder under it with
+//! `ERROR_FILE_SYSTEM_VIRTUALIZATION_UNAVAILABLE` (os error 369): it sees a root whose provider
+//! is not running. So the root loses its reparse point first; the filter then no longer treats
+//! the tree as virtual, and the walk lists only what is physically on disk and acts on the
+//! reparse tag of each entry:
 //!
 //! * a ProjFS placeholder directory loses its reparse point and is walked;
 //! * a ProjFS placeholder file (empty, hydrated or with dirty metadata: its content is the
@@ -12,8 +15,8 @@
 //! * a full file or directory (the user's edits and new files) is kept; other reparse points
 //!   (symbolic links, junctions) are neither changed nor entered.
 //!
-//! The root loses its own reparse point last, so a walk that stops part way leaves a root the
-//! provider can still mount.
+//! Every step reads the tag on disk, so a walk that stops part way is finished by running it
+//! again: the root is then no longer a reparse point and the walk goes on where it stopped.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -74,6 +77,10 @@ fn unmark(w: &[u16], p: &Path, tag: u32) -> io::Result<()> {
 /// (or no longer) a virtualization root is walked the same way and comes out unchanged.
 pub fn unvirtualize(root: &Path) -> io::Result<Unvirtualized> {
     let root = verbatim(root);
+    match ffi::delete_reparse_point(&ffi::path_to_wide(&root), IO_REPARSE_TAG_PROJFS) {
+        Err(e) if matches!(e.raw_os_error(), Some(NOT_A_REPARSE_POINT | TAG_MISMATCH)) => {}
+        r => r.map_err(at("delete the reparse point of", &root))?,
+    }
     let mut out = Unvirtualized::default();
     let mut stack: Vec<(PathBuf, String)> = vec![(root.clone(), String::new())];
     while let Some((dir, rel)) = stack.pop() {
@@ -106,10 +113,6 @@ pub fn unvirtualize(root: &Path) -> io::Result<Unvirtualized> {
                 _ => {}
             }
         }
-    }
-    match ffi::delete_reparse_point(&ffi::path_to_wide(&root), IO_REPARSE_TAG_PROJFS) {
-        Err(e) if matches!(e.raw_os_error(), Some(NOT_A_REPARSE_POINT | TAG_MISMATCH)) => {}
-        r => r.map_err(at("delete the reparse point of", &root))?,
     }
     out.deleted.sort();
     Ok(out)
