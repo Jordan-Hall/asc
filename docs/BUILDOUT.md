@@ -77,7 +77,8 @@ scope is needed.
 
 **Token scopes by area.** Every RPC runs in the area of its service (`authz/area.rs`, set by the admission layer): `Changes`,
 `Stacks`, `Review`, `MergeQueue`, `Inbox` and `Projects` are `changes`, `Agents` and `AgentTokens` are `runs`, and everything else,
-git over HTTP and SSH included, is the repository. `asc serve` sends the area with each repository question (`"area": "changes"` or
+git over HTTP and SSH included, is the repository. An MCP tool is authorised in the area of its backing RPC (`stack` is
+`Changes.Stack`, so `changes`). `asc serve` sends the area with each repository question (`"area": "changes"` or
 `"runs"`; nothing for the repository, the hub's default), so the hub holds a personal access token to the scope of that part on a
 direct connection to asc as it does in its own forwarder: a token with only `read:repository` reads code but not stacks. The area is
 part of the cache key, so an answer for code is never reused for stacks or runs. Identity questions and an agent token's
