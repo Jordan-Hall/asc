@@ -209,6 +209,16 @@ impl Quota {
         if known.is_some() {
             return Ok(());
         }
+        // Take the owner's ledger row first: concurrent reports of one owner queue here (a row
+        // lock on Postgres, the single writer on SQLite), so the count below cannot be raced.
+        sqlx::query(
+            "INSERT INTO cloud_usage (ns, owner, bytes, workspaces) VALUES ($1, $2, 0, 0)              ON CONFLICT (ns, owner) DO UPDATE SET bytes = cloud_usage.bytes",
+        )
+        .bind(ns.clone())
+        .bind(owner)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| db("cloud_usage", &e))?;
         let unsynced: i64 = sqlx::query_scalar(
             "SELECT COUNT(DISTINCT d.name) FROM cloud_device_drafts d              WHERE d.ns = $1 AND d.owner = $2 AND d.name <> $3 AND NOT EXISTS              (SELECT 1 FROM cloud_ws w WHERE w.ns = d.ns AND w.owner = d.owner AND w.name = d.name)",
         )
