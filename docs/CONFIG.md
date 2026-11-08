@@ -73,6 +73,7 @@ The cloud uploads your drafts in the background so they follow you between machi
 |---|---|---|---|
 | `asc.cloud` | `auto` | `auto` is on when `asc.branchless` is on, the server offers the cloud for the repository and a daemon runs; `on`; or `off`. A public repository never uploads. | `asc config asc.cloud off` |
 | `asc.cloud.workspace` | `default` | This machine's cloud workspace: `default`, `host` (the host name) or a name. | `asc config asc.cloud.workspace host` |
+| `asc.cloud.device` | the host name | The name the hub shows for drafts on this machine ("Only on laptop"). Letters, digits, `.`, `_` and `-`, at most 64. | `asc config --global asc.cloud.device laptop` |
 | `asc.cloud.maxSyncAge` | `14d` | Heads older than this are not listed by `asc cloud list` without `--all`. | `asc config --global asc.cloud.maxSyncAge 30d` |
 | `asc.cloud.queueMax` | `10000` | The longest upload queue; beyond it new heads stay local and `asc cloud status` says `queue full`. | `asc config --global asc.cloud.queueMax 2000` |
 | `asc.cloud.maxChangesetSize` | `1GiB` | The largest changeset uploaded. | `asc config --global asc.cloud.maxChangesetSize 256MiB` |

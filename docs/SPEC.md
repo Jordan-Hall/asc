@@ -2933,6 +2933,8 @@ cloud_heads(ns BLOB, owner BIGINT /*Forgejo user id*/, name TEXT, cs BLOB, chang
 repos += branchless BOOL, cloud BOOL /*default = branchless; owners can switch cloud off alone*/, shared_refs TEXT /*json globs*/, legacy_shared TEXT /*json names, migration only*/
 user_ref_meta(ns BLOB, owner BIGINT, name TEXT, landed_at BIGINT NULL, PRIMARY KEY(ns, owner, name)) + INDEX (ns, landed_at)
 cloud_usage(ns BLOB, owner BIGINT, bytes BIGINT, workspaces INT, PRIMARY KEY(ns, owner))   -- quota accounting (§21.3.7)
+cloud_device_drafts(ns BLOB, owner BIGINT, name TEXT, device TEXT, cs BLOB, change BLOB, added BIGINT, state BIGINT,
+            reported_at BIGINT, PRIMARY KEY(ns, owner, name, device, cs))   -- where a draft is (§21.3.9)
 -- user refs: rows in the existing refs/ref_log tables (§3.4), name = refs/users/<owner-id>/heads/<n>; user_ref_meta holds only the landed marker
 ```
 
@@ -3025,13 +3027,15 @@ service Cloud {
   rpc UpdateWorkspace(UpdateWorkspaceRequest) returns (UpdateWorkspaceResponse); // background, x-asc-op-id
   rpc ListWorkspaces(ListWorkspacesRequest) returns (ListWorkspacesResponse);    // cheap, paged
   rpc Purge(PurgeRequest) returns (PurgeResponse);                               // admin only
+  rpc ReportDevice(ReportDeviceRequest) returns (ReportDeviceResponse);          // background, owner only (§21.3.9)
 }
 message CloudHead { bytes cs = 1; bytes change = 2; /* response only; the server derives it from m/ and ignores the client value */
-  repeated string labels = 3; /* <= 8, each <= 64 bytes, [A-Za-z0-9._/-], else INVALID_ARGUMENT */ int64 added = 4; int64 hidden_at = 5; }
+  repeated string labels = 3; /* <= 8, each <= 64 bytes, [A-Za-z0-9._/-], else INVALID_ARGUMENT */ int64 added = 4; int64 hidden_at = 5;
+  repeated string devices = 6; /* response only, with include_devices (§21.3.9) */ }
 message GetWorkspaceRequest { RepoRef repo = 1; string owner = 2; /* empty = caller */ string name = 3;
-  uint64 since_version = 4; int64 max_age_s = 5; bool include_hidden = 6; string page_token = 7; }
+  uint64 since_version = 4; int64 max_age_s = 5; bool include_hidden = 6; string page_token = 7; bool include_devices = 8; }
 message GetWorkspaceResponse { uint64 version = 1; repeated CloudHead heads = 2; repeated bytes removed = 3;
-  uint32 omitted = 4; string next_page_token = 5; }
+  uint32 omitted = 4; string next_page_token = 5; repeated LocalDraft local = 6; /* §21.3.9 */ }
 message UpdateWorkspaceRequest { RepoRef repo = 1; string name = 2; uint64 base_version = 3;
   repeated CloudHead add = 4; repeated bytes remove = 5; repeated bytes hide = 6; repeated bytes unhide = 7; }
 message UpdateWorkspaceResponse { uint64 version = 1; }   // ErrorDetail.code VERSION_CONFLICT carries the current version
@@ -3095,6 +3099,27 @@ The server sends only refs the caller may read (§15.1) and only names that matc
 - At most one live update per worktree per debounce window. Restack and update work is capped (`asc.live.maxStack`, default 50 changes; `asc.live.maxFiles`, default 5000 changed paths). Above a cap, nothing is restacked and a notice is raised.
 
 **Default experience.** With `asc.live.restack` and `asc.live.update` off, the IDE plugins show "trunk moved N commits - Restack" (§24.4) and the user runs `asc restack`.
+
+#### 21.3.9 Where a draft is (device reports; decision 2026-11-08)
+
+The hub drafts page says where each draft is: "On laptop and on the hub", "On the hub", or "Only on desk · waiting to upload". The server knows only uploaded heads, so each device reports what it holds.
+
+```proto
+rpc ReportDevice(ReportDeviceRequest) returns (ReportDeviceResponse);   // class background; owner only
+enum LocalDraftState { UNSPECIFIED = 0; UPLOADED = 1; WAITING = 2; FAILED = 3; TOO_LARGE = 4; NOT_QUEUED = 5; }
+message LocalDraft { bytes cs = 1; bytes change = 2; int64 added = 3; LocalDraftState state = 4;
+  string device = 5; /* response only */ int64 reported_at = 6; /* response only */ }
+message ReportDeviceRequest { RepoRef repo = 1; string name = 2; /* workspace; empty = default */ string device = 3; repeated LocalDraft drafts = 4; }
+message ReportDeviceResponse { uint32 kept = 1; }
+```
+
+**Client.** After each cloud sync (§21.3.4) the daemon, and `asc cloud upload`, send one report for this device: every visible draft head, newest first, at most 1,000. The state comes from the upload queue (§21.3.1): `UPLOADED` when the head is in the synced base, `WAITING` while queued, `FAILED` after the retry budget, `TOO_LARGE` above `asc.cloud.maxChangesetSize`, `NOT_QUEUED` when the queue was full or the draft predates the cloud. The device name is `asc.cloud.device`, else the host name, else `device`, cut to `[A-Za-z0-9._-]{1,64}`. A failed report is logged and never fails the sync.
+
+**Server.** The caller must be the workspace owner (a user identity); the repo needs its `cloud` flag (else `FAILED_PRECONDITION`). The request is refused with `INVALID_ARGUMENT` for a bad device name, more than 1,000 drafts, a `cs` that is not 32 bytes, a `change` that is not 16 bytes, a negative `added`, or an unspecified or unknown state; a repeated `cs` counts once. One transaction replaces every row of that device, drops rows older than 30 days, and keeps the 8 most recently reported devices of the workspace. An empty report clears the device.
+
+**Read.** `GetWorkspace` with `include_devices` fills `CloudHead.devices` from live reports (newer than 30 days) and returns `local`: reported drafts whose `cs` is not a head of the workspace (visible or hidden), with `cs` empty. `since_version` is ignored so the locations are always whole; `local` comes on the first page only. Without the flag the response is unchanged. Reading another owner's locations needs the same access as their workspace (§21.2.5).
+
+**Bounds and privacy.** At most 8 devices × 1,000 drafts per workspace. Device names and change ids are the only client strings stored; the hub re-validates both and drops a bad one. Deleting the namespace removes the rows. A purged draft (§21.3.7) that a device still holds reads "removed from the hub" until that device drops it.
 
 ### 21.4 Git DX mapping
 
@@ -3207,6 +3232,7 @@ To https://forge.example.org/asc/monorepo.git
 | `asc.branchless` | system, global, local, worktree, `-c`, env `ASC_BRANCHLESS` | `true` | client behaviour: cloud upload, `asc create` without a label, push submits the stack. It never changes local git output. |
 | `asc.cloud` | same | `auto` | `auto` = on when `asc.branchless`, a server remote advertises `cloud.v1` with the repo's `cloud` flag on, and a daemon runs; `on` (still refused on a public repo); `off` |
 | `asc.cloud.workspace` | global, local | `default` | `default`, `host` (the hostname) or a name |
+| `asc.cloud.device` | global, local | the host name | the name this machine's drafts are reported under, `[A-Za-z0-9._-]{1,64}` (§21.3.9) |
 | `asc.cloud.maxSyncAge` | global | `14d` | §21.3.4 |
 | `asc.cloud.queueMax`, `asc.cloud.streams`, `asc.cloud.maxChangesetSize` | global | 10000, 2, 1 GiB | §21.3.2 |
 | `asc.push.review` | global, local | `draft` | `draft`, `publish`, `none` (§21.4.3); remote effect of `push` per the amended §20.1 D4 |
