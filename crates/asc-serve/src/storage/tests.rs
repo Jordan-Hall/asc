@@ -469,9 +469,11 @@ async fn verification_writes_reads_and_deletes_a_probe_with_the_targets_own_key(
             Step::Connect,
             Step::Put,
             Step::Get,
-            Step::Delete
+            Step::Delete,
+            Step::Versioning
         ]
     );
+    assert!(report.checks.iter().all(|c| c.ok && c.needs.is_empty()));
     assert_eq!(after.target.state, State::Verified);
     assert!(after.target.verified_at > 0 && after.target.last_error.is_empty());
     assert!(
@@ -485,8 +487,14 @@ async fn verification_writes_reads_and_deletes_a_probe_with_the_targets_own_key(
         .map(|r| r.method.as_str())
         .collect();
     assert_eq!(methods, vec!["PUT", "GET"]);
-    // The delete goes out as the provider's bulk-delete call.
-    assert_eq!(seen.last().map(|r| r.method.as_str()), Some("POST"));
+    // The delete goes out as the provider's bulk-delete call, then the versioning is read with a
+    // signed GET of the bucket itself.
+    let tail: Vec<&str> = seen[seen.len() - 2..]
+        .iter()
+        .map(|r| r.method.as_str())
+        .collect();
+    assert_eq!(tail, vec!["POST", "GET"]);
+    assert_eq!(seen.last().map(|r| r.status), Some(200));
     // Every signed request used the target's key and no other.
     assert!(
         seen.iter()
@@ -532,12 +540,115 @@ async fn verification_writes_reads_and_deletes_a_probe_with_the_targets_own_key(
     );
 }
 
+#[tokio::test]
+async fn bucket_versioning_is_reported_but_never_fails_the_verification() {
+    let f = fx().await;
+    let v = f.create("versions").await;
+    let versioning = |r: &super::live::Report| {
+        r.checks
+            .iter()
+            .find(|c| c.step == Step::Versioning)
+            .cloned()
+            .unwrap()
+    };
+    for (status, phrase) in [
+        (
+            Some("Suspended"),
+            "versioning is suspended: an overwritten or deleted object cannot be recovered",
+        ),
+        (
+            None,
+            "versioning is off: an overwritten or deleted object cannot be recovered",
+        ),
+    ] {
+        f.s3.set_versioning(status);
+        let (report, after) = f.svc.verify_target(&alice(), &v.target.id).await.unwrap();
+        assert!(report.ok(), "{:?}", report.checks);
+        let c = versioning(&report);
+        assert!(!c.ok);
+        assert_eq!((c.message.as_str(), c.needs), (phrase, ""));
+        assert_eq!(after.target.state, State::Verified);
+        assert!(
+            after.target.last_error.is_empty(),
+            "{}",
+            after.target.last_error
+        );
+    }
+
+    // The key may not read the setting: the permission it lacks is named.
+    f.s3.set_versioning(Some("Enabled"));
+    f.s3.fail_after("GET", 1, 1, 403);
+    let (report, after) = f.svc.verify_target(&alice(), &v.target.id).await.unwrap();
+    assert!(report.ok());
+    let c = versioning(&report);
+    assert_eq!(
+        (c.ok, c.message.as_str(), c.needs),
+        (
+            false,
+            "access denied: check the key's permissions on the bucket",
+            "s3:GetBucketVersioning"
+        )
+    );
+    assert_eq!(after.target.state, State::Verified);
+
+    // The provider fails the read: a fixed phrase, still verified.
+    f.s3.fail_after("GET", 1, 1, 500);
+    let (report, _) = f.svc.verify_target(&alice(), &v.target.id).await.unwrap();
+    assert!(report.ok());
+    assert_eq!(
+        versioning(&report).message,
+        "the provider did not report the bucket's versioning"
+    );
+
+    // Enabled again: every step passes.
+    let (report, _) = f.svc.verify_target(&alice(), &v.target.id).await.unwrap();
+    assert!(versioning(&report).ok);
+}
+
+#[tokio::test]
+async fn a_refused_step_names_the_permission_it_needs() {
+    let f = fx().await;
+    let g = f.create("needget").await;
+    f.s3.fail_next("GET", 1, 403);
+    let (report, _) = f.svc.verify_target(&alice(), &g.target.id).await.unwrap();
+    let get = report.checks.iter().find(|c| c.step == Step::Get).unwrap();
+    assert_eq!(get.needs, "s3:GetObject");
+    let d = f.create("needdelete").await;
+    f.s3.fail_next("POST", 1, 403);
+    let (report, _) = f.svc.verify_target(&alice(), &d.target.id).await.unwrap();
+    let del = report
+        .checks
+        .iter()
+        .find(|c| c.step == Step::Delete)
+        .unwrap();
+    assert_eq!(del.needs, "s3:DeleteObject");
+    // A failure that is not a missing permission names none.
+    let mut x = f.fields("badsecret");
+    x.credentials = Credentials::new(AK, "not-the-secret", "").unwrap();
+    let e = f.svc.create_target(&alice(), x).await.unwrap();
+    let (report, _) = f.svc.verify_target(&alice(), &e.target.id).await.unwrap();
+    let put = report.checks.iter().find(|c| c.step == Step::Put).unwrap();
+    assert!(!put.ok && put.needs.is_empty(), "{put:?}");
+}
+
 async fn failing_step(f: &Fx, id: &str) -> (Step, String, View) {
     let (report, v) = f.svc.verify_target(&alice(), id).await.unwrap();
     assert!(!report.ok());
-    let bad = report.checks.iter().find(|c| !c.ok).unwrap().clone();
-    // Steps after the failing one did not run (except the cleanup delete after a put).
-    assert!(report.checks.last().unwrap().step == bad.step || bad.step == Step::Get);
+    let bad = report
+        .checks
+        .iter()
+        .find(|c| !c.ok && c.step != Step::Versioning)
+        .unwrap()
+        .clone();
+    // Steps after the failing one did not run, except the cleanup delete after a put and the
+    // advisory versioning read after the delete.
+    let last = report.checks.last().unwrap().step;
+    assert!(
+        last == bad.step
+            || matches!(bad.step, Step::Get | Step::Delete) && last == Step::Versioning,
+        "{:?}",
+        report.checks
+    );
     assert_eq!(v.target.state, State::Failed);
     assert_eq!(
         v.target.last_error,
@@ -583,6 +694,7 @@ async fn each_failing_step_of_the_handshake_is_reported_with_a_fixed_phrase() {
     // Permission lost after the key was created: access denied.
     let ok = f.create("denied").await;
     f.s3.deny();
+    let (report, _) = f.svc.verify_target(&alice(), &ok.target.id).await.unwrap();
     let (step, msg, _) = failing_step(&f, &ok.target.id).await;
     assert_eq!(
         (step, msg.as_str()),
@@ -591,6 +703,7 @@ async fn each_failing_step_of_the_handshake_is_reported_with_a_fixed_phrase() {
             "access denied: check the key's permissions on the bucket"
         )
     );
+    assert_eq!(report.checks.last().unwrap().needs, "s3:PutObject");
     f.s3.allow();
 
     // The read-back fails: the probe is still deleted.

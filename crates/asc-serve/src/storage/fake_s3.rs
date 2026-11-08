@@ -47,6 +47,8 @@ struct Inner {
     log: Mutex<Vec<Seen>>,
     faults: Mutex<Faults>,
     page_size: Mutex<usize>,
+    /// The bucket's versioning status: `Enabled`, `Suspended`, or `None` for never set.
+    versioning: Mutex<Option<String>>,
 }
 
 /// The running server.
@@ -73,6 +75,7 @@ impl FakeS3 {
             log: Mutex::default(),
             faults: Mutex::default(),
             page_size: Mutex::new(1000),
+            versioning: Mutex::new(Some("Enabled".into())),
         });
         let app = axum::Router::new()
             .fallback(handle)
@@ -93,6 +96,12 @@ impl FakeS3 {
     pub fn set_credentials(&self, key: &str, secret: &str) {
         *self.inner.access_key.lock().unwrap() = key.to_owned();
         *self.inner.secret.lock().unwrap() = secret.to_owned();
+    }
+
+    /// Sets what `GET ?versioning` reports: `Some("Enabled")` (the default), `Some("Suspended")`,
+    /// or `None` for a bucket that never had versioning.
+    pub fn set_versioning(&self, status: Option<&str>) {
+        *self.inner.versioning.lock().unwrap() = status.map(str::to_owned);
     }
 
     pub fn set_page_size(&self, n: usize) {
@@ -417,6 +426,21 @@ async fn respond(
             list(inner, &query)
         }
         (&Method::POST, true) if query.contains_key("delete") => multi_delete(inner, &bytes),
+        (&Method::GET, true) if query.contains_key("versioning") => {
+            let status = inner
+                .versioning
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|s| format!("<Status>{s}</Status>"))
+                .unwrap_or_default();
+            Response::builder()
+                .header(header::CONTENT_TYPE, "application/xml")
+                .body(Body::from(format!(
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?><VersioningConfiguration xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">{status}</VersioningConfiguration>"
+                )))
+                .unwrap()
+        }
         (&Method::PUT, false) => put(inner, key, &parts.headers, bytes.to_vec()),
         (&Method::GET | &Method::HEAD, false) => {
             get(inner, key, &parts.headers, parts.method == Method::HEAD)

@@ -319,7 +319,8 @@ async fn verify_enable_assign_and_migrate_over_the_wire() {
         .into_inner();
     assert!(v.ok);
     let steps: Vec<i32> = v.checks.iter().map(|c| c.step).collect();
-    assert_eq!(steps, vec![1, 2, 3, 4, 5]);
+    assert_eq!(steps, vec![1, 2, 3, 4, 5, 6]);
+    assert!(v.checks.iter().all(|c| c.ok && c.needs.is_empty()));
     assert_eq!(
         v.target.unwrap().state,
         wire::StorageTargetState::Verified as i32
