@@ -9,6 +9,9 @@ use uuid::Uuid;
 
 /// Object classes with a directory under `cache/` and `store/` (SPEC §3.1).
 const OBJECT_DIRS: [&str; 9] = ["f", "l", "k", "t", "c", "g", "o", "m", "d"];
+/// The directory, under the home, of the shared blob area (`asc.worktree.link = symlink`). It is
+/// created on first use.
+pub const SHARED_BLOBS: &str = "shared-blobs";
 /// Top-level directories created with the home.
 const TOP_DIRS: [&str; 10] = [
     "cache", "store", "tmp", "repos", "wc", "wt", "redirect", "tools", "run", "log",
@@ -149,6 +152,11 @@ impl AscHome {
 
     pub fn tmp(&self) -> PathBuf {
         self.root.join("tmp")
+    }
+
+    /// The shared blob area that link-mode checkouts point into (`asc.worktree.link`).
+    pub fn shared_blobs(&self) -> PathBuf {
+        self.root.join(SHARED_BLOBS)
     }
 
     pub fn run(&self) -> PathBuf {
