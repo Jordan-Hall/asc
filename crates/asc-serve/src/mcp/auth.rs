@@ -23,6 +23,7 @@
 //!   which is the one in the request extensions and the audit record. An authorizer that cannot
 //!   name a caller refuses them (the trait default fails closed).
 
+use crate::authz::area::{self, Area};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -94,7 +95,16 @@ struct Call {
     tool: String,
     repo: Option<String>,
     mode: Mode,
+    /// The part of asc the tool's RPC belongs to, so the decision holds a token to its scope.
+    area: Area,
     id: Value,
+}
+
+/// The area of a tool by its backing RPC (`Changes.Stack` is `changes`). A forge tool, a search
+/// and anything without an RPC is the repository.
+fn area_of_rpc(rpc: &str) -> Area {
+    rpc.split_once('.')
+        .map_or(Area::Repository, |(service, _)| Area::of_service(service))
 }
 
 /// The tool call a message makes: `None` for any other message, `Err` for a call that cannot be
@@ -116,6 +126,7 @@ fn call_of(msg: &Value) -> Option<Result<Call, (&'static str, Call)>> {
                 tool,
                 repo: None,
                 mode: Mode::Read,
+                area: Area::Repository,
                 id,
             },
         )))
@@ -129,6 +140,7 @@ fn call_of(msg: &Value) -> Option<Result<Call, (&'static str, Call)>> {
                 repo: Some(r.clone()),
                 tool,
                 mode: Mode::Read,
+                area: Area::Repository,
                 id,
             })),
             Some(_) => bad("repo must be a string", tool, id),
@@ -141,6 +153,7 @@ fn call_of(msg: &Value) -> Option<Result<Call, (&'static str, Call)>> {
             tool,
             repo: None,
             mode: Mode::Read,
+            area: Area::Repository,
             id,
         }));
     };
@@ -161,6 +174,7 @@ fn call_of(msg: &Value) -> Option<Result<Call, (&'static str, Call)>> {
         tool,
         repo,
         mode,
+        area: area_of_rpc(def.rpc),
         id,
     }))
 }
@@ -325,10 +339,12 @@ async fn authorise(State(auth): State<McpAuth>, req: Request, next: Next) -> Res
         },
         Some(Ok(c)) => {
             let repo = c.repo.as_deref().unwrap_or_default();
-            match auth
-                .authorizer
-                .authorize_credential(Some(&credential), repo, access_of(c.mode))
-                .await
+            match area::scope(
+                c.area,
+                auth.authorizer
+                    .authorize_credential(Some(&credential), repo, access_of(c.mode)),
+            )
+            .await
             {
                 Ok(p) => {
                     vouch = Some(Arc::new(auth.ledger.vouch(&p.id, repo, c.mode)));
@@ -406,5 +422,21 @@ mod tests {
         for bad in [json!({}), json!({"repo": 7})] {
             assert!(call_of(&forge(bad)).unwrap().is_err());
         }
+        assert_eq!(c.area, Area::Repository);
+    }
+
+    #[test]
+    fn a_tool_is_authorised_in_the_area_of_its_rpc() {
+        let tool = |name: &str| {
+            json!({"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+                   "params": {"name": name, "arguments": {"repo": "acme/app"}}})
+        };
+        let c = call_of(&tool("stack")).unwrap().ok().unwrap();
+        assert_eq!(c.area, Area::Changes, "stack is Changes.Stack");
+        let unknown = call_of(&tool("no-such-tool")).unwrap().ok().unwrap();
+        assert_eq!(unknown.area, Area::Repository);
+        assert_eq!(area_of_rpc("Agents.ListRuns"), Area::Runs);
+        assert_eq!(area_of_rpc("Repo.GetTree"), Area::Repository);
+        assert_eq!(area_of_rpc(""), Area::Repository);
     }
 }

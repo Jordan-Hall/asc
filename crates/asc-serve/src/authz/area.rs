@@ -59,7 +59,10 @@ tokio::task_local! {
     static CALL_AREA: Area;
 }
 
-/// The area of the call being served; [`Area::Repository`] outside one.
+/// The area of the call being served; [`Area::Repository`] outside one. Only gRPC services and
+/// MCP tools belong to another area, and both set it: every RPC runs inside the admission layer's
+/// [`scope`] and every MCP tool call is authorised inside one. The surfaces left (git over HTTP and
+/// SSH, `/v8`, `/seeds`, `/actions`) serve code and objects, which are the repository's.
 #[must_use]
 pub fn current() -> Area {
     CALL_AREA.try_with(|a| *a).unwrap_or_default()
