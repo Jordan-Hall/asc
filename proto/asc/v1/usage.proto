@@ -23,6 +23,9 @@ service Usage {
   rpc GetQuota(GetQuotaRequest) returns (GetQuotaResponse);        // owner: the limits that apply
   rpc SetQuota(SetQuotaRequest) returns (SetQuotaResponse);        // site admin; mutating
   rpc Report(ReportUsageRequest) returns (ReportUsageResponse);    // host service or site admin; mutating
+  // Site admin: the changes published and the agent runs started on the whole server in a window. Advertised as
+  // Version.features "usage-activity.v1".
+  rpc GetActivity(GetActivityRequest) returns (GetActivityResponse);
 }
 
 // The limits of an owner. 0 = unlimited. A measure the owner has no limit for inherits the instance default.
@@ -124,3 +127,24 @@ message ReportUsageRequest {
   int64 at = 5;                        // unix seconds; 0 = now
 }
 message ReportUsageResponse {}
+
+// `since` and `until` are unix seconds. since 0 = the start of the UTC day of `until`; until 0 = now. At most 31 days.
+message GetActivityRequest {
+  int64 since = 1;
+  int64 until = 2;
+}
+// A change counts once, in the window its first version was published in. It is by an agent when an agent run holds
+// it or it was published under an `agent:` principal. A run counts in the window it was created in; `runs_active` are
+// queued, running or waiting for input now, the other three are how the ended runs ended.
+message GetActivityResponse {
+  int64 since = 1;
+  int64 until = 2;
+  uint32 changes = 3;
+  uint32 changes_by_agents = 4;
+  uint32 runs = 5;
+  uint32 runs_active = 6;
+  uint32 runs_succeeded = 7;
+  uint32 runs_failed = 8;              // failed, over budget or expired
+  uint32 runs_cancelled = 9;
+  bool truncated = 10;                 // more than 100000 changes: the change counts are lower bounds
+}

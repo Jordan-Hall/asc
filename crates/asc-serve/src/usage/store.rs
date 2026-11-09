@@ -437,6 +437,90 @@ impl Store {
             })
             .collect()
     }
+
+    /// The changes first published and the agent runs created on the whole server in
+    /// `[since, until)`. A change is by an agent when it was published under an `agent:`
+    /// principal or an agent run holds it; only runs that had not ended before `since` can hold
+    /// a change published in the window, so only those are read.
+    pub async fn activity(&self, since: i64, until: i64) -> Result<Activity, sqlx::Error> {
+        let mut a = Activity::default();
+        let rows = sqlx::query(
+            "SELECT change, actor FROM change_versions WHERE v = 1 AND at >= $1 AND at < $2 LIMIT $3",
+        )
+        .bind(since)
+        .bind(until)
+        .bind(i64::try_from(MAX_ACTIVITY_CHANGES + 1).unwrap_or(i64::MAX))
+        .fetch_all(&self.pool)
+        .await?;
+        a.truncated = rows.len() > MAX_ACTIVITY_CHANGES;
+        let mut unknown = Vec::new();
+        for r in rows.iter().take(MAX_ACTIVITY_CHANGES) {
+            let actor: String = r.try_get("actor")?;
+            if actor.starts_with("agent:") {
+                a.changes_by_agents += 1;
+            } else {
+                let change: Vec<u8> = r.try_get("change")?;
+                unknown.push(
+                    change
+                        .iter()
+                        .map(|x| format!("{x:02x}"))
+                        .collect::<String>(),
+                );
+            }
+            a.changes += 1;
+        }
+        if !unknown.is_empty() {
+            let mut held = std::collections::HashSet::new();
+            for r in sqlx::query(
+                "SELECT changes_json FROM agent_runs WHERE changes_json <> '[]'                  AND created < $2 AND (finished = 0 OR finished >= $1)",
+            )
+            .bind(since)
+            .bind(until)
+            .fetch_all(&self.pool)
+            .await?
+            {
+                let changes: Vec<String> =
+                    serde_json::from_str(&r.try_get::<String, _>("changes_json")?)
+                        .unwrap_or_default();
+                held.extend(changes);
+            }
+            a.changes_by_agents += unknown.iter().filter(|c| held.contains(*c)).count() as u64;
+        }
+        for r in sqlx::query(
+            "SELECT state, COUNT(*) AS n FROM agent_runs WHERE created >= $1 AND created < $2 GROUP BY state",
+        )
+        .bind(since)
+        .bind(until)
+        .fetch_all(&self.pool)
+        .await?
+        {
+            let n = u(r.try_get("n")?);
+            a.runs += n;
+            match r.try_get::<i64, _>("state")? {
+                4 => a.runs_succeeded += n,
+                5 | 7 | 8 => a.runs_failed += n,
+                6 => a.runs_cancelled += n,
+                _ => a.runs_active += n,
+            }
+        }
+        Ok(a)
+    }
+}
+
+/// At most this many changes are read by [`Store::activity`]; past it the counts are lower bounds.
+pub const MAX_ACTIVITY_CHANGES: usize = 100_000;
+
+/// What [`Store::activity`] counts.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Activity {
+    pub changes: u64,
+    pub changes_by_agents: u64,
+    pub runs: u64,
+    pub runs_active: u64,
+    pub runs_succeeded: u64,
+    pub runs_failed: u64,
+    pub runs_cancelled: u64,
+    pub truncated: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -24,6 +24,8 @@ pub use store::{Quota, Store};
 
 /// What `Version.features` adds for this service.
 pub const FEATURE: &str = "usage.v1";
+/// `Usage.GetActivity`: the changes and agent runs of the whole server in a window.
+pub const ACTIVITY_FEATURE: &str = "usage-activity.v1";
 /// Longest range a spend report may span, in days.
 pub const MAX_REPORT_DAYS: i64 = 400;
 

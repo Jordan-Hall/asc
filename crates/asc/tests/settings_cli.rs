@@ -303,6 +303,13 @@ impl Usage for Fake {
     ) -> Result<Response<wire::ReportUsageResponse>, Status> {
         Err(Status::unimplemented("not served by this stand-in"))
     }
+
+    async fn get_activity(
+        &self,
+        _r: Request<wire::GetActivityRequest>,
+    ) -> Result<Response<wire::GetActivityResponse>, Status> {
+        Err(Status::unimplemented("not served by this stand-in"))
+    }
 }
 
 #[tonic::async_trait]

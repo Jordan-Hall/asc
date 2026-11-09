@@ -109,6 +109,7 @@ impl SettingsHubs {
         [
             crate::backups::FEATURE,
             crate::usage::FEATURE,
+            crate::usage::ACTIVITY_FEATURE,
             crate::org::FEATURE,
             crate::sessions::FEATURE,
             crate::export::FEATURE,

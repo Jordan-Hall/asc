@@ -140,6 +140,27 @@ impl UsageService {
     }
 }
 
+/// The longest window [`UsageService::get_activity`] answers for.
+const MAX_ACTIVITY_DAYS: i64 = 31;
+
+/// The window of an activity request: `until` 0 is `now`, `since` 0 the start of the UTC day of
+/// `until`.
+fn activity_window(since: i64, until: i64, now: i64) -> Result<(i64, i64), Status> {
+    let until = if until == 0 { now } else { until };
+    let since = if since == 0 {
+        until - until.rem_euclid(86_400)
+    } else {
+        since
+    };
+    if since < 0 || until < 0 || since > until {
+        return Err(Status::invalid_argument("since is after until"));
+    }
+    if until - since > MAX_ACTIVITY_DAYS * 86_400 {
+        return Err(Status::invalid_argument("the window is at most 31 days"));
+    }
+    Ok((since, until))
+}
+
 fn wire_spend(r: Spend) -> wire::SpendRow {
     wire::SpendRow {
         group: r.group,
@@ -375,6 +396,29 @@ impl Usage for UsageService {
         )
         .await
         .map(Response::new)
+    }
+
+    async fn get_activity(
+        &self,
+        request: Request<wire::GetActivityRequest>,
+    ) -> Result<Response<wire::GetActivityResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        self.site_admin(&ext, &meta).await?;
+        let (since, until) = activity_window(msg.since, msg.until, clock::now())?;
+        let a = self.hub.store.activity(since, until).await.map_err(db)?;
+        let n = |v: u64| u32::try_from(v).unwrap_or(u32::MAX);
+        Ok(Response::new(wire::GetActivityResponse {
+            since,
+            until,
+            changes: n(a.changes),
+            changes_by_agents: n(a.changes_by_agents),
+            runs: n(a.runs),
+            runs_active: n(a.runs_active),
+            runs_succeeded: n(a.runs_succeeded),
+            runs_failed: n(a.runs_failed),
+            runs_cancelled: n(a.runs_cancelled),
+            truncated: a.truncated,
+        }))
     }
 
     async fn report(
