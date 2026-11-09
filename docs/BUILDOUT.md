@@ -189,6 +189,10 @@ and evaluated through the API and the hub shows it; every key below is parsed st
   message `<ref> is protected by [refs."<pattern>"]: <why>`. A host principal is neither a maintainer nor a release key unless the
   maintainer role names it; an agent never moves a ruled ref directly (`AGENT_SCOPE_DENIED`). Trunk keeps `[trunk]` and `[signing]`;
   a rule that also matches trunk adds its own checks.
+  A ref pointed at a tag object is judged on the changeset the tag names (signature, path rules, secret scan); moving a ruled ref to
+  or from a tag object has no ancestry and counts as a rewrite, so it needs `force`. While the policy in force cannot be used its rules
+  are unknown, so no `refs/heads/` or `refs/tags/` ref moves (`POLICY_DENIED`, "cannot be used") except by an administrator, until
+  trunk's policy is repaired.
 - **Teams:** a subject may be `team:<name>` (letters, digits, `.`, `-`, `_`, at most 64; no glob), in a role or a `[paths]` write list. It
   names a team of the organisation that owns the repository, with the members the host sends (`PathRules.SetTeamMembers`, the same teams
   the path rules use); the name is matched ignoring ASCII case. The gate, `Repo.GetPolicy`, `Policy.*` and the CI insights maintainer check
