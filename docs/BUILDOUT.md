@@ -434,7 +434,12 @@ the `MergeQueue` service: its methods answer `UNIMPLEMENTED` from the router unt
 - **Data:** `agent_runs(id, repo, agent, title, state, target, base, ai_key_id, model, limits_json, usage_json, changes_json, created_by,
   created, started, finished, failure_code, failure_message, token_id, workflow_run_id, workflow_step)` and `agent_run_events(run_id, seq,
   kind, time_ms, text, tool, change, usage_json)`. Event text is passed through the secret rules before storage.
-- **Config:** `[agents] max_concurrent_runs` (4), `max_concurrent_per_repo` (1), `max_task_bytes` (65,536), `event_retention_days` (30).
+- **Runners:** every server process with agents on is an agent runner. It upserts `agent_runners(name, slots, vcpu, version, started,
+  heartbeat)` every 10 s and stamps the runs it takes in `agent_runs.runner` (migration 0610). A runner whose heartbeat is older than 90 s
+  is offline; one offline for 7 days is removed. `Maintenance.ListAgentRunners` (site admin, `agent-runners.v1`) lists them, online first,
+  each with the runs it is executing (running or waiting for input).
+- **Config:** `[agents] max_concurrent_runs` (4, a runner's slots), `max_concurrent_per_repo` (1), `max_task_bytes` (65,536),
+  `event_retention_days` (30), `runner_name` (the host name; 1 to 63 letters, digits, `.`, `-`, `_`).
 - **Errors:** `AGENTS_DISABLED`, `RUN_NOT_ACTIVE`, `BUDGET_EXCEEDED`, `AGENT_SCOPE_DENIED`, `AI_KEY_UNTESTED`, `AI_CAP_REACHED`.
 - **Audit:** `agent.run.created`, `agent.run.cancelled`, `agent.run.finished`.
 - **Hub:** a runs list and a run page with the live event stream (rendered as text), the produced stack linked as pull requests, a cancel
@@ -1096,6 +1101,7 @@ Every method of the build-out services (98). A test keeps this list equal to the
 - `asc.v1.Usage/Report` — host service or site admin
 - `asc.v1.Usage/GetActivity` — site admin: changes and agent runs of the whole server in a window
 - `asc.v1.Maintenance/CheckHealth` — site admin: object store round trip, server signing key, server clock (SPEC §14.5)
+- `asc.v1.Maintenance/ListAgentRunners` — site admin: the agent runners, their slots, CPUs, heartbeat and live runs (SPEC §14.5)
 - `asc.v1.OrgSettings/GetOrgSettings` — org read
 - `asc.v1.OrgSettings/SetAgentPolicy` — org admin
 - `asc.v1.OrgSettings/SetMergeDefaults` — org admin
