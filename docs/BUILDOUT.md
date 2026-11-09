@@ -613,6 +613,12 @@ A client calls it with the user's own credential.
 - `since` (unix seconds; 0: any time) counts only the runs created at or after it; a negative value is `INVALID_ARGUMENT`. The answer carries
   `per_repo`, the count of each repository in the order of the request, beside `total`: the agent activity chip of the Explore rows asks
   once for a whole page. The query is `GROUP BY repo` over the same filter, so the cost does not change.
+- `Agents.SummarizeAgents` (cheap) answers the agents seen over the same 1 to 50 repositories, with the same `created_by` and `since`
+  filters and the same check of read on each: per agent its runs, how many are active (queued, running or waiting for input), when the
+  newest was created, where it ran (`repos`, indexes into the request) and who started its runs (`people`, at most 5, most runs first).
+  Agents come most runs first, then by name; `limit` is 0 for 20 and at most 100, and `total` counts the agents before it. One query
+  groups the runs by agent, repository, person and state (at most 5000 groups, the newest first) and the server folds them. The agent rows
+  of the hub use it: Explore people, the agents a person runs, and the agents of an organization.
 
 ## 23. Agent profile privacy
 
@@ -986,6 +992,7 @@ Every method of the build-out services (98). A test keeps this list equal to the
 - `asc.v1.Agents/SetMonthlyBudget` — repo admin; mutating
 - `asc.v1.Agents/GetPerson` — repo read; the profile a person lets agents read, asked of the hub each time; fails closed
 - `asc.v1.Agents/CountRuns` — repo read on every repository named; cheap; per repository and since a time on request
+- `asc.v1.Agents/SummarizeAgents` — repo read on every repository named; cheap; the agents seen over 1 to 50 repositories
 
 **AgentTokens** (`agents.proto`)
 
