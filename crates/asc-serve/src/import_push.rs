@@ -27,6 +27,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
 use asc_core::git::ObjectKind;
@@ -142,6 +143,42 @@ pub struct ImportPush {
     pipeline: Arc<PipelineHooks>,
     refs: ServerRefs,
     locks: StdMutex<HashMap<i64, Arc<Mutex<()>>>>,
+    progress: Arc<StdMutex<HashMap<i64, Arc<ImportCounter>>>>,
+}
+
+/// How far the running import of one repository is: the commits it has turned into changesets
+/// (counted as their git-map rows are written) and when it started.
+#[derive(Debug)]
+pub struct ImportCounter {
+    commits: AtomicU64,
+    started: i64,
+}
+
+impl ImportCounter {
+    fn count(&self, rows: &[GitMapRow]) {
+        let n = rows.iter().filter(|r| r.kind == ObjectKind::Commit).count() as u64;
+        if n > 0 {
+            self.commits.fetch_add(n, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Removes the counter of an import from the table when the import ends, however it ends.
+struct ProgressGuard {
+    table: Arc<StdMutex<HashMap<i64, Arc<ImportCounter>>>>,
+    repo: i64,
+    counter: Arc<ImportCounter>,
+}
+
+impl Drop for ProgressGuard {
+    fn drop(&mut self) {
+        let mut m = self.table.lock().unwrap_or_else(|e| e.into_inner());
+        if m.get(&self.repo)
+            .is_some_and(|c| Arc::ptr_eq(c, &self.counter))
+        {
+            m.remove(&self.repo);
+        }
+    }
 }
 
 impl ImportPush {
@@ -151,7 +188,36 @@ impl ImportPush {
             registry,
             pipeline,
             locks: StdMutex::default(),
+            progress: Arc::default(),
         }
+    }
+
+    /// Starts counting the import of `repo`; the count ends with the guard. Imports of one
+    /// repository are serialised by its lock, so there is one counter per repository.
+    fn start_progress(&self, repo: i64) -> ProgressGuard {
+        let started = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+        let counter = Arc::new(ImportCounter {
+            commits: AtomicU64::new(0),
+            started,
+        });
+        self.progress
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(repo, counter.clone());
+        ProgressGuard {
+            table: self.progress.clone(),
+            repo,
+            counter,
+        }
+    }
+
+    /// The running import of `repo`: the commits imported so far and when it started.
+    pub fn progress(&self, repo: i64) -> Option<(u64, i64)> {
+        let m = self.progress.lock().unwrap_or_else(|e| e.into_inner());
+        m.get(&repo)
+            .map(|c| (c.commits.load(Ordering::Relaxed), c.started))
     }
 
     fn repo_lock(&self, repo: i64) -> Arc<Mutex<()>> {
@@ -509,7 +575,10 @@ impl ImportPush {
             .await
             .map_err(|e| internal("import lock", &e))?;
 
-        let report = import_tips(entry.clone(), map.clone(), quarantine.clone(), tips).await?;
+        let progress = self.start_progress(entry.key.0);
+        let mut map = map.clone();
+        map.counter = Some(progress.counter.clone());
+        let report = import_tips(entry.clone(), map, quarantine.clone(), tips).await?;
         let imported = Imported::of(&report, commands)?;
 
         let nodes = new_graph_nodes(entry, pool, &imported.changesets).await?;
@@ -791,6 +860,8 @@ struct PushMap {
     pool: AnyPool,
     ns: crate::registry::Ns,
     sink: Arc<crate::registry::SqlGitMap>,
+    /// Counts the commits written, for `ImportProgress`; `None` outside an import.
+    counter: Option<Arc<ImportCounter>>,
 }
 
 impl PushMap {
@@ -799,6 +870,7 @@ impl PushMap {
             pool,
             ns: entry.ns,
             sink: entry.git_map.clone(),
+            counter: None,
         }
     }
 
@@ -816,7 +888,11 @@ impl PushMap {
 #[async_trait]
 impl GitMapSink for PushMap {
     async fn put(&self, rows: &[GitMapRow]) -> derive::Result<()> {
-        self.sink.put(rows).await
+        self.sink.put(rows).await?;
+        if let Some(c) = &self.counter {
+            c.count(rows);
+        }
+        Ok(())
     }
 }
 
@@ -1093,6 +1169,38 @@ impl ImportPushHandler for ImportPushService {
         req: wire::IngestRequest,
     ) -> Result<wire::IngestResponse, Status> {
         self.mutations.ingest(ctx, req).await
+    }
+
+    async fn import_progress(
+        &self,
+        ctx: &CallCtx,
+        _req: wire::ImportProgressRequest,
+    ) -> Result<wire::ImportProgressResponse, Status> {
+        // The host service credential only, like the import it reports on.
+        if !self.pipeline.push_hooks().may_skip_pre(ctx) {
+            return Err(Status::permission_denied(
+                "ImportProgress needs the host service credential",
+            ));
+        }
+        let entry = self
+            .push
+            .registry
+            .open(&ctx.repo)
+            .await
+            .map_err(|e| match e {
+                crate::registry::RegistryError::NotFound(_) => {
+                    Status::not_found("no such repository")
+                }
+                e => internal("registry", &e),
+            })?;
+        Ok(match self.push.progress(entry.key.0) {
+            Some((commits, started)) => wire::ImportProgressResponse {
+                running: true,
+                commits,
+                started,
+            },
+            None => wire::ImportProgressResponse::default(),
+        })
     }
 
     async fn import_git_push(
@@ -2566,4 +2674,5 @@ mod tests {
         assert_eq!(e.code(), tonic::Code::NotFound);
         assert_eq!(f.count("SELECT COUNT(*) FROM cs_graph").await, 0);
     }
+
 }

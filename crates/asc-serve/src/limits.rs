@@ -193,6 +193,7 @@ const TABLE: &[(&str, Class, &[&str])] = &[
             "IsAncestor",
             "ReadChangeset",
             "FindLanding",
+            "ImportProgress",
             "RepoConfig",
             "CheckAttr",
             "LastCommits",

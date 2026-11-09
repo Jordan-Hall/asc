@@ -506,9 +506,10 @@ handler_group! {
     }
 }
 handler_group! {
-    /// `ImportGitPush`, `Ingest`.
+    /// `ImportGitPush`, `ImportProgress`, `Ingest`.
     ImportPushHandler {
         fn import_git_push(ImportGitPushRequest) -> ImportGitPushResponse;
+        fn import_progress(ImportProgressRequest) -> ImportProgressResponse;
         fn ingest(IngestRequest) -> IngestResponse;
     }
 }
@@ -1110,6 +1111,7 @@ repo_impl! {
         commit(CommitRequest) -> CommitResponse, mutations, Access::Write, true;
         apply(ApplyRequest) -> ApplyResponse, mutations, Access::Write, true;
         import_git_push(ImportGitPushRequest) -> ImportGitPushResponse, import_push, Access::Admin, true;
+        import_progress(ImportProgressRequest) -> ImportProgressResponse, import_push, Access::Admin, false;
         ingest(IngestRequest) -> IngestResponse, import_push, Access::Write, true;
         find_landing(FindLandingRequest) -> FindLandingResponse, landing, Access::Read, false;
         classify(ClassifyRequest) -> ClassifyResponse, classify, Access::Read, false;
