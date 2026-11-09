@@ -412,15 +412,24 @@ async fn an_s3_backup_is_encrypted_before_upload_verified_and_restorable_only_wh
         restore("RESTORE", 7).await.unwrap_err().code(),
         Code::FailedPrecondition
     );
-    let status = f
-        .svc
-        .list_backups(admin(&f, wire::ListBackupsRequest::default(), 8))
-        .await
-        .unwrap()
-        .into_inner()
-        .status
-        .unwrap();
-    assert!(status.restore_staged);
+    // The record is set after the marker is written: wait for it rather than race it.
+    let mut staged = false;
+    for _ in 0..200 {
+        let status = f
+            .svc
+            .list_backups(admin(&f, wire::ListBackupsRequest::default(), 8))
+            .await
+            .unwrap()
+            .into_inner()
+            .status
+            .unwrap();
+        if status.restore_staged {
+            staged = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(staged, "the status says a restore is staged");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -756,8 +765,19 @@ async fn verify_restores_into_a_scratch_area_and_checks_the_result() {
     let v = settle(&f, &local.id).await;
     assert_eq!(v.verify, store::V_OK, "{}", v.note);
     assert!(v.note.starts_with("Restore test passed"), "{}", v.note);
+    // A local backup is tested on a private copy, never where it lies on the target.
     let tested = f.fake.tested.lock().unwrap().clone();
-    assert_eq!(tested, vec![(f.local.join(&local.id), true)]);
+    assert_eq!(tested.len(), 1);
+    let (dir, had_db) = tested[0].clone();
+    assert!(had_db, "the copy holds the backup's files");
+    assert_ne!(dir, f.local.join(&local.id));
+    assert!(
+        dir.ends_with(std::path::Path::new("verify").join(&local.id)),
+        "{}",
+        dir.display()
+    );
+    assert!(!dir.exists(), "the copy is removed after the test");
+    assert!(f.local.join(&local.id).exists(), "the backup itself stays");
 
     let remote = run_now(&f, "r2-backup", 3).await;
     f.svc
