@@ -179,6 +179,16 @@ and evaluated through the API and the hub shows it; every key below is parsed st
   rules.<id>.{pattern,severity,description}` (section 4); `[signing] require_signed` (section 5); `[ci] flaky_threshold, allow_quarantine`
   (section 8); `[agents] enabled, max_runtime_seconds` and `[agents.budgets] max_tokens, max_cost_micro_usd` next to the existing
   `max_changes_per_run`, `max_paths_per_run` (section 11); `[merge] queue = true|false`, `[merge] revalidate = true` (section 7).
+- **Ref rules:** `[refs."<pattern>"] land = [..], signed, force, delete` (at most 64 rules). The pattern is a branch name glob
+  (`stable/*`; `*` matches any run, `/` included; case counts) or `refs/tags/<glob>` for tags; no other `refs/` prefix, no empty
+  segment, `..`, `@{`, `.lock` end, space, control character or `~^:?[\`. `land` takes `queue` (the server's land of a reviewed change),
+  `maintainers` (a direct push by a maintainer of the policy), `release-key` (a direct push by a CI or deploy key) and `agents` (the
+  queue may land changes an agent wrote: the change's first version has an `agent:` actor, or an agent run produced it). Every rule that
+  matches a ref binds it: each must admit the mover, a deletion needs `delete` in each, a non-fast-forward push needs `force` in each,
+  and one `signed` rule makes every landed change need a valid signature (`UNSIGNED_CHANGE`). Refusals are `POLICY_DENIED` with the
+  message `<ref> is protected by [refs."<pattern>"]: <why>`. A host principal is neither a maintainer nor a release key unless the
+  maintainer role names it; an agent never moves a ruled ref directly (`AGENT_SCOPE_DENIED`). Trunk keeps `[trunk]` and `[signing]`;
+  a rule that also matches trunk adds its own checks.
 - **Teams:** a subject may be `team:<name>` (letters, digits, `.`, `-`, `_`, at most 64; no glob), in a role or a `[paths]` write list. It
   names a team of the organisation that owns the repository, with the members the host sends (`PathRules.SetTeamMembers`, the same teams
   the path rules use); the name is matched ignoring ASCII case. The gate, `Repo.GetPolicy`, `Policy.*` and the CI insights maintainer check
