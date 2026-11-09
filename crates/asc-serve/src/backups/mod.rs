@@ -671,50 +671,56 @@ impl BackupsHub {
         .await;
     }
 
-    /// The restore test: the backup is restored into a scratch area and the result is checked.
-    /// A local backup is tested where it lies (only the scratch copy of its database is opened);
-    /// a remote one is first downloaded into a private scratch directory, which is removed after.
+    /// The restore test: the backup is copied into a private scratch directory, the copy is checked
+    /// against the server's record, restored into a scratch area and checked, and the scratch
+    /// directory is removed. Only the copy is ever read after it is made, so a backup changed
+    /// on its target while the test runs cannot pass on the strength of an earlier check.
     async fn check(&self, run: &Run) -> Result<String, String> {
         let place = self.place(&run.target).map_err(|e| format!("{e:?}"))?;
         let key = self.backup_key()?;
-        match place.local_dir(&run.location) {
-            Some(dir) => {
-                if !dir.exists() {
-                    return Err("the backup's files are not on the target".into());
+        if run.encrypted && key.is_none() {
+            return Err("the backup is encrypted and no backup key is configured".into());
+        }
+        let scratch = self.state_dir.join("verify").join(&run.id);
+        let _ = std::fs::remove_dir_all(&scratch);
+        crate::workdir::create_private_all(&self.state_dir).map_err(|e| e.to_string())?;
+        let out = async {
+            match place.local_dir(&run.location) {
+                Some(src) => {
+                    if !src.exists() {
+                        return Err("the backup's files are not on the target".to_owned());
+                    }
+                    let d = scratch.clone();
+                    tokio::task::spawn_blocking(move || place::copy_private(&src, &d))
+                        .await
+                        .map_err(|e| e.to_string())??;
+                    let (d, id) = (scratch.clone(), run.id.clone());
+                    let now = tokio::task::spawn_blocking(move || place::local_seal(&d, &id))
+                        .await
+                        .map_err(|e| e.to_string())??;
+                    if run.seal.is_empty() || now != run.seal {
+                        return Err(
+                            "the backup does not match the record the server made of it".to_owned()
+                        );
+                    }
                 }
-                // The files must be the ones the server recorded, then they must restore.
-                let (d, id, want) = (dir.clone(), run.id.clone(), run.seal.clone());
-                let now = tokio::task::spawn_blocking(move || place::local_seal(&d, &id))
-                    .await
-                    .map_err(|e| e.to_string())??;
-                if want.is_empty() || now != want {
-                    return Err("the backup does not match the record the server made of it".into());
-                }
-                self.engine.restore_test(&dir, key).await
-            }
-            None => {
-                if run.encrypted && key.is_none() {
-                    return Err("the backup is encrypted and no backup key is configured".into());
-                }
-                let scratch = self.state_dir.join("verify").join(&run.id);
-                let _ = std::fs::remove_dir_all(&scratch);
-                crate::workdir::create_private_all(&scratch).map_err(|e| e.to_string())?;
-                let expected = place::Expected {
-                    encrypted: run.encrypted,
-                    size: u64::try_from(run.size_bytes).unwrap_or(0),
-                    seal: run.seal.clone(),
-                };
-                let out = async {
+                None => {
+                    crate::workdir::create_private_all(&scratch).map_err(|e| e.to_string())?;
+                    let expected = place::Expected {
+                        encrypted: run.encrypted,
+                        size: u64::try_from(run.size_bytes).unwrap_or(0),
+                        seal: run.seal.clone(),
+                    };
                     place
                         .download_dir(&run.location, &scratch, key, &expected)
                         .await?;
-                    self.engine.restore_test(&scratch, key).await
                 }
-                .await;
-                let _ = std::fs::remove_dir_all(&scratch);
-                out
             }
+            self.engine.restore_test(&scratch, key).await
         }
+        .await;
+        let _ = std::fs::remove_dir_all(&scratch);
+        out
     }
 
     // -------------------------------------------------------------------------- restore

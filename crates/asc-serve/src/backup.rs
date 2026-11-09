@@ -614,7 +614,11 @@ pub fn verify(dir: &Path) -> Result<u64, BackupError> {
 /// `pg_restore --list`. A sealed vault key must open under `key`. The scratch directory is
 /// removed when the test ends, whatever its outcome.
 pub async fn restore_test(dir: &Path, key: Option<&[u8; 32]>) -> Result<String, BackupError> {
-    let objects = verify(dir)?;
+    // Hashing every file is slow work: it runs off the async workers.
+    let d = dir.to_owned();
+    let objects = tokio::task::spawn_blocking(move || verify(&d))
+        .await
+        .map_err(|e| BackupError(e.to_string()))??;
     let m = read_manifest(dir)?;
     if m.vault_key == "sealed" {
         let Some(key) = key else {
@@ -644,7 +648,11 @@ pub async fn restore_test(dir: &Path, key: Option<&[u8; 32]>) -> Result<String, 
         format!("the PostgreSQL dump lists {entries} entries")
     } else {
         let copy = scratch.path().join(DB_SQLITE);
-        std::fs::copy(dir.join(DB_SQLITE), &copy)?;
+        let src = dir.join(DB_SQLITE);
+        let c = copy.clone();
+        tokio::task::spawn_blocking(move || std::fs::copy(src, c))
+            .await
+            .map_err(|e| BackupError(e.to_string()))??;
         let pool = migrate::connect(&format!("sqlite:{}?mode=ro", copy.display()), 1).await?;
         let checked = async {
             let verdict: String = sqlx::query_scalar("PRAGMA integrity_check")
