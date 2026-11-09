@@ -247,6 +247,7 @@
       "asc.v1.AiProviders/ReplaceKey",
       "asc.v1.AiProviders/ListFeatures",
       "asc.v1.AiProviders/SetFeature",
+      "asc.v1.AiProviders/ListActivity",
       "asc.v1.Audit/Append",
       "asc.v1.Changes/AmendChange",
       "asc.v1.Ci/Stats",

@@ -98,6 +98,29 @@ const SPECS: &[Spec] = &[
         ],
         owner: None,
     },
+    // The uses of the person's own keys, and what the person used another owner's key for (without its id).
+    Spec {
+        table: "ai_activity",
+        sql: "SELECT CASE WHEN owner_kind = 1 AND owner_name = $1 THEN key_id ELSE '' END AS key_id, kind, subject, actor, \
+              repo, agent, model, first_at, last_at, requests, input_tokens, output_tokens, cost_micro_usd FROM ai_activity \
+              WHERE (owner_kind = 1 AND owner_name = $1) OR actor = $1 ORDER BY first_at, kind, subject",
+        cols: &[
+            ("key_id", T),
+            ("kind", I),
+            ("subject", T),
+            ("actor", T),
+            ("repo", T),
+            ("agent", T),
+            ("model", T),
+            ("first_at", I),
+            ("last_at", I),
+            ("requests", I),
+            ("input_tokens", I),
+            ("output_tokens", I),
+            ("cost_micro_usd", I),
+        ],
+        owner: None,
+    },
     Spec {
         table: "agent_runs",
         sql: "SELECT id, repo, agent, title, task, state, created, started, finished FROM agent_runs \

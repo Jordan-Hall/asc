@@ -392,6 +392,7 @@ const TABLE: &[(&str, Class, &[&str])] = &[
             "CreateKey",
             "DeleteKey",
             "GetKey",
+            "ListActivity",
             "ListFeatures",
             "ListKeys",
             "ListModels",

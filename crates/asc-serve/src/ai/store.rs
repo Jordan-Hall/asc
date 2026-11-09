@@ -226,6 +226,55 @@ pub struct UsageRecord<'a> {
     pub output_tokens: u64,
     /// `None`: the model has no price (recorded as cost 0 and counted as unpriced).
     pub cost_micro_usd: Option<u64>,
+    /// What the call was made for, for the activity list of the key.
+    pub activity: Activity<'a>,
+}
+
+/// How long the activity of a key is kept after its last call.
+pub const ACTIVITY_KEEP_SECS: i64 = 90 * 86_400;
+
+/// What a call was made for. Calls of one use are summed into one activity row.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Activity<'a> {
+    /// A call made for no run and no person.
+    #[default]
+    Other,
+    /// A model turn of agent run `run`, started by `by` (a handle, or empty).
+    AgentRun { run: u64, by: &'a str },
+    /// A review summary of `change` (its id as letters, or empty for a range) asked by `by`.
+    ReviewSummary { change: &'a str, by: &'a str },
+    /// A test or a replace of the key.
+    KeyTest,
+}
+
+impl Activity<'_> {
+    /// `(kind, subject, actor)` as stored; the kinds are those of `asc.v1.AiActivityKind`.
+    fn columns(&self, at: i64) -> (i64, String, String) {
+        match *self {
+            Activity::AgentRun { run, by } => (1, run.to_string(), by.to_owned()),
+            Activity::ReviewSummary { change, by } => (2, change.to_owned(), by.to_owned()),
+            Activity::KeyTest => (3, clock::day(at), String::new()),
+            Activity::Other => (4, String::new(), String::new()),
+        }
+    }
+}
+
+/// One row of the activity of a key.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ActivityRow {
+    pub kind: i64,
+    pub subject: String,
+    pub actor: String,
+    pub repo: String,
+    pub agent: String,
+    pub model: String,
+    pub first_at: i64,
+    pub last_at: i64,
+    pub requests: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cost_micro_usd: u64,
+    pub unpriced: u64,
 }
 
 /// One row of a usage report.
@@ -486,7 +535,88 @@ impl AiStore {
         .bind(i64::from(u.cost_micro_usd.is_none()))
         .execute(&self.pool)
         .await?;
+        self.record_activity(u, at).await
+    }
+
+    /// Adds one call to the activity row of its use, and drops the key's rows past the keep window.
+    async fn record_activity(&self, u: &UsageRecord<'_>, at: i64) -> Result<(), sqlx::Error> {
+        let (kind, name) = u.owner.columns();
+        let (akind, subject, actor) = u.activity.columns(at);
+        sqlx::query(
+            "INSERT INTO ai_activity (key_id, owner_kind, owner_name, kind, subject, actor, repo, agent, model, \
+              first_at, last_at, requests, input_tokens, output_tokens, cost_micro_usd, unpriced) \
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10, 1, $11, $12, $13, $14) \
+              ON CONFLICT (key_id, kind, subject, actor) DO UPDATE SET \
+              model = EXCLUDED.model, \
+              last_at = EXCLUDED.last_at, \
+              requests = ai_activity.requests + 1, \
+              input_tokens = ai_activity.input_tokens + EXCLUDED.input_tokens, \
+              output_tokens = ai_activity.output_tokens + EXCLUDED.output_tokens, \
+              cost_micro_usd = ai_activity.cost_micro_usd + EXCLUDED.cost_micro_usd, \
+              unpriced = ai_activity.unpriced + EXCLUDED.unpriced",
+        )
+        .bind(u.key_id.to_owned())
+        .bind(kind)
+        .bind(name)
+        .bind(akind)
+        .bind(subject)
+        .bind(actor)
+        .bind(u.repo.to_owned())
+        .bind(u.agent.to_owned())
+        .bind(u.model.to_owned())
+        .bind(at)
+        .bind(i64_of(u.input_tokens))
+        .bind(i64_of(u.output_tokens))
+        .bind(i64_of(u.cost_micro_usd.unwrap_or(0)))
+        .bind(i64::from(u.cost_micro_usd.is_none()))
+        .execute(&self.pool)
+        .await?;
+        sqlx::query("DELETE FROM ai_activity WHERE key_id = $1 AND last_at < $2")
+            .bind(u.key_id.to_owned())
+            .bind(at - ACTIVITY_KEEP_SECS)
+            .execute(&self.pool)
+            .await?;
         Ok(())
+    }
+
+    /// The activity of key `key_id` used after `since`, newest first: `limit` rows after the first `offset`.
+    pub async fn activity(
+        &self,
+        key_id: &str,
+        since: i64,
+        offset: u64,
+        limit: u64,
+    ) -> Result<Vec<ActivityRow>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT kind, subject, actor, repo, agent, model, first_at, last_at, requests, input_tokens, \
+              output_tokens, cost_micro_usd, unpriced FROM ai_activity WHERE key_id = $1 AND last_at >= $2 \
+              ORDER BY last_at DESC, kind, subject, actor LIMIT $3 OFFSET $4",
+        )
+        .bind(key_id.to_owned())
+        .bind(since)
+        .bind(i64_of(limit))
+        .bind(i64_of(offset))
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(|r| {
+                Ok(ActivityRow {
+                    kind: r.try_get("kind")?,
+                    subject: r.try_get("subject")?,
+                    actor: r.try_get("actor")?,
+                    repo: r.try_get("repo")?,
+                    agent: r.try_get("agent")?,
+                    model: r.try_get("model")?,
+                    first_at: r.try_get("first_at")?,
+                    last_at: r.try_get("last_at")?,
+                    requests: u64_of(r.try_get("requests")?),
+                    input_tokens: u64_of(r.try_get("input_tokens")?),
+                    output_tokens: u64_of(r.try_get("output_tokens")?),
+                    cost_micro_usd: u64_of(r.try_get("cost_micro_usd")?),
+                    unpriced: u64_of(r.try_get("unpriced")?),
+                })
+            })
+            .collect()
     }
 
     /// Usage of `owner` (or of one of its keys) between two UTC days, inclusive.

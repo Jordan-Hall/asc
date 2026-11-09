@@ -564,6 +564,7 @@ async fn a_key_whose_owner_turned_the_stop_off_is_not_stopped_by_its_own_cap() {
         repo: "alice/lab",
         agent: "fixer",
         feature: None,
+        activity: super::Activity::Other,
     };
     let req = ModelRequest {
         model: "model-x".into(),

@@ -22,6 +22,7 @@ service AiProviders {
   rpc ReplaceKey(ReplaceAiKeyRequest) returns (ReplaceAiKeyResponse);   // owner admin; mutating, x-asc-op-id; the new key is tried first and replaces the old only when the provider accepts it; rate limited with TestKey
   rpc ListFeatures(ListAiFeaturesRequest) returns (ListAiFeaturesResponse);   // owner admin; every feature that uses AI, with the setting that applies to the owner
   rpc SetFeature(SetAiFeatureRequest) returns (SetAiFeatureResponse);   // owner admin; mutating, x-asc-op-id
+  rpc ListActivity(ListAiActivityRequest) returns (ListAiActivityResponse);   // owner admin; who used one key, for what, and the tokens, newest first
 }
 
 enum AiProvider {
@@ -156,6 +157,42 @@ message AiUsageRow {
 message AiUsageResponse {
   repeated AiUsageRow rows = 1;
   AiUsageRow total = 2;
+}
+
+// What a key was used for.
+enum AiActivityKind {
+  AI_ACTIVITY_KIND_UNSPECIFIED = 0;
+  AI_ACTIVITY_KIND_AGENT_RUN = 1;        // `subject` is the run id
+  AI_ACTIVITY_KIND_REVIEW_SUMMARY = 2;   // `subject` is the change id (32 letters k-z), or empty for a range
+  AI_ACTIVITY_KIND_KEY_TEST = 3;         // a test or replace of the key; `subject` is the UTC day
+  AI_ACTIVITY_KIND_OTHER = 4;            // a call made for no run and no person
+}
+// The activity of one key of `owner`, kept for 90 days after its last call. `page_size` 0 means 50; at most 100.
+message ListAiActivityRequest {
+  OwnerRef owner = 1;
+  string key_id = 2;
+  uint32 page_size = 3;
+  string page_token = 4;
+}
+// One use of a key: every call of one run, of one person's summaries of one change, or of the tests of one day.
+message AiActivity {
+  AiActivityKind kind = 1;
+  string subject = 2;
+  string actor = 3;                    // the handle of the person who started the run or asked; empty when none
+  string repo = 4;                     // "owner/name", or empty
+  string agent = 5;
+  string model = 6;                    // the model of the last call
+  int64 first_at = 7;
+  int64 last_at = 8;
+  uint64 requests = 9;
+  uint64 input_tokens = 10;
+  uint64 output_tokens = 11;
+  uint64 cost_micro_usd = 12;
+  uint64 unpriced_requests = 13;
+}
+message ListAiActivityResponse {
+  repeated AiActivity items = 1;
+  string next_page_token = 2;          // empty on the last page
 }
 
 message ReplaceAiKeyRequest {

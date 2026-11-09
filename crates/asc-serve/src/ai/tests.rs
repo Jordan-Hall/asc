@@ -215,6 +215,7 @@ const WHO: CallInfo<'static> = CallInfo {
     repo: "acme/app",
     agent: "fixer",
     feature: None,
+    activity: super::Activity::Other,
 };
 
 // ------------------------------------------------------------------------------ keys
@@ -1701,6 +1702,7 @@ async fn usage_is_reported_per_owner_and_group() {
                 repo: "acme/other",
                 agent: "docs",
                 feature: None,
+                activity: super::Activity::Other,
             },
             &request("mystery"),
             false,

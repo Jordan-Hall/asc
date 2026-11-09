@@ -18,11 +18,27 @@ use super::audit::Entry;
 use super::caller::{Caller, authenticate, once, op_id};
 use super::feature::{Feature, wire_feature};
 use super::owner::Owner;
-use super::store::{GroupBy, Provider};
+use super::store::{ACTIVITY_KEEP_SECS, GroupBy, Provider};
 use super::{AiError, AiHub, KeyPatch, NewKey, clock, wire_key};
 
 /// Days a usage report may span.
 const MAX_REPORT_DAYS: i64 = 400;
+const ACTIVITY_PAGE: u32 = 50;
+const ACTIVITY_PAGE_MAX: u32 = 100;
+/// Activity is paged by offset; past this a page is refused (the list holds 90 days of uses).
+const ACTIVITY_OFFSET_MAX: u64 = 100_000;
+
+/// The offset a `ListActivity` page token names; empty is the first page.
+fn activity_offset(token: &str) -> Result<u64, Status> {
+    if token.is_empty() {
+        return Ok(0);
+    }
+    token
+        .strip_prefix('o')
+        .and_then(|n| n.parse::<u64>().ok())
+        .filter(|&n| n > 0 && n <= ACTIVITY_OFFSET_MAX && token == format!("o{n}"))
+        .ok_or_else(|| Status::invalid_argument("bad page_token"))
+}
 
 /// The `asc.v1.AiProviders` service.
 pub struct AiService {
@@ -472,6 +488,74 @@ impl AiProviders for AiService {
             features.push(wire_feature(&self.hub, v, &owner).await);
         }
         Ok(Response::new(wire::ListAiFeaturesResponse { features }))
+    }
+
+    async fn list_activity(
+        &self,
+        request: Request<wire::ListAiActivityRequest>,
+    ) -> Result<Response<wire::ListAiActivityResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        let owner = Owner::from_wire(msg.owner.as_ref())?;
+        self.admin_of(&ext, &meta, &owner).await?;
+        if msg.key_id.is_empty() {
+            return Err(Status::invalid_argument("key_id is required"));
+        }
+        // The key must belong to the owner named; anything else is not found.
+        let k = self
+            .hub
+            .get_key(&msg.key_id)
+            .await
+            .map_err(|e| e.status())?;
+        if k.owner != owner {
+            return Err(AiError::NotFound.status());
+        }
+        let size = match msg.page_size {
+            0 => ACTIVITY_PAGE,
+            n => n.min(ACTIVITY_PAGE_MAX),
+        };
+        let offset = activity_offset(&msg.page_token)?;
+        let since = clock::now() - ACTIVITY_KEEP_SECS;
+        let mut rows = self
+            .hub
+            .store
+            .activity(&k.id, since, offset, u64::from(size) + 1)
+            .await
+            .map_err(|e| AiError::from(e).status())?;
+        let more = rows.len() > size as usize;
+        rows.truncate(size as usize);
+        let next = offset + rows.len() as u64;
+        let next_page_token = if more && next <= ACTIVITY_OFFSET_MAX {
+            format!("o{next}")
+        } else {
+            String::new()
+        };
+        let items = rows
+            .into_iter()
+            .map(|r| wire::AiActivity {
+                kind: match r.kind {
+                    1 => wire::AiActivityKind::AgentRun,
+                    2 => wire::AiActivityKind::ReviewSummary,
+                    3 => wire::AiActivityKind::KeyTest,
+                    _ => wire::AiActivityKind::Other,
+                } as i32,
+                subject: r.subject,
+                actor: r.actor,
+                repo: r.repo,
+                agent: r.agent,
+                model: r.model,
+                first_at: r.first_at,
+                last_at: r.last_at,
+                requests: r.requests,
+                input_tokens: r.input_tokens,
+                output_tokens: r.output_tokens,
+                cost_micro_usd: r.cost_micro_usd,
+                unpriced_requests: r.unpriced,
+            })
+            .collect();
+        Ok(Response::new(wire::ListAiActivityResponse {
+            items,
+            next_page_token,
+        }))
     }
 
     async fn set_feature(

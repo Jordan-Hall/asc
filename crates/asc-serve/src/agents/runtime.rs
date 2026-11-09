@@ -1177,10 +1177,19 @@ impl AgentsHub {
             .flatten()
             .map(|r| r.token_id)
             .unwrap_or_default();
+        let started_by = if run.starter.is_empty() {
+            crate::review::handle_of(&run.created_by).unwrap_or_default()
+        } else {
+            run.starter.clone()
+        };
         let who = CallInfo {
             repo: &run.repo,
             agent: &run.agent,
             feature: Some(crate::ai::feature::Feature::AgentRuns),
+            activity: crate::ai::Activity::AgentRun {
+                run: run.id,
+                by: &started_by,
+            },
         };
         let max_command = Duration::from_secs(core.cfg.sandbox.max_command_seconds);
         let mut retries = 0u32;

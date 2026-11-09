@@ -399,10 +399,22 @@ impl Reviews {
             tools: Vec::new(),
             max_output_tokens: MAX_OUTPUT,
         };
+        let change_hex = if req.change.is_empty() {
+            String::new()
+        } else {
+            change_of(&req.change)
+                .map(|c| c.to_string())
+                .unwrap_or_default()
+        };
+        let asker = handle.clone().unwrap_or_default();
         let who = CallInfo {
             repo,
             agent: "",
             feature: Some(feature),
+            activity: crate::ai::Activity::ReviewSummary {
+                change: &change_hex,
+                by: &asker,
+            },
         };
         let done = ai
             .complete(&key, &who, &mreq, false, &CancellationToken::new())

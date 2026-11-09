@@ -30,6 +30,8 @@ pub mod share_rpc;
 pub mod store;
 
 #[cfg(test)]
+mod activity_tests;
+#[cfg(test)]
 pub(crate) mod fake;
 #[cfg(test)]
 mod feature_tests;
@@ -54,6 +56,7 @@ use model::{Message, ModelError, ModelInfo, ModelRequest, ModelResponse, Usage};
 use owner::{Owner, OwnerAdmin};
 use prices::Prices;
 use provider::{Anthropic, Google, ModelClient, OpenAi};
+pub use store::Activity;
 use store::{AiStore, KeyRow, KeyState, Provider, ReserveError, UsageRecord};
 
 use crate::netguard::{Guard, Shape};
@@ -212,6 +215,8 @@ pub struct CallInfo<'a> {
     /// The feature the call is made for: its setting for `repo` adds a cap and counts the
     /// spending.
     pub feature: Option<feature::Feature>,
+    /// What the call is made for, for the activity list of the key.
+    pub activity: Activity<'a>,
 }
 
 /// A finished call.
@@ -763,6 +768,7 @@ impl AiHub {
                 input_tokens: usage.input_tokens,
                 output_tokens: usage.output_tokens,
                 cost_micro_usd: cost,
+                activity: who.activity,
             };
             if let Err(e) = self.store.record(&rec, at).await {
                 tracing::error!(class = %store::class(&e), "ai usage record failed");
@@ -959,6 +965,7 @@ impl AiHub {
             input_tokens: r.usage.input_tokens,
             output_tokens: r.usage.output_tokens,
             cost_micro_usd: cost,
+            activity: Activity::KeyTest,
         };
         let at = clock::now();
         let _ = self.store.record(&rec, at).await;

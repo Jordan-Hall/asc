@@ -16,6 +16,7 @@ const APP: CallInfo<'static> = CallInfo {
     repo: "acme/app",
     agent: "fixer",
     feature: Some(Feature::AgentRuns),
+    activity: super::Activity::Other,
 };
 
 fn org() -> Owner {
@@ -72,6 +73,7 @@ async fn a_replacement_key_is_tried_first_and_a_refused_one_changes_nothing() {
                 repo: "",
                 agent: "fixer",
                 feature: None,
+                activity: super::Activity::Other,
             },
             &request("model-x"),
             false,
