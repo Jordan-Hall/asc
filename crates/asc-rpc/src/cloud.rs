@@ -435,6 +435,6 @@ mod tests {
         let _ = crate::services::cloud_client::CloudClient::<tonic::transport::Channel>::new;
         let d = prost_reflect::DescriptorPool::decode(crate::DESCRIPTOR_SET).unwrap();
         let s = d.get_service_by_name("asc.v1.Cloud").unwrap();
-        assert_eq!(s.methods().count(), 4);
+        assert_eq!(s.methods().count(), 5);
     }
 }
