@@ -725,6 +725,8 @@ gRPC over HTTP/2 (`tonic` 0.14), TLS on the network, `interprocess` local socket
 
 **Stacked changes:** the `Changes` service (`proto/asc/v1/changes.proto`, same port) and the additive `repo.proto`/`workspace.proto` fields for stacks and history insight are specified in §20.5 and §20.6.
 
+**Maintenance:** the `Maintenance` service (`proto/asc/v1/maintenance.proto`, same port: `GetMaintenance`, `SetMaintenance`, site administrators only; `Version.features += "maintenance.v1"`) is specified in §14.5.
+
 **Commit cloud:** the `Cloud` service (`proto/asc/v1/cloud.proto`, same port) and the additive `repo.proto` fields (`Version.features += "cloud.v1", "branchless.v1"`; `RepoConfigResponse += branchless, cloud, shared_refs, visibility`; `WatchEvent` kind `KIND_CLOUD`) are specified in §21.3.5 [audit: branchless-folded].
 
 **MCP and the JSON profile (§22) [audit: mcp-folded]:** `options.proto` holds the `(asc.v1.json)` field option and `cli.proto` the messages of asc-only verbs (`OpResult`, `OpLogResponse`, the `*Args` messages, `AscHandles`, `WorktreeAddResult`). `asc serve` also mounts `POST /mcp` (§22.2). CLI `--json` prints the versioned **asc JSON profile** `json.profile.v1` (§22.4.2): snake_case field names, lowercase hex ids (40 = git SHA, 64 = asc id), change ids as 32 letters `k`–`z`, paths and text as UTF-8 (otherwise `{"b64": …}`), enums as lowercase names without the type prefix, and 64-bit integers as JSON numbers. It differs from standard proto3 JSON, which `asc api` keeps (below). The two never mix, and `asc_rpc::json` is the profile's only codec.
@@ -2127,6 +2129,18 @@ ASC scale: 5,502 commits and about 50k blobs (6.99 GiB raw) import in minutes. T
 - **I7 Bounded memory:** commits stream in topological order through a bounded window. Peak RSS is O(window + largest tree + chunk buffer), independent of history length. Blob hashing (BLAKE3, SHA-1) runs in parallel across files; changeset construction stays sequential.
 
 **Targets:** ASC full import ≤ 5 min with peak RSS ≤ 1 GiB on 8 cores; a synthetic 1M-commit history imports in < 6 h with peak RSS ≤ 2 GiB. **Test `import_crash`:** 200 seeded runs each kill the importer at a random object write and rerun it; the final store, git map and `cs_graph` must be byte-identical to an uninterrupted import.
+
+### 14.5 Read-only maintenance
+
+An administrator can put the whole server into read-only maintenance for an upgrade, a storage move or an incident. Reads keep working; every write is refused.
+
+- **The switch:** one row in `server_maintenance` (id 1: `enabled`, `message`, `until_at`, `version`, `updated`, `updated_by`). Every node reads it at start and every 5 s, so all nodes of a cluster follow one switch within 5 s; the node that switches applies it at once. A node that cannot read the row keeps what it had: a database outage neither starts nor ends maintenance.
+- **Who switches:** the `Maintenance` service (`proto/asc/v1/maintenance.proto`: `GetMaintenance`, `SetMaintenance`; `Version.features += "maintenance.v1"`) is for site administrators only (the host's admin claim on `instance`). `SetMaintenance` is mutating and needs `x-asc-op-id`; a retry of the same operation returns the first answer. The operator switches without a running server through `asc serve admin maintenance on [--message M] [--for 30m] [--version V] | off | status`, recorded as `operator`.
+- **Bounds:** the message is at most 500 characters and holds no control character; the version is at most 64 characters of `[A-Za-z0-9._+-]`; `until` (seconds since the epoch, 0 for none) is not negative and, when switching on, not in the past. `until` is shown and never acted on: maintenance ends only when switched off. Switching off keeps the message and version stored for the next time.
+- **What is refused:** every ref update through the ref gate (pushes, lands, merges, the merge queue, cloud syncs) and every object upload (`PutObjects`), with `UNAVAILABLE` and the text `the server is read-only for maintenance (upgrading to V) until <RFC 3339>: <message>` (each part only when set). A staged restore (§16.3) raises the same flag and keeps its own text; it wins over maintenance and ends only at the restart.
+- **Readiness:** the admin listener's `/readyz` adds `read_only`, `restore_staged` and `maintenance`; the server stays ready (200), because reads work.
+- **Audit:** each switch writes `server.maintenance.updated` (target `maintenance`; details `enabled`, `old_enabled`, `message`, `until`, `version`). A refused switch writes nothing.
+- **Forge:** the hub's own maintenance toggle calls `SetMaintenance` when asc is enabled, so the forge and asc go read-only together, and shows the same message and "upgrading to" on its notice.
 
 ---
 

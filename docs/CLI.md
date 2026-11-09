@@ -275,6 +275,7 @@ All take `--json` and `--remote <name\|url>`. The scope is `--rev <rev>`, `--cha
 | `serve admin import` | Imports git history into a mirror-mode repository. `--init` creates it. | `asc serve admin import --repo acme/payments --init --source https://git.example.org/acme/payments.git` |
 | `serve admin verify-import`, `verify` | Checks an import against git, or the refs' closure and git map. | `asc serve admin verify --all` |
 | `serve admin outbox drain` | Reports or waits for undelivered outbox rows. | `asc serve admin outbox drain --wait --timeout 300` |
+| `serve admin maintenance` | Read-only maintenance on every node (SPEC §14.5): `on [--message M] [--for 30m] [--version V]`, `off`, `status`. Reads keep working. | `asc serve admin maintenance on --message "new disks" --for 30m` |
 | `serve admin set-mode` | Sets a repository's mode (`mirror` or `primary`) and `git_reads`. | `asc serve admin set-mode --repo acme/payments --mode primary` |
 | `api` | Calls any RPC. `--list` lists them, `--docs` prints the reference, `--stdio` is the bridge the editor plugins use. | `asc api Repo/ListRefs --json '{"repo":{"name":"acme/payments"}}'` |
 | `mcp` | The MCP server on standard input and output. Read-only unless `--write[=local\|remote]`; `--remote <url>` proxies to a hosted server. See [`mcp.md`](mcp.md). | `asc mcp --toolsets core,search` |
