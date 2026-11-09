@@ -831,6 +831,9 @@ fn usage_pb(r: &super::usage::Report) -> wire::GetRepoStorageUsageResponse {
         computing: r.computing,
         read_this_month: r.read_bytes,
         month: r.month.clone(),
+        target_id: r.target_id.clone(),
+        has_fallback: r.fallback.is_some(),
+        fallback_target_id: r.fallback.clone().unwrap_or_default(),
     }
 }
 

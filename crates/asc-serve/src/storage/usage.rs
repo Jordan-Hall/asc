@@ -125,6 +125,10 @@ pub struct Report {
     /// `YYYY-MM` (UTC) of `read_bytes`.
     pub month: String,
     pub read_bytes: u64,
+    /// Where new objects of the repository go; `""`: the instance default.
+    pub target_id: String,
+    /// An earlier place that still holds objects; `Some("")`: the instance default.
+    pub fallback: Option<String>,
 }
 
 impl Report {
@@ -444,6 +448,7 @@ pub async fn load(pool: &AnyPool, ns: Ns, now: i64) -> Result<Report, sqlx::Erro
         computing: false,
         month,
         read_bytes: unclamp(read.unwrap_or(0)),
+        ..Report::default()
     })
 }
 

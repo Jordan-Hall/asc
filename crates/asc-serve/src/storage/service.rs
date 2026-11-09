@@ -917,6 +917,10 @@ impl Service {
         let mut report = usage::load(&self.db.pool, ns, at).await?;
         // Reads a failed flush kept are still the month's.
         report.read_bytes = report.read_bytes.saturating_add(self.meter.pending(ns));
+        if let Some(route) = self.db.route(repo_id).await? {
+            report.target_id = route.target_id;
+            report.fallback = route.fallback;
+        }
         let mut started = false;
         if !was_running
             && usage::wants_scan(report.computed_at, refresh, at)

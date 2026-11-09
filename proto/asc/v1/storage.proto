@@ -251,4 +251,7 @@ message GetRepoStorageUsageResponse {
   bool computing = 4;                  // a scan is running
   uint64 read_this_month = 5;          // bytes read from storage in `month`
   string month = 6;                    // YYYY-MM, UTC
+  string target_id = 7;                // where new objects go; empty: the instance default
+  bool has_fallback = 8;               // objects remain in an earlier place until a migration moves them
+  string fallback_target_id = 9;       // that place when has_fallback; empty: the instance default
 }
