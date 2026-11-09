@@ -616,6 +616,7 @@ A client calls it with the user's own credential.
 - `Agents.SummarizeAgents` (cheap) answers the agents seen over the same 1 to 50 repositories, with the same `created_by` and `since`
   filters and the same check of read on each: per agent its runs, how many are active (queued, running or waiting for input), when the
   newest was created, where it ran (`repos`, indexes into the request) and who started its runs (`people`, at most 5, most runs first).
+  `places` gives the same per repository where it ran, so the hub can tell `@acme/review` from `@orbit/review`.
   Agents come most runs first, then by name; `limit` is 0 for 20 and at most 100, and `total` counts the agents before it. One query
   groups the runs by agent, repository, person and state (at most 5000 groups, the newest first) and the server folds them. The agent rows
   of the hub use it: Explore people, the agents a person runs, and the agents of an organization.
