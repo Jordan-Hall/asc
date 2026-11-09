@@ -133,5 +133,7 @@ mod feature_tests {
         let on = features_for(true);
         assert!(on.contains(&"agents.v1".to_owned()) && on.contains(&"agent-tokens.v1".to_owned()));
         assert!(on.contains(&"aikeyshares.v1".to_owned()));
+        assert!(on.contains(&"agent-runners.v1".to_owned()));
+        assert!(!off.contains(&"agent-runners.v1".to_owned()));
     }
 }

@@ -409,3 +409,148 @@ mod health {
         assert_eq!(h.checked_at_ms, 1);
     }
 }
+
+mod runners {
+    use std::sync::Arc;
+
+    use asc_rpc::forwarded::Role;
+    use asc_rpc::server::wire;
+    use asc_rpc::services::maintenance_server::Maintenance;
+    use tonic::Code;
+
+    use super::{fx, root};
+    use crate::agents::runners::{KEEP_SECS, Runners, name_of, valid_name};
+    use crate::agents::runs::RunStore;
+    use crate::ai::clock;
+    use crate::settings::testkit::{claim, req};
+
+    async fn add_run(pool: &sqlx::AnyPool, id: i64, state: i64, runner: &str) {
+        sqlx::query(
+            "INSERT INTO agent_runs (id, repo, agent, title, state, target, base, task, created_by, created, started, runner) \
+             VALUES ($1, 'acme/api', 'fixer', $2, $3, 'main', $4, 'task', '1:root', $5, $5, $6)",
+        )
+        .bind(id)
+        .bind(format!("Run {id}"))
+        .bind(state)
+        .bind(Vec::<u8>::new())
+        .bind(clock::now())
+        .bind(runner)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    async fn list(
+        f: &super::Fx,
+    ) -> Result<tonic::Response<wire::ListAgentRunnersResponse>, tonic::Status> {
+        f.svc
+            .list_agent_runners(root(f, wire::ListAgentRunnersRequest {}, None))
+            .await
+    }
+
+    #[tokio::test]
+    async fn the_site_administrator_sees_each_runner_with_its_slots_cpus_and_live_runs() {
+        let f = fx().await;
+        let pool = f.k.pool.clone();
+        // A server with agents off has no runner table.
+        assert_eq!(list(&f).await.unwrap_err().code(), Code::Unimplemented);
+
+        let now = clock::now();
+        let box1 = Arc::new(Runners::new(pool.clone(), "agent-box-1".into(), 4));
+        let box2 = Runners::new(pool.clone(), "agent-box-2".into(), 2);
+        let gone = Runners::new(pool.clone(), "agent-box-0".into(), 2);
+        gone.beat(now - KEEP_SECS - 60).await.unwrap();
+        box2.beat(now - 200).await.unwrap();
+        box1.beat(now).await.unwrap();
+        assert!(f.hub.set_runners(box1.clone()));
+
+        // A queued run taken by box 1 carries its name; finished runs and runs of no runner are not listed.
+        add_run(&pool, 214, 1, "").await;
+        assert!(
+            RunStore::new(pool.clone())
+                .claim(214, box1.name())
+                .await
+                .unwrap()
+        );
+        assert!(
+            !RunStore::new(pool.clone())
+                .claim(214, "agent-box-2")
+                .await
+                .unwrap(),
+            "taken once"
+        );
+        add_run(&pool, 215, 4, "agent-box-1").await;
+        add_run(&pool, 216, 3, "agent-box-2").await;
+        add_run(&pool, 217, 1, "").await;
+
+        let r = list(&f).await.unwrap().into_inner();
+        assert!(r.now >= now);
+        let names: Vec<&str> = r.runners.iter().map(|x| x.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["agent-box-1", "agent-box-2"],
+            "online first; a runner offline for 7 days is removed"
+        );
+        let b1 = &r.runners[0];
+        assert!(b1.online);
+        assert_eq!(b1.slots, 4);
+        assert!(b1.vcpu >= 1);
+        assert_eq!(b1.version, env!("CARGO_PKG_VERSION"));
+        assert!(b1.last_seen >= now && b1.started > 0);
+        let ids: Vec<u64> = b1.runs.iter().map(|x| x.id).collect();
+        assert_eq!(ids, [214]);
+        assert_eq!(b1.runs[0].repo, "acme/api");
+        assert_eq!(b1.runs[0].title, "Run 214");
+        assert_eq!(b1.runs[0].agent, "fixer");
+        let b2 = &r.runners[1];
+        assert!(!b2.online);
+        assert_eq!(b2.last_seen, now - 200);
+        assert_eq!(
+            b2.runs.iter().map(|x| x.id).collect::<Vec<_>>(),
+            [216],
+            "a run waiting for input is live"
+        );
+
+        // Only the site administrator.
+        let denied = [
+            req(wire::ListAgentRunnersRequest {}, "alice-token", None),
+            claim(
+                req(wire::ListAgentRunnersRequest {}, "host-token", None),
+                &f.k,
+                "2:alice",
+                Role::Write,
+                "instance",
+            ),
+        ];
+        for d in denied {
+            assert_eq!(
+                f.svc.list_agent_runners(d).await.unwrap_err().code(),
+                Code::PermissionDenied
+            );
+        }
+    }
+
+    #[test]
+    fn runner_names_are_short_and_plain() {
+        assert!(valid_name("agent-box-1"));
+        assert!(valid_name("eu.box_2"));
+        assert!(!valid_name(""));
+        assert!(!valid_name("box 1"));
+        assert!(!valid_name(&"a".repeat(64)));
+        assert_eq!(name_of(" Box-1.local\n"), "Box-1.local");
+        assert_eq!(name_of("bad name/€"), "badname");
+        assert_eq!(name_of("\n"), "asc-serve");
+        assert_eq!(name_of(&"x".repeat(80)).len(), 63);
+    }
+
+    #[test]
+    fn the_runner_name_setting_is_checked() {
+        let mut cfg = crate::agents::AgentsConfig {
+            runner_name: Some("box 1".into()),
+            ..Default::default()
+        };
+        assert!(cfg.validate().unwrap_err().contains("agents.runner_name"));
+        cfg.runner_name = Some("agent-box-1".into());
+        assert!(cfg.validate().is_ok());
+    }
+}
