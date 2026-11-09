@@ -1444,3 +1444,71 @@ async fn every_wrapper_forwards_the_standing_of_a_person() {
         "the default denies"
     );
 }
+
+#[tokio::test]
+async fn only_the_host_service_resolves_a_secret_and_it_learns_the_state_never_the_secret() {
+    let w = World::new().await;
+    let (a, a_secret) = make(&w, &[], wire::AgentBudgetLimits::default(), 0).await;
+    let tokens = w.svc.tokens();
+    let resolve = |who: &str, secret: &str| {
+        tokens.resolve_token(w.request(
+            wire::ResolveAgentTokenRequest {
+                secret: secret.to_owned(),
+            },
+            who,
+            None,
+        ))
+    };
+    let got = resolve("host-token", &a_secret)
+        .await
+        .unwrap()
+        .into_inner()
+        .token
+        .unwrap();
+    assert_eq!(got.id, a.id);
+    assert_eq!(got.agent, "fixer");
+    assert_eq!(got.state(), wire::AgentTokenState::Active);
+    assert!(
+        !format!("{got:?}").contains(&a_secret),
+        "the secret is never returned"
+    );
+
+    // Nobody else asks, an admin of the repository and the token itself included.
+    for who in ["alice-token", "carol-token", a_secret.as_str()] {
+        assert_eq!(
+            resolve(who, &a_secret).await.unwrap_err().code(),
+            Code::PermissionDenied,
+            "{who}"
+        );
+    }
+    // A secret that is no token, of the right shape or not, is not found.
+    let other = format!("ascat_{}", "A".repeat(43));
+    for secret in [other.as_str(), "ascat_short", ""] {
+        assert_eq!(
+            resolve("host-token", secret).await.unwrap_err().code(),
+            Code::NotFound,
+            "{secret}"
+        );
+    }
+
+    // A revoked token is returned with its state, for the hub to refuse.
+    tokens
+        .revoke_token(w.request(
+            wire::RevokeAgentTokenRequest {
+                repo: repo_ref(),
+                id: a.id.clone(),
+                reason: String::new(),
+            },
+            "alice-token",
+            Some(&uuid::Uuid::new_v4().to_string()),
+        ))
+        .await
+        .unwrap();
+    let got = resolve("host-token", &a_secret)
+        .await
+        .unwrap()
+        .into_inner()
+        .token
+        .unwrap();
+    assert_eq!(got.state(), wire::AgentTokenState::Revoked);
+}
