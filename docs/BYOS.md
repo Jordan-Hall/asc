@@ -145,6 +145,13 @@ A fork starts in the instance bucket, whatever the source's route; a fork across
 
 A failure or a cancel before the switch clears the mirror and leaves the source authoritative and untouched, with a sanitised `error`.
 `CancelMigration` is idempotent; after the switch it changes nothing. One migration per repository at a time (`MIGRATION_ACTIVE`).
+
+`PauseMigration` holds a migration before the switch: the worker stops after the chunk it is on (at most 64 objects) and the
+migration keeps its state, its cursor and the mirror, so new writes still reach both places. `StorageMigration.paused` is true while
+it is held, and the `storage.migration.paused` event is published. `ResumeMigration` lets it carry on from the cursor
+(`storage.migration.resumed`); nothing already copied is copied again. Both are idempotent; pausing is refused with
+`FAILED_PRECONDITION` once the migration is switching or over. A paused migration still counts as the repository's active one, and
+`CancelMigration` on it clears the pause and cancels it as usual.
 Migrations hold a lease on their row and are picked up by any replica when the lease runs out, so a stopped server's migration resumes.
 
 Progress is visible through `GetMigration` and `ListMigrations`, in the log (`storage migration` lines), in the audit events

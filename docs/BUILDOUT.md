@@ -329,7 +329,7 @@ the `MergeQueue` service: its methods answer `UNIMPLEMENTED` from the router unt
 
 - **RPCs** (`storage.proto`, `storage.v1`): `Storage.CreateTarget`, `ListTargets`, `GetTarget`, `UpdateTarget`, `DeleteTarget`,
   `VerifyTarget`, `SetEnabled`, `AssignRepo`, `StartMigration`, `GetMigration`, `ListMigrations`, `CancelMigration`,
-  `GetRepoUsage`.
+  `PauseMigration`, `ResumeMigration`, `GetRepoUsage`.
 - **Lifecycle:** `PENDING` on create or on any change of endpoint, bucket, prefix or credentials; `VerifyTarget` runs `resolve`, `connect`,
   `put`, `get`, `delete` (a random probe object under `<prefix>.asc-probe/`) and the advisory `versioning` read (never fails the
   verification) through the network guard (section 2) and sets `VERIFIED` or `FAILED`; a refused step names the S3 permission it
@@ -949,6 +949,8 @@ Every method of the build-out services (98). A test keeps this list equal to the
 - `asc.v1.Storage/GetMigration`
 - `asc.v1.Storage/ListMigrations`
 - `asc.v1.Storage/CancelMigration` — idempotent
+- `asc.v1.Storage/PauseMigration` — repo admin; idempotent; before the switch
+- `asc.v1.Storage/ResumeMigration` — repo admin; idempotent
 - `asc.v1.Storage/GetRepoUsage` — repo admin; cached, scanned in the background
 
 **Vault** (`vault.proto`)
