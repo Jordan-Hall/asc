@@ -39,7 +39,7 @@ it is verified and enabled again. A target cannot be deleted or disabled while a
 | targets of a repository | anyone with admin on the repository |
 | targets of an organisation | the host application, which checks its own permissions first and then calls with its service credential |
 | `AssignRepo`, `StartMigration`, `CancelMigration`, migration reads, `GetRepoUsage` | admin on the repository, and for a target, admin of the target's owner |
-| `Vault.*` | site administrator (the host application's service credential) |
+| `ListRepoPlacements`, `Vault.*` | site administrator (the host application's service credential) |
 
 A call that names an owner and is not allowed answers `PERMISSION_DENIED`. A call that names an id (a target, a migration) and is not
 allowed answers `NOT_FOUND`, the same as for an id that does not exist.
@@ -188,6 +188,13 @@ The answer also says where the repository keeps its objects: `target_id` is wher
 storage), and `has_fallback` with `fallback_target_id` names an earlier place that still holds objects until a migration moves
 them (empty: the instance storage). A hub uses it to tell a repository on the server's storage, which counts against the
 owner's plan, from one on its own bucket.
+
+`ListRepoPlacements` answers the same question for many repositories at once, for the site administrator's list of
+repositories: for each name (at most 100 per call) the target that receives new objects with its name, owner and state, whether
+an earlier place still holds objects (`has_fallback`), and whether a migration is copying (`migrating`). It reads the routing
+table only, starts no scan, and leaves out names that are not repositories. A hub uses it for the storage column of its
+repository list and warns when a repository's objects are split across two places with no migration moving them, or when its
+target is no longer enabled.
 
 ## Health
 
