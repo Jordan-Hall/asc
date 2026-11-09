@@ -2008,4 +2008,181 @@ mod tests {
         .unwrap();
         assert!(ok <= 2 && names <= 2, "{ok} accepted, {names} names");
     }
+
+    const HOST: &str = "host-token";
+
+    /// The service of `f` behind the hub's credential and claim verifier.
+    fn hosted(f: &Fx) -> CloudService {
+        let auth = crate::authz::forwarded::ForwardedAuthorizer::new(
+            Arc::new(
+                StaticTokens::new()
+                    .with_token(HOST, "host-service", Access::Admin)
+                    .with_token(ALICE, "42:alice", Access::Read),
+            ),
+            asc_rpc::forwarded::ForwardedVerifier::new(vec![3u8; 32]).unwrap(),
+        );
+        CloudService::new(f.svc.rpc.clone(), Arc::new(auth), ServerInfo::default())
+    }
+
+    /// A request of the hub, with the claim that `user` holds `role` on `o/r` when `user` is set.
+    fn relayed<T>(
+        m: T,
+        user: Option<&str>,
+        role: asc_rpc::forwarded::Role,
+        op: bool,
+    ) -> Request<T> {
+        let mut r = req(m, HOST, op);
+        if let Some(user) = user {
+            let v = asc_rpc::forwarded::ForwardedVerifier::new(vec![3u8; 32]).unwrap();
+            let now = now();
+            for (k, val) in v.sign(user, role, "o/r", now) {
+                r.metadata_mut().append(k, val.parse().unwrap());
+            }
+        }
+        r
+    }
+
+    fn hide(base: u64, hide: Vec<Bytes>, unhide: Vec<Bytes>) -> wire::UpdateWorkspaceRequest {
+        wire::UpdateWorkspaceRequest {
+            repo: repo_ref(),
+            name: "w".into(),
+            base_version: base,
+            hide,
+            unhide,
+            ..Default::default()
+        }
+    }
+
+    async fn hidden_heads(svc: &CloudService) -> Vec<i64> {
+        svc.get_workspace(req(
+            wire::GetWorkspaceRequest {
+                repo: repo_ref(),
+                owner: "42".into(),
+                name: "w".into(),
+                include_hidden: true,
+                ..Default::default()
+            },
+            ALICE,
+            false,
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .heads
+        .iter()
+        .map(|h| h.hidden_at)
+        .collect()
+    }
+
+    #[tokio::test]
+    async fn the_hub_hides_and_unhides_a_draft_for_the_person_of_its_claim_only() {
+        use asc_rpc::forwarded::Role;
+        let f = fx().await;
+        let svc = hosted(&f);
+        update(&f, ALICE, upd("w", 0, vec![head(f.css[0], &[])]))
+            .await
+            .unwrap();
+        let cs = cs_bytes(f.css[0]);
+
+        // A read claim of Alice's changes Alice's own workspace: the draft is hidden, then back.
+        let v = svc
+            .update_workspace(relayed(
+                hide(1, vec![cs.clone()], vec![]),
+                Some("42:alice"),
+                Role::Read,
+                true,
+            ))
+            .await
+            .unwrap()
+            .into_inner()
+            .version;
+        assert_eq!(v, 2);
+        assert!(hidden_heads(&svc).await[0] > 0, "hidden");
+        let v = svc
+            .update_workspace(relayed(
+                hide(2, vec![], vec![cs.clone()]),
+                Some("42:alice"),
+                Role::Read,
+                true,
+            ))
+            .await
+            .unwrap()
+            .into_inner()
+            .version;
+        assert_eq!(v, 3);
+        assert_eq!(hidden_heads(&svc).await, vec![0], "back");
+
+        // Without a claim the hub is nobody's workspace owner.
+        assert_eq!(
+            svc.update_workspace(relayed(
+                hide(3, vec![cs.clone()], vec![]),
+                None,
+                Role::Read,
+                true
+            ))
+            .await
+            .unwrap_err()
+            .code(),
+            tonic::Code::PermissionDenied
+        );
+        // Bob's claim changes Bob's workspace, never Alice's.
+        assert_eq!(
+            svc.update_workspace(relayed(
+                hide(3, vec![cs.clone()], vec![]),
+                Some("43:bob"),
+                Role::Read,
+                true
+            ))
+            .await
+            .unwrap_err()
+            .code(),
+            tonic::Code::Aborted,
+            "Bob's own workspace does not exist at version 3"
+        );
+        assert_eq!(hidden_heads(&svc).await, vec![0]);
+
+        // A read claim does not read another person's workspace on the hub's own breadth; a write claim does.
+        let read_alice = |user: &'static str, role: Role| {
+            svc.get_workspace(relayed(
+                wire::GetWorkspaceRequest {
+                    repo: repo_ref(),
+                    owner: "42".into(),
+                    name: "w".into(),
+                    ..Default::default()
+                },
+                Some(user),
+                role,
+                false,
+            ))
+        };
+        assert_eq!(
+            read_alice("43:bob", Role::Read).await.unwrap_err().code(),
+            tonic::Code::PermissionDenied
+        );
+        assert_eq!(
+            read_alice("43:bob", Role::Write)
+                .await
+                .unwrap()
+                .into_inner()
+                .heads
+                .len(),
+            1
+        );
+        // And a read claim is no admin for Purge: Bob's purge of Alice's draft is refused.
+        let purged = svc
+            .purge(relayed(
+                wire::PurgeRequest {
+                    repo: repo_ref(),
+                    cs: vec![cs.clone()],
+                },
+                Some("43:bob"),
+                Role::Read,
+                false,
+            ))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!((purged.purged, purged.refused), (0, vec![cs]));
+        assert_eq!(hidden_heads(&svc).await, vec![0], "still there");
+    }
 }
