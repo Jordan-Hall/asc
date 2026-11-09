@@ -56,7 +56,7 @@ const ASC_ONLY: &[(&str, &str)] = &[
     ("hide", "hide a draft change"),
     (
         "doctor",
-        "check the install; --fix repairs, --report-reclaimable measures",
+        "check the install; --fix repairs, --report tells the hub, --report-reclaimable measures",
     ),
     ("install-shim", "put git beside asc and print the PATH line"),
 ];

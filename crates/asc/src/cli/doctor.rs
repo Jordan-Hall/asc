@@ -1,4 +1,4 @@
-//! `asc doctor [--fix] [--store <url>] [--report-reclaimable [<path>…]]` (SPEC §2.4, §9.4, §10.5,
+//! `asc doctor [--fix] [--store <url>] [--report [<hub>]] [--report-reclaimable [<path>…]]` (SPEC §2.4, §9.4, §10.5,
 //! §11.4, §12, unit U40).
 //!
 //! Every check prints one line, `ok|info|warn|fail <name>: <detail>`, and a `warn` or `fail` may
@@ -23,6 +23,7 @@ use std::time::Duration;
 use asc_state::AscHome;
 use asc_state::state::repos::RemoteKind;
 
+mod report;
 mod workflows;
 
 use super::common::{Ctx, Result};
@@ -48,6 +49,10 @@ pub struct Args {
     /// Print the checks as one JSON object instead of text.
     #[arg(long)]
     pub json: bool,
+    /// Send the name and level of each check to the hub (by default the hub of the workspace
+    /// remote), for the health check of its Get started page.
+    #[arg(long, value_name = "HUB", num_args = 0..=1, default_missing_value = "")]
+    pub report: Option<String>,
 }
 
 pub const NATIVE: &[NativeSpec] = &[NativeSpec {
@@ -58,6 +63,7 @@ pub const NATIVE: &[NativeSpec] = &[NativeSpec {
         "--report-reclaimable",
         "--workflows",
         "--json",
+        "--report",
     ],
     placeholders: &[],
 }];
@@ -1762,7 +1768,17 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
     } else {
         print_checks(&checks);
     }
-    let failed = checks.iter().any(|c| c.level == Level::Fail);
+    let mut failed = checks.iter().any(|c| c.level == Level::Fail);
+    if let Some(hub) = &args.report {
+        match report::run(ctx, &home, hub, &checks).await {
+            Ok(origin) if args.json => eprintln!("reported to {}", clean(&origin)),
+            Ok(origin) => println!("reported to {}", clean(&origin)),
+            Err(e) => {
+                eprintln!("asc: could not report to the hub: {}", clean(&e));
+                failed = true;
+            }
+        }
+    }
     Ok(if failed {
         ExitCode::FAILURE
     } else {
