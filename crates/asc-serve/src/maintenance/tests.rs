@@ -311,3 +311,101 @@ async fn an_administrator_switches_maintenance_once_per_operation() {
         .unwrap();
     assert!(!got.on && got.restore_staged);
 }
+
+mod health {
+    use std::sync::Arc;
+
+    use asc_rpc::forwarded::Role;
+    use asc_rpc::server::wire;
+    use asc_rpc::services::maintenance_server::Maintenance;
+    use futures::TryStreamExt;
+    use object_store::ObjectStore;
+    use object_store::local::LocalFileSystem;
+    use object_store::memory::InMemory;
+    use object_store::path::Path;
+    use tonic::Code;
+
+    use super::super::health::HealthProbes;
+    use super::{fx, root};
+    use crate::settings::testkit::{claim, req};
+    use crate::signing::tests::{ALICE_BODY, server_signer};
+
+    #[tokio::test]
+    async fn the_site_administrator_probes_the_object_store_and_the_server_key() {
+        let f = fx().await;
+        // Before the probes are installed the server says it cannot answer.
+        let e = f
+            .svc
+            .check_health(root(&f, wire::CheckHealthRequest {}, None))
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), Code::Unimplemented);
+
+        let dir = tempfile::tempdir().unwrap();
+        let signer = server_signer(&dir, "server_key", ALICE_BODY);
+        let store = Arc::new(InMemory::new());
+        assert!(f.hub.set_health(HealthProbes::new(
+            store.clone(),
+            Path::from("root"),
+            Some(signer.clone()),
+        )));
+        let r = f
+            .svc
+            .check_health(root(&f, wire::CheckHealthRequest {}, None))
+            .await
+            .unwrap()
+            .into_inner();
+        let ok = wire::HealthState::Ok as i32;
+        assert_eq!(r.object_store.as_ref().unwrap().state, ok, "{r:?}");
+        assert_eq!(r.server_key.as_ref().unwrap().state, ok, "{r:?}");
+        assert_eq!(r.server_key_fingerprint, signer.public_key().fingerprint());
+        assert!(r.checked_at_ms > 0 && r.now_ms >= r.checked_at_ms);
+        let left: Vec<_> = store.list(None).try_collect().await.unwrap();
+        assert!(left.is_empty(), "the probe object is deleted: {left:?}");
+
+        // A second call within five seconds gets the same probes, and writes nothing more.
+        let again = f
+            .svc
+            .check_health(root(&f, wire::CheckHealthRequest {}, None))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(again.checked_at_ms, r.checked_at_ms);
+
+        // Only the site administrator.
+        let denied = [
+            req(wire::CheckHealthRequest {}, "alice-token", None),
+            claim(
+                req(wire::CheckHealthRequest {}, "host-token", None),
+                &f.k,
+                "2:alice",
+                Role::Write,
+                "instance",
+            ),
+        ];
+        for d in denied {
+            assert_eq!(
+                f.svc.check_health(d).await.unwrap_err().code(),
+                Code::PermissionDenied
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_store_that_refuses_writes_fails_and_a_server_without_a_key_is_not_configured() {
+        let dir = tempfile::tempdir().unwrap();
+        let bucket = dir.path().join("bucket");
+        std::fs::create_dir(&bucket).unwrap();
+        let store = Arc::new(LocalFileSystem::new_with_prefix(&bucket).unwrap());
+        // The place of the probe objects is a file, so no object can be written under it.
+        std::fs::write(bucket.join("root"), b"not a directory").unwrap();
+        let probes = HealthProbes::new(store, Path::from("root"), None);
+        let h = probes.check(1).await;
+        assert_eq!(h.object_store.state, wire::HealthState::Failed);
+        assert!(h.object_store.detail.starts_with("write: "), "{h:?}");
+        assert!(!h.object_store.detail.contains("bucket"), "no path: {h:?}");
+        assert_eq!(h.server_key.state, wire::HealthState::NotConfigured);
+        assert!(h.fingerprint.is_empty());
+        assert_eq!(h.checked_at_ms, 1);
+    }
+}
