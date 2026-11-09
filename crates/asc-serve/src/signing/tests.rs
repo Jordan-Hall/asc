@@ -885,3 +885,136 @@ async fn the_hub_signing_keys_page_acts_as_the_person_of_an_account_claim_and_no
         .await
         .unwrap();
 }
+
+#[tokio::test]
+async fn a_user_switches_signing_by_default_and_only_a_change_is_audited() {
+    let s = svc().await;
+    let get = |token: &str, user: &str| {
+        s.svc.get_signing_defaults(call(
+            wire::GetSigningDefaultsRequest { user: user.into() },
+            Some(token),
+            false,
+        ))
+    };
+    let set = |token: &str, on: bool| {
+        s.svc.set_signing_defaults(call(
+            wire::SetSigningDefaultsRequest {
+                sign_by_default: on,
+            },
+            Some(token),
+            true,
+        ))
+    };
+    // Never set reads as off.
+    let d = get("alice", "").await.unwrap().into_inner();
+    assert!(!d.sign_by_default);
+    assert_eq!(d.updated, 0);
+
+    let on = set("alice", true).await.unwrap().into_inner();
+    assert!(on.sign_by_default);
+    assert!(on.updated > 0);
+    assert!(get("alice", "").await.unwrap().into_inner().sign_by_default);
+    assert!(
+        get("alice", "alice")
+            .await
+            .unwrap()
+            .into_inner()
+            .sign_by_default,
+        "the caller may name themselves"
+    );
+    // Setting the same value again changes nothing and leaves no second event.
+    let again = set("alice", true).await.unwrap().into_inner();
+    assert_eq!(again.updated, on.updated);
+    // Defaults are per user.
+    assert!(!get("bob", "").await.unwrap().into_inner().sign_by_default);
+    assert!(
+        !set("alice", false)
+            .await
+            .unwrap()
+            .into_inner()
+            .sign_by_default
+    );
+
+    let events: Vec<(String, String)> = sqlx::query_as(
+        "SELECT target, details_json FROM audit_events WHERE action = 'signing.defaults.set' AND scope_kind = 'owner' ORDER BY time_ms, seq",
+    )
+    .fetch_all(s.f.reg.pool())
+    .await
+    .unwrap();
+    assert_eq!(events.len(), 2, "on, then off: the repeat is not recorded");
+    assert!(events.iter().all(|(target, _)| target == "alice"));
+    assert!(
+        events[0].1.contains(r#""sign_by_default":"on""#),
+        "{}",
+        events[0].1
+    );
+    assert!(
+        events[1].1.contains(r#""sign_by_default":"off""#),
+        "{}",
+        events[1].1
+    );
+}
+
+#[tokio::test]
+async fn signing_defaults_need_a_user_and_hide_other_users() {
+    let s = svc().await;
+    let get = |token: Option<&str>, user: &str| {
+        s.svc.get_signing_defaults(call(
+            wire::GetSigningDefaultsRequest { user: user.into() },
+            token,
+            false,
+        ))
+    };
+    s.svc
+        .set_signing_defaults(call(
+            wire::SetSigningDefaultsRequest {
+                sign_by_default: true,
+            },
+            Some("alice"),
+            true,
+        ))
+        .await
+        .unwrap();
+    // Bob cannot read Alice's defaults, nor tell that she has any.
+    assert_eq!(
+        get(Some("bob"), "alice").await.unwrap_err().code(),
+        Code::NotFound
+    );
+    assert_eq!(
+        get(Some("bob"), "no-such-user").await.unwrap_err().code(),
+        Code::NotFound
+    );
+    assert_eq!(
+        get(Some("alice"), "not a handle").await.unwrap_err().code(),
+        Code::InvalidArgument
+    );
+    // The host service reads anyone's by name, and has no defaults of its own.
+    assert!(
+        get(Some("host"), "alice")
+            .await
+            .unwrap()
+            .into_inner()
+            .sign_by_default
+    );
+    assert_eq!(
+        get(Some("host"), "").await.unwrap_err().code(),
+        Code::PermissionDenied
+    );
+    assert_eq!(
+        get(None, "").await.unwrap_err().code(),
+        Code::Unauthenticated
+    );
+    // Setting needs a user: the host service without a claim has none.
+    let e = s
+        .svc
+        .set_signing_defaults(call(
+            wire::SetSigningDefaultsRequest {
+                sign_by_default: true,
+            },
+            Some("host"),
+            true,
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Code::PermissionDenied);
+}
