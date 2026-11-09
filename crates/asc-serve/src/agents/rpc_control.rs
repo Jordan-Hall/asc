@@ -684,6 +684,9 @@ impl AgentService {
                 states.push(s);
             }
         }
+        if msg.since < 0 {
+            return Err(Status::invalid_argument("since is a unix time"));
+        }
         // Read on every repository, checked one by one as for ListRuns; one refusal fails the call.
         let mut repos: Vec<String> = Vec::with_capacity(msg.repos.len());
         for r in &msg.repos {
@@ -697,14 +700,18 @@ impl AgentService {
             }
             repos.push(name);
         }
-        let total = self
+        let per_repo = self
             .hub
             .core
             .runs
-            .count_in(&repos, &states, &msg.created_by)
+            .count_in(&repos, &states, &msg.created_by, msg.since)
             .await
             .map_err(|e| db(&e))?;
-        Ok(Response::new(wire::CountAgentRunsResponse { total }))
+        let total = per_repo.iter().sum();
+        Ok(Response::new(wire::CountAgentRunsResponse {
+            total,
+            per_repo,
+        }))
     }
 
     pub(super) async fn get_run_log_impl(

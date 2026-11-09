@@ -450,15 +450,18 @@ impl RunStore {
         Ok(u64::try_from(n).unwrap_or(0))
     }
 
-    /// The number of runs over several repositories that match `states` and `created_by` (see [`Self::count`]).
+    /// The number of runs of each of several repositories (in the order of `repos`, names in lower case) that match
+    /// `states` and `created_by` (see [`Self::count`]) and were created at or after `since` (unix seconds; 0: any
+    /// time). One query for all of them.
     pub async fn count_in(
         &self,
         repos: &[String],
         states: &[RunState],
         created_by: &str,
-    ) -> Result<u64, sqlx::Error> {
+        since: i64,
+    ) -> Result<Vec<u64>, sqlx::Error> {
         if repos.is_empty() {
-            return Ok(0);
+            return Ok(Vec::new());
         }
         let marks: Vec<String> = (1..=repos.len()).map(|n| format!("${n}")).collect();
         let mut conds = vec![format!("repo IN ({})", marks.join(", "))];
@@ -466,25 +469,38 @@ impl RunStore {
             let list: Vec<String> = states.iter().map(|s| (*s as i64).to_string()).collect();
             conds.push(format!("state IN ({})", list.join(", ")));
         }
+        let mut next = repos.len() + 1;
         if !created_by.is_empty() {
-            conds.push(format!(
-                "(created_by = ${n} OR starter = ${n})",
-                n = repos.len() + 1
-            ));
+            conds.push(format!("(created_by = ${next} OR starter = ${next})"));
+            next += 1;
+        }
+        if since > 0 {
+            conds.push(format!("created >= ${next}"));
         }
         let q = format!(
-            "SELECT COUNT(*) FROM agent_runs WHERE {}",
+            "SELECT repo, COUNT(*) FROM agent_runs WHERE {} GROUP BY repo",
             conds.join(" AND ")
         );
-        let mut query = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(q));
+        let mut query = sqlx::query_as::<_, (String, i64)>(sqlx::AssertSqlSafe(q));
         for r in repos {
             query = query.bind(r.to_ascii_lowercase());
         }
         if !created_by.is_empty() {
             query = query.bind(created_by.to_owned());
         }
-        let n = query.fetch_one(&self.pool).await?;
-        Ok(u64::try_from(n).unwrap_or(0))
+        if since > 0 {
+            query = query.bind(since);
+        }
+        let rows = query.fetch_all(&self.pool).await?;
+        Ok(repos
+            .iter()
+            .map(|r| {
+                let name = r.to_ascii_lowercase();
+                rows.iter()
+                    .find(|(repo, _)| *repo == name)
+                    .map_or(0, |(_, n)| u64::try_from(*n).unwrap_or(0))
+            })
+            .collect())
     }
 
     /// Moves a run from one of `from` to `to`. `Ok(false)`: it was in another state.

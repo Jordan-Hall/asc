@@ -481,9 +481,11 @@ message CountAgentRunsRequest {
   repeated RepoRef repos = 1;            // 1 to 50, each named once
   repeated AgentRunState states = 2;     // empty: every state
   string created_by = 3;                 // empty: anyone; else the runs this person started or created
+  int64 since = 4;                       // unix seconds; 0: any time, else the runs created at or after it
 }
 message CountAgentRunsResponse {
   uint64 total = 1;
+  repeated uint64 per_repo = 2;          // the count of each repository, in the order of the request
 }
 message RecentAgentTasksRequest {
   RepoRef repo = 1;
