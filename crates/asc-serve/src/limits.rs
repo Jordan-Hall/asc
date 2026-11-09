@@ -417,10 +417,16 @@ const TABLE: &[(&str, Class, &[&str])] = &[
     (
         "Maintenance",
         Class::Cheap,
-        &["GetMaintenance", "SetMaintenance"],
+        &["GetMaintenance", "SetMaintenance", "ListAgentRunners"],
     ),
+    // Probes the object store and the signing key; it keeps its answer a few seconds as well.
+    ("Maintenance", Class::Expensive, &["CheckHealth"]),
     ("Usage", Class::Cheap, &["GetQuota", "SetQuota", "Report"]),
-    ("Usage", Class::Expensive, &["GetUsage", "ListSpend"]),
+    (
+        "Usage",
+        Class::Expensive,
+        &["GetUsage", "ListSpend", "GetActivity"],
+    ),
     (
         "OrgSettings",
         Class::Cheap,
