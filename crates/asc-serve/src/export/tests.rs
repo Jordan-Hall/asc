@@ -69,6 +69,24 @@ async fn seed(f: &Fx) {
             .await
             .unwrap();
     }
+    // Carol used alice's key; alice used bob's key; bob used his own.
+    for (key, owner, subject, actor) in [
+        ("ak_a", "alice", "run-carol", "carol"),
+        ("ak_b", "bob", "run-alice-on-bob", "alice"),
+        ("ak_b", "bob", "run-bob-alone", "bob"),
+    ] {
+        sqlx::query(
+            "INSERT INTO ai_activity (key_id, owner_kind, owner_name, kind, subject, actor, repo, agent, model, \
+             first_at, last_at, requests) VALUES ($1, 1, $2, 1, $3, $4, 'acme/app', 'review', 'm', 1, 2, 1)",
+        )
+        .bind(key.to_owned())
+        .bind(owner.to_owned())
+        .bind(subject.to_owned())
+        .bind(actor.to_owned())
+        .execute(p)
+        .await
+        .unwrap();
+    }
     sqlx::query("INSERT INTO auth_tokens (id, kind, principal, digest, label, created) VALUES ('t1', 'pat', 'pat:alice', $1, 'cli', 9)")
         .bind(vec![9u8; 32])
         .execute(p)
@@ -141,13 +159,24 @@ async fn an_export_holds_only_the_callers_rows_and_no_secret() {
         "looks good",
         "\"table\":\"access_tokens\"",
         "\"cli\"",
+        "\"table\":\"ai_activity\"",
+        "run-carol",
+        "run-alice-on-bob",
     ] {
         assert!(text.contains(must), "{must}\n{text}");
     }
+    // Another owner's key used by alice comes without its id.
+    let on_bob = text
+        .lines()
+        .find(|l| l.contains("run-alice-on-bob"))
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_str(on_bob).unwrap();
+    assert_eq!(v["row"]["key_id"], "", "{on_bob}");
     // Nothing of bob's or alicia's, and no secret column or value.
     for never in [
         "ak_b",
         "bobs private note",
+        "run-bob-alone",
         "alicia",
         "sealed-alice",
         "sealed-bob",
