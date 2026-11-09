@@ -2141,6 +2141,7 @@ An administrator can put the whole server into read-only maintenance for an upgr
 - **Readiness:** the admin listener's `/readyz` adds `read_only`, `restore_staged` and `maintenance`; the server stays ready (200), because reads work.
 - **Audit:** each switch writes `server.maintenance.updated` (target `maintenance`; details `enabled`, `old_enabled`, `message`, `until`, `version`). A refused switch writes nothing.
 - **Forge:** the hub's own maintenance toggle calls `SetMaintenance` when asc is enabled, so the forge and asc go read-only together, and shows the same message and "upgrading to" on its notice.
+- **Health probes:** `CheckHealth` (site administrators only; `Version.features += "health.v1"`) answers the part of the hub's health page that only the server knows. It writes a random 24-byte object under `<root>/.asc-probe/` of the instance bucket, reads it back, compares and deletes it (a written object is deleted even when the read fails; the probe gives up after 10 s), and signs the fixed message `asc health probe` with `signing.server_key_file`, parses the signature and verifies it with the key's public half. Each probe is `OK`, `FAILED` with a fixed phrase (never the provider's own text, which can hold URLs and request ids) or `NOT_CONFIGURED` (no server key). The answer also gives the key's fingerprint, `checked_at_ms` and `now_ms`, the server's clock when it answered, so the caller can measure how far apart the two clocks are. The probes run at most once every 5 s; calls in between get the last answer.
 
 ---
 

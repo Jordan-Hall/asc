@@ -1095,6 +1095,7 @@ Every method of the build-out services (98). A test keeps this list equal to the
 - `asc.v1.Usage/SetQuota` — site admin
 - `asc.v1.Usage/Report` — host service or site admin
 - `asc.v1.Usage/GetActivity` — site admin: changes and agent runs of the whole server in a window
+- `asc.v1.Maintenance/CheckHealth` — site admin: object store round trip, server signing key, server clock (SPEC §14.5)
 - `asc.v1.OrgSettings/GetOrgSettings` — org read
 - `asc.v1.OrgSettings/SetAgentPolicy` — org admin
 - `asc.v1.OrgSettings/SetMergeDefaults` — org admin
