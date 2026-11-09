@@ -1,9 +1,14 @@
 //! The `[refs]` rules of the policy: who may move a protected branch or tag, and whether it may
 //! be rewritten, deleted or take unsigned changes.
 
-use asc_core::id::{ChangesetId, RefTarget};
+use asc_core::codec::Enveloped;
+use asc_core::id::{ChangesetId, RefTarget, TagId};
+use asc_core::object::{SortedMap, TagRecord};
 use asc_core::policy::POLICY_PATH;
 use asc_rpc::server::{CallCtx, wire};
+use asc_store::codec::encode_stored;
+use asc_store::key::ObjKey;
+use asc_store::objects::Objects;
 
 use super::gate::{GateMode, GateRequest, GateUpdate, RefGate};
 use super::tests::{ALICE, BOB, Fx, code, ctx, fx, paths, policy_text};
@@ -259,4 +264,130 @@ async fn an_agent_still_never_moves_a_ruled_ref() {
     .await
     .unwrap_err();
     assert!(err.starts_with("AGENT_SCOPE_DENIED"), "{err}");
+}
+
+/// Stores a tag object naming `target` and answers its id.
+async fn tag_object(f: &Fx, target: ChangesetId, message: &[u8]) -> TagId {
+    let rec = TagRecord {
+        target,
+        name: b"v1.0".to_vec(),
+        tagger: None,
+        message: message.to_vec(),
+        extra: SortedMap::default(),
+    };
+    f.e.objects
+        .put(&ObjKey::Tag(rec.id()), encode_stored(&rec.to_envelope()))
+        .await
+        .unwrap();
+    rec.id()
+}
+
+fn tagged(name: &str, old: Option<RefTarget>, new: Option<RefTarget>) -> [GateUpdate; 1] {
+    [GateUpdate {
+        name: name.into(),
+        old,
+        new,
+        user: false,
+    }]
+}
+
+#[tokio::test]
+async fn a_tag_object_is_no_way_around_a_rule() {
+    let (f, a, b) = staged().await;
+    let ci = ctx("ci:abc");
+    let t1 = tag_object(&f, b, b"one").await;
+    let t2 = tag_object(&f, b, b"two").await;
+
+    // Creating a tag through a tag object is checked like a plain one.
+    check(
+        &f,
+        &ci,
+        &tagged("refs/tags/v1.0", None, Some(RefTarget::Tag(t1))),
+        PUSH,
+    )
+    .await
+    .unwrap();
+    let err = check(
+        &f,
+        &ctx(BOB),
+        &tagged("refs/tags/v1.0", None, Some(RefTarget::Tag(t1))),
+        PUSH,
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("only the merge queue"), "{err}");
+
+    // Moving it to another tag object, or between a tag object and a changeset, has no ancestry
+    // to judge and is a rewrite, forced or not.
+    for (old, new) in [
+        (RefTarget::Tag(t1), RefTarget::Tag(t2)),
+        (RefTarget::Tag(t1), RefTarget::Changeset(b)),
+        (RefTarget::Changeset(a), RefTarget::Tag(t1)),
+    ] {
+        for mode in [PUSH, FORCE] {
+            let err = check(
+                &f,
+                &ci,
+                &tagged("refs/tags/v1.0", Some(old), Some(new)),
+                mode,
+            )
+            .await
+            .unwrap_err();
+            assert!(err.contains("cannot be rewritten"), "{err}");
+        }
+    }
+
+    // A signed rule judges the changeset a tag object names.
+    let s = tag_object(&f, b, b"signed").await;
+    let err = check(
+        &f,
+        &ctx(ALICE),
+        &tagged("refs/heads/signed/1", None, Some(RefTarget::Tag(s))),
+        PUSH,
+    )
+    .await
+    .unwrap_err();
+    assert!(err.starts_with("UNSIGNED_CHANGE"), "{err}");
+
+    // A tag object the server does not have refuses the update.
+    let missing = TagRecord {
+        target: b,
+        name: b"v9".to_vec(),
+        tagger: None,
+        message: Vec::new(),
+        extra: SortedMap::default(),
+    }
+    .id();
+    assert!(
+        check(
+            &f,
+            &ci,
+            &tagged("refs/tags/v9", None, Some(RefTarget::Tag(missing))),
+            PUSH
+        )
+        .await
+        .is_err()
+    );
+}
+
+#[tokio::test]
+async fn an_unusable_policy_holds_every_branch_and_tag() {
+    let f = fx().await;
+    let a = commit(
+        &f.e,
+        &[],
+        &[(POLICY_PATH, b"[refs.\"x\"]\nbogus = 1\n"), ("x", b"1")],
+    )
+    .await;
+    f.set_master(a).await;
+    assert!(f.policies.in_force(&f.e).await.unwrap().error().is_some());
+    let b = commit(&f.e, &[a], &[("y", b"2")]).await;
+    f.ingest(b).await;
+    for name in ["refs/heads/feature", "refs/tags/v1"] {
+        let err = check(&f, &ctx(ALICE), &moved(name, None, Some(b)), PUSH)
+            .await
+            .unwrap_err();
+        assert!(err.starts_with("POLICY_DENIED"), "{err}");
+        assert!(err.contains("cannot be used"), "{err}");
+    }
 }
