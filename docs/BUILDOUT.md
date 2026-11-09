@@ -626,6 +626,18 @@ They need no more than repo read and count one repository only. A forwarded clai
 - **Stacks opened.** Changes without a parent change that were first published in the window.
 - **Bounds.** 50,000 landed rows, 100,000 verdicts, 200 contributors; a cut sets `truncated` and the numbers are lower bounds.
 
+`Insights.ListOwnerContributors` (feature `insights-owner.v1`, expensive) is the organisation People page in one call: the `ListContributors` of each named
+repository of one owner (1 to 64, every one `owner/…`, duplicates ignored whatever the case), summed by kind and lower-case name. `repos` on each row is how many
+repositories the person appears in; the median review time does not add up across repositories and is not given.
+
+- **Who may read.** The hub signs a forwarded read claim for `org:<owner>` and names only the repositories its permission model lets the person read; a claim that
+  does not verify or is below read is `PERMISSION_DENIED`. The host service without a claim is system work. Any other caller is checked per repository with its own
+  credential: one it may not read, or one that does not exist, is left out without a word, so the answer cannot tell a private repository from a missing one.
+- **Answer.** `landed` over the repositories counted, `counted_repos`, at most 200 rows (landed, then reviews given, then name). The call stops after 20 seconds;
+  a repository not reached, or a cut in one, sets `truncated`.
+- **Hub.** `asctrust.UserCallOrgRepos` keeps the repositories of the organisation the person may read the code of and signs the claim; the People page asks once
+  when asc serves the feature and falls back to 24 per-repository calls otherwise.
+
 ## 25. Policy keys of the Policy board
 
 `Repo.GetPolicy` (and `Policy.Validate`'s `parsed`) now answer every key the form edits, so a form needs no second parse of the file:
