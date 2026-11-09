@@ -1570,6 +1570,40 @@ async fn assert_all_in_target(f: &Fx, e: &RepoEntry, objs: &[(ObjKey, Vec<u8>)])
 }
 
 #[tokio::test]
+async fn the_check_counts_the_copies_it_redid() {
+    let f = fx().await;
+    let v = f.enabled("main").await;
+    let e = f.repo("acme/app").await;
+    let objs = seed(&f, &e, 20).await;
+    // Two objects are already at the destination with the right size and the wrong bytes: the copy keeps them and the
+    // check finds them.
+    let prefix = format!("pre/ns/{}/", e.ns.hex());
+    let (default_store, default_root) = f.registry.default_place();
+    for (k, _) in objs.iter().take(2) {
+        let at = default_root.clone().join("ns").join(e.ns.hex());
+        let at = k.path().split('/').fold(at, |p, s| p.join(s));
+        let size = object_store::ObjectStoreExt::head(&default_store, &at)
+            .await
+            .unwrap()
+            .size;
+        f.s3.put(
+            &format!("{prefix}{}", k.path()),
+            &vec![b'x'; usize::try_from(size).unwrap()],
+        );
+    }
+    let m = f
+        .svc
+        .start_migration(&alice(), "acme/app", &v.target.id, false)
+        .await
+        .unwrap();
+    f.drain().await;
+    let m = f.svc.get_migration(&alice(), &m.id).await.unwrap();
+    assert_eq!(m.state, state::DONE, "{m:?}");
+    assert_eq!(m.mismatched, 2);
+    assert_all_in_target(&f, &e, &objs).await;
+}
+
+#[tokio::test]
 async fn a_migration_copies_verifies_switches_and_leaves_the_source_alone_unless_asked() {
     let f = fx().await;
     let v = f.enabled("main").await;
@@ -1590,6 +1624,8 @@ async fn a_migration_copies_verifies_switches_and_leaves_the_source_alone_unless
     assert_eq!(m.state, state::DONE, "{m:?}");
     assert_eq!((m.objects_total, m.error.as_str()), (150, ""));
     assert!(m.objects_copied >= 150 && m.bytes_copied > 0);
+    assert!(m.bytes_total > 0, "the bytes are counted before the copy");
+    assert_eq!(m.mismatched, 0, "every copy matched");
     assert_all_in_target(&f, &e, &objs).await;
     // The route points at the target; reads come from it.
     let e2 = f.open("acme/app").await.unwrap();
@@ -1611,6 +1647,19 @@ async fn a_migration_copies_verifies_switches_and_leaves_the_source_alone_unless
     .unwrap()
     .len();
     assert_eq!(n, 150);
+    let stored: u64 = futures::TryStreamExt::try_collect::<Vec<_>>(
+        default_store.list(Some(&default_root.clone().join("ns").join(e.ns.hex()))),
+    )
+    .await
+    .unwrap()
+    .iter()
+    .map(|o| o.size)
+    .sum();
+    assert_eq!(
+        u64::try_from(m.bytes_total).unwrap(),
+        stored,
+        "the stored bytes counted before the copy"
+    );
     // The notices a subscriber saw, in order.
     let mut states = Vec::new();
     while let Ok(ev) = events.try_recv() {
