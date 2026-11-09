@@ -1163,3 +1163,73 @@ fn summarize(
     out
 }
 
+#[cfg(test)]
+mod summary_tests {
+    use super::summarize;
+    use crate::agents::runs::{RunGroup, RunState};
+
+    fn g(agent: &str, repo: &str, person: &str, state: RunState, runs: u64, last: i64) -> RunGroup {
+        RunGroup {
+            agent: agent.into(),
+            repo: repo.into(),
+            person: person.into(),
+            state,
+            runs,
+            last_run: last,
+        }
+    }
+
+    #[test]
+    fn the_groups_fold_into_one_summary_per_agent() {
+        let repos = vec!["acme/a".to_owned(), "acme/b".to_owned()];
+        let groups = vec![
+            g("review", "acme/b", "ann", RunState::Running, 2, 50),
+            g("review", "acme/a", "bob", RunState::Succeeded, 3, 40),
+            g("review", "acme/a", "ann", RunState::Failed, 1, 60),
+            g("fix", "acme/a", "cy", RunState::Queued, 6, 10),
+            g("docs", "acme/b", "", RunState::Succeeded, 6, 20),
+            g("lint", "acme/gone", "dee", RunState::Succeeded, 1, 5),
+        ];
+        let out = summarize(&repos, &groups);
+        let names: Vec<&str> = out.iter().map(|a| a.agent.as_str()).collect();
+        assert_eq!(
+            names,
+            ["docs", "fix", "review", "lint"],
+            "most runs, then by name"
+        );
+        let review = &out[2];
+        assert_eq!((review.runs, review.active, review.last_run), (6, 2, 60));
+        assert_eq!(review.repos, vec![0, 1]);
+        assert_eq!(
+            review.people,
+            vec!["ann", "bob"],
+            "ann has 3 runs, bob 3: by name"
+        );
+        assert_eq!(out[1].active, 6, "queued is active");
+        assert!(out[0].people.is_empty(), "no person is not named");
+        assert!(
+            out[3].repos.is_empty(),
+            "a repository not asked about is not pointed to"
+        );
+    }
+
+    #[test]
+    fn at_most_five_people_are_named() {
+        let repos = vec!["acme/a".to_owned()];
+        let groups: Vec<RunGroup> = (0..7u64)
+            .map(|i| {
+                g(
+                    "a",
+                    "acme/a",
+                    &format!("p{i}"),
+                    RunState::Succeeded,
+                    i + 1,
+                    1,
+                )
+            })
+            .collect();
+        let out = summarize(&repos, &groups);
+        assert_eq!(out[0].people, vec!["p6", "p5", "p4", "p3", "p2"]);
+        assert_eq!(out[0].runs, 28);
+    }
+}

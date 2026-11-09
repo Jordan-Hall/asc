@@ -1453,3 +1453,103 @@ async fn count_runs_counts_over_the_repositories_named_and_checks_each_of_them()
         .unwrap_err();
     assert_ne!(e.code(), Code::Ok);
 }
+
+#[tokio::test]
+async fn summarize_agents_folds_the_runs_by_agent_over_the_repositories_named() {
+    let w = World::new().await;
+    w.key(alice(), "mine").await;
+    w.fake.set_default(done("ok"));
+    let run = w.start_run("alice-token", "Summarize me").await.unwrap();
+    let row = w.wait(run.id).await;
+    assert_eq!(row.state, RunState::Succeeded);
+    let by = if row.starter.is_empty() {
+        row.created_by.clone()
+    } else {
+        row.starter.clone()
+    };
+    let ask = |repos: Vec<&str>, who: &str, since: i64, limit: u32, token: &str| {
+        let r = w.request(
+            wire::SummarizeAgentsRequest {
+                repos: repos
+                    .into_iter()
+                    .map(|n| wire::RepoRef {
+                        name: n.into(),
+                        id_mode: asc_rpc::IdMode::Asc as i32,
+                    })
+                    .collect(),
+                created_by: who.to_owned(),
+                since,
+                limit,
+            },
+            token,
+            None,
+        );
+        let svc = w.svc.clone();
+        async move { svc.summarize_agents(r).await }
+    };
+    // A reader gets one entry per agent; `repos` points into the request.
+    let r = ask(vec!["acme/other", "Acme/App"], "", 0, 0, "carol-token")
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(r.total, 1);
+    assert_eq!(
+        r.agents,
+        vec![wire::AgentSummary {
+            agent: row.agent.clone(),
+            runs: 1,
+            active: 0,
+            last_run: row.created,
+            repos: vec![1],
+            people: vec![by.clone()],
+        }]
+    );
+    // The filters: someone else's runs, and a window after the run, give nothing.
+    let r = ask(vec!["acme/app"], "nobody", 0, 0, "carol-token")
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!((r.total, r.agents.len()), (0, 0));
+    let r = ask(vec!["acme/app"], &by, 0, 0, "carol-token")
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(r.total, 1);
+    let r = ask(vec!["acme/app"], "", row.created + 1, 0, "carol-token")
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(r.total, 0);
+    // Bad arguments.
+    for (repos, since, limit) in [
+        (vec![], 0, 0),
+        (vec!["acme/app"], -1, 0),
+        (vec!["acme/app"], 0, 101),
+        (vec!["acme/app", "ACME/app"], 0, 0),
+    ] {
+        let e = ask(repos, "", since, limit, "carol-token")
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), Code::InvalidArgument);
+    }
+    let many: Vec<String> = (0..51).map(|i| format!("acme/r{i}")).collect();
+    let e = ask(
+        many.iter().map(String::as_str).collect(),
+        "",
+        0,
+        0,
+        "carol-token",
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(e.code(), Code::InvalidArgument);
+    // Each repository is checked.
+    let e = ask(vec!["acme/app"], "", 0, 0, "nobody-token")
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Code::Unauthenticated);
+    let e = ask(vec!["acme/app", "../etc"], "", 0, 0, "carol-token")
+        .await
+        .unwrap_err();
+    assert_ne!(e.code(), Code::Ok);
+}
