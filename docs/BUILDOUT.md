@@ -994,6 +994,7 @@ Every method of the build-out services (98). A test keeps this list equal to the
 - `asc.v1.Storage/PauseMigration` — repo admin; idempotent; before the switch
 - `asc.v1.Storage/ResumeMigration` — repo admin; idempotent
 - `asc.v1.Storage/GetRepoUsage` — repo admin; cached, scanned in the background
+- `asc.v1.Storage/ListRepoPlacements` — site admin: where each repository's objects live; at most 100 repositories
 
 **Vault** (`vault.proto`)
 
@@ -1105,6 +1106,8 @@ Every method of the build-out services (98). A test keeps this list equal to the
 - `asc.v1.Usage/SetQuota` — site admin
 - `asc.v1.Usage/Report` — host service or site admin
 - `asc.v1.Usage/GetActivity` — site admin: changes and agent runs of the whole server in a window
+- `asc.v1.Maintenance/GetMaintenance` — site admin: the maintenance switch and its message
+- `asc.v1.Maintenance/SetMaintenance` — site admin
 - `asc.v1.Maintenance/CheckHealth` — site admin: object store round trip, server signing key, server clock (SPEC §14.5)
 - `asc.v1.Maintenance/ListAgentRunners` — site admin: the agent runners, their slots, CPUs, heartbeat and live runs (SPEC §14.5)
 - `asc.v1.OrgSettings/GetOrgSettings` — org read
