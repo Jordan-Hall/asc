@@ -28,6 +28,10 @@
 //!   [`DEVICE_TTL_S`]. `GetWorkspace(include_devices)` names the devices of each head and, on its
 //!   first page, lists the reported drafts that are not heads of the workspace; it always answers
 //!   in full, as a report does not move the workspace version.
+//! * A call the hub makes for a signed-in person with its forwarded claim acts as that person
+//!   ([`acting::act_as`]): the hub hides and unhides the person's drafts from its Drafts page. The
+//!   claim is the whole of its authority: another user's workspace needs a `write` claim and Purge
+//!   as an administrator an `admin` claim; the hub's own credential is not asked again.
 
 use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -60,6 +64,7 @@ use crate::commit_graph_rpc::{internal, registry_status};
 use crate::idmode::IdCodec;
 use crate::refpolicy;
 use crate::registry::{Extensions, Registry, RepoEntry};
+use crate::review::acting;
 
 /// Heads in one `GetWorkspace` page.
 pub const PAGE: usize = 1_000;
@@ -1049,6 +1054,8 @@ impl CloudService {
             .authorizer
             .authorize_credential(ext.get::<Credential>(), name.as_str(), access)
             .await?;
+        // A call the hub makes for a signed-in person acts as that person, within the claim.
+        let (principal, admin) = acting::act_as(&*self.authorizer, principal, meta, &name, access)?;
         let op_id = match meta.get("x-asc-op-id") {
             None => None,
             Some(v) => Some(
@@ -1061,18 +1068,14 @@ impl CloudService {
         if mutating && op_id.is_none() {
             return Err(Status::invalid_argument("mutating calls need x-asc-op-id"));
         }
-        let admin = asc_rpc::auth::AdminProof::new(
-            self.authorizer.clone(),
-            ext.get::<Credential>().cloned(),
-            name.as_str(),
-        )
-        .with_forwarded(asc_rpc::auth::AdminProof::forwarded_for_call(
-            &*self.authorizer,
-            &principal,
-            meta,
-            name.as_str(),
-            access,
-        )?);
+        let admin = match admin.forwarded_claim() {
+            Some(_) => admin,
+            None => asc_rpc::auth::AdminProof::new(
+                self.authorizer.clone(),
+                ext.get::<Credential>().cloned(),
+                name.as_str(),
+            ),
+        };
         Ok(CallCtx {
             repo: name,
             id_mode,
@@ -1087,12 +1090,26 @@ impl CloudService {
     async fn read_owner(&self, ctx: &CallCtx, ext: &TonicExt, raw: &str) -> Result<i64, Status> {
         let owner = parse_owner(&ctx.principal.id, raw)?
             .ok_or_else(|| Status::permission_denied("no user identity"))?;
-        if refpolicy::owner_of(&ctx.principal) != Some(owner) {
-            self.authorizer
-                .authorize_credential(ext.get::<Credential>(), ctx.repo.as_str(), Access::Write)
-                .await?;
+        if refpolicy::owner_of(&ctx.principal) != Some(owner)
+            && !self.has(ext, ctx, Access::Write).await
+        {
+            return Err(Status::permission_denied(
+                "reading another user's workspace needs write access",
+            ));
         }
         Ok(owner)
+    }
+
+    /// Whether the caller holds `access` on the repository of `ctx`. A call made on the hub's claim
+    /// holds what the claim's role covers and nothing more (the service credential is not asked).
+    async fn has(&self, ext: &TonicExt, ctx: &CallCtx, access: Access) -> bool {
+        if let Some(c) = ctx.admin.forwarded_claim() {
+            return c.allows(acting::role_of(access));
+        }
+        self.authorizer
+            .authorize_credential(ext.get::<Credential>(), ctx.repo.as_str(), access)
+            .await
+            .is_ok()
     }
 }
 
@@ -1171,11 +1188,7 @@ impl Cloud for CloudService {
             .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
             .await?;
         // Admin rights are asked of the authorizer; an answer other than yes means no.
-        let admin = self
-            .authorizer
-            .authorize_credential(ext.get::<Credential>(), ctx.repo.as_str(), Access::Admin)
-            .await
-            .is_ok();
+        let admin = self.has(&ext, &ctx, Access::Admin).await;
         let owner = refpolicy::owner_of(&ctx.principal);
         if owner.is_none() && !admin {
             return Err(Status::permission_denied(
