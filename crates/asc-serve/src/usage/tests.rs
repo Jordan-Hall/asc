@@ -809,3 +809,113 @@ async fn the_site_administrator_reads_another_accounts_usage_and_it_is_audited()
         .unwrap();
     assert_eq!(f.audit.of("usage.admin.read").len(), 2);
 }
+
+async fn change(pool: &AnyPool, id: u8, v: i64, at: i64, actor: &str) {
+    sqlx::query(
+        "INSERT INTO change_versions (ns, change, v, cs, at, actor, op_id) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+    )
+    .bind(vec![1u8])
+    .bind(vec![id, 0xab])
+    .bind(v)
+    .bind(vec![id, v as u8])
+    .bind(at)
+    .bind(actor.to_owned())
+    .bind(vec![id, v as u8, 9])
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+async fn agent_run(
+    pool: &AnyPool,
+    id: i64,
+    state: i64,
+    created: i64,
+    finished: i64,
+    changes: &str,
+) {
+    sqlx::query(
+        "INSERT INTO agent_runs (id, repo, agent, state, target, base, task, created_by, created, finished, changes_json) \
+         VALUES ($1, 'acme/app', 'fixer', $2, 'main', $3, 't', 'user:7:dana', $4, $5, $6)",
+    )
+    .bind(id)
+    .bind(state)
+    .bind(Vec::<u8>::new())
+    .bind(created)
+    .bind(finished)
+    .bind(changes.to_owned())
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_site_administrator_reads_the_activity_of_the_whole_server() {
+    let f = fx().await;
+    let day = 20_717 * 86_400;
+    let pool = &f.k.pool;
+    change(pool, 1, 1, day + 100, "user:7:dana").await;
+    change(pool, 1, 2, day + 400, "user:7:dana").await; // a second version is not a new change
+    change(pool, 2, 1, day + 200, "agent:docs-bot").await;
+    change(pool, 3, 1, day + 300, "user:7:dana").await; // published by a run that holds it
+    change(pool, 4, 1, day - 10, "agent:docs-bot").await; // yesterday
+    change(pool, 5, 1, day + 60_000, "user:7:dana").await; // after the window
+    agent_run(pool, 2, 2, day - 1_000, 0, r#"["03ab"]"#).await; // created yesterday, still going
+    agent_run(pool, 3, 4, day - 9_000, day - 5_000, r#"["01ab"]"#).await; // ended before the window
+    for (id, state) in [(10, 4), (11, 4), (12, 5), (13, 7), (14, 6), (15, 2)] {
+        agent_run(pool, id, state, day + 1_000 + id, 0, "[]").await;
+    }
+
+    let ask = |since, until| wire::GetActivityRequest { since, until };
+    let r = f
+        .svc
+        .get_activity(as_admin(&f, ask(0, day + 50_000), 1))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        (r.since, r.until),
+        (day, day + 50_000),
+        "since 0 is the start of the UTC day"
+    );
+    assert_eq!((r.changes, r.changes_by_agents), (3, 2));
+    assert_eq!(r.runs, 6);
+    assert_eq!(
+        (
+            r.runs_active,
+            r.runs_succeeded,
+            r.runs_failed,
+            r.runs_cancelled
+        ),
+        (1, 2, 2, 1)
+    );
+    assert!(!r.truncated);
+
+    let r = f
+        .svc
+        .get_activity(as_admin(&f, ask(day - 86_400, day + 86_400), 2))
+        .await
+        .unwrap()
+        .into_inner();
+    // Run 3 ends inside this window, so the change it holds is an agent's here.
+    assert_eq!((r.changes, r.changes_by_agents, r.runs), (5, 4, 8));
+
+    let e = f
+        .svc
+        .get_activity(as_user(&f, ask(0, 0), "dana", Role::Admin))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        e.code(),
+        Code::PermissionDenied,
+        "only the site administrator"
+    );
+    for (since, until) in [(day, day - 1), (day - 32 * 86_400, day)] {
+        let e = f
+            .svc
+            .get_activity(as_admin(&f, ask(since, until), 3))
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), Code::InvalidArgument);
+    }
+}
