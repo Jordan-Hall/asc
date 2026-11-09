@@ -3175,3 +3175,85 @@ async fn a_team_named_by_the_policy_admits_the_members_the_host_sent() {
         ["team:payments-reviewers"]
     );
 }
+
+#[tokio::test]
+async fn an_organisation_agent_writes_only_its_paths_and_repositories() {
+    use crate::ai::audit::PoolAudit;
+    use crate::org::{AgentRow, OrgHub};
+    let f = fx().await;
+    // No repository policy: the organisation's scope still holds.
+    let a = commit(&f.e, &[], &[("base", b"0")]).await;
+    f.set_master(a).await;
+    let c = ctx("agent:bot");
+    let check = |cs: ChangesetId| {
+        let u = [draft(cs)];
+        let c = c.clone();
+        let f = &f;
+        async move {
+            f.ingest(cs).await;
+            f.gate
+                .check(&gate_req(&c, &f.e, &u, GateMode::Push { force: false }))
+                .await
+        }
+    };
+    let inside = commit(&f.e, &[a], &[("src/a.rs", b"1")]).await;
+    let outside = commit(&f.e, &[a], &[("src/a.rs", b"1"), ("infra/x", b"2")]).await;
+    // Without organisation settings, or an agent the organisation has not registered: no limit.
+    check(outside).await.unwrap();
+    let pool = f.reg.pool().clone();
+    let hub = OrgHub::new(pool.clone(), Arc::new(PoolAudit::new(pool)));
+    assert!(f.gate.org_slot().set(hub.clone()));
+    check(outside).await.unwrap();
+
+    let row = AgentRow {
+        name: "bot".into(),
+        display: String::new(),
+        run_by: String::new(),
+        paths: vec!["src/**".into()],
+        repos: Vec::new(),
+        paused: false,
+        created: 0,
+        created_by: String::new(),
+        updated: 0,
+    };
+    let mut row = hub.create_agent("o", row, "9:owner").await.unwrap();
+    check(inside).await.unwrap();
+    let err = check(outside).await.unwrap_err();
+    assert_eq!(code(&err), "AGENT_SCOPE_DENIED");
+    assert_eq!(paths(&err)[1..], ["infra/x".to_owned()]);
+    assert!(paths(&err)[0].contains("src/**"), "{:?}", paths(&err));
+
+    // Kept to another repository of the organisation.
+    row.repos = vec!["o/other".into()];
+    let mut row = hub.update_agent("o", row).await.unwrap();
+    let err = check(inside).await.unwrap_err();
+    assert_eq!(code(&err), "AGENT_SCOPE_DENIED");
+    assert!(
+        paths(&err)[0].contains("this repository"),
+        "{:?}",
+        paths(&err)
+    );
+    row.repos = vec!["o/r".into()];
+    let mut row = hub.update_agent("o", row).await.unwrap();
+    check(inside).await.unwrap();
+
+    // Paused.
+    row.paused = true;
+    let mut row = hub.update_agent("o", row).await.unwrap();
+    let err = check(inside).await.unwrap_err();
+    assert!(paths(&err)[0].contains("paused"), "{:?}", paths(&err));
+
+    // No paths: no path limit from the organisation.
+    row.paused = false;
+    row.paths = Vec::new();
+    hub.update_agent("o", row).await.unwrap();
+    check(outside).await.unwrap();
+
+    // A person is not held to an agent's scope.
+    let human = ctx(ALICE);
+    let u = [draft(outside)];
+    f.gate
+        .check(&gate_req(&human, &f.e, &u, GateMode::Push { force: false }))
+        .await
+        .unwrap();
+}
