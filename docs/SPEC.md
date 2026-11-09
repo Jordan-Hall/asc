@@ -792,6 +792,7 @@ service Repo {
   rpc CopyClosure(CopyClosureRequest) returns (CopyClosureResponse);
   rpc RepoAdmin(RepoAdminRequest) returns (RepoAdminResponse);
   rpc ImportGitPush(ImportGitPushRequest) returns (ImportGitPushResponse);   // Forgejo internal token only
+  rpc ImportProgress(ImportProgressRequest) returns (ImportProgressResponse); // Forgejo internal token only; how far a running import is
   rpc Ingest(IngestRequest) returns (IngestResponse);                        // §8.7
   rpc FindLanding(FindLandingRequest) returns (FindLandingResponse);         // §8.9
   rpc Classify(ClassifyRequest) returns (ClassifyResponse);                  // §8.10
@@ -914,6 +915,10 @@ message GitRefUpdate { string name = 1; bytes old_git = 2; bytes new_git = 3; }
 message ImportGitPushRequest { RepoRef repo = 1; string git_dir = 2; string object_dir = 3;
   repeated string alternate_dirs = 4; repeated GitRefUpdate updates = 5; int64 pusher_id = 6; }
 message ImportGitPushResponse { repeated RefResult results = 1; }
+// The import of the repository running now: commits turned into changesets so far (commits asc
+// already held are not counted) and its start (unix seconds). Nothing running: running false.
+message ImportProgressRequest { RepoRef repo = 1; }
+message ImportProgressResponse { bool running = 1; uint64 commits = 2; int64 started = 3; }
 
 message IngestRequest { RepoRef repo = 1; repeated bytes changesets = 2; }
 message IngestResponse { repeated bytes ingested = 1; }
@@ -2126,6 +2131,7 @@ ASC scale: 5,502 commits and about 50k blobs (6.99 GiB raw) import in minutes. T
 - **I4 Refs last:** a ref (asc ref, mirror sync, `ImportGitPush`) moves only when I1–I3 hold for its whole new closure (the warm-ref rule, §5).
 - **I5 Idempotent writes:** object puts are create-if-absent, and map and graph inserts are `INSERT … ON CONFLICT DO NOTHING`. A second concurrent importer of the same commits gets no error and writes no different row.
 - **I6 One importer per repo:** mirror import, the poller and `ImportGitPush` for one repo are serialised by `pg_advisory_xact_lock(repo_id)` (SQLite has a single writer).
+- **I6a Progress:** while `ImportGitPush` imports a repository, `ImportProgress` (internal token only, cheap) reports the commits turned into changesets so far, counted as their git-map rows are written, and when the import started. The count lives in memory for that import only and is gone when it ends, however it ends. The host divides it by its own count of the history (`git rev-list --count --all`) for a progress bar.
 - **I7 Bounded memory:** commits stream in topological order through a bounded window. Peak RSS is O(window + largest tree + chunk buffer), independent of history length. Blob hashing (BLAKE3, SHA-1) runs in parallel across files; changeset construction stays sequential.
 
 **Targets:** ASC full import ≤ 5 min with peak RSS ≤ 1 GiB on 8 cores; a synthetic 1M-commit history imports in < 6 h with peak RSS ≤ 2 GiB. **Test `import_crash`:** 200 seeded runs each kill the importer at a random object write and rerun it; the final store, git map and `cs_graph` must be byte-identical to an uninterrupted import.
