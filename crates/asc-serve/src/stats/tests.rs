@@ -467,3 +467,208 @@ fn the_median_is_the_middle_value_or_the_mean_of_the_two_in_the_middle() {
     assert_eq!(median(vec![9, 1, 5]), 5);
     assert_eq!(median(vec![1, 3, 5, 9]), 4);
 }
+
+/// A second repository of `o`, `o/s`, where carol reviewed one change of a version opened by her
+/// an hour before (nothing landed there).
+async fn second(f: &Fx) {
+    let s = f
+        .reg
+        .create(
+            &asc_rpc::server::RepoName::parse("o/s").unwrap(),
+            &Default::default(),
+        )
+        .await
+        .unwrap();
+    let ns = s.ns.as_bytes().to_vec();
+    sqlx::query(
+        "INSERT INTO change_versions (ns, change, v, cs, parent_change, at, actor, op_id) \
+         VALUES ($1, $2, 1, $3, NULL, $4, '44:carol', $5)",
+    )
+    .bind(ns.clone())
+    .bind(cid(9).as_bytes().to_vec())
+    .bind(vec![9u8; 32])
+    .bind(U - 2 * DAY)
+    .bind(vec![9u8])
+    .execute(f.reg.pool())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO review_approvals (ns, change, reviewer, version, state, at, reviewer_id) VALUES ($1, $2, 'Carol', 1, 1, $3, 44)",
+    )
+    .bind(ns)
+    .bind(cid(9).as_bytes().to_vec())
+    .bind(U - 2 * DAY + 3600)
+    .execute(f.reg.pool())
+    .await
+    .unwrap();
+}
+
+fn owner_ask(repos: &[&str]) -> wire::ListOwnerContributorsRequest {
+    wire::ListOwnerContributorsRequest {
+        owner: "o".into(),
+        repos: repos.iter().map(|r| (*r).to_owned()).collect(),
+        days: 30,
+        kind: 0,
+        until: U,
+    }
+}
+
+/// Reads `o/r` only: every other repository is forbidden.
+struct OnlyR;
+
+#[tonic::async_trait]
+impl asc_rpc::auth::Authorizer for OnlyR {
+    async fn authorize(
+        &self,
+        _token: Option<&asc_rpc::auth::BearerToken>,
+        repo: &str,
+        _access: asc_rpc::auth::Access,
+    ) -> Result<asc_rpc::auth::Principal, asc_rpc::auth::AuthError> {
+        if repo == "o/r" {
+            Ok(asc_rpc::auth::Principal {
+                id: "42:alice".into(),
+            })
+        } else {
+            Err(asc_rpc::auth::AuthError::Forbidden)
+        }
+    }
+}
+
+#[tokio::test]
+async fn the_owner_total_sums_the_repositories_by_person() {
+    let f = world().await;
+    second(&f).await;
+    let got = svc(&f, auth(&f))
+        .list_owner_contributors(req(owner_ask(&["o/r", "o/s", "o/missing"]), DEPLOY, false))
+        .await
+        .unwrap()
+        .into_inner();
+    // A repository that does not exist is not counted.
+    assert_eq!((got.counted_repos, got.landed), (2, 2));
+    let by = |n: &str| {
+        got.contributors
+            .iter()
+            .find(|c| c.name.eq_ignore_ascii_case(n))
+            .unwrap()
+    };
+    // carol reviewed in both repositories; "Carol" and "carol" are one person.
+    let carol = by("carol");
+    assert_eq!((carol.landed, carol.reviews_given, carol.repos), (0, 2, 2));
+    assert_eq!(carol.user_id, 44);
+    assert_eq!(
+        got.contributors
+            .iter()
+            .filter(|c| c.name.eq_ignore_ascii_case("carol"))
+            .count(),
+        1
+    );
+    let alice = by("alice");
+    assert_eq!((alice.landed, alice.repos), (1, 1));
+    assert_eq!(alice.weekly_landed.iter().sum::<u32>(), 1);
+    assert_eq!(by("fixer").kind, wire::AuthorKind::Agent as i32);
+    // The same as the one-repository answer for that repository.
+    let one = svc(&f, auth(&f))
+        .list_owner_contributors(req(owner_ask(&["o/r"]), DEPLOY, false))
+        .await
+        .unwrap()
+        .into_inner();
+    let single = svc(&f, auth(&f))
+        .list_contributors(req(
+            wire::ListContributorsRequest {
+                repo: repo_ref(),
+                days: 30,
+                kind: 0,
+                until: U,
+            },
+            DEPLOY,
+            false,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        one.contributors
+            .iter()
+            .map(|c| (c.name.clone(), c.landed, c.reviews_given))
+            .collect::<Vec<_>>(),
+        single
+            .contributors
+            .iter()
+            .map(|c| (c.name.clone(), c.landed, c.reviews_given))
+            .collect::<Vec<_>>()
+    );
+    // Persons only: the agent is left out.
+    let mut people = owner_ask(&["o/r", "o/s"]);
+    people.kind = wire::AuthorKind::Person as i32;
+    let people = svc(&f, auth(&f))
+        .list_owner_contributors(req(people, DEPLOY, false))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(people.contributors.iter().all(|c| c.name != "fixer"));
+    assert_eq!(people.landed, 1);
+}
+
+#[tokio::test]
+async fn a_repository_the_caller_cannot_read_is_left_out_without_a_word() {
+    let f = world().await;
+    second(&f).await;
+    let got = svc(&f, Arc::new(OnlyR))
+        .list_owner_contributors(req(owner_ask(&["o/s", "o/r"]), DEPLOY, false))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(got.counted_repos, 1);
+    // carol's review in o/s is not counted; her review in o/r is.
+    let carol = got.contributors.iter().find(|c| c.name == "carol").unwrap();
+    assert_eq!((carol.reviews_given, carol.repos), (1, 1));
+    // Nothing readable is an empty answer, the same as nothing there.
+    let none = svc(&f, Arc::new(OnlyR))
+        .list_owner_contributors(req(owner_ask(&["o/s", "o/hidden"]), DEPLOY, false))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!((none.counted_repos, none.contributors.len()), (0, 0));
+    // A repository of another owner is refused, not looked at.
+    let err = svc(&f, auth(&f))
+        .list_owner_contributors(req(owner_ask(&["o/r", "x/r"]), DEPLOY, false))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::InvalidArgument);
+}
+
+#[tokio::test]
+async fn the_host_service_needs_a_read_claim_for_the_organisation() {
+    let f = world().await;
+    second(&f).await;
+    let (a, v) = claimkit::authorizer();
+    let s = svc(&f, a);
+    let ok = s
+        .list_owner_contributors(host(
+            &v,
+            owner_ask(&["o/r", "o/s"]),
+            "42:alice",
+            Role::Read,
+            "org:o",
+            false,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(ok.counted_repos, 2);
+    // A claim for another organisation, or for one repository, does not cover the organisation.
+    for subject in ["org:other", "o/r", "user:alice"] {
+        let err = s
+            .list_owner_contributors(host(
+                &v,
+                owner_ask(&["o/r"]),
+                "42:alice",
+                Role::Admin,
+                subject,
+                false,
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), Code::PermissionDenied, "{subject}");
+    }
+}
