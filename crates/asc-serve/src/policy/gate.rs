@@ -22,14 +22,17 @@
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
+use asc_core::codec::decode_envelope;
 use asc_core::id::{ChangesetId, RefTarget};
-use asc_core::object::Changeset;
+use asc_core::object::{Changeset, TagRecord};
 use asc_core::policy::{
     Denial, Diagnostic, Kind, Lander, POLICY_PATH, Policy, RefRule, SecretsPolicy, Strategy, Who,
 };
 use asc_engine::graph::LogQuery;
 use asc_rpc::errors::RpcError;
 use asc_rpc::server::{CallCtx, wire};
+use asc_store::key::ObjKey;
+use asc_store::objects::Objects;
 use async_trait::async_trait;
 use futures::{StreamExt, TryStreamExt};
 use prost::Message;
@@ -762,11 +765,15 @@ impl ServerGate {
     ) -> Result<(), Status> {
         let entry = req.entry;
         let engine = entry.backend.engine();
+        let ruled = self.check_ref_rules(req, who, u, in_force).await?;
+        let ref_signed = ruled == Some(true);
+        // A ref a `[refs]` rule binds is judged on what a tag object names too: its signature,
+        // path rules and secret scan cannot be skipped by pointing the ref at a tag.
         let old = match u.old {
             Some(RefTarget::Changeset(c)) => Some(c),
+            Some(t @ RefTarget::Tag(_)) if ruled.is_some() => Some(self.peel(entry, t).await?),
             _ => None,
         };
-        let ref_signed = self.check_ref_rules(req, who, u, in_force).await?;
         let Some(new) = u.new else {
             // Deleting trunk needs allow_force; deleting any other protected ref is a maintainer
             // matter the forge decides.
@@ -781,8 +788,10 @@ impl ServerGate {
             }
             return Ok(());
         };
-        let RefTarget::Changeset(new) = new else {
-            return Ok(());
+        let new = match new {
+            RefTarget::Changeset(c) => c,
+            t @ RefTarget::Tag(_) if ruled.is_some() => self.peel(entry, t).await?,
+            RefTarget::Tag(_) => return Ok(()),
         };
 
         // The policy that decides, and what trunk will say after the update.
@@ -1184,20 +1193,22 @@ impl ServerGate {
     /// The `[refs]` rules of the policy in force that bind `u`: each must let the mover move the
     /// ref (the queue for a land, a maintainer or a CI or deploy key for a push), a land of
     /// changes an agent wrote needs `agents` in each, a deletion needs `delete` in each and a
-    /// non-fast-forward push `force` in each. Answers whether one of them needs signed changes.
+    /// non-fast-forward push `force` in each; a move to or from a tag object, which has no
+    /// ancestry, counts as a rewrite. Answers `None` when no rule binds `u`, else whether one of
+    /// them needs signed changes.
     async fn check_ref_rules(
         &self,
         req: &GateRequest<'_>,
         who: &Who,
         u: &GateUpdate,
         in_force: &Loaded,
-    ) -> Result<bool, Status> {
+    ) -> Result<Option<bool>, Status> {
         let Some(p) = in_force.policy() else {
-            return Ok(false);
+            return Ok(None);
         };
         let rules = p.ref_rules(&u.name);
         if rules.is_empty() {
-            return Ok(false);
+            return Ok(None);
         }
         let movers = movers_of(p, who, &req.mode);
         if let Some(r) = rules.iter().find(|r| !movers.iter().any(|m| r.lets(*m))) {
@@ -1217,25 +1228,45 @@ impl ServerGate {
             if let Some(r) = rules.iter().find(|r| !r.delete) {
                 return Err(ref_refused(r, &u.name, "it cannot be deleted"));
             }
-            return Ok(rules.iter().any(|r| r.signed));
+            return Ok(Some(rules.iter().any(|r| r.signed)));
         };
-        if let (
-            GateMode::Push { force: true },
-            Some(RefTarget::Changeset(o)),
-            RefTarget::Changeset(n),
-        ) = (&req.mode, u.old, new)
-            && o != n
+        if let (GateMode::Push { .. }, Some(old)) = (&req.mode, u.old)
+            && old != new
             && let Some(r) = rules.iter().find(|r| !r.force)
         {
-            let fast = graph_of(&self.registry, req.entry)
-                .is_ancestor(o, n)
-                .await
-                .map_err(|e| internal("gate: ancestry", &e))?;
+            let fast = match (old, new) {
+                (RefTarget::Changeset(o), RefTarget::Changeset(n)) => {
+                    graph_of(&self.registry, req.entry)
+                        .is_ancestor(o, n)
+                        .await
+                        .map_err(|e| internal("gate: ancestry", &e))?
+                }
+                _ => false,
+            };
             if !fast {
                 return Err(ref_refused(r, &u.name, "it cannot be rewritten"));
             }
         }
-        Ok(rules.iter().any(|r| r.signed))
+        Ok(Some(rules.iter().any(|r| r.signed)))
+    }
+
+    /// The changeset `t` names: itself, or the target of a tag object. A tag the server cannot
+    /// read refuses the update.
+    async fn peel(&self, entry: &RepoEntry, t: RefTarget) -> Result<ChangesetId, Status> {
+        let tag = match t {
+            RefTarget::Changeset(c) => return Ok(c),
+            RefTarget::Tag(tag) => tag,
+        };
+        let data = entry
+            .objects
+            .get(&ObjKey::Tag(tag))
+            .await
+            .map_err(|e| internal("gate: tag", &e))?
+            .ok_or_else(|| {
+                Status::failed_precondition(format!("tag {tag} is not on the server"))
+            })?;
+        let rec: TagRecord = decode_envelope(&data).map_err(|e| internal("gate: tag", &e))?;
+        Ok(rec.target)
     }
 
     /// Whether a land brings a change an agent wrote: the first version of the change of one of
@@ -1438,6 +1469,12 @@ impl RefGate for ServerGate {
                     .is_some_and(|p| !p.ref_rules(&u.name).is_empty())
                 {
                     protected.push(u);
+                } else if let Some(d) = loaded.error()
+                    && !self.may_repair(req.ctx).await
+                {
+                    // While the policy is unusable its `[refs]` rules are unknown, so no branch or
+                    // tag moves until it is repaired, except by an administrator.
+                    return Err(self.refuse(req.ctx, &u.name, unusable(d)).await);
                 }
             }
         }
