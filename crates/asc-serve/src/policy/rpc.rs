@@ -39,6 +39,7 @@ pub struct PolicyHub {
     registry: Arc<Registry>,
     policies: Arc<PolicyStore>,
     commits: Arc<ServerMutations>,
+    pathrules: Arc<crate::pathrules::PathRulesSlot>,
 }
 
 fn subject_list(subjects: &[asc_core::policy::Subject]) -> Vec<String> {
@@ -211,7 +212,25 @@ impl PolicyHub {
             registry,
             policies,
             commits,
+            pathrules: Arc::default(),
         }
+    }
+
+    /// Where the teams a policy's `team:<name>` subjects name are read from.
+    #[must_use]
+    pub fn with_pathrules(mut self, slot: Arc<crate::pathrules::PathRulesSlot>) -> Self {
+        self.pathrules = slot;
+        self
+    }
+
+    /// The caller as the policy of `ctx.repo` sees it, with its teams.
+    async fn caller(&self, ctx: &CallCtx) -> Who {
+        crate::policy::with_teams(
+            &self.pathrules,
+            ctx.repo.as_str(),
+            who_of(&ctx.principal.id),
+        )
+        .await
     }
 
     pub fn policies(&self) -> &Arc<PolicyStore> {
@@ -243,7 +262,7 @@ impl PolicyHub {
         let entry = self.open(ctx).await?;
         let ids = self.codec(ctx, &entry);
         let loaded = self.policies.in_force(&entry).await?;
-        let who = who_of(&ctx.principal.id);
+        let who = self.caller(ctx).await;
         let source = self.source_out(&ids, &loaded).await?;
         Ok(describe(
             &entry.default_branch,
@@ -274,7 +293,7 @@ impl PolicyHub {
                 .ok_or_else(|| Status::not_found(format!("unknown revision {:?}", req.rev)))?;
             self.policies.at(&entry, cs).await?
         };
-        let who = who_of(&ctx.principal.id);
+        let who = self.caller(ctx).await;
         let source = self.source_out(&ids, &loaded).await?;
         let parsed = describe(&entry.default_branch, &loaded, source.clone(), &who, &[]);
         Ok(wire::GetPolicySourceResponse {
@@ -359,7 +378,7 @@ impl PolicyHub {
         }
         let entry = self.open(ctx).await?;
         let current = self.policies.in_force(&entry).await?;
-        let who = who_of(&ctx.principal.id);
+        let who = self.caller(ctx).await;
         Ok(self.judge(&entry.default_branch, &req.text, &who, &current))
     }
 
@@ -380,7 +399,7 @@ impl PolicyHub {
         }
         let entry = self.open(ctx).await?;
         let ids = self.codec(ctx, &entry);
-        let who = who_of(&ctx.principal.id);
+        let who = self.caller(ctx).await;
         let current = self.policies.in_force(&entry).await?;
         let validation = self.judge(&entry.default_branch, &req.text, &who, &current);
         if !validation.valid {
@@ -496,7 +515,7 @@ impl PolicyHub {
                 .ok_or_else(|| Status::not_found(format!("unknown revision {:?}", req.rev)))?;
             self.policies.at(&entry, cs).await?
         };
-        let me = who_of(&ctx.principal.id);
+        let me = self.caller(ctx).await;
         let target = match &req.principal {
             None => me.clone(),
             Some(p) if p.kind.is_empty() && p.name.is_empty() => me.clone(),
@@ -504,7 +523,12 @@ impl PolicyHub {
                 if p.kind.len() > 16 || p.name.len() > 255 || p.name.chars().any(char::is_control) {
                     return Err(Status::invalid_argument("invalid principal"));
                 }
-                who_from_ref(&p.kind, &p.name)
+                let target = who_from_ref(&p.kind, &p.name);
+                if target.kind == me.kind && target.name == me.name {
+                    me.clone()
+                } else {
+                    crate::policy::with_teams(&self.pathrules, ctx.repo.as_str(), target).await
+                }
             }
         };
         // How someone else is bound is for maintainers to see. With no policy in force there is

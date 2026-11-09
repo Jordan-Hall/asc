@@ -115,7 +115,7 @@ impl Subject {
         match self {
             Self::Anyone => true,
             Self::Of { kind, glob } => v.who.kind == Some(*kind) && name_glob(glob, &v.who.name),
-            Self::Team(t) => v.teams.iter().any(|m| m == t),
+            Self::Team(t) => v.teams.iter().any(|m| m.eq_ignore_ascii_case(t)),
         }
     }
 }
@@ -419,6 +419,9 @@ mod tests {
         let a = acl();
         let core = user("bob", &["core"], Level::Write);
         assert_eq!(a.level(&core, b"secret/key.pem"), Level::Write);
+        // A team name is matched ignoring ASCII case (the host sends lower-case names).
+        let upper = user("bob", &["CORE"], Level::Write);
+        assert_eq!(a.level(&upper, b"secret/key.pem"), Level::Write);
         let ops_reader = user("carol", &["ops"], Level::Read);
         assert_eq!(a.level(&ops_reader, b"infra/main.tf"), Level::Read);
         let bot = Viewer {

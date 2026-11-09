@@ -104,6 +104,8 @@ pub struct Insights {
     pub(crate) registry: Arc<Registry>,
     pub(crate) policy: PolicyStore,
     pub(crate) cfg: InsightsConfig,
+    /// Where the teams a policy's `team:<name>` subjects name are read from.
+    pub(crate) pathrules: Arc<crate::pathrules::PathRulesSlot>,
 }
 
 impl Insights {
@@ -112,7 +114,14 @@ impl Insights {
             policy: PolicyStore::new(registry.clone()),
             registry,
             cfg,
+            pathrules: Arc::default(),
         }
+    }
+
+    #[must_use]
+    pub fn with_pathrules(mut self, slot: Arc<crate::pathrules::PathRulesSlot>) -> Self {
+        self.pathrules = slot;
+        self
     }
 }
 
@@ -133,7 +142,9 @@ impl InsightsSlot {
 
 /// The unit's one line in `serve`.
 pub fn register(ext: &Extensions, registry: &Arc<Registry>, cfg: &InsightsConfig) {
-    let hub = Arc::new(Insights::new(registry.clone(), cfg.clone()));
+    let hub = Arc::new(
+        Insights::new(registry.clone(), cfg.clone()).with_pathrules(ext.pathrules.clone()),
+    );
     assert!(
         ext.insights.set(hub),
         "the CI insights hub is registered once"

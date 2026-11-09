@@ -23,7 +23,9 @@
 //!
 //! [`who_of`] maps a principal id to a policy subject: `7:alice` and `pat:alice` are `user:alice`,
 //! `agent:<name>` is an agent, a deploy key is `deploy:`, a CI task or token is `ci:` and the host
-//! service is `host:`. An anonymous or unknown principal matches `*` only.
+//! service is `host:`. An anonymous or unknown principal matches `*` only. [`with_teams`] adds
+//! the teams of the repository's organisation that list the principal (the members the host sends
+//! with `PathRules.SetTeamMembers`), so a rule naming `team:<name>` admits them.
 
 pub mod gate;
 pub mod rpc;
@@ -94,6 +96,26 @@ pub fn who_of(principal_id: &str) -> Who {
         return Who::new(WhoKind::User, id.handle);
     }
     Who::unknown()
+}
+
+/// `who` with the teams of the organisation owning `repo` (`owner/name`) that list it. Without
+/// the path rules service, or when the teams cannot be read, `who` keeps no teams: a rule naming
+/// a team then admits nobody through it, so a failure never grants anything.
+pub async fn with_teams(slot: &crate::pathrules::PathRulesSlot, repo: &str, who: Who) -> Who {
+    let Some(hub) = slot.get() else {
+        return who;
+    };
+    if who.kind.is_none() {
+        return who;
+    }
+    let org = repo.split_once('/').map_or(repo, |(o, _)| o);
+    match hub.teams_of(org, &who).await {
+        Ok(teams) => who.with_teams(teams),
+        Err(e) => {
+            tracing::warn!(error = ?e, repo, "reading the caller's teams failed");
+            who
+        }
+    }
 }
 
 /// The policy a [`Who`] is judged under for a wire `PrincipalRef`: kinds `user`, `agent`,
@@ -332,11 +354,10 @@ pub fn register(
         signing,
         server,
     ));
-    let policy_hub = Arc::new(rpc::PolicyHub::new(
-        registry.clone(),
-        policies.clone(),
-        mutations.clone(),
-    ));
+    let policy_hub = Arc::new(
+        rpc::PolicyHub::new(registry.clone(), policies.clone(), mutations.clone())
+            .with_pathrules(ext.pathrules.clone()),
+    );
     let secret_hub = Arc::new(crate::secretscan::rpc::SecretScanHub::new(
         registry.clone(),
         scanner.clone(),

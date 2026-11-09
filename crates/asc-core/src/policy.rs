@@ -65,9 +65,11 @@
 //!
 //! # Subjects
 //!
-//! A subject is `*` (anyone), `<kind>:<glob>` or `role:<name>`. The kinds are `user`, `agent`,
-//! `deploy`, `ci` and `host`; the glob has `*` for any run of characters. A role holds subjects
-//! of the first two forms only, so a role never refers to another role.
+//! A subject is `*` (anyone), `<kind>:<glob>`, `team:<name>` or `role:<name>`. The kinds are
+//! `user`, `agent`, `deploy`, `ci` and `host`; the glob has `*` for any run of characters. A team
+//! is a team of the organisation that owns the repository, as the host keeps it on the server
+//! (`PathRules.SetTeamMembers`); its name is matched ignoring ASCII case and has no glob. A role
+//! holds the other forms only, so a role never refers to another role.
 //!
 //! # Paths
 //!
@@ -254,6 +256,9 @@ impl Kind {
 pub struct Who {
     pub kind: Option<Kind>,
     pub name: String,
+    /// The teams of the repository's organisation that list this principal; filled by the
+    /// server when a policy names a team.
+    pub teams: Vec<String>,
 }
 
 impl Who {
@@ -261,7 +266,15 @@ impl Who {
         Self {
             kind: Some(kind),
             name: name.into(),
+            teams: Vec::new(),
         }
+    }
+
+    /// The same principal, listed in `teams`.
+    #[must_use]
+    pub fn with_teams(mut self, teams: Vec<String>) -> Self {
+        self.teams = teams;
+        self
     }
 
     /// A principal of no known kind.
@@ -269,6 +282,7 @@ impl Who {
         Self {
             kind: None,
             name: String::new(),
+            teams: Vec::new(),
         }
     }
 
@@ -288,6 +302,8 @@ pub enum Subject {
     Of { kind: Kind, glob: String },
     /// `role:<name>`.
     Role(String),
+    /// `team:<name>`: a team of the repository's organisation.
+    Team(String),
 }
 
 impl Subject {
@@ -304,9 +320,22 @@ impl Subject {
         }
         let Some((head, rest)) = text.split_once(':') else {
             return bad(format!(
-                "subject {text:?} is not `*`, `<kind>:<name>` or `role:<name>`"
+                "subject {text:?} is not `*`, `<kind>:<name>`, `team:<name>` or `role:<name>`"
             ));
         };
+        if head == "team" {
+            let ok = !rest.is_empty()
+                && rest.len() <= 64
+                && rest
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b));
+            if !ok {
+                return bad(format!(
+                    "team name {rest:?} is not letters, digits, ., - and _ (at most 64)"
+                ));
+            }
+            return Ok(Self::Team(rest.to_owned()));
+        }
         if head == "role" {
             if !allow_role {
                 return bad("a role cannot refer to another role");
@@ -336,6 +365,7 @@ impl Subject {
             Self::Anyone => "*".to_owned(),
             Self::Of { kind, glob } => format!("{}:{glob}", kind.as_str()),
             Self::Role(r) => format!("role:{r}"),
+            Self::Team(t) => format!("team:{t}"),
         }
     }
 }
@@ -1262,7 +1292,15 @@ impl Policy {
             Subject::Anyone => true,
             Subject::Of { kind, glob } => who.kind == Some(*kind) && name_glob(glob, &who.name),
             Subject::Role(r) => self.is_member(who, r),
+            Subject::Team(t) => who.teams.iter().any(|m| m.eq_ignore_ascii_case(t)),
         }
+    }
+
+    /// Whether some role or `[paths]` rule names a team, so a caller's teams decide something.
+    pub fn names_teams(&self) -> bool {
+        let team = |s: &Subject| matches!(s, Subject::Team(_));
+        self.roles.values().any(|m| m.iter().any(team))
+            || self.paths.iter().any(|r| r.write.iter().any(team))
     }
 
     /// Whether `who` is one of the subjects of role `role`.
@@ -2293,5 +2331,35 @@ block = \"high\"
                 .check_write(&agent("bot"), POLICY_PATH.as_bytes())
                 .is_err()
         );
+    }
+
+    #[test]
+    fn a_team_subject_admits_its_members() {
+        let text = r#"
+version = 1
+[roles]
+maintainer = ["user:alice", "team:Leads"]
+[paths."payments/**"]
+write = ["team:payments-reviewers"]
+"#;
+        let p = Policy::parse(text.as_bytes()).unwrap();
+        assert!(p.names_teams());
+        let path = b"payments/ledger.rs".as_slice();
+        assert!(p.check_write(&user("carol"), path).is_err());
+        let carol = user("carol").with_teams(vec!["payments-reviewers".into()]);
+        assert!(p.check_write(&carol, path).is_ok());
+        // Case is ignored; another team does not count.
+        assert!(p.is_maintainer(&user("dan").with_teams(vec!["leads".into()])));
+        assert!(!p.is_maintainer(&user("dan").with_teams(vec!["leadsx".into()])));
+        assert_eq!(
+            p.paths[0].write[0].render(),
+            "team:payments-reviewers",
+            "renders as written"
+        );
+        assert!(!policy().names_teams());
+        for bad in ["team:", "team:a b", "team:a/b", "team:*"] {
+            let t = format!("version = 1\n[roles]\nmaintainer = [\"{bad}\"]\n");
+            assert!(Policy::parse(t.as_bytes()).is_err(), "{bad}");
+        }
     }
 }

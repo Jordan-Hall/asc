@@ -1155,7 +1155,12 @@ impl RefGate for ServerGate {
                 .to_owned();
             return Err(self.refuse(req.ctx, &name, status).await);
         }
-        let who = who_of(&req.ctx.principal.id);
+        let who = crate::policy::with_teams(
+            &self.pathrules,
+            req.entry.name.as_str(),
+            who_of(&req.ctx.principal.id),
+        )
+        .await;
         if matches!(req.mode, GateMode::Submit) {
             return self.check_submitted(req, &who).await;
         }

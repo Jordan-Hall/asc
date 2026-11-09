@@ -44,12 +44,19 @@ impl CiInsightsService {
         let Ok(entry) = self.hub.registry.open(&ctx.repo).await else {
             return false;
         };
-        match self.hub.policy.in_force(&entry).await {
-            Ok(loaded) => loaded
-                .policy()
-                .is_some_and(|p| p.is_maintainer(&crate::policy::who_of(&ctx.principal.id))),
-            Err(_) => false,
-        }
+        let Ok(loaded) = self.hub.policy.in_force(&entry).await else {
+            return false;
+        };
+        let Some(policy) = loaded.policy() else {
+            return false;
+        };
+        let who = crate::policy::with_teams(
+            &self.hub.pathrules,
+            ctx.repo.as_str(),
+            crate::policy::who_of(&ctx.principal.id),
+        )
+        .await;
+        policy.is_maintainer(&who)
     }
 }
 
