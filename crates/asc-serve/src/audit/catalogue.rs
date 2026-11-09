@@ -92,7 +92,7 @@ pub const CATALOGUE: &[ActionInfo] = &[
     a(
         "host.maintenance.updated",
         "The maintenance notice of the host application was switched or changed.",
-        &["enabled", "old_enabled", "message", "until"],
+        &["enabled", "old_enabled", "message", "until", "version"],
     ),
     a(
         "host.user.suspended",
