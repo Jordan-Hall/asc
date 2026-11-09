@@ -2796,3 +2796,55 @@ async fn repo_usage_lists_a_routed_repository_in_its_target() {
     assert_eq!(tally(&r, super::usage::Kind::Files).objects, 1);
     let _ = e;
 }
+
+#[tokio::test]
+async fn a_site_admin_sees_where_each_repository_keeps_its_objects() {
+    let f = fx().await;
+    let v = f.enabled("main").await;
+    f.repo("acme/app").await;
+    f.repo("acme/web").await;
+    f.svc
+        .assign_repo(&alice(), "acme/app", &v.target.id)
+        .await
+        .unwrap();
+    let names: Vec<String> = ["acme/app", "acme/web", "acme/ghost"]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
+    // Repository administration is not enough: the list spans every owner.
+    assert!(matches!(
+        f.svc.repo_placements(&alice(), &names).await,
+        Err(StorageError::PermissionDenied(_))
+    ));
+    f.table.grant_admin("9:root");
+    let root = caller("9:root");
+    let list = f.svc.repo_placements(&root, &names).await.unwrap();
+    assert_eq!(list.len(), 2, "a name that is not a repository is left out");
+    let app = &list[0];
+    assert_eq!(app.repo, "acme/app");
+    assert_eq!(app.target_id, v.target.id);
+    assert_eq!(
+        app.target,
+        Some(("main".to_owned(), owner_of("alice"), State::Enabled))
+    );
+    assert!(!app.migrating);
+    let web = &list[1];
+    assert_eq!(
+        (web.repo.as_str(), web.target_id.as_str(), &web.target),
+        ("acme/web", "", &None),
+        "no assignment: the instance default"
+    );
+    assert!(!web.has_fallback && !web.migrating);
+
+    let many: Vec<String> = (0..=super::service::MAX_PLACEMENTS)
+        .map(|i| format!("acme/r{i}"))
+        .collect();
+    assert!(matches!(
+        f.svc.repo_placements(&root, &many).await,
+        Err(StorageError::InvalidArgument(_))
+    ));
+    assert!(matches!(
+        f.svc.repo_placements(&root, &["../x".to_owned()]).await,
+        Err(StorageError::InvalidArgument(_))
+    ));
+}
