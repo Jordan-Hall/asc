@@ -603,6 +603,14 @@ A client calls it with the user's own credential.
 - **Row 294, `Stacks.UndoRef` dry run.** The answer lists the changes that leave the ref (`changes_back`, at most 100 in `changes`) and how many of them hold an
   approval of their newest version, which stays (`approvals_kept`). The walk is bounded at 2000 changesets (`preview_truncated`).
 
+## 22b. Runs counted over several repositories
+
+- `Agents.CountRuns` (cheap) counts the runs over 1 to 50 repositories at once, filtered by state (empty: every state) and by the person who
+  started or created them (`created_by`, empty: anyone), for the "N agents running" pill of the hub header. One SQL `COUNT(*)` with
+  `repo IN (...)`; names are compared lower-case. The caller needs read on every repository named and one refusal fails the whole call, so a
+  count never mixes in a repository the caller may not see. No list, an empty list, more than 50 or a repository named twice is
+  `INVALID_ARGUMENT`.
+
 ## 23. Agent profile privacy
 
 - `Agents.GetPerson` (repo read; cheap) returns the profile a person lets agents read: name, bio, location, website, pronouns. asc keeps no profiles; each call asks
@@ -974,6 +982,7 @@ Every method of the build-out services (98). A test keeps this list equal to the
 - `asc.v1.Agents/GetSpend` — repo read
 - `asc.v1.Agents/SetMonthlyBudget` — repo admin; mutating
 - `asc.v1.Agents/GetPerson` — repo read; the profile a person lets agents read, asked of the hub each time; fails closed
+- `asc.v1.Agents/CountRuns` — repo read on every repository named; cheap
 
 **AgentTokens** (`agents.proto`)
 
