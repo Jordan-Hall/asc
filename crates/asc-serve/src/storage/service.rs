@@ -25,6 +25,24 @@ use super::model::{
 use crate::netguard::{BlockReason, Guard, Shape};
 use crate::vault::{Vault, VaultError};
 
+/// The most repositories one `ListRepoPlacements` call answers for.
+pub const MAX_PLACEMENTS: usize = 100;
+
+/// Where a repository keeps its objects.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Placement {
+    pub repo: String,
+    /// `""`: the instance default.
+    pub target_id: String,
+    /// The name, owner and state of the target; `None` for the instance default or a target
+    /// that is gone.
+    pub target: Option<(String, Owner, State)>,
+    /// Objects remain in an earlier place until a migration moves them.
+    pub has_fallback: bool,
+    /// A migration is copying, so writes go to two places.
+    pub migrating: bool,
+}
+
 /// `[storage]`.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -1038,6 +1056,50 @@ impl Service {
             self.engine.kick();
         }
         self.db.migration(id).await?.ok_or(StorageError::Internal)
+    }
+
+    /// Where each of `repos` keeps its objects, for the site administrator's list of
+    /// repositories. Names that are not repositories are left out; at most
+    /// [`MAX_PLACEMENTS`] names.
+    pub async fn repo_placements(
+        &self,
+        caller: &Caller,
+        repos: &[String],
+    ) -> Result<Vec<Placement>, StorageError> {
+        if !self.authority.is_site_admin(caller).await {
+            return Err(StorageError::PermissionDenied(
+                "only a site administrator may list where repositories keep their objects",
+            ));
+        }
+        if repos.len() > MAX_PLACEMENTS {
+            return Err(StorageError::InvalidArgument(format!(
+                "at most {MAX_PLACEMENTS} repositories at a time"
+            )));
+        }
+        let mut out = Vec::with_capacity(repos.len());
+        for repo in repos {
+            let name = asc_rpc::server::RepoName::parse(repo)
+                .map_err(|_| StorageError::InvalidArgument("invalid repository name".into()))?;
+            let Some((id, _)) = self.db.repo(name.as_str()).await? else {
+                continue;
+            };
+            let mut p = Placement {
+                repo: name.as_str().to_owned(),
+                ..Placement::default()
+            };
+            if let Some(route) = self.db.route(id).await? {
+                p.has_fallback = route.fallback.is_some();
+                p.migrating = route.mirror_to.is_some();
+                if !route.target_id.is_empty() {
+                    if let Some(t) = self.db.target(&route.target_id).await? {
+                        p.target = Some((t.name, t.owner, t.state));
+                    }
+                    p.target_id = route.target_id;
+                }
+            }
+            out.push(p);
+        }
+        Ok(out)
     }
 }
 

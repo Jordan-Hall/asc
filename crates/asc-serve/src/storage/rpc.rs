@@ -253,16 +253,20 @@ fn credentials_in(c: &wire::StorageCredentials) -> Result<Credentials, Status> {
         .map_err(Status::invalid_argument)
 }
 
-/// The wire form of a target. Credentials are not in [`View`], so they cannot be in the answer.
-pub fn target_pb(v: &View) -> wire::StorageTarget {
-    let t = &v.target;
-    let state = match t.state {
+fn state_pb(s: State) -> wire::StorageTargetState {
+    match s {
         State::Pending => wire::StorageTargetState::Pending,
         State::Verified => wire::StorageTargetState::Verified,
         State::Enabled => wire::StorageTargetState::Enabled,
         State::Disabled => wire::StorageTargetState::Disabled,
         State::Failed => wire::StorageTargetState::Failed,
-    };
+    }
+}
+
+/// The wire form of a target. Credentials are not in [`View`], so they cannot be in the answer.
+pub fn target_pb(v: &View) -> wire::StorageTarget {
+    let t = &v.target;
+    let state = state_pb(t.state);
     wire::StorageTarget {
         id: t.id.clone(),
         owner: Some(owner_pb(&t.owner)),
@@ -697,6 +701,41 @@ impl Storage for StorageService {
             .map_err(status_of)?;
         Ok(Response::new(wire::ResumeStorageMigrationResponse {
             migration: Some(migration_pb(&m)),
+        }))
+    }
+
+    async fn list_repo_placements(
+        &self,
+        request: Request<wire::ListRepoPlacementsRequest>,
+    ) -> Result<Response<wire::ListRepoPlacementsResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        let caller = self.caller(&ext, &meta).await?;
+        let list = self
+            .svc
+            .repo_placements(&caller, &msg.repos)
+            .await
+            .map_err(status_of)?;
+        Ok(Response::new(wire::ListRepoPlacementsResponse {
+            placements: list
+                .into_iter()
+                .map(|p| {
+                    let (target_name, target_owner, target_state) = match p.target {
+                        Some((name, owner, state)) => {
+                            (name, Some(owner_pb(&owner)), state_pb(state) as i32)
+                        }
+                        None => (String::new(), None, 0),
+                    };
+                    wire::RepoPlacement {
+                        repo: p.repo,
+                        target_id: p.target_id,
+                        target_name,
+                        target_owner,
+                        target_state,
+                        has_fallback: p.has_fallback,
+                        migrating: p.migrating,
+                    }
+                })
+                .collect(),
         }))
     }
 }

@@ -213,6 +213,7 @@
       "asc.v1.Storage/PauseMigration",
       "asc.v1.Storage/ResumeMigration",
       "asc.v1.Storage/GetRepoUsage",
+      "asc.v1.Storage/ListRepoPlacements",
       "asc.v1.Vault/Status",
       "asc.v1.Vault/Rotate",
       "asc.v1.Vault/GetRotation",

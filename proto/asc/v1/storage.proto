@@ -31,6 +31,7 @@ service Storage {
   rpc PauseMigration(PauseStorageMigrationRequest) returns (PauseStorageMigrationResponse);      // repo admin; idempotent; before the switch
   rpc ResumeMigration(ResumeStorageMigrationRequest) returns (ResumeStorageMigrationResponse);   // repo admin; idempotent
   rpc GetRepoUsage(GetRepoStorageUsageRequest) returns (GetRepoStorageUsageResponse);   // repo admin; cached, scanned in the background
+  rpc ListRepoPlacements(ListRepoPlacementsRequest) returns (ListRepoPlacementsResponse); // site admin; at most 100 repositories
 }
 
 enum StorageTargetState {
@@ -242,6 +243,24 @@ message ResumeStorageMigrationRequest {
 }
 message ResumeStorageMigrationResponse {
   StorageMigration migration = 1;
+}
+
+// Where repositories keep their objects, for the site administrator's list of repositories. Names that are not
+// repositories are left out of the answer.
+message ListRepoPlacementsRequest {
+  repeated string repos = 1;           // "owner/name", at most 100
+}
+message RepoPlacement {
+  string repo = 1;
+  string target_id = 2;                // where new objects go; empty: the instance default
+  string target_name = 3;              // that target's name; empty for the instance default
+  OwnerRef target_owner = 4;           // that target's owner; unset for the instance default
+  StorageTargetState target_state = 5; // UNSPECIFIED for the instance default or a target that is gone
+  bool has_fallback = 6;               // objects remain in an earlier place until a migration moves them
+  bool migrating = 7;                  // a migration is copying, so writes go to two places
+}
+message ListRepoPlacementsResponse {
+  repeated RepoPlacement placements = 1;
 }
 
 // What stored bytes are.

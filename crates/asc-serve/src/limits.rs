@@ -535,6 +535,7 @@ const TABLE: &[(&str, Class, &[&str])] = &[
             "GetRepoUsage",
             "GetTarget",
             "ListMigrations",
+            "ListRepoPlacements",
             "ListTargets",
             "PauseMigration",
             "ResumeMigration",
