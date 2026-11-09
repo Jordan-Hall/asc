@@ -463,36 +463,6 @@ impl Place {
         }
     }
 
-    /// Whether every file of S3 backup `id` is on the target at the size it was stored with, and
-    /// its seal as it now stands (compare it with the server's record). `encrypted` is the
-    /// server's record of the run.
-    pub async fn check(
-        &self,
-        id: &str,
-        key: Option<[u8; 32]>,
-        encrypted: bool,
-    ) -> Result<String, String> {
-        let side = self.sidecar(id).await?;
-        if side.encrypted != encrypted {
-            return Err("the backup's record on the target disagrees with the server's".into());
-        }
-        let mut total = 0u64;
-        for (rel, size) in &side.files {
-            let (store, path) = self.key(id, rel).ok_or("not an S3 target")?;
-            let meta = store
-                .head(&path)
-                .await
-                .map_err(|_| format!("{rel} is missing from the target"))?;
-            if meta.size != *size {
-                return Err(format!("{rel} has the wrong size on the target"));
-            }
-            total += size;
-        }
-        let _ = total;
-        let manifest = self.read_manifest(id).await?;
-        Ok(seal(key.as_ref(), id, encrypted, &side.files, &manifest))
-    }
-
     /// Removes backup `id` from the target. A missing backup is not an error.
     pub async fn delete(&self, id: &str) -> Result<(), String> {
         match self {

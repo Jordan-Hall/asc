@@ -81,6 +81,7 @@ getrandom = "0.4"
 chacha20poly1305 = { version = "0.11.0", default-features = false, features = ["alloc", "zeroize"] }
 hkdf = "0.13.0"
 zeroize = "1.9.1"
+tempfile = { workspace = true }
 # JWT signature checks for the optional MCP OAuth path (mcp/oauth.rs); already built for rustls.
 ring = "0.17.14"
 # Free space of the volume that holds the git views (`min_free_disk`, SPEC 25.5).
@@ -104,7 +105,6 @@ rustix = { workspace = true, features = ["process"] }
 [dev-dependencies]
 # `run_index_suite`: the pack index contract, run against the SQL index.
 asc-store = { workspace = true, features = ["testkit"] }
-tempfile = { workspace = true }
 rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "ring", "pem"] }
 # Builds gzip request bodies for the upload-pack tests (U81); the backend `zip` already uses.
 flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"] }

@@ -95,6 +95,8 @@ pub trait Engine: Send + Sync {
     async fn dump(&self, out: &Path, o: &DumpOptions) -> Result<(), String>;
     /// Checks a backup directory; the number of objects it holds.
     fn verify(&self, dir: &Path) -> Result<u64, String>;
+    /// Restores a backup directory into a scratch area and checks the result; what was checked.
+    async fn restore_test(&self, dir: &Path, key: Option<[u8; 32]>) -> Result<String, String>;
 }
 
 /// `asc serve backup` and its check.
@@ -121,6 +123,12 @@ impl Engine for RealEngine {
 
     fn verify(&self, dir: &Path) -> Result<u64, String> {
         crate::backup::verify(dir).map_err(|e| e.0)
+    }
+
+    async fn restore_test(&self, dir: &Path, key: Option<[u8; 32]>) -> Result<String, String> {
+        crate::backup::restore_test(dir, key.as_ref())
+            .await
+            .map_err(|e| e.0)
     }
 }
 
@@ -663,14 +671,18 @@ impl BackupsHub {
         .await;
     }
 
+    /// The restore test: the backup is restored into a scratch area and the result is checked.
+    /// A local backup is tested where it lies (only the scratch copy of its database is opened);
+    /// a remote one is first downloaded into a private scratch directory, which is removed after.
     async fn check(&self, run: &Run) -> Result<String, String> {
         let place = self.place(&run.target).map_err(|e| format!("{e:?}"))?;
+        let key = self.backup_key()?;
         match place.local_dir(&run.location) {
             Some(dir) => {
                 if !dir.exists() {
                     return Err("the backup's files are not on the target".into());
                 }
-                // The files must be the ones the server recorded, then they must match their manifest.
+                // The files must be the ones the server recorded, then they must restore.
                 let (d, id, want) = (dir.clone(), run.id.clone(), run.seal.clone());
                 let now = tokio::task::spawn_blocking(move || place::local_seal(&d, &id))
                     .await
@@ -678,26 +690,29 @@ impl BackupsHub {
                 if want.is_empty() || now != want {
                     return Err("the backup does not match the record the server made of it".into());
                 }
-                let engine = self.engine.clone();
-                tokio::task::spawn_blocking(move || engine.verify(&dir))
-                    .await
-                    .map_err(|e| e.to_string())??;
-                Ok("Restore test passed".into())
+                self.engine.restore_test(&dir, key).await
             }
             None => {
-                let key = if run.encrypted {
-                    self.backup_key()?
-                } else {
-                    None
-                };
                 if run.encrypted && key.is_none() {
                     return Err("the backup is encrypted and no backup key is configured".into());
                 }
-                let now = place.check(&run.location, key, run.encrypted).await?;
-                if run.seal.is_empty() || now != run.seal {
-                    return Err("the backup does not match the record the server made of it".into());
+                let scratch = self.state_dir.join("verify").join(&run.id);
+                let _ = std::fs::remove_dir_all(&scratch);
+                crate::workdir::create_private_all(&scratch).map_err(|e| e.to_string())?;
+                let expected = place::Expected {
+                    encrypted: run.encrypted,
+                    size: u64::try_from(run.size_bytes).unwrap_or(0),
+                    seal: run.seal.clone(),
+                };
+                let out = async {
+                    place
+                        .download_dir(&run.location, &scratch, key, &expected)
+                        .await?;
+                    self.engine.restore_test(&scratch, key).await
                 }
-                Ok("Files present at their stored size".into())
+                .await;
+                let _ = std::fs::remove_dir_all(&scratch);
+                out
             }
         }
     }

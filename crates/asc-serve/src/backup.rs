@@ -605,6 +605,78 @@ pub fn verify(dir: &Path) -> Result<u64, BackupError> {
     Ok(count)
 }
 
+/// Restores the backup in `dir` into a scratch area and checks what comes out: the restore a
+/// real one would do, without touching the server. Returns what was checked, in one line.
+///
+/// Every file and object is checked against its digest first, as [`restore`] does. The database
+/// is then copied into a private scratch directory and opened there: a SQLite copy must pass
+/// `PRAGMA integrity_check` and hold the server's tables, a PostgreSQL dump must be readable by
+/// `pg_restore --list`. A sealed vault key must open under `key`. The scratch directory is
+/// removed when the test ends, whatever its outcome.
+pub async fn restore_test(dir: &Path, key: Option<&[u8; 32]>) -> Result<String, BackupError> {
+    let objects = verify(dir)?;
+    let m = read_manifest(dir)?;
+    if m.vault_key == "sealed" {
+        let Some(key) = key else {
+            return fail("the backup holds a sealed vault key and no backup key is configured");
+        };
+        let plain = zeroize::Zeroizing::new(unseal(key, &std::fs::read(dir.join(SEALED_KEY))?)?);
+        if plain.is_empty() {
+            return fail("the sealed vault key in the backup is empty");
+        }
+    }
+    let scratch = tempfile::Builder::new()
+        .prefix(".asc-restore-test-")
+        .tempdir_in(dir.parent().unwrap_or(dir))
+        .or_else(|_| tempfile::tempdir())?;
+    let db = if m.db_kind == "postgres" {
+        let dump = dir.join(DB_PG);
+        let list = scratch.path().join("toc.list");
+        let (d, l) = (dump.to_string_lossy(), list.to_string_lossy());
+        run_pg("pg_restore", &["--list", "--file", &l, &d], &[])?;
+        let entries = std::fs::read_to_string(&list)?
+            .lines()
+            .filter(|l| !l.trim().is_empty() && !l.starts_with(';'))
+            .count();
+        if entries == 0 {
+            return fail("the database dump restores nothing");
+        }
+        format!("the PostgreSQL dump lists {entries} entries")
+    } else {
+        let copy = scratch.path().join(DB_SQLITE);
+        std::fs::copy(dir.join(DB_SQLITE), &copy)?;
+        let pool = migrate::connect(&format!("sqlite:{}?mode=ro", copy.display()), 1).await?;
+        let checked = async {
+            let verdict: String = sqlx::query_scalar("PRAGMA integrity_check")
+                .fetch_one(&pool)
+                .await?;
+            if verdict != "ok" {
+                return fail(format!(
+                    "the restored database fails its integrity check: {verdict}"
+                ));
+            }
+            let tables: i64 = sqlx::query_scalar(
+                "SELECT CAST(COUNT(*) AS BIGINT) FROM sqlite_master WHERE type = 'table' \
+                 AND name NOT LIKE 'sqlite_%'",
+            )
+            .fetch_one(&pool)
+            .await?;
+            if tables == 0 {
+                return fail("the restored database has no tables");
+            }
+            Ok(tables)
+        }
+        .await;
+        pool.close().await;
+        format!("the database opened with {} tables", checked?)
+    };
+    drop(scratch);
+    Ok(format!(
+        "Restore test passed: {db} in a scratch copy, {} files and {objects} objects match",
+        m.files.len()
+    ))
+}
+
 /// Restores the backup in `opts.from` into the server `cfg` names. Stop the server first.
 pub async fn restore(cfg: &ServeConfig, opts: &RestoreOptions) -> Result<String, BackupError> {
     let Some(db) = cfg.db.as_deref() else {
