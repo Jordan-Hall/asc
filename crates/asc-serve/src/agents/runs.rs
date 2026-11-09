@@ -450,6 +450,43 @@ impl RunStore {
         Ok(u64::try_from(n).unwrap_or(0))
     }
 
+    /// The number of runs over several repositories that match `states` and `created_by` (see [`Self::count`]).
+    pub async fn count_in(
+        &self,
+        repos: &[String],
+        states: &[RunState],
+        created_by: &str,
+    ) -> Result<u64, sqlx::Error> {
+        if repos.is_empty() {
+            return Ok(0);
+        }
+        let marks: Vec<String> = (1..=repos.len()).map(|n| format!("${n}")).collect();
+        let mut conds = vec![format!("repo IN ({})", marks.join(", "))];
+        if !states.is_empty() {
+            let list: Vec<String> = states.iter().map(|s| (*s as i64).to_string()).collect();
+            conds.push(format!("state IN ({})", list.join(", ")));
+        }
+        if !created_by.is_empty() {
+            conds.push(format!(
+                "(created_by = ${n} OR starter = ${n})",
+                n = repos.len() + 1
+            ));
+        }
+        let q = format!(
+            "SELECT COUNT(*) FROM agent_runs WHERE {}",
+            conds.join(" AND ")
+        );
+        let mut query = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(q));
+        for r in repos {
+            query = query.bind(r.to_ascii_lowercase());
+        }
+        if !created_by.is_empty() {
+            query = query.bind(created_by.to_owned());
+        }
+        let n = query.fetch_one(&self.pool).await?;
+        Ok(u64::try_from(n).unwrap_or(0))
+    }
+
     /// Moves a run from one of `from` to `to`. `Ok(false)`: it was in another state.
     pub async fn transition(
         &self,

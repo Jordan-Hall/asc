@@ -214,6 +214,13 @@ impl Agents for Fake {
         Err(Status::unimplemented("not served by this stand-in"))
     }
 
+    async fn count_runs(
+        &self,
+        _r: Request<wire::CountAgentRunsRequest>,
+    ) -> Result<Response<wire::CountAgentRunsResponse>, Status> {
+        Err(Status::unimplemented("not served by this stand-in"))
+    }
+
     async fn set_monthly_budget(
         &self,
         _r: Request<wire::SetMonthlyBudgetRequest>,

@@ -27,6 +27,8 @@ use crate::review::{handle_of, require_handle};
 
 const DEFAULT_REQUESTS: usize = 50;
 const MAX_REQUESTS: usize = 200;
+/// The repositories one CountRuns may name.
+const MAX_COUNT_REPOS: usize = 50;
 
 fn relay(ctx: &CallCtx) -> Option<&'static str> {
     crate::review::acting::relayed(ctx).then_some("host-service")
@@ -664,6 +666,45 @@ impl AgentService {
                 })
                 .collect(),
         }))
+    }
+
+    pub(super) async fn count_runs_impl(
+        &self,
+        request: Request<wire::CountAgentRunsRequest>,
+    ) -> Result<Response<wire::CountAgentRunsResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        if msg.repos.is_empty() || msg.repos.len() > MAX_COUNT_REPOS {
+            return Err(Status::invalid_argument("name 1 to 50 repositories"));
+        }
+        let mut states = Vec::new();
+        for s in &msg.states {
+            let st = wire::AgentRunState::try_from(*s)
+                .map_err(|_| Status::invalid_argument("unknown state"))?;
+            if let Some(s) = RunState::from_wire(st) {
+                states.push(s);
+            }
+        }
+        // Read on every repository, checked one by one as for ListRuns; one refusal fails the call.
+        let mut repos: Vec<String> = Vec::with_capacity(msg.repos.len());
+        for r in &msg.repos {
+            let ctx = self
+                .env
+                .context(&meta, &ext, Some(r), Access::Read, false)
+                .await?;
+            let name = ctx.repo.as_str().to_ascii_lowercase();
+            if repos.contains(&name) {
+                return Err(Status::invalid_argument("a repository is named twice"));
+            }
+            repos.push(name);
+        }
+        let total = self
+            .hub
+            .core
+            .runs
+            .count_in(&repos, &states, &msg.created_by)
+            .await
+            .map_err(|e| db(&e))?;
+        Ok(Response::new(wire::CountAgentRunsResponse { total }))
     }
 
     pub(super) async fn get_run_log_impl(

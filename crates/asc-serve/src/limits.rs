@@ -343,6 +343,7 @@ const TABLE: &[(&str, Class, &[&str])] = &[
             "RecentTasks",
             "SetMonthlyBudget",
             "GetPerson",
+            "CountRuns",
         ],
     ),
     (

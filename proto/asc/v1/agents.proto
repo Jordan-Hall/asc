@@ -61,6 +61,7 @@ service Agents {
   rpc GetSpend(GetAgentSpendRequest) returns (GetAgentSpendResponse);               // repo read; month totals, cap, daily series, per agent
   rpc SetMonthlyBudget(SetMonthlyBudgetRequest) returns (SetMonthlyBudgetResponse); // repo admin; whole repository or one agent; mutating, x-asc-op-id
   rpc GetPerson(GetAgentPersonRequest) returns (GetAgentPersonResponse);            // repo read; the profile a person lets agents read, asked of the hub each time; fails closed
+  rpc CountRuns(CountAgentRunsRequest) returns (CountAgentRunsResponse);            // repo read on every repository named; one count over 1 to 50 repositories; cheap
 }
 
 enum AgentRunState {
@@ -473,6 +474,16 @@ message AgentTaskRef {
   string agent = 3;
   uint64 run_id = 4;                     // the latest run with this task
   int64 at = 5;
+}
+// The runs over several repositories that match the filters, counted at once (the "N agents running" pill of the hub).
+// The caller needs read on every repository named; one it may not read fails the call.
+message CountAgentRunsRequest {
+  repeated RepoRef repos = 1;            // 1 to 50, each named once
+  repeated AgentRunState states = 2;     // empty: every state
+  string created_by = 3;                 // empty: anyone; else the runs this person started or created
+}
+message CountAgentRunsResponse {
+  uint64 total = 1;
 }
 message RecentAgentTasksRequest {
   RepoRef repo = 1;
