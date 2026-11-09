@@ -527,6 +527,11 @@ A client calls it with the user's own credential.
   makes the call act as the person (`ctx.principal`) with that role and no more; a claim that does not verify, is for another subject
   (another tenant), is too old or too small is `PERMISSION_DENIED`, never system work; a caller that is not the host ignores the metadata.
   Audit events of such a call name the person as the actor and `host` as `on_behalf_of` (`acting::event`).
+- **Cloud on a claim.** The `Cloud` service builds its context with the same `acting::act_as`, so the hub's Drafts page hides
+  (discards) and unhides (undoes) the signed-in person's drafts with `UpdateWorkspace` on a `read` claim of that person, in their
+  own workspace only. With a claim, reading another user's workspace needs a `write` claim and `Purge` as an administrator an
+  `admin` claim; the hub's own credential is never asked instead. A hidden head is deleted after `hidden_grace_days` (30) by the
+  cloud expiry, so an undo works for 30 days.
 - **Hub comments.** `Review.AddComment` takes `external_id` (the hub's own comment id, at most 128 bytes of `[A-Za-z0-9._:/-]`): mirroring
   the same id twice stores it once, and an id never names a comment of another change (`ALREADY_EXISTS`). `ReviewComment.external_id`
   returns it. New audit actions: `review.comment.added`, `review.thread.resolved`, `review.requested`. Migration `0570`.
