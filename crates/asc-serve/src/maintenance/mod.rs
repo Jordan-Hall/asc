@@ -6,10 +6,11 @@
 //! or `asc serve admin maintenance`). [`MaintenanceHub`] reads the row at start and every
 //! [`POLL`], so every node of a cluster follows the same switch.
 
+pub mod health;
 pub mod rpc;
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 
 use sqlx::{AnyPool, Row};
@@ -271,6 +272,7 @@ pub struct MaintenanceHub {
     flag: Arc<ReadOnly>,
     audit: Arc<dyn Audit>,
     pub(crate) ops: Ops,
+    health: OnceLock<health::HealthProbes>,
 }
 
 impl MaintenanceHub {
@@ -280,7 +282,18 @@ impl MaintenanceHub {
             pool,
             flag,
             audit,
+            health: OnceLock::new(),
         })
+    }
+
+    /// Installs the health probes, once. False when they were already installed.
+    pub fn set_health(&self, probes: health::HealthProbes) -> bool {
+        self.health.set(probes).is_ok()
+    }
+
+    /// The health probes, when installed.
+    pub fn health(&self) -> Option<&health::HealthProbes> {
+        self.health.get()
     }
 
     pub fn flag(&self) -> &Arc<ReadOnly> {

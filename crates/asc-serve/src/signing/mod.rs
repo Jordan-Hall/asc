@@ -131,6 +131,12 @@ impl ServerSigner {
         self.signer.sign(&message)?.armored()
     }
 
+    /// The armored signature of `message` in the changeset namespace. Only for messages that are
+    /// not changeset ids, such as the health probe's.
+    pub fn sign_bytes(&self, message: &[u8]) -> Result<String, sshsig::Error> {
+        self.signer.sign(message)?.armored()
+    }
+
     /// The armored signature of an audit export whose SHA-512 is `sha512`, in the namespace
     /// [`sshsig::AUDIT_EXPORT_NAMESPACE`].
     pub fn sign_audit_export(&self, sha512: &[u8; 64]) -> Result<String, sshsig::Error> {

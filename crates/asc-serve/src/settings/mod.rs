@@ -85,6 +85,16 @@ pub fn register(
         pathrules: PathRulesHub::new(pool.clone(), audit.clone()),
         maintenance: MaintenanceHub::new(pool.clone(), ext.read_only.clone(), audit.clone()),
     });
+    // The health page's probes: the instance bucket and the server's signing key.
+    let (store, root) = registry.default_place();
+    let signer = ext
+        .security
+        .get()
+        .and_then(|s| s.signing.verifier().server().cloned());
+    hubs.maintenance
+        .set_health(crate::maintenance::health::HealthProbes::new(
+            store, root, signer,
+        ));
     // The land gate, the agent runtime and the object server find the hubs through these slots.
     if let Some(s) = ext.security.get() {
         let _ = s.org_slot.set(hubs.org.clone());
@@ -116,6 +126,7 @@ impl SettingsHubs {
             crate::pathrules::FEATURE,
             crate::pathrules::ACCESS_FEATURE,
             crate::maintenance::FEATURE,
+            crate::maintenance::health::FEATURE,
         ]
         .map(str::to_owned)
         .to_vec()

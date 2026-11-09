@@ -67,6 +67,13 @@ impl MaintenanceService {
     }
 }
 
+/// The clock in unix milliseconds.
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+}
+
 #[tonic::async_trait]
 impl Maintenance for MaintenanceService {
     async fn get_maintenance(
@@ -78,6 +85,20 @@ impl Maintenance for MaintenanceService {
         Ok(Response::new(wire::GetMaintenanceResponse {
             state: Some(self.state().await?),
         }))
+    }
+
+    async fn check_health(
+        &self,
+        request: Request<wire::CheckHealthRequest>,
+    ) -> Result<Response<wire::CheckHealthResponse>, Status> {
+        let (meta, ext, _) = request.into_parts();
+        self.admin(&ext, &meta).await?;
+        let probes = self
+            .hub
+            .health()
+            .ok_or_else(|| Status::unimplemented("the health probes are not installed"))?;
+        let h = probes.check(now_ms()).await;
+        Ok(Response::new(h.to_wire(now_ms())))
     }
 
     async fn set_maintenance(

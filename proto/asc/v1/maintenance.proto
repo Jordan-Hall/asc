@@ -12,9 +12,37 @@ package asc.v1;
 // Every call is for the site administrator: the host service with an `instance` claim of role admin, or the host service's own
 // credential. Any other caller gets PERMISSION_DENIED. SetMaintenance needs `x-asc-op-id` and is written to the audit log as
 // "server.maintenance.updated". Advertised as Version.features "maintenance.v1".
+//
+// CheckHealth is the part of the hub's health page that only this server can answer: whether its object store takes a
+// write, gives it back and deletes it, whether its own signing key still signs, and its clock. It is advertised as
+// Version.features "health.v1". The server makes the probes at most once every 5 seconds; a call in between gets the
+// last answer again.
 service Maintenance {
   rpc GetMaintenance(GetMaintenanceRequest) returns (GetMaintenanceResponse);   // site admin
   rpc SetMaintenance(SetMaintenanceRequest) returns (SetMaintenanceResponse);   // site admin; mutating
+  rpc CheckHealth(CheckHealthRequest) returns (CheckHealthResponse);            // site admin; probes, rate limited
+}
+
+enum HealthState {
+  HEALTH_STATE_UNSPECIFIED = 0;
+  HEALTH_STATE_OK = 1;
+  HEALTH_STATE_FAILED = 2;
+  HEALTH_STATE_NOT_CONFIGURED = 3;   // the server has no such thing to check (no signing key is set)
+}
+
+message HealthProbe {
+  HealthState state = 1;
+  uint32 millis = 2;   // how long the probe took
+  string detail = 3;   // why it failed, a fixed phrase (never a provider's own text); empty when it passed
+}
+
+message CheckHealthRequest {}
+message CheckHealthResponse {
+  HealthProbe object_store = 1;   // write a random object under `<root>/.asc-probe/`, read it back, compare, delete it
+  HealthProbe server_key = 2;     // sign a fixed message with the key of signing.server_key_file and verify the signature
+  string server_key_fingerprint = 3;
+  int64 checked_at_ms = 4;        // the server's clock (unix milliseconds) when it made the probes
+  int64 now_ms = 5;               // the server's clock when it answered, for the caller to compare with its own
 }
 
 message MaintenanceState {
