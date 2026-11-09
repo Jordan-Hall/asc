@@ -232,6 +232,66 @@ impl Signing {
         })
     }
 
+    /// `Signing.GetSigningDefaults`.
+    pub async fn get_defaults(
+        &self,
+        principal_id: &str,
+        req: wire::GetSigningDefaultsRequest,
+    ) -> Result<wire::GetSigningDefaultsResponse, Status> {
+        let me = handle_of(principal_id);
+        let owner = if req.user.is_empty() {
+            Self::handle(principal_id)?
+        } else {
+            if !crate::review::valid_handle(&req.user) {
+                return Err(Status::invalid_argument("invalid user"));
+            }
+            if me.as_deref() != Some(req.user.as_str()) && !is_host_service(principal_id) {
+                return Err(Status::not_found("no such user"));
+            }
+            req.user
+        };
+        let d = store::get_defaults(self.registry.pool(), &owner)
+            .await
+            .map_err(sql)?;
+        Ok(wire::GetSigningDefaultsResponse {
+            sign_by_default: d.sign_by_default,
+            updated: d.updated,
+        })
+    }
+
+    /// `Signing.SetSigningDefaults`.
+    pub async fn set_defaults(
+        &self,
+        principal_id: &str,
+        relay: Option<&str>,
+        req: wire::SetSigningDefaultsRequest,
+    ) -> Result<wire::SetSigningDefaultsResponse, Status> {
+        let owner = Self::handle(principal_id)?;
+        let mut event = NewEvent::new("signing.defaults.set", actor_of(principal_id))
+            .owner(&owner)
+            .target(&owner)
+            .detail(
+                "sign_by_default",
+                if req.sign_by_default { "on" } else { "off" },
+            );
+        if let Some(r) = relay {
+            event = event.on_behalf_of(actor_of(r));
+        }
+        let d = store::set_defaults(
+            self.registry.pool(),
+            &owner,
+            req.sign_by_default,
+            now(),
+            Some(&event),
+        )
+        .await
+        .map_err(sql)?;
+        Ok(wire::SetSigningDefaultsResponse {
+            sign_by_default: d.sign_by_default,
+            updated: d.updated,
+        })
+    }
+
     /// `Signing.GetServerKey`.
     pub fn get_server_key(&self) -> wire::GetServerKeyResponse {
         match self.verifier.server() {
@@ -531,5 +591,26 @@ impl SigningApi for SigningService {
         // Public information, but only for a caller the server can name.
         self.caller(&ext, &meta, Role::Read).await?;
         Ok(Response::new(self.hub.get_server_key()))
+    }
+
+    async fn get_signing_defaults(
+        &self,
+        request: Request<wire::GetSigningDefaultsRequest>,
+    ) -> Result<Response<wire::GetSigningDefaultsResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        let (who, _) = self.caller(&ext, &meta, Role::Read).await?;
+        self.hub.get_defaults(&who, msg).await.map(Response::new)
+    }
+
+    async fn set_signing_defaults(
+        &self,
+        request: Request<wire::SetSigningDefaultsRequest>,
+    ) -> Result<Response<wire::SetSigningDefaultsResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        let (who, relay) = self.caller(&ext, &meta, Role::Write).await?;
+        self.hub
+            .set_defaults(&who, relay.as_deref(), msg)
+            .await
+            .map(Response::new)
     }
 }

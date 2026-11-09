@@ -215,6 +215,11 @@ pub const CATALOGUE: &[ActionInfo] = &[
         &["fingerprint", "kind"],
     ),
     a(
+        "signing.defaults.set",
+        "A user switched signing by default on or off.",
+        &["sign_by_default"],
+    ),
+    a(
         "signing.signature.submitted",
         "A signature was submitted for a change.",
         &["change", "version", "fingerprint"],
@@ -840,6 +845,7 @@ mod tests {
             "secret.finding.updated",
             "signing.key.added",
             "signing.key.revoked",
+            "signing.defaults.set",
             "signing.signature.submitted",
             "storage.target.created",
             "storage.target.updated",

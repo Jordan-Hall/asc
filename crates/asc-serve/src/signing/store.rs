@@ -1,4 +1,5 @@
-//! Signing keys and signature rows (`signing_keys`, `change_signatures`; migration 0521).
+//! Signing keys and signature rows (`signing_keys`, `change_signatures`; migration 0521) and each user's signing
+//! defaults (`signing_defaults`; migration 0607).
 
 use asc_core::id::ChangesetId;
 use asc_core::sshsig::KeyKind;
@@ -244,6 +245,57 @@ pub async fn revoke_key(
     }
     tx.commit().await?;
     get_key(pool, id).await
+}
+
+/// A user's signing defaults: whether to sign by default and when that was set (0 = never, which reads as off).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Defaults {
+    pub sign_by_default: bool,
+    pub updated: i64,
+}
+
+pub async fn get_defaults(pool: &AnyPool, owner: &str) -> Result<Defaults, sqlx::Error> {
+    let row = sqlx::query("SELECT sign_by_default, updated FROM signing_defaults WHERE owner = $1")
+        .bind(owner)
+        .fetch_optional(pool)
+        .await?;
+    Ok(match row {
+        None => Defaults::default(),
+        Some(r) => Defaults {
+            sign_by_default: r.try_get::<i64, _>(0)? != 0,
+            updated: r.try_get(1)?,
+        },
+    })
+}
+
+/// Sets the defaults of `owner` at `at`. Only a change is audited, so a repeat leaves no event.
+pub async fn set_defaults(
+    pool: &AnyPool,
+    owner: &str,
+    sign_by_default: bool,
+    at: i64,
+    event: Option<&NewEvent>,
+) -> Result<Defaults, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    let before: Option<i64> =
+        sqlx::query_scalar("SELECT sign_by_default FROM signing_defaults WHERE owner = $1")
+            .bind(owner)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let value = i64::from(sign_by_default);
+    if before != Some(value) {
+        sqlx::query(
+            "INSERT INTO signing_defaults (owner, sign_by_default, updated) VALUES ($1, $2, $3)              ON CONFLICT (owner) DO UPDATE SET sign_by_default = excluded.sign_by_default, updated = excluded.updated",
+        )
+        .bind(owner)
+        .bind(value)
+        .bind(at)
+        .execute(&mut *tx)
+        .await?;
+        audit_in_tx(&mut tx, event).await?;
+    }
+    tx.commit().await?;
+    get_defaults(pool, owner).await
 }
 
 /// Records that key `id` verified a signature at `at`.

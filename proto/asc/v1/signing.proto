@@ -17,6 +17,8 @@ service Signing {
   rpc SubmitSignature(SubmitSignatureRequest) returns (SubmitSignatureResponse);   // repo write; mutating, x-asc-op-id
   rpc Verify(VerifySignaturesRequest) returns (VerifySignaturesResponse);       // repo read; cheap
   rpc GetServerKey(GetServerKeyRequest) returns (GetServerKeyResponse);        // any caller; the key that signs server-made commits
+  rpc GetSigningDefaults(GetSigningDefaultsRequest) returns (GetSigningDefaultsResponse);   // own; another user's needs a site administrator
+  rpc SetSigningDefaults(SetSigningDefaultsRequest) returns (SetSigningDefaultsResponse);   // user identity; mutating, x-asc-op-id
 }
 
 enum SigningKeyKind {
@@ -116,4 +118,24 @@ message GetServerKeyResponse {
   SigningKeyKind kind = 2;
   string fingerprint = 3;
   string public_key = 4;
+}
+
+// A user's signing defaults. `sign_by_default` asks the user's clients to sign every new change without a flag: the CLI
+// reads it with `asc signing default` and keeps it as the local key `asc.signByDefault`, which a local `commit.gpgsign`
+// overrides. The server does not refuse unsigned changes because of it; branch policy `[signing] require_signed` does that.
+// `user` empty means the caller.
+message GetSigningDefaultsRequest {
+  string user = 1;
+}
+message GetSigningDefaultsResponse {
+  bool sign_by_default = 1;
+  int64 updated = 2;             // 0 = never set
+}
+
+message SetSigningDefaultsRequest {
+  bool sign_by_default = 1;
+}
+message SetSigningDefaultsResponse {
+  bool sign_by_default = 1;
+  int64 updated = 2;
 }

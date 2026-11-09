@@ -514,7 +514,15 @@ const TABLE: &[(&str, Class, &[&str])] = &[
     (
         "Signing",
         Class::Cheap,
-        &["AddKey", "GetServerKey", "ListKeys", "RevokeKey", "Verify"],
+        &[
+            "AddKey",
+            "GetServerKey",
+            "GetSigningDefaults",
+            "ListKeys",
+            "RevokeKey",
+            "SetSigningDefaults",
+            "Verify",
+        ],
     ),
     ("Signing", Class::Expensive, &["SubmitSignature"]),
     ("Stacks", Class::Cheap, &["ListRefLog"]),
