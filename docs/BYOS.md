@@ -173,6 +173,11 @@ Bytes read are the bytes the server fetched from storage for the repository (who
 process and written to the database every minute and before each answer. They are per UTC month (`month`, `YYYY-MM`); a metadata
 request (`HEAD`) and a write count nothing. They show the egress the owner's provider bills for this server's reads.
 
+The answer also says where the repository keeps its objects: `target_id` is where new objects go (empty: the instance
+storage), and `has_fallback` with `fallback_target_id` names an earlier place that still holds objects until a migration moves
+them (empty: the instance storage). A hub uses it to tell a repository on the server's storage, which counts against the
+owner's plan, from one on its own bucket.
+
 ## Health
 
 Every `health_interval_secs` each enabled target gets the verification probe (without using the owner's allowance). Three failures in a

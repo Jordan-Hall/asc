@@ -340,7 +340,8 @@ the `MergeQueue` service: its methods answer `UNIMPLEMENTED` from the router unt
   cancelled migration leaves the source authoritative. Writes during the copy go to both until the switch.
 - **Usage:** `GetRepoUsage` (repository admin) answers the stored bytes and objects by kind (`history`, `files`, `large files`,
   `indexes`, `CI`, `other`), their total, when they were scanned, whether a scan is running, and the bytes read in the current UTC
-  month. The scan runs in the background and is kept in `storage_usage`; it is redone when missing, a day old, or on `refresh`
+  month, and where the repository keeps its objects (`target_id`, and `has_fallback` with `fallback_target_id` while an earlier
+  place still holds some). The scan runs in the background and is kept in `storage_usage`; it is redone when missing, a day old, or on `refresh`
   (at most every 5 minutes). Reads are counted per namespace in process and added to `storage_reads(ns, month)` every 60 s.
 - **Data:** `storage_targets(id, owner_kind, owner_name, name, endpoint, region, bucket, prefix, addressing, sealed_credentials, key_gen,
   state, last_error, verified_at, created, updated)`, `repo_storage(repo, target_id)`, `storage_migrations(...)`.
