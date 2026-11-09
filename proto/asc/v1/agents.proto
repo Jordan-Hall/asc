@@ -62,6 +62,7 @@ service Agents {
   rpc SetMonthlyBudget(SetMonthlyBudgetRequest) returns (SetMonthlyBudgetResponse); // repo admin; whole repository or one agent; mutating, x-asc-op-id
   rpc GetPerson(GetAgentPersonRequest) returns (GetAgentPersonResponse);            // repo read; the profile a person lets agents read, asked of the hub each time; fails closed
   rpc CountRuns(CountAgentRunsRequest) returns (CountAgentRunsResponse);            // repo read on every repository named; one count over 1 to 50 repositories; cheap
+  rpc SummarizeAgents(SummarizeAgentsRequest) returns (SummarizeAgentsResponse);   // repo read on every repository named; the agents seen over 1 to 50 repositories; cheap
 }
 
 enum AgentRunState {
@@ -486,6 +487,26 @@ message CountAgentRunsRequest {
 message CountAgentRunsResponse {
   uint64 total = 1;
   repeated uint64 per_repo = 2;          // the count of each repository, in the order of the request
+}
+// The agents seen over several repositories, from their runs: the agent rows of the hub (Explore people, the agents of a
+// person and of an organization). The caller needs read on every repository named; one it may not read fails the call.
+message SummarizeAgentsRequest {
+  repeated RepoRef repos = 1;            // 1 to 50, each named once
+  string created_by = 2;                 // empty: anyone; else the runs this person started or created
+  int64 since = 3;                       // unix seconds; 0: any time, else the runs created at or after it
+  uint32 limit = 4;                      // 0 means 20, at most 100
+}
+message AgentSummary {
+  string agent = 1;
+  uint64 runs = 2;                       // the runs that match the filters
+  uint64 active = 3;                     // of those, queued, running or waiting for input
+  int64 last_run = 4;                    // when the newest of them was created, unix seconds
+  repeated uint32 repos = 5;             // where it ran: indexes into the repositories of the request, ascending
+  repeated string people = 6;            // who started or created its runs, at most 5, most runs first then by name
+}
+message SummarizeAgentsResponse {
+  repeated AgentSummary agents = 1;      // most runs first, then by name; at most `limit`
+  uint32 total = 2;                      // the distinct agents before the limit
 }
 message RecentAgentTasksRequest {
   RepoRef repo = 1;

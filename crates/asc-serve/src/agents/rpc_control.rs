@@ -29,6 +29,11 @@ const DEFAULT_REQUESTS: usize = 50;
 const MAX_REQUESTS: usize = 200;
 /// The repositories one CountRuns may name.
 const MAX_COUNT_REPOS: usize = 50;
+/// The agents `SummarizeAgents` answers when no limit is asked, and the most it answers.
+const DEFAULT_SUMMARY_AGENTS: u32 = 20;
+const MAX_SUMMARY_AGENTS: u32 = 100;
+/// The most people an agent summary names.
+const SUMMARY_PEOPLE: usize = 5;
 
 fn relay(ctx: &CallCtx) -> Option<&'static str> {
     crate::review::acting::relayed(ctx).then_some("host-service")
@@ -687,19 +692,7 @@ impl AgentService {
         if msg.since < 0 {
             return Err(Status::invalid_argument("since is a unix time"));
         }
-        // Read on every repository, checked one by one as for ListRuns; one refusal fails the call.
-        let mut repos: Vec<String> = Vec::with_capacity(msg.repos.len());
-        for r in &msg.repos {
-            let ctx = self
-                .env
-                .context(&meta, &ext, Some(r), Access::Read, false)
-                .await?;
-            let name = ctx.repo.as_str().to_ascii_lowercase();
-            if repos.contains(&name) {
-                return Err(Status::invalid_argument("a repository is named twice"));
-            }
-            repos.push(name);
-        }
+        let repos = self.readable_repos(&meta, &ext, &msg.repos).await?;
         let per_repo = self
             .hub
             .core
@@ -711,6 +704,66 @@ impl AgentService {
         Ok(Response::new(wire::CountAgentRunsResponse {
             total,
             per_repo,
+        }))
+    }
+
+    /// Read on every repository, checked one by one as for ListRuns; one refusal fails the call. The names come back in
+    /// lower case, in the order of the request. A repository named twice is refused.
+    async fn readable_repos(
+        &self,
+        meta: &tonic::metadata::MetadataMap,
+        ext: &tonic::Extensions,
+        refs: &[wire::RepoRef],
+    ) -> Result<Vec<String>, Status> {
+        let mut repos: Vec<String> = Vec::with_capacity(refs.len());
+        for r in refs {
+            let ctx = self
+                .env
+                .context(meta, ext, Some(r), Access::Read, false)
+                .await?;
+            let name = ctx.repo.as_str().to_ascii_lowercase();
+            if repos.contains(&name) {
+                return Err(Status::invalid_argument("a repository is named twice"));
+            }
+            repos.push(name);
+        }
+        Ok(repos)
+    }
+
+    /// `Agents.SummarizeAgents`: the agents seen over 1 to 50 repositories, from their runs.
+    pub(super) async fn summarize_agents_impl(
+        &self,
+        request: Request<wire::SummarizeAgentsRequest>,
+    ) -> Result<Response<wire::SummarizeAgentsResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        if msg.repos.is_empty() || msg.repos.len() > MAX_COUNT_REPOS {
+            return Err(Status::invalid_argument("name 1 to 50 repositories"));
+        }
+        if msg.since < 0 {
+            return Err(Status::invalid_argument("since is a unix time"));
+        }
+        if msg.limit > MAX_SUMMARY_AGENTS {
+            return Err(Status::invalid_argument("limit is at most 100"));
+        }
+        let limit = if msg.limit == 0 {
+            DEFAULT_SUMMARY_AGENTS
+        } else {
+            msg.limit
+        };
+        let repos = self.readable_repos(&meta, &ext, &msg.repos).await?;
+        let groups = self
+            .hub
+            .core
+            .runs
+            .summarize_in(&repos, &msg.created_by, msg.since)
+            .await
+            .map_err(|e| db(&e))?;
+        let mut agents = summarize(&repos, &groups);
+        let total = u32::try_from(agents.len()).unwrap_or(u32::MAX);
+        agents.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+        Ok(Response::new(wire::SummarizeAgentsResponse {
+            agents,
+            total,
         }))
     }
 
@@ -1054,3 +1107,59 @@ mod activity_day_tests {
         assert_eq!(day_of(-1), "1969-12-31");
     }
 }
+
+/// Folds the run groups into one summary per agent: most runs first, then by name. `repos` are the names of the
+/// request, in order.
+fn summarize(
+    repos: &[String],
+    groups: &[crate::agents::runs::RunGroup],
+) -> Vec<wire::AgentSummary> {
+    use std::collections::BTreeMap;
+    struct Acc {
+        runs: u64,
+        active: u64,
+        last_run: i64,
+        repos: std::collections::BTreeSet<u32>,
+        people: BTreeMap<String, u64>,
+    }
+    let mut by: BTreeMap<&str, Acc> = BTreeMap::new();
+    for g in groups {
+        let a = by.entry(g.agent.as_str()).or_insert_with(|| Acc {
+            runs: 0,
+            active: 0,
+            last_run: 0,
+            repos: Default::default(),
+            people: BTreeMap::new(),
+        });
+        a.runs += g.runs;
+        if g.state.is_active() {
+            a.active += g.runs;
+        }
+        a.last_run = a.last_run.max(g.last_run);
+        if let Some(i) = repos.iter().position(|r| *r == g.repo) {
+            a.repos.insert(u32::try_from(i).unwrap_or(u32::MAX));
+        }
+        if !g.person.is_empty() {
+            *a.people.entry(g.person.clone()).or_default() += g.runs;
+        }
+    }
+    let mut out: Vec<wire::AgentSummary> = by
+        .into_iter()
+        .map(|(agent, a)| {
+            let mut people: Vec<(String, u64)> = a.people.into_iter().collect();
+            people.sort_by(|x, y| y.1.cmp(&x.1).then_with(|| x.0.cmp(&y.0)));
+            people.truncate(SUMMARY_PEOPLE);
+            wire::AgentSummary {
+                agent: agent.to_owned(),
+                runs: a.runs,
+                active: a.active,
+                last_run: a.last_run,
+                repos: a.repos.into_iter().collect(),
+                people: people.into_iter().map(|(p, _)| p).collect(),
+            }
+        })
+        .collect();
+    out.sort_by(|x, y| y.runs.cmp(&x.runs).then_with(|| x.agent.cmp(&y.agent)));
+    out
+}
+

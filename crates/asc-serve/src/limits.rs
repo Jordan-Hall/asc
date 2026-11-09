@@ -344,6 +344,7 @@ const TABLE: &[(&str, Class, &[&str])] = &[
             "SetMonthlyBudget",
             "GetPerson",
             "CountRuns",
+            "SummarizeAgents",
         ],
     ),
     (

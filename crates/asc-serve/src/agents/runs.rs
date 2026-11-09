@@ -12,6 +12,20 @@ use super::tokens::Budget;
 use crate::ai::clock;
 use crate::ai::store::class;
 
+/// The most groups [`RunStore::summarize_in`] reads.
+pub const SUMMARY_GROUPS: usize = 5000;
+
+/// The runs of one agent in one repository by one person in one state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunGroup {
+    pub agent: String,
+    pub repo: String,
+    pub person: String,
+    pub state: RunState,
+    pub runs: u64,
+    pub last_run: i64,
+}
+
 /// Where a run is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RunState {
@@ -499,6 +513,61 @@ impl RunStore {
                 rows.iter()
                     .find(|(repo, _)| *repo == name)
                     .map_or(0, |(_, n)| u64::try_from(*n).unwrap_or(0))
+            })
+            .collect())
+    }
+
+    /// The runs of several repositories (names in lower case) grouped by agent, repository, person (the starter, else
+    /// who created it) and state, with `created_by` and `since` as for [`Self::count_in`]. One query; at most
+    /// [`SUMMARY_GROUPS`] groups, the newest first.
+    pub async fn summarize_in(
+        &self,
+        repos: &[String],
+        created_by: &str,
+        since: i64,
+    ) -> Result<Vec<RunGroup>, sqlx::Error> {
+        if repos.is_empty() {
+            return Ok(Vec::new());
+        }
+        let marks: Vec<String> = (1..=repos.len()).map(|n| format!("${n}")).collect();
+        let mut conds = vec![format!("repo IN ({})", marks.join(", "))];
+        let mut next = repos.len() + 1;
+        if !created_by.is_empty() {
+            conds.push(format!("(created_by = ${next} OR starter = ${next})"));
+            next += 1;
+        }
+        if since > 0 {
+            conds.push(format!("created >= ${next}"));
+        }
+        let q = format!(
+            "SELECT agent, repo, CASE WHEN starter <> '' THEN starter ELSE created_by END AS person, state, \
+             COUNT(*), MAX(created) FROM agent_runs WHERE {} \
+             GROUP BY agent, repo, CASE WHEN starter <> '' THEN starter ELSE created_by END, state \
+             ORDER BY MAX(created) DESC LIMIT {SUMMARY_GROUPS}",
+            conds.join(" AND ")
+        );
+        let mut query =
+            sqlx::query_as::<_, (String, String, String, i64, i64, i64)>(sqlx::AssertSqlSafe(q));
+        for r in repos {
+            query = query.bind(r.to_ascii_lowercase());
+        }
+        if !created_by.is_empty() {
+            query = query.bind(created_by.to_owned());
+        }
+        if since > 0 {
+            query = query.bind(since);
+        }
+        Ok(query
+            .fetch_all(&self.pool)
+            .await?
+            .into_iter()
+            .map(|(agent, repo, person, state, n, last)| RunGroup {
+                agent,
+                repo,
+                person,
+                state: RunState::from_i64(state),
+                runs: u64::try_from(n).unwrap_or(0),
+                last_run: last,
             })
             .collect())
     }

@@ -311,6 +311,13 @@ impl Agents for AgentService {
         self.count_runs_impl(request).await
     }
 
+    async fn summarize_agents(
+        &self,
+        request: Request<wire::SummarizeAgentsRequest>,
+    ) -> Result<Response<wire::SummarizeAgentsResponse>, Status> {
+        self.summarize_agents_impl(request).await
+    }
+
     async fn set_monthly_budget(
         &self,
         request: Request<wire::SetMonthlyBudgetRequest>,

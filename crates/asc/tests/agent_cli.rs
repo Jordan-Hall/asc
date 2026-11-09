@@ -221,6 +221,13 @@ impl Agents for Fake {
         Err(Status::unimplemented("not served by this stand-in"))
     }
 
+    async fn summarize_agents(
+        &self,
+        _r: Request<wire::SummarizeAgentsRequest>,
+    ) -> Result<Response<wire::SummarizeAgentsResponse>, Status> {
+        Err(Status::unimplemented("not served by this stand-in"))
+    }
+
     async fn set_monthly_budget(
         &self,
         _r: Request<wire::SetMonthlyBudgetRequest>,
