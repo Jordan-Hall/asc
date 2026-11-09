@@ -378,7 +378,10 @@ the `MergeQueue` service: its methods answer `UNIMPLEMENTED` from the router unt
 
 ## 11. Agent tokens and budgets
 
-- **RPCs** (`agents.proto`, `agent-tokens.v1`): `AgentTokens.CreateToken`, `ListTokens`, `GetToken`, `RevokeToken`, `SetBudget`, `ReportUsage`.
+- **RPCs** (`agents.proto`, `agent-tokens.v1`): `AgentTokens.CreateToken`, `ListTokens`, `GetToken`, `RevokeToken`, `SetBudget`, `ReportUsage`, `ResolveToken`.
+- **ResolveToken** (the host service only): the hub sends a secret an agent presented to it (for example the bearer of an agent
+  abuse report) and gets the token's wire form: id, repo, agent, state, scope and usage, never the secret. A string that is not an
+  `ascat_` token, or an unknown secret, answers `NOT_FOUND`; any other caller answers `PERMISSION_DENIED`.
 - **Token:** `ascat_` + 43 base64url characters from 32 random bytes; only SHA-256 stored; shown once. Always expires (default 1 hour, at
   most 90 days). Scope = the intersection of the token's `paths`, the policy `[agents] default_scope` (or the rule that names the agent)
   and the policy path rules, minus `denied_paths`; `max_changes_per_run` and the budgets come from the token and the policy, the stricter
@@ -980,6 +983,7 @@ Every method of the build-out services (98). A test keeps this list equal to the
 - `asc.v1.AgentTokens/RevokeToken` — repo admin; idempotent
 - `asc.v1.AgentTokens/SetBudget` — repo admin; may raise or lower
 - `asc.v1.AgentTokens/ReportUsage` — the agent token itself; mutating
+- `asc.v1.AgentTokens/ResolveToken` — the host service only
 
 **Workflows** (`workflows.proto`)
 
