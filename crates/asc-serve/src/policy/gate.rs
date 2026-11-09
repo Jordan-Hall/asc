@@ -24,7 +24,9 @@ use std::sync::Arc;
 
 use asc_core::id::{ChangesetId, RefTarget};
 use asc_core::object::Changeset;
-use asc_core::policy::{Denial, Diagnostic, POLICY_PATH, Policy, SecretsPolicy, Strategy, Who};
+use asc_core::policy::{
+    Denial, Diagnostic, Kind, Lander, POLICY_PATH, Policy, RefRule, SecretsPolicy, Strategy, Who,
+};
 use asc_engine::graph::LogQuery;
 use asc_rpc::errors::RpcError;
 use asc_rpc::server::{CallCtx, wire};
@@ -158,6 +160,42 @@ fn truncated_refusal(sp: &SecretsPolicy, report: &Report) -> Option<Status> {
             [],
         )
     })
+}
+
+/// Who `who` moves a ref as under `[refs]`: the queue for a land; for a push, a maintainer, a CI
+/// or deploy key, both or neither.
+fn movers_of(p: &Policy, who: &Who, mode: &GateMode) -> Vec<Lander> {
+    if matches!(mode, GateMode::Land { .. }) {
+        return vec![Lander::Queue];
+    }
+    let mut out = Vec::new();
+    if p.is_maintainer(who) {
+        out.push(Lander::Maintainers);
+    }
+    if matches!(who.kind, Some(Kind::Ci | Kind::Deploy)) {
+        out.push(Lander::ReleaseKey);
+    }
+    out
+}
+
+/// The reason a mover outside a rule's `land` list is given.
+fn unlisted(movers: &[Lander]) -> String {
+    match movers.first() {
+        Some(Lander::Queue) => "the merge queue may not land on it".into(),
+        Some(_) => "its rule does not let you move it directly".into(),
+        None => "only the merge queue, maintainers or keys its rule names may move it".into(),
+    }
+}
+
+/// A refusal of an update of `refname` under the `[refs]` rule `r`.
+fn ref_refused(r: &RefRule, refname: &str, why: &str) -> Status {
+    from_denial(
+        &Denial {
+            path: String::new(),
+            reason: format!("{refname} is protected by [refs.{:?}]: {why}", r.pattern),
+        },
+        &[],
+    )
 }
 
 fn from_denial(d: &Denial, more: &[String]) -> Status {
@@ -728,6 +766,7 @@ impl ServerGate {
             Some(RefTarget::Changeset(c)) => Some(c),
             _ => None,
         };
+        let ref_signed = self.check_ref_rules(req, who, u, in_force).await?;
         let Some(new) = u.new else {
             // Deleting trunk needs allow_force; deleting any other protected ref is a maintainer
             // matter the forge decides.
@@ -861,9 +900,11 @@ impl ServerGate {
                     Some(h) => h.requires_signed(entry.name.as_str()).await,
                     None => false,
                 };
-                if p.signing.require_signed || org_signed {
+                if p.signing.require_signed || org_signed || ref_signed {
                     self.check_signed(entry, &added, &rewrites).await?;
                 }
+            } else if ref_signed {
+                self.check_signed(entry, &added, &rewrites).await?;
             }
         }
 
@@ -1140,6 +1181,111 @@ impl ServerGate {
     /// `[signing] require_signed`: each changeset that lands has a valid signature. A changeset
     /// the server rebased has none of its own; when the server holds a signing key and the
     /// changeset it was made from was valid, the server attests to it.
+    /// The `[refs]` rules of the policy in force that bind `u`: each must let the mover move the
+    /// ref (the queue for a land, a maintainer or a CI or deploy key for a push), a land of
+    /// changes an agent wrote needs `agents` in each, a deletion needs `delete` in each and a
+    /// non-fast-forward push `force` in each. Answers whether one of them needs signed changes.
+    async fn check_ref_rules(
+        &self,
+        req: &GateRequest<'_>,
+        who: &Who,
+        u: &GateUpdate,
+        in_force: &Loaded,
+    ) -> Result<bool, Status> {
+        let Some(p) = in_force.policy() else {
+            return Ok(false);
+        };
+        let rules = p.ref_rules(&u.name);
+        if rules.is_empty() {
+            return Ok(false);
+        }
+        let movers = movers_of(p, who, &req.mode);
+        if let Some(r) = rules.iter().find(|r| !movers.iter().any(|m| r.lets(*m))) {
+            return Err(ref_refused(r, &u.name, &unlisted(&movers)));
+        }
+        if let GateMode::Land { rewrites } = &req.mode
+            && let Some(r) = rules.iter().find(|r| !r.lets(Lander::Agents))
+            && self.lands_agent_work(req.entry, rewrites).await?
+        {
+            return Err(ref_refused(
+                r,
+                &u.name,
+                "it does not take changes an agent wrote",
+            ));
+        }
+        let Some(new) = u.new else {
+            if let Some(r) = rules.iter().find(|r| !r.delete) {
+                return Err(ref_refused(r, &u.name, "it cannot be deleted"));
+            }
+            return Ok(rules.iter().any(|r| r.signed));
+        };
+        if let (
+            GateMode::Push { force: true },
+            Some(RefTarget::Changeset(o)),
+            RefTarget::Changeset(n),
+        ) = (&req.mode, u.old, new)
+            && o != n
+            && let Some(r) = rules.iter().find(|r| !r.force)
+        {
+            let fast = graph_of(&self.registry, req.entry)
+                .is_ancestor(o, n)
+                .await
+                .map_err(|e| internal("gate: ancestry", &e))?;
+            if !fast {
+                return Err(ref_refused(r, &u.name, "it cannot be rewritten"));
+            }
+        }
+        Ok(rules.iter().any(|r| r.signed))
+    }
+
+    /// Whether a land brings a change an agent wrote: the first version of the change of one of
+    /// the pushed changesets was made by an agent, or an agent run produced it.
+    async fn lands_agent_work(
+        &self,
+        entry: &RepoEntry,
+        rewrites: &[(ChangesetId, ChangesetId)],
+    ) -> Result<bool, Status> {
+        let ns = entry.ns.as_bytes().to_vec();
+        let mut seen = BTreeSet::new();
+        for (pushed, landed) in rewrites {
+            for cs in [pushed, landed] {
+                if !seen.insert(*cs) {
+                    continue;
+                }
+                let first: Option<(Vec<u8>, String)> = sqlx::query_as(
+                    "SELECT f.change, f.actor FROM change_versions cv \
+                     JOIN change_versions f ON f.ns = cv.ns AND f.change = cv.change AND f.v = 1 \
+                     WHERE cv.ns = $1 AND cv.cs = $2 LIMIT 1",
+                )
+                .bind(ns.clone())
+                .bind(cs.as_bytes().to_vec())
+                .fetch_optional(self.registry.pool())
+                .await
+                .map_err(sql)?;
+                let Some((change, actor)) = first else {
+                    continue;
+                };
+                if actor.starts_with("agent:") {
+                    return Ok(true);
+                }
+                let hexed: String = change.iter().map(|b| format!("{b:02x}")).collect();
+                let run: Option<i64> = sqlx::query_scalar(
+                    "SELECT a.id FROM agent_runs a JOIN repos r ON LOWER(r.name) = a.repo \
+                     WHERE r.id = $1 AND a.changes_json LIKE $2 LIMIT 1",
+                )
+                .bind(entry.key.0)
+                .bind(format!("%{hexed}%"))
+                .fetch_optional(self.registry.pool())
+                .await
+                .map_err(sql)?;
+                if run.is_some() {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+
     async fn check_signed(
         &self,
         entry: &RepoEntry,
@@ -1251,6 +1397,8 @@ impl RefGate for ServerGate {
         let trunk = format!("refs/heads/{}", req.entry.default_branch);
         let mut protected: Vec<&GateUpdate> = Vec::new();
         let mut drafts: Vec<&GateUpdate> = Vec::new();
+        // The policy in force, read once when a ref outside the built-in protected set needs it.
+        let mut early: Option<Arc<Loaded>> = None;
         for u in req.updates {
             // An agent's own drafts: a ref of a branchless repository's user namespace, or, in branch mode, the ref of its own
             // run or token (`agent/<name>/run-<n>`, `agent/<name>/<token id>/..`). The agent gate has already refused any
@@ -1273,12 +1421,33 @@ impl RefGate for ServerGate {
             }
             if u.name.starts_with("refs/heads/") && self.protected(req.entry, &u.name).await? {
                 protected.push(u);
+                continue;
+            }
+            // A branch or tag a `[refs]` rule of the policy in force names.
+            if u.name.starts_with("refs/heads/") || u.name.starts_with("refs/tags/") {
+                let loaded = match &early {
+                    Some(l) => l.clone(),
+                    None => {
+                        let l = self.policies.in_force(req.entry).await?;
+                        early = Some(l.clone());
+                        l
+                    }
+                };
+                if loaded
+                    .policy()
+                    .is_some_and(|p| !p.ref_rules(&u.name).is_empty())
+                {
+                    protected.push(u);
+                }
             }
         }
         if protected.is_empty() && drafts.is_empty() {
             return Ok(());
         }
-        let in_force = self.policies.in_force(req.entry).await?;
+        let in_force = match early {
+            Some(l) => l,
+            None => self.policies.in_force(req.entry).await?,
+        };
         for u in drafts {
             if let Err(status) = self.check_draft(req, &who, u, &in_force).await {
                 return Err(self.refuse(req.ctx, &u.name, status).await);

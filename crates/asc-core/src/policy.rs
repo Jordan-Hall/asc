@@ -25,6 +25,14 @@
 //! [paths."src/**"]             # every matching rule must admit the writer
 //! write = ["role:maintainer", "agent:*"]
 //!
+//! [refs."release/*"]           # a protected branch pattern, or "refs/tags/<glob>" for tags
+//! land = ["queue", "maintainers", "release-key"]   # who may move it: the merge queue,
+//!                              # maintainers, CI and deploy keys, and "agents" (agents' changes
+//!                              # may land through the queue)
+//! signed = true                # every change landing on it needs a VALID signature
+//! force = false                # no non-fast-forward update
+//! delete = false               # no deletion
+//!
 //! [secrets]
 //! enabled = true               # scan what an update adds (default true)
 //! block_on_push = true         # refuse an update that adds a secret (default true)
@@ -71,6 +79,14 @@
 //! (`PathRules.SetTeamMembers`); its name is matched ignoring ASCII case and has no glob. A role
 //! holds the other forms only, so a role never refers to another role.
 //!
+//! # Refs
+//!
+//! A `[refs]` pattern is a branch name glob (`release/*`; `*` matches any run of characters, `/`
+//! included) or `refs/tags/<glob>` for tags. Every rule whose pattern matches a ref binds it: an
+//! update must be admitted by the `land` list of each, needs a signature when one says `signed`,
+//! and may rewrite or delete the ref only when all of them allow it. Trunk stays protected by
+//! `[trunk]` and `[signing]` whether or not a `[refs]` rule also matches it.
+//!
 //! # Paths
 //!
 //! A path pattern is a `/`-separated glob: `*` and `?` match inside one segment, a `**` segment
@@ -99,6 +115,8 @@ pub const MAX_POLICY_BYTES: usize = 64 * 1024;
 pub const MAX_ROLES: usize = 16;
 pub const MAX_SUBJECTS: usize = 64;
 pub const MAX_PATH_RULES: usize = 128;
+/// Most `[refs]` rules.
+pub const MAX_REF_RULES: usize = 64;
 pub const MAX_GLOBS: usize = 64;
 pub const MAX_CHECKS: usize = 32;
 /// Longest glob, subject, role name and check name, in bytes.
@@ -593,6 +611,76 @@ pub struct PathRule {
     pub write: Vec<Subject>,
 }
 
+/// Who a `[refs]` rule lets move its refs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Lander {
+    /// The server's land of a reviewed change (the merge queue).
+    Queue,
+    /// A maintainer pushing directly.
+    Maintainers,
+    /// A CI or deploy key pushing directly (a release key).
+    ReleaseKey,
+    /// The queue may land changes an agent wrote.
+    Agents,
+}
+
+impl Lander {
+    /// The word the policy file uses.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Queue => "queue",
+            Self::Maintainers => "maintainers",
+            Self::ReleaseKey => "release-key",
+            Self::Agents => "agents",
+        }
+    }
+
+    fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "queue" => Self::Queue,
+            "maintainers" => Self::Maintainers,
+            "release-key" => Self::ReleaseKey,
+            "agents" => Self::Agents,
+            _ => return None,
+        })
+    }
+}
+
+/// `[refs."<pattern>"]`: a protected branch or tag pattern.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RefRule {
+    /// As written: a branch name glob, or `refs/tags/<glob>`.
+    pub pattern: String,
+    /// Sorted, without repeats.
+    pub land: Vec<Lander>,
+    pub signed: bool,
+    pub force: bool,
+    pub delete: bool,
+}
+
+impl RefRule {
+    /// Whether the rule binds the full ref name `refname` (`refs/heads/..` or `refs/tags/..`).
+    pub fn matches(&self, refname: &str) -> bool {
+        match self.pattern.strip_prefix("refs/tags/") {
+            Some(tag) => refname
+                .strip_prefix("refs/tags/")
+                .is_some_and(|t| name_glob(tag, t)),
+            None => refname
+                .strip_prefix("refs/heads/")
+                .is_some_and(|b| name_glob(&self.pattern, b)),
+        }
+    }
+
+    /// Whether the rule is for tags.
+    pub fn is_tags(&self) -> bool {
+        self.pattern.starts_with("refs/tags/")
+    }
+
+    pub fn lets(&self, who: Lander) -> bool {
+        self.land.contains(&who)
+    }
+}
+
 /// `[secrets]`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SecretsPolicy {
@@ -835,6 +923,8 @@ pub struct Policy {
     pub trunk: Trunk,
     pub signing: Signing,
     pub paths: Vec<PathRule>,
+    /// Sorted by pattern.
+    pub refs: Vec<RefRule>,
     pub secrets: SecretsPolicy,
     pub deps: DepsPolicy,
     pub ci: CiPolicy,
@@ -856,6 +946,8 @@ struct RawPolicy {
     signing: RawSigning,
     #[serde(default)]
     paths: BTreeMap<String, RawPathRule>,
+    #[serde(default)]
+    refs: BTreeMap<String, RawRefRule>,
     #[serde(default)]
     secrets: RawSecrets,
     #[serde(default)]
@@ -936,6 +1028,18 @@ struct RawSigning {
 #[serde(deny_unknown_fields)]
 struct RawPathRule {
     write: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawRefRule {
+    land: Vec<String>,
+    #[serde(default)]
+    signed: bool,
+    #[serde(default)]
+    force: bool,
+    #[serde(default)]
+    delete: bool,
 }
 
 #[derive(Deserialize)]
@@ -1200,6 +1304,7 @@ impl Policy {
                 write,
             });
         }
+        let refs = build_refs(&raw.refs)?;
         let secrets = build_secrets(raw.secrets)?;
         let deps = build_deps(raw.deps)?;
         let ci = build_ci(raw.ci)?;
@@ -1235,6 +1340,7 @@ impl Policy {
                 require_signed: raw.signing.require_signed || raw.trunk.require_signed,
             },
             paths,
+            refs,
             secrets,
             deps,
             ci,
@@ -1438,6 +1544,11 @@ impl Policy {
         }
     }
 
+    /// The `[refs]` rules that bind the full ref name `refname`.
+    pub fn ref_rules(&self, refname: &str) -> Vec<&RefRule> {
+        self.refs.iter().filter(|r| r.matches(refname)).collect()
+    }
+
     /// The members of role `maintainer` that are agents or the open `*`: a warning for an editor,
     /// since an agent that can change the policy can lift every rule that binds it.
     pub fn maintainers_include_agents(&self) -> bool {
@@ -1456,6 +1567,64 @@ impl Policy {
 }
 
 /// `[secrets]` of a raw policy: the allow list and the custom rules, validated.
+/// The `[refs]` rules: each pattern a branch name glob or `refs/tags/<glob>`, each `land` entry
+/// known and the list at most four long.
+fn build_refs(raw: &BTreeMap<String, RawRefRule>) -> Result<Vec<RefRule>, Failure> {
+    if raw.len() > MAX_REF_RULES {
+        return invalid("too many [refs] rules");
+    }
+    let mut out = Vec::with_capacity(raw.len());
+    for (pattern, rule) in raw {
+        valid_ref_pattern(pattern)?;
+        let mut land = Vec::with_capacity(rule.land.len());
+        for word in &rule.land {
+            match Lander::parse(word) {
+                Some(l) => land.push(l),
+                None => {
+                    return invalid(format!(
+                        "[refs.{pattern:?}] land names {word:?}; it takes \"queue\", \"maintainers\", \"release-key\" and \"agents\""
+                    ));
+                }
+            }
+        }
+        land.sort_unstable();
+        land.dedup();
+        out.push(RefRule {
+            pattern: pattern.clone(),
+            land,
+            signed: rule.signed,
+            force: rule.force,
+            delete: rule.delete,
+        });
+    }
+    Ok(out)
+}
+
+/// A `[refs]` pattern: a branch name glob or `refs/tags/<glob>`, with no other `refs/` prefix, no
+/// empty segment, no `..`, no control character, space or one of `~^:?[\\`, and at most
+/// [`MAX_GLOB_LEN`] bytes.
+fn valid_ref_pattern(pattern: &str) -> Result<(), Failure> {
+    let name = pattern.strip_prefix("refs/tags/").unwrap_or(pattern);
+    let bad = name.is_empty()
+        || pattern.len() > MAX_GLOB_LEN
+        || name.starts_with("refs/")
+        || name.starts_with('/')
+        || name.ends_with('/')
+        || name.ends_with(".lock")
+        || name.contains("//")
+        || name.contains("..")
+        || name.contains("@{")
+        || name
+            .chars()
+            .any(|c| c.is_control() || c == ' ' || "~^:?[\\".contains(c));
+    if bad {
+        return invalid(format!(
+            "[refs.{pattern:?}] is not a branch name pattern or refs/tags/<pattern>"
+        ));
+    }
+    Ok(())
+}
+
 fn build_secrets(raw: RawSecrets) -> Result<SecretsPolicy, Failure> {
     if raw.rules.len() > crate::secrets::MAX_CUSTOM_RULES {
         return invalid("too many secret rules");
@@ -1573,6 +1742,88 @@ impl std::fmt::Display for Denial {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn with_refs(refs: &str) -> Result<Policy, PolicyError> {
+        Policy::parse(
+            format!("version = 1\n[roles]\nmaintainer = [\"user:alice\"]\n{refs}").as_bytes(),
+        )
+    }
+
+    #[test]
+    fn ref_rules_parse_and_match_branches_and_tags() {
+        let p = with_refs(
+            "[refs.\"release/*\"]\nland = [\"queue\", \"maintainers\", \"queue\"]\nsigned = true\n\
+             [refs.\"refs/tags/v*\"]\nland = [\"release-key\"]\ndelete = true\nforce = true\n",
+        )
+        .unwrap();
+        assert_eq!(p.refs.len(), 2);
+        let release = &p.refs[0];
+        assert_eq!(release.pattern, "refs/tags/v*", "sorted by pattern");
+        assert!(release.is_tags() && release.delete && release.force && !release.signed);
+        assert_eq!(release.land, vec![Lander::ReleaseKey]);
+        let lines = &p.refs[1];
+        assert_eq!(
+            lines.land,
+            vec![Lander::Queue, Lander::Maintainers],
+            "sorted, no repeats"
+        );
+        assert!(lines.signed && !lines.force && !lines.delete && !lines.is_tags());
+
+        assert!(lines.matches("refs/heads/release/1.2"));
+        assert!(lines.matches("refs/heads/release/a/b"), "* takes a slash");
+        assert!(!lines.matches("refs/heads/releases/1"));
+        assert!(
+            !lines.matches("refs/tags/release/1"),
+            "a branch pattern names branches only"
+        );
+        assert!(release.matches("refs/tags/v1.0"));
+        assert!(
+            !release.matches("refs/heads/v1.0"),
+            "a tag pattern names tags only"
+        );
+        assert_eq!(p.ref_rules("refs/heads/release/9").len(), 1);
+        assert!(p.ref_rules("refs/heads/main").is_empty());
+        assert!(with_refs("").unwrap().refs.is_empty(), "no [refs]: no rule");
+        let all = Lander::Queue.as_str().to_owned()
+            + Lander::Maintainers.as_str()
+            + Lander::ReleaseKey.as_str()
+            + Lander::Agents.as_str();
+        assert_eq!(all, "queuemaintainersrelease-keyagents");
+    }
+
+    #[test]
+    fn bad_ref_rules_are_refused() {
+        for bad in [
+            "[refs.\"main\"]\nland = [\"everyone\"]\n",
+            "[refs.\"main\"]\nsigned = true\n",
+            "[refs.\"main\"]\nland = []\nkind = \"trunk\"\n",
+            "[refs.\"refs/heads/main\"]\nland = []\n",
+            "[refs.\"refs/tags/\"]\nland = []\n",
+            "[refs.\"\"]\nland = []\n",
+            "[refs.\"a..b\"]\nland = []\n",
+            "[refs.\"a b\"]\nland = []\n",
+            "[refs.\"a//b\"]\nland = []\n",
+            "[refs.\"/a\"]\nland = []\n",
+            "[refs.\"a/\"]\nland = []\n",
+            "[refs.\"a:b\"]\nland = []\n",
+            "[refs.\"x.lock\"]\nland = []\n",
+            "[refs.\"a@{1}\"]\nland = []\n",
+        ] {
+            assert!(with_refs(bad).is_err(), "{bad:?}");
+        }
+        let many: String = (0..=MAX_REF_RULES)
+            .map(|i| format!("[refs.\"b{i}\"]\nland = []\n"))
+            .collect();
+        assert!(with_refs(&many).unwrap_err().0.contains("too many [refs]"));
+        let long = format!("[refs.\"{}\"]\nland = []\n", "a".repeat(MAX_GLOB_LEN + 1));
+        assert!(with_refs(&long).is_err());
+        // An empty land list protects the ref from everyone but leaves it valid.
+        assert!(
+            with_refs("[refs.\"frozen/*\"]\nland = []\n").unwrap().refs[0]
+                .land
+                .is_empty()
+        );
+    }
 
     const FULL: &str = r#"
 version = 1
