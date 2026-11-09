@@ -718,6 +718,12 @@ and bandwidth from `usage_counters` (the host reports storage with `Report`; the
 A person reads their own usage, an organisation's owners the organisation's, the site administrator the server's and sets quotas (`usage_quotas`; an owner
 without a limit inherits the instance default).
 
+`GetActivity` (feature `usage-activity.v1`, migration 0609 for its indexes) is the site administrator's: the changes first published and the
+agent runs created on the whole server in a window of at most 31 days (since 0 is the start of the UTC day). A change is an agent's when it was
+published under an `agent:` principal or an agent run that had not ended before the window holds it. Runs are counted by how they stand: active
+(queued, running, waiting for input), succeeded, failed (failed, over budget, expired) and cancelled. At most 100000 changes are read; past that
+`truncated` is set. The hub's site administration dashboard shows these as its Changesets today and Agent runs today tiles.
+
 ## 28. Organisation settings
 
 `orgsettings.proto`, `crates/asc-serve/src/org/`, migration 0592. Feature `orgsettings.v1`. The Agents card, the default merge policy, organisation agent
@@ -1088,6 +1094,7 @@ Every method of the build-out services (98). A test keeps this list equal to the
 - `asc.v1.Usage/GetQuota` — owner: the limits that apply
 - `asc.v1.Usage/SetQuota` — site admin
 - `asc.v1.Usage/Report` — host service or site admin
+- `asc.v1.Usage/GetActivity` — site admin: changes and agent runs of the whole server in a window
 - `asc.v1.OrgSettings/GetOrgSettings` — org read
 - `asc.v1.OrgSettings/SetAgentPolicy` — org admin
 - `asc.v1.OrgSettings/SetMergeDefaults` — org admin
