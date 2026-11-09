@@ -1620,7 +1620,7 @@ async fn a_run_whose_server_died_is_failed_by_the_reaper_and_its_token_revoked()
         })
         .await
         .unwrap();
-    assert!(w.hub.core.runs.claim(id).await.unwrap());
+    assert!(w.hub.core.runs.claim(id, "test").await.unwrap());
     let token = super::tokens::new_secret();
     let t = w
         .hub
@@ -1692,7 +1692,7 @@ async fn a_run_whose_server_died_is_failed_by_the_reaper_and_its_token_revoked()
         })
         .await
         .unwrap();
-    assert!(w.hub.core.runs.claim(id2).await.unwrap());
+    assert!(w.hub.core.runs.claim(id2, "test").await.unwrap());
     assert_eq!(w.hub.reap_once().await.unwrap(), 0);
     assert_eq!(
         w.hub.core.runs.get(id2).await.unwrap().unwrap().state,
@@ -1837,7 +1837,7 @@ async fn a_repository_at_its_cap_does_not_hide_the_queued_runs_of_others() {
         .create(&queued_run("big/blocked", "going"))
         .await
         .unwrap();
-    assert!(runs.claim(busy).await.unwrap());
+    assert!(runs.claim(busy, "test").await.unwrap());
     for i in 0..100 {
         runs.create(&queued_run("big/blocked", &format!("q{i}")))
             .await

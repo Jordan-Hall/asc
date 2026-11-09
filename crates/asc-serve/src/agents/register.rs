@@ -117,6 +117,7 @@ fn features_for(agents_enabled: bool) -> Vec<String> {
     if agents_enabled {
         v.push(super::FEATURE_RUNS.to_owned());
         v.push(super::FEATURE_TOKENS.to_owned());
+        v.push(super::runners::FEATURE.to_owned());
     }
     v
 }

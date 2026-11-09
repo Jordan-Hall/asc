@@ -47,7 +47,7 @@ pub const MAX_TITLE: usize = 200;
 /// Seconds past the run's wall time its token stays valid.
 const TOKEN_GRACE_SECS: u64 = 600;
 /// A heartbeat older than this means the process that ran the run is gone.
-const STALE_SECS: i64 = 90;
+const STALE_SECS: i64 = super::runners::STALE_SECS;
 /// Seconds between heartbeats.
 const HEARTBEAT_SECS: u64 = 10;
 /// Model calls retried on a transient failure.
@@ -549,6 +549,8 @@ impl AgentsHub {
         tasks.push(tokio::spawn(async move { hub.dispatch_loop().await }));
         let hub = self.clone();
         tasks.push(tokio::spawn(async move { hub.reap_loop().await }));
+        let hub = self.clone();
+        tasks.push(tokio::spawn(async move { hub.beat_loop().await }));
         tasks
     }
 
@@ -606,7 +608,7 @@ impl AgentsHub {
             {
                 continue;
             }
-            if !self.core.runs.claim(run.id).await? {
+            if !self.core.runs.claim(run.id, self.runners.name()).await? {
                 continue;
             }
             started += 1;
@@ -614,6 +616,19 @@ impl AgentsHub {
             tokio::spawn(async move { hub.execute(run.id, permit).await });
         }
         Ok(started)
+    }
+
+    /// Writes this process's runner row every few seconds until shutdown.
+    async fn beat_loop(self: Arc<Self>) {
+        loop {
+            if let Err(e) = self.runners.beat(clock::now()).await {
+                tracing::warn!(class = %crate::ai::store::class(&e), "agent runner heartbeat");
+            }
+            tokio::select! {
+                () = tokio::time::sleep(Duration::from_secs(super::runners::BEAT_SECS)) => {}
+                () = self.shutdown.cancelled() => return,
+            }
+        }
     }
 
     async fn reap_loop(self: Arc<Self>) {

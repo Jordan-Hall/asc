@@ -100,6 +100,9 @@ pub struct AgentsConfig {
     /// Most tokens the model may write in one answer.
     pub max_output_tokens: u32,
     pub sandbox: SandboxConfig,
+    /// The name this process shows on the runners page and stamps on the runs it takes. Default:
+    /// the host name. Two processes with one name are shown as one runner.
+    pub runner_name: Option<String>,
 }
 
 impl Default for AgentsConfig {
@@ -119,6 +122,7 @@ impl Default for AgentsConfig {
             max_steps: 200,
             max_output_tokens: 8192,
             sandbox: SandboxConfig::default(),
+            runner_name: None,
         }
     }
 }
@@ -157,6 +161,11 @@ impl AgentsConfig {
         }
         if self.default_limits.max_runtime_seconds == 0 {
             return bad("agents.default_limits.max_runtime_seconds must be positive");
+        }
+        if let Some(n) = &self.runner_name
+            && !super::runners::valid_name(n)
+        {
+            return bad("agents.runner_name must be 1 to 63 letters, digits, '.', '-' or '_'");
         }
         let s = &self.sandbox;
         if s.allow

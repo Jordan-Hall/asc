@@ -29,6 +29,7 @@ pub mod mask;
 pub mod register;
 pub mod repo;
 pub mod rpc;
+pub mod runners;
 pub mod runs;
 pub mod runtime;
 pub mod tokens;
@@ -104,6 +105,8 @@ pub struct AgentsHub {
     pub(crate) work_dir: PathBuf,
     pub(crate) shutdown: CancellationToken,
     pub(crate) audit: Option<Arc<dyn Audit>>,
+    /// This process as an agent runner.
+    pub runners: Arc<runners::Runners>,
     /// Where an agent's request for the profile of a person is answered; without it every request is refused.
     pub(crate) profiles: OnceLock<Arc<crate::profile::AgentProfiles>>,
 }
@@ -158,6 +161,15 @@ impl AgentsHub {
             .unwrap_or_else(|| crate::workdir::fallback("agents"));
         let sandbox = sandbox_of(&cfg);
         let permits = Arc::new(Semaphore::new(cfg.max_concurrent_runs as usize));
+        let runner_name = cfg
+            .runner_name
+            .clone()
+            .unwrap_or_else(runners::default_name);
+        let runners = Arc::new(runners::Runners::new(
+            pool.clone(),
+            runner_name,
+            cfg.max_concurrent_runs,
+        ));
         let core = Arc::new(Core {
             pool: pool.clone(),
             tokens: TokenStore::new(pool.clone()),
@@ -179,6 +191,7 @@ impl AgentsHub {
             work_dir,
             shutdown: CancellationToken::new(),
             audit,
+            runners,
             org: Arc::default(),
         })
     }

@@ -21,6 +21,34 @@ service Maintenance {
   rpc GetMaintenance(GetMaintenanceRequest) returns (GetMaintenanceResponse);   // site admin
   rpc SetMaintenance(SetMaintenanceRequest) returns (SetMaintenanceResponse);   // site admin; mutating
   rpc CheckHealth(CheckHealthRequest) returns (CheckHealthResponse);            // site admin; probes, rate limited
+  rpc ListAgentRunners(ListAgentRunnersRequest) returns (ListAgentRunnersResponse);   // site admin; feature agent-runners.v1
+}
+
+// The server processes that execute agent runs (every process with [agents] enabled is one).
+message ListAgentRunnersRequest {}
+
+message AgentRunnerRun {
+  uint64 id = 1;
+  string repo = 2;     // owner/name
+  string title = 3;
+  string agent = 4;
+  int64 started = 5;   // unix seconds
+}
+
+message AgentRunner {
+  string name = 1;     // agents.runner_name, default the host name
+  uint32 slots = 2;    // agents.max_concurrent_runs
+  uint32 vcpu = 3;     // the CPUs the process may use
+  string version = 4;  // asc serve's version
+  int64 started = 5;   // unix seconds the process started
+  int64 last_seen = 6; // unix seconds of its last heartbeat (every 10 seconds)
+  bool online = 7;     // the heartbeat is at most 90 seconds old
+  repeated AgentRunnerRun runs = 8;   // running or waiting for input, oldest first
+}
+
+message ListAgentRunnersResponse {
+  repeated AgentRunner runners = 1;   // online first, then by name; offline ones for 7 days
+  int64 now = 2;                      // the server's clock, unix seconds
 }
 
 enum HealthState {

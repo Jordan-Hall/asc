@@ -273,6 +273,7 @@ pub struct MaintenanceHub {
     audit: Arc<dyn Audit>,
     pub(crate) ops: Ops,
     health: OnceLock<health::HealthProbes>,
+    runners: OnceLock<Arc<crate::agents::runners::Runners>>,
 }
 
 impl MaintenanceHub {
@@ -283,6 +284,7 @@ impl MaintenanceHub {
             flag,
             audit,
             health: OnceLock::new(),
+            runners: OnceLock::new(),
         })
     }
 
@@ -294,6 +296,17 @@ impl MaintenanceHub {
     /// The health probes, when installed.
     pub fn health(&self) -> Option<&health::HealthProbes> {
         self.health.get()
+    }
+
+    /// Installs the agent runner table, once; only when agents are switched on. False when it was
+    /// already installed.
+    pub fn set_runners(&self, runners: Arc<crate::agents::runners::Runners>) -> bool {
+        self.runners.set(runners).is_ok()
+    }
+
+    /// The agent runner table, when agents are switched on.
+    pub fn runners(&self) -> Option<&Arc<crate::agents::runners::Runners>> {
+        self.runners.get()
     }
 
     pub fn flag(&self) -> &Arc<ReadOnly> {

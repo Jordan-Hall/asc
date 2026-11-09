@@ -104,6 +104,9 @@ pub fn register(
     }
     if let Some(a) = ext.agents.get() {
         let _ = a.org.set(hubs.org.clone());
+        if a.core.cfg.enabled {
+            hubs.maintenance.set_runners(a.runners.clone());
+        }
     }
     let _ = ext.usage.set(hubs.usage.clone());
     let _ = ext.pathrules.set(hubs.pathrules.clone());

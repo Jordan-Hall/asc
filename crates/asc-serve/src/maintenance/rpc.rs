@@ -67,6 +67,29 @@ impl MaintenanceService {
     }
 }
 
+fn runner_wire(r: &crate::agents::runners::RunnerView) -> wire::AgentRunner {
+    wire::AgentRunner {
+        name: r.name.clone(),
+        slots: r.slots,
+        vcpu: r.vcpu,
+        version: r.version.clone(),
+        started: r.started,
+        last_seen: r.last_seen,
+        online: r.online,
+        runs: r
+            .runs
+            .iter()
+            .map(|a| wire::AgentRunnerRun {
+                id: a.id,
+                repo: a.repo.clone(),
+                title: a.title.clone(),
+                agent: a.agent.clone(),
+                started: a.started,
+            })
+            .collect(),
+    }
+}
+
 /// The clock in unix milliseconds.
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
@@ -99,6 +122,27 @@ impl Maintenance for MaintenanceService {
             .ok_or_else(|| Status::unimplemented("the health probes are not installed"))?;
         let h = probes.check(now_ms()).await;
         Ok(Response::new(h.to_wire(now_ms())))
+    }
+
+    async fn list_agent_runners(
+        &self,
+        request: Request<wire::ListAgentRunnersRequest>,
+    ) -> Result<Response<wire::ListAgentRunnersResponse>, Status> {
+        let (meta, ext, _) = request.into_parts();
+        self.admin(&ext, &meta).await?;
+        let runners = self
+            .hub
+            .runners()
+            .ok_or_else(|| Status::unimplemented("agents are not switched on"))?;
+        let now = crate::ai::clock::now();
+        let list = runners.list(now).await.map_err(|e| {
+            tracing::error!(class = %crate::ai::store::class(&e), "list agent runners");
+            Status::unavailable("the runner table cannot be read")
+        })?;
+        Ok(Response::new(wire::ListAgentRunnersResponse {
+            runners: list.iter().map(runner_wire).collect(),
+            now,
+        }))
     }
 
     async fn set_maintenance(

@@ -760,10 +760,20 @@ impl RunStore {
         .await
     }
 
-    /// Takes a queued run for execution (`Queued -> Running`). `Ok(false)`: another worker has it.
-    pub async fn claim(&self, id: u64) -> Result<bool, sqlx::Error> {
-        self.transition(id, &[RunState::Queued], RunState::Running)
-            .await
+    /// Takes a queued run for execution on the runner `runner` (`Queued -> Running`). `Ok(false)`:
+    /// another worker has it.
+    pub async fn claim(&self, id: u64, runner: &str) -> Result<bool, sqlx::Error> {
+        let r = sqlx::query(
+            "UPDATE agent_runs SET state = $2, started = CASE WHEN started = 0 THEN $3 ELSE started END,              heartbeat = $3, runner = $4 WHERE id = $1 AND state = $5",
+        )
+        .bind(i64::try_from(id).unwrap_or(0))
+        .bind(RunState::Running as i64)
+        .bind(clock::now())
+        .bind(runner)
+        .bind(RunState::Queued as i64)
+        .execute(&self.pool)
+        .await?;
+        Ok(r.rows_affected() == 1)
     }
 
     // -------------------------------------------------------------------------- events
