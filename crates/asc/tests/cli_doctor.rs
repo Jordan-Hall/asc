@@ -235,6 +235,39 @@ fn reclaimable_report_refuses_a_non_repository_and_exits_nonzero() {
     );
 }
 
+#[test]
+fn report_needs_a_hub_https_and_a_credential() {
+    let sb = Sandbox::new();
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let cases = [
+        (
+            vec!["--report"],
+            "name the hub: asc doctor --report https://<hub>",
+        ),
+        (vec!["--report", "http://hub.example"], "https"),
+        (
+            vec!["--report", "https://me:pw@hub.example"],
+            "no user information",
+        ),
+        (
+            vec!["--report", "https://hub.invalid"],
+            "no credential for https://hub.invalid: sign in with asc auth login --host https://hub.invalid",
+        ),
+    ];
+    for (args, want) in cases {
+        let out = doctor_with_path(&sb, &path, &args);
+        let err = text(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{args:?}: {err}");
+        assert!(
+            err.contains("asc: could not report to the hub: "),
+            "{args:?}: {err}"
+        );
+        assert!(err.contains(want), "{args:?}: {err}");
+        assert!(!err.contains("pw@"), "{err}");
+        assert!(stdout(&out).contains("real-git"), "the checks print first");
+    }
+}
+
 #[tokio::test]
 async fn workspace_checks_report_ignore_shadows_and_include_if_drift() {
     let f = Fixture::new().await;
