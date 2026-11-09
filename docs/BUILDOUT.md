@@ -729,7 +729,8 @@ A value out of range, or an unknown key in these sections, makes the file invali
 `backups.proto`, `crates/asc-serve/src/backups/`, migration 0590. Feature `backups.v1`, configuration `[backups]` (targets by name, a local directory or an S3 bucket;
 credentials only as environment variable names; endpoints https). The Admin Backups board: schedule (interval, anchor minute, retention in days then weeks),
 history with the result of each run, Back up now, Verify, and a restore that needs the word RESTORE. A run is `asc serve backup`; an S3 target is encrypted in
-4 MiB chunks (XChaCha20-Poly1305 under `[backups] key_file`) before upload and keeps a plain sidecar of stored sizes. Restore is staged: the backup must be
+4 MiB chunks (XChaCha20-Poly1305 under `[backups] key_file`) before upload and keeps a plain sidecar of stored sizes. Verify is a restore test: the
+backup (an S3 one downloaded first) is restored into a scratch area, its database opened and checked, and the scratch area removed. Restore is staged: the backup must be
 verified, the marker `restore.pending.json` is written in `<data dir>/backups`, and the server applies it before opening its database at the next start. Site
 administrator only (the host's `instance` claim with role admin, or the host's own credential). Audit: `backup.started`, `backup.finished`, `backup.verified`,
 `backup.purged`, `backup.schedule.updated`, `backup.restore.staged`. Runbook: docs/runbooks/backup.md.

@@ -33,6 +33,21 @@ and the SSH host keys and `[auth]` key files (copy them as part of configuration
 Without the vault master key a restored database cannot open any stored secret (storage credentials, AI keys, workflow secrets).
 Either include it, sealed, or keep your own copy of `[vault] key_file`.
 
+## Check (the restore test)
+
+Check on the Backups board (`Backups/VerifyBackup`, also run after every scheduled backup) restores the backup into a scratch area and
+checks the result; the server's own database, bucket and vault key are never touched.
+
+1. A local backup must still be the files the server recorded (its seal). An S3 backup is first downloaded, decrypted and checked
+   against that record into a private scratch directory under `<data dir>/backups/verify/<id>`, which is removed when the check ends.
+2. Every file and every object is checked against the manifest, as a restore does.
+3. The database is opened from a scratch copy: a SQLite copy must pass `PRAGMA integrity_check` and hold the server's tables; a
+   Postgres dump must be readable by `pg_restore --list` (the PostgreSQL client tools must be on the path).
+4. A sealed vault key must open under `[backups] key_file`. A backup that holds one is not restorable without it, so the check fails.
+
+The note on a passed check reads `Restore test passed: ...` and says what was opened and how many files and objects matched; a failed
+check names the first thing that failed.
+
 ## Restore
 
 1. The manifest is read and every file and every object is checked against it. A changed or missing file stops the restore before
