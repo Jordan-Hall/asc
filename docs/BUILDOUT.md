@@ -179,6 +179,10 @@ and evaluated through the API and the hub shows it; every key below is parsed st
   rules.<id>.{pattern,severity,description}` (section 4); `[signing] require_signed` (section 5); `[ci] flaky_threshold, allow_quarantine`
   (section 8); `[agents] enabled, max_runtime_seconds` and `[agents.budgets] max_tokens, max_cost_micro_usd` next to the existing
   `max_changes_per_run`, `max_paths_per_run` (section 11); `[merge] queue = true|false`, `[merge] revalidate = true` (section 7).
+- **Teams:** a subject may be `team:<name>` (letters, digits, `.`, `-`, `_`, at most 64; no glob), in a role or a `[paths]` write list. It
+  names a team of the organisation that owns the repository, with the members the host sends (`PathRules.SetTeamMembers`, the same teams
+  the path rules use); the name is matched ignoring ASCII case. The gate, `Repo.GetPolicy`, `Policy.*` and the CI insights maintainer check
+  read the caller's teams before they judge; when the teams cannot be read the caller has none, so a team rule then admits nobody.
 - **Config:** none. **Errors:** `POLICY_DENIED`, `POLICY_INVALID`, `POLICY_LOCKOUT` (a file that would leave no maintainer or that the
   proposer could not land is refused with `POLICY_LOCKOUT` by `Validate` as a warning and by `Propose` as an error).
 - **Audit:** `policy.proposed`, `policy.denied`.
