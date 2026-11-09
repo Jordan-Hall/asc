@@ -2675,4 +2675,200 @@ mod tests {
         assert_eq!(f.count("SELECT COUNT(*) FROM cs_graph").await, 0);
     }
 
+    // -------------------------------------------------------------------------- import progress
+
+    /// Samples the progress of the import of its repository when the import hands over its new
+    /// changesets, which is while the import still runs.
+    struct ProgressObserver {
+        table: Arc<StdMutex<HashMap<i64, Arc<ImportCounter>>>>,
+        seen: StdMutex<Vec<(u64, i64)>>,
+    }
+
+    #[async_trait]
+    impl crate::ingest::IngestObserver for ProgressObserver {
+        async fn on_ingested(
+            &self,
+            _tx: &mut sqlx::Transaction<'_, sqlx::any::Any>,
+            repo: asc_store::refs::RepoKey,
+            _new: &[ChangesetId],
+            _closure: &[ObjKey],
+        ) -> Result<(), crate::ingest::ObserverError> {
+            let m = self.table.lock().unwrap();
+            if let Some(c) = m.get(&repo.0) {
+                self.seen
+                    .lock()
+                    .unwrap()
+                    .push((c.commits.load(Ordering::Relaxed), c.started));
+            }
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_running_import_counts_the_commits_it_imports_and_is_gone_when_it_ends() {
+        let f = fx().await;
+        let pipeline = Arc::new(PipelineHooks::default());
+        assert!(pipeline.set_push_hooks(f.hooks.clone()).is_ok());
+        let push = ImportPush::new(f.registry.clone(), pipeline.clone());
+        let observer = Arc::new(ProgressObserver {
+            table: push.progress.clone(),
+            seen: StdMutex::default(),
+        });
+        assert!(pipeline.set_observer(observer.clone()).is_ok());
+        let before = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let c1 = f.forge.commit(None, &[("a", "1")]);
+        let c2 = f.forge.commit(Some(&c1), &[("a", "2")]);
+        push.import_git_push(
+            &ctx_of("alice"),
+            &f.forge.whole(),
+            &[cmd("refs/heads/master", None, Some(&c2))],
+            &ImportOptions::default(),
+        )
+        .await
+        .unwrap();
+        // Two commits while it ran; nothing once it ended.
+        let seen = observer.seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].0, 2);
+        assert!(u64::try_from(seen[0].1).unwrap() >= before);
+        assert_eq!(push.progress(f.entry.key.0), None);
+        // Commits asc already holds are not counted again.
+        let c3 = f.forge.commit(Some(&c2), &[("a", "3")]);
+        push.import_git_push(
+            &ctx_of("alice"),
+            &f.forge.whole(),
+            &[cmd("refs/heads/master", Some(&c2), Some(&c3))],
+            &ImportOptions::default(),
+        )
+        .await
+        .unwrap();
+        let seen = observer.seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 2, "{seen:?}");
+        assert_eq!(seen[1].0, 1);
+        assert_eq!(push.progress(f.entry.key.0), None);
+    }
+
+    #[tokio::test]
+    async fn a_failed_import_leaves_no_progress_behind() {
+        let f = fx().await;
+        let c1 = f.forge.commit(None, &[("a", "1")]);
+        let commands = [cmd("refs/heads/master", None, Some(&c1))];
+        let map = PushMap::new(f.registry.pool().clone(), &f.entry);
+        sqlx::query("DELETE FROM repos WHERE id = $1")
+            .bind(f.entry.key.0)
+            .execute(f.registry.pool())
+            .await
+            .unwrap();
+        let e = f
+            .push
+            .import(
+                &f.entry,
+                &map,
+                &f.forge.whole(),
+                &commands,
+                (true, false),
+                (1, None),
+            )
+            .await
+            .err()
+            .expect("a deleted repository is refused");
+        assert_eq!(e.code(), tonic::Code::NotFound);
+        assert_eq!(f.push.progress(f.entry.key.0), None);
+    }
+
+    #[test]
+    fn the_end_of_an_earlier_import_never_removes_the_count_of_a_later_one() {
+        let table: Arc<StdMutex<HashMap<i64, Arc<ImportCounter>>>> = Arc::default();
+        let counter = |n| {
+            Arc::new(ImportCounter {
+                commits: AtomicU64::new(n),
+                started: 1,
+            })
+        };
+        let first = ProgressGuard {
+            table: table.clone(),
+            repo: 4,
+            counter: counter(1),
+        };
+        let later = counter(9);
+        table.lock().unwrap().insert(4, later.clone());
+        drop(first);
+        assert!(Arc::ptr_eq(&table.lock().unwrap()[&4], &later));
+        drop(ProgressGuard {
+            table: table.clone(),
+            repo: 4,
+            counter: later,
+        });
+        assert!(table.lock().unwrap().is_empty());
+    }
+
+    fn progress_request() -> wire::ImportProgressRequest {
+        wire::ImportProgressRequest {
+            repo: Some(wire::RepoRef {
+                name: "o/r".into(),
+                id_mode: 0,
+            }),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_progress_rpc_reports_the_running_import_to_the_internal_token_only() {
+        let r = rpc_fx(true, true).await;
+        let host = ctx_of(HOST_SERVICE_PRINCIPAL);
+        let idle = r
+            .service
+            .import_progress(&host, progress_request())
+            .await
+            .unwrap();
+        assert_eq!(idle, wire::ImportProgressResponse::default());
+
+        let guard = r.service.push.start_progress(r.f.entry.key.0);
+        guard.counter.commits.fetch_add(3412, Ordering::Relaxed);
+        let running = r
+            .service
+            .import_progress(&host, progress_request())
+            .await
+            .unwrap();
+        assert!(running.running);
+        assert_eq!(running.commits, 3412);
+        assert_eq!(running.started, guard.counter.started);
+        assert!(running.started > 0);
+
+        for who in ["alice", "7:alice", "admin"] {
+            let s = r
+                .service
+                .import_progress(&ctx_of(who), progress_request())
+                .await
+                .unwrap_err();
+            assert_eq!(s.code(), tonic::Code::PermissionDenied, "{who}");
+        }
+        let mut other = ctx_of(HOST_SERVICE_PRINCIPAL);
+        other.repo = RepoName::parse("o/none").unwrap();
+        let s = r
+            .service
+            .import_progress(&other, progress_request())
+            .await
+            .unwrap_err();
+        assert_eq!(s.code(), tonic::Code::NotFound);
+
+        drop(guard);
+        let done = r
+            .service
+            .import_progress(&host, progress_request())
+            .await
+            .unwrap();
+        assert!(!done.running);
+
+        // Without the forge no caller holds the host credential.
+        let none = rpc_fx(true, false).await;
+        let s = none
+            .service
+            .import_progress(&host, progress_request())
+            .await
+            .unwrap_err();
+        assert_eq!(s.code(), tonic::Code::PermissionDenied);
+    }
 }
