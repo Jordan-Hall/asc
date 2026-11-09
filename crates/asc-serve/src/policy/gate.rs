@@ -515,11 +515,15 @@ impl ServerGate {
         u: &GateUpdate,
         in_force: &Loaded,
     ) -> Result<(), Status> {
+        let scope = self.org_agent_scope(req.entry, who).await?;
         let policy = match &in_force.state {
-            State::Absent => return Ok(()),
-            State::Valid(p) => p.clone(),
+            State::Absent => None,
+            State::Valid(p) => Some(p.clone()),
             State::Invalid(d) => return Err(unusable(d)),
         };
+        if policy.is_none() && scope.as_ref().is_none_or(Vec::is_empty) {
+            return Ok(());
+        }
         let Some(RefTarget::Changeset(new)) = u.new else {
             return Ok(());
         };
@@ -532,6 +536,29 @@ impl ServerGate {
             .added(req.entry, old.or(in_force.source), new, MAX_ADDED)
             .await?;
         let paths = added.paths();
+        if let Some(globs) = scope.as_ref().filter(|g| !g.is_empty()) {
+            let outside: Vec<String> = paths
+                .iter()
+                .filter(|p| !globs.iter().any(|g| g.matches(p)))
+                .map(|p| String::from_utf8_lossy(p).into_owned())
+                .collect();
+            if !outside.is_empty() {
+                let mut i = info(vec![format!(
+                    "the organisation lets agent {} write only {}",
+                    who.name,
+                    globs
+                        .iter()
+                        .map(asc_core::policy::PathGlob::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )]);
+                i.paths.extend(outside.into_iter().take(MAX_REPORTED));
+                return Err(rpc(RpcError::AgentScopeDenied(i)));
+            }
+        }
+        let Some(policy) = policy else {
+            return Ok(());
+        };
         let mut refused = Vec::new();
         let mut first: Option<Denial> = None;
         for p in &paths {
@@ -549,6 +576,60 @@ impl ServerGate {
             return Err(rpc(RpcError::BudgetExceeded(info(vec![d.reason]))));
         }
         Ok(())
+    }
+
+    /// The write scope the repository's organisation gives the agent `who`: `None` when `who` is
+    /// not an agent or the organisation has not registered it, otherwise its path patterns (empty:
+    /// no limit). A paused agent, or one kept to other repositories, is refused here. When the
+    /// organisation settings cannot be read the agent is refused, never let through.
+    async fn org_agent_scope(
+        &self,
+        entry: &RepoEntry,
+        who: &Who,
+    ) -> Result<Option<Vec<asc_core::policy::PathGlob>>, Status> {
+        if !who.is_agent() {
+            return Ok(None);
+        }
+        let Some(hub) = self.org.get() else {
+            return Ok(None);
+        };
+        let repo = entry.name.as_str().to_ascii_lowercase();
+        let row = hub
+            .agent_of_repo(&repo, &who.name)
+            .await
+            .map_err(|e| Status::unavailable(format!("gate: organisation agents: {e:?}")))?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        if row.paused {
+            return Err(rpc(RpcError::AgentScopeDenied(info(vec![format!(
+                "the organisation has paused agent {}",
+                who.name
+            )]))));
+        }
+        if !row.repos.is_empty() && !row.repos.contains(&repo) {
+            return Err(rpc(RpcError::AgentScopeDenied(info(vec![
+                format!(
+                    "the organisation does not let agent {} act in this repository",
+                    who.name
+                ),
+                repo,
+            ]))));
+        }
+        let mut globs = Vec::with_capacity(row.paths.len());
+        for p in &row.paths {
+            // Stored patterns were checked when they were set; one that no longer parses admits nothing.
+            match asc_core::policy::PathGlob::parse(p) {
+                Ok(g) => globs.push(g),
+                Err(_) => {
+                    return Err(rpc(RpcError::AgentScopeDenied(info(vec![format!(
+                        "the organisation's path pattern {p} for agent {} cannot be used",
+                        who.name
+                    )]))));
+                }
+            }
+        }
+        Ok(Some(globs))
     }
 
     // -------------------------------------------------------------------------- submitted changes

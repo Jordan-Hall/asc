@@ -478,6 +478,21 @@ impl OrgHub {
             .ok_or(OrgError::NotFound)
     }
 
+    /// The agent identity `name` of the organisation that owns `repo`, if it has one. A repository
+    /// owned by a person, or an agent the organisation has not registered, has none.
+    pub async fn agent_of_repo(
+        &self,
+        repo: &str,
+        name: &str,
+    ) -> Result<Option<AgentRow>, OrgError> {
+        let owner = repo.split('/').next().unwrap_or("").to_ascii_lowercase();
+        match self.agent(&owner, name).await {
+            Ok(a) => Ok(Some(a)),
+            Err(OrgError::NotFound) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Checks the fields of an agent against `org`.
     pub fn check_agent(org: &str, a: &AgentRow) -> Result<(), OrgError> {
         if !agent_name_ok(&a.name) {
