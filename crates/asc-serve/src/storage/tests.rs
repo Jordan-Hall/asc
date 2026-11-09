@@ -1815,6 +1815,120 @@ impl Engine2 {
     }
 }
 
+/// Starts a slow migration of 300 objects and waits until it has copied some of them.
+async fn copying_migration(
+    f: &Fx,
+    e: &RepoEntry,
+) -> (super::db::MigrationRow, String, tokio::task::JoinHandle<()>) {
+    let v = f.enabled("main").await;
+    seed(f, e, 300).await;
+    f.s3.set_delay("PUT", 10);
+    let m = f
+        .svc
+        .start_migration(&alice(), "acme/app", &v.target.id, true)
+        .await
+        .unwrap();
+    let engine = f.byos.engine.clone();
+    let runner = tokio::spawn(async move {
+        engine.tick().await;
+        engine.wait_idle().await;
+    });
+    loop {
+        let cur = f.svc.db.migration(&m.id).await.unwrap().unwrap();
+        if cur.objects_copied >= 64 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    (m, v.target.id, runner)
+}
+
+#[tokio::test]
+async fn pausing_holds_the_copy_where_it_is_and_resuming_carries_on() {
+    let f = fx().await;
+    let e = f.repo("acme/app").await;
+    let (m, target, runner) = copying_migration(&f, &e).await;
+    let p = f.svc.pause_migration(&alice(), &m.id).await.unwrap();
+    assert!(p.paused);
+    runner.await.unwrap();
+    let held = f.svc.get_migration(&alice(), &m.id).await.unwrap();
+    assert_eq!(held.state, state::COPYING, "it stays where it stopped");
+    assert!(held.paused);
+    assert!(held.objects_copied < 300, "{} copied", held.objects_copied);
+    assert!(
+        f.audit
+            .actions()
+            .contains(&"storage.migration.paused".to_owned())
+    );
+    // Writes still go to both places while it is held.
+    let route = f.svc.db.route(e.key.0).await.unwrap().unwrap();
+    assert_eq!(route.mirror_to.as_deref(), Some(target.as_str()));
+    // The worker leaves it alone.
+    f.byos.engine.tick().await;
+    f.byos.engine.wait_idle().await;
+    let still = f.svc.db.migration(&m.id).await.unwrap().unwrap();
+    assert_eq!(still.objects_copied, held.objects_copied);
+    // Pausing again changes nothing; another caller does not see it.
+    assert!(f.svc.pause_migration(&alice(), &m.id).await.unwrap().paused);
+    for err in [
+        f.svc.pause_migration(&bob(), &m.id).await.unwrap_err(),
+        f.svc.resume_migration(&bob(), &m.id).await.unwrap_err(),
+    ] {
+        assert!(matches!(err, StorageError::NotFound(_)), "{err:?}");
+    }
+    // Resumed, it carries on from its cursor and finishes.
+    f.s3.allow();
+    f.s3.clear_requests();
+    let r = f.svc.resume_migration(&alice(), &m.id).await.unwrap();
+    assert!(!r.paused);
+    assert!(
+        f.audit
+            .actions()
+            .contains(&"storage.migration.resumed".to_owned())
+    );
+    f.byos.engine.tick().await;
+    f.byos.engine.wait_idle().await;
+    let done = f.svc.get_migration(&alice(), &m.id).await.unwrap();
+    assert_eq!(done.state, state::DONE, "{done:?}");
+    let puts = f.s3.requests().iter().filter(|r| r.method == "PUT").count();
+    assert!(
+        puts < 300,
+        "{puts} puts after the resume: it did not start over"
+    );
+    // Resuming again changes nothing, and a migration that ended cannot be paused.
+    assert_eq!(
+        f.svc.resume_migration(&alice(), &m.id).await.unwrap().state,
+        state::DONE
+    );
+    assert!(matches!(
+        f.svc.pause_migration(&alice(), &m.id).await.unwrap_err(),
+        StorageError::FailedPrecondition(_)
+    ));
+}
+
+#[tokio::test]
+async fn cancelling_a_paused_migration_clears_the_mirror() {
+    let f = fx().await;
+    let e = f.repo("acme/app").await;
+    let (m, _, runner) = copying_migration(&f, &e).await;
+    f.svc.pause_migration(&alice(), &m.id).await.unwrap();
+    runner.await.unwrap();
+    let c = f.svc.cancel_migration(&alice(), &m.id).await.unwrap();
+    assert!(
+        c.cancel && !c.paused,
+        "cancelling clears the pause so the worker picks it up"
+    );
+    f.byos.engine.tick().await;
+    f.byos.engine.wait_idle().await;
+    let after = f.svc.get_migration(&alice(), &m.id).await.unwrap();
+    assert_eq!(after.state, state::CANCELLED);
+    assert!(f.svc.db.route(e.key.0).await.unwrap().is_none());
+    assert!(matches!(
+        f.svc.pause_migration(&alice(), &m.id).await.unwrap_err(),
+        StorageError::FailedPrecondition(_)
+    ));
+}
+
 #[tokio::test]
 async fn cancelling_stops_the_copy_clears_the_mirror_and_is_idempotent() {
     let f = fx().await;
