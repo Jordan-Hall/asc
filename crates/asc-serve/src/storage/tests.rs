@@ -1388,6 +1388,12 @@ async fn a_fresh_repository_has_no_fallback_and_can_be_reassigned() {
         .unwrap();
     let e = f.open("acme/app").await.unwrap();
     put_obj(&e, b"in a").await;
+    // The usage answer names where new objects go and the earlier place that still holds some.
+    let u = f.svc.repo_usage(&alice(), "acme/app", false).await.unwrap();
+    assert_eq!(
+        (u.target_id.as_str(), u.fallback.as_deref()),
+        (a.target.id.as_str(), Some(b.target.id.as_str()))
+    );
     let err = f
         .svc
         .assign_repo(&alice(), "acme/app", &b.target.id)
@@ -2527,6 +2533,8 @@ async fn repo_usage_splits_stored_bytes_by_kind_and_counts_reads() {
     let r = settled_usage(&f, false).await;
     assert!(r.computed_at > 0);
     assert_eq!(r.kinds.len(), Kind::ALL.len(), "every kind is answered");
+    // Never assigned: on the instance default, with no earlier place.
+    assert_eq!((r.target_id.as_str(), r.fallback.as_deref()), ("", None));
     let files = tally(&r, Kind::Files);
     assert_eq!(files.objects, 2);
     assert!(files.bytes >= 26, "{files:?}");

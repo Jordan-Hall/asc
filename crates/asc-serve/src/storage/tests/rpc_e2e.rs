@@ -520,6 +520,9 @@ async fn verify_enable_assign_and_migrate_over_the_wire() {
     );
     assert!(usage.computed_at > 0);
     assert_eq!(usage.month.len(), 7);
+    // The migration moved every object, so the repository is on the target alone.
+    assert_eq!(usage.target_id, id, "{usage:?}");
+    assert!(!usage.has_fallback, "{usage:?}");
     // Deleting the target now is refused with the dedicated code.
     let e = w
         .storage
