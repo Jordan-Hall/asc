@@ -1228,6 +1228,19 @@ mod summary_tests {
             out[3].repos.is_empty(),
             "a repository not asked about is not pointed to"
         );
+        let places: Vec<(u32, u64, u64, i64, Vec<String>)> = review
+            .places
+            .iter()
+            .map(|p| (p.repo, p.runs, p.active, p.last_run, p.people.clone()))
+            .collect();
+        assert_eq!(
+            places,
+            vec![
+                (0, 4, 0, 60, vec!["bob".to_owned(), "ann".to_owned()]),
+                (1, 2, 2, 50, vec!["ann".to_owned()]),
+            ],
+            "each repository has its own runs and people"
+        );
     }
 
     #[test]

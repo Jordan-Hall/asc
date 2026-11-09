@@ -1502,6 +1502,13 @@ async fn summarize_agents_folds_the_runs_by_agent_over_the_repositories_named() 
             last_run: row.created,
             repos: vec![1],
             people: vec![by.clone()],
+            places: vec![wire::AgentPlace {
+                repo: 1,
+                runs: 1,
+                active: 0,
+                last_run: row.created,
+                people: vec![by.clone()],
+            }],
         }]
     );
     // The filters: someone else's runs, and a window after the run, give nothing.
