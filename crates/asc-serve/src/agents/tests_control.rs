@@ -1329,3 +1329,97 @@ async fn a_token_made_after_a_limits_edit_takes_the_edited_limits_with_it_onto_t
     let t = w.hub.core.tokens.get(&t.id).await.unwrap().unwrap();
     assert_eq!(t.limits.tokens, 100_000, "the edit was not lost");
 }
+
+#[tokio::test]
+async fn count_runs_counts_over_the_repositories_named_and_checks_each_of_them() {
+    let w = World::new().await;
+    w.key(alice(), "mine").await;
+    w.fake.set_default(done("ok"));
+    let run = w.start_run("alice-token", "Count me").await.unwrap();
+    let row = w.wait(run.id).await;
+    assert_eq!(row.state, RunState::Succeeded);
+    let by = if row.starter.is_empty() {
+        row.created_by.clone()
+    } else {
+        row.starter.clone()
+    };
+    let count = |repos: Vec<&str>, states: Vec<wire::AgentRunState>, who: &str, token: &str| {
+        let r = w.request(
+            wire::CountAgentRunsRequest {
+                repos: repos
+                    .into_iter()
+                    .map(|n| wire::RepoRef {
+                        name: n.into(),
+                        id_mode: asc_rpc::IdMode::Asc as i32,
+                    })
+                    .collect(),
+                states: states.into_iter().map(|s| s as i32).collect(),
+                created_by: who.to_owned(),
+            },
+            token,
+            None,
+        );
+        let svc = w.svc.clone();
+        async move { svc.count_runs(r).await }
+    };
+    let total = |r: Result<tonic::Response<wire::CountAgentRunsResponse>, tonic::Status>| {
+        r.unwrap().into_inner().total
+    };
+    // A reader counts; the name may be spelled in any case.
+    assert_eq!(
+        total(count(vec!["acme/app"], vec![], "", "carol-token").await),
+        1
+    );
+    assert_eq!(
+        total(count(vec!["Acme/App"], vec![], &by, "carol-token").await),
+        1
+    );
+    // The filters: a finished run is not active, and the runs of someone else are not counted.
+    let active = vec![wire::AgentRunState::Queued, wire::AgentRunState::Running];
+    assert_eq!(
+        total(count(vec!["acme/app"], active, &by, "carol-token").await),
+        0
+    );
+    assert_eq!(
+        total(
+            count(
+                vec!["acme/app"],
+                vec![wire::AgentRunState::Succeeded],
+                &by,
+                "carol-token"
+            )
+            .await
+        ),
+        1
+    );
+    assert_eq!(
+        total(count(vec!["acme/app"], vec![], "nobody", "carol-token").await),
+        0
+    );
+    // The list of repositories is 1 to 50, each once.
+    let e = count(vec![], vec![], "", "carol-token").await.unwrap_err();
+    assert_eq!(e.code(), Code::InvalidArgument);
+    let many: Vec<String> = (0..51).map(|i| format!("acme/r{i}")).collect();
+    let e = count(
+        many.iter().map(String::as_str).collect(),
+        vec![],
+        "",
+        "carol-token",
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(e.code(), Code::InvalidArgument);
+    let e = count(vec!["acme/app", "ACME/app"], vec![], "", "carol-token")
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Code::InvalidArgument);
+    // Each repository is checked: a caller without a credential, or a repository that cannot be read, fails the call.
+    let e = count(vec!["acme/app"], vec![], "", "nobody-token")
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Code::Unauthenticated);
+    let e = count(vec!["acme/app", "../etc"], vec![], "", "carol-token")
+        .await
+        .unwrap_err();
+    assert_ne!(e.code(), Code::Ok);
+}
