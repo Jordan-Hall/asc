@@ -3091,3 +3091,87 @@ async fn without_a_usable_policy_trunk_rebases() {
         Strategy::Rebase
     );
 }
+
+#[tokio::test]
+async fn a_team_named_by_the_policy_admits_the_members_the_host_sent() {
+    let f = fx().await;
+    let rules = policy_text("[paths.\"payments/**\"]\nwrite = [\"team:payments-reviewers\"]\n");
+    let a = commit(
+        &f.e,
+        &[],
+        &[
+            (POLICY_PATH, rules.as_bytes()),
+            ("payments/ledger.rs", b"//\n"),
+        ],
+    )
+    .await;
+    f.set_master(a).await;
+    let edit = commit(&f.e, &[a], &[("payments/ledger.rs", b"// changed\n")]).await;
+    // Without the path rules service nobody is in a team.
+    let err = f.land(BOB, edit).await.unwrap_err();
+    assert_eq!(code(&err), "POLICY_DENIED");
+    assert!(
+        paths(&err)[0].contains("team:payments-reviewers"),
+        "{err:?}"
+    );
+    let teams = crate::pathrules::PathRulesHub::new(
+        f.reg.pool().clone(),
+        Arc::new(crate::settings::testkit::Recorder::default()),
+    );
+    teams
+        .set_team("o", "Payments-Reviewers", &["bob".to_owned()])
+        .await
+        .unwrap();
+    assert!(f.pathrules.set(teams));
+    // Alice is no member, even as a maintainer of other things.
+    assert_eq!(
+        code(&f.land(ALICE, edit).await.unwrap_err()),
+        "POLICY_DENIED"
+    );
+    // Bob is (team names ignore case).
+    f.land(BOB, edit).await.unwrap();
+
+    // Repo.GetPolicy and Evaluate judge with the teams too.
+    let hub = rpc::PolicyHub::new(
+        f.reg.clone(),
+        f.policies.clone(),
+        Arc::new(ServerMutations::new(
+            f.reg.clone(),
+            f.gated.hooks.clone(),
+            Arc::new(ReadHooks::default()),
+        )),
+    )
+    .with_pathrules(f.pathrules.clone());
+    let decide = |who: &'static str| {
+        let hub = &hub;
+        async move {
+            hub.get_policy(
+                &ctx(who),
+                wire::GetPolicyRequest {
+                    repo: repo_ref(),
+                    paths: vec![b"payments/x.rs".to_vec().into()],
+                },
+            )
+            .await
+            .unwrap()
+            .decisions[0]
+                .allowed
+        }
+    };
+    assert!(decide(BOB).await);
+    assert!(!decide(CAROL).await);
+    assert_eq!(
+        hub.get_policy(
+            &ctx(BOB),
+            wire::GetPolicyRequest {
+                repo: repo_ref(),
+                paths: vec![]
+            }
+        )
+        .await
+        .unwrap()
+        .paths[0]
+            .write,
+        ["team:payments-reviewers"]
+    );
+}
