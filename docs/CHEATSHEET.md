@@ -29,6 +29,7 @@ example for every command. Output, `--porcelain`, `-z` and `--format` are stable
 | `asc projects`, `asc graph` | The project graph. |
 | `asc landed` | Whether a change has landed on `master`. |
 | `asc doctor` | Check the install; `asc doctor --fix` repairs what it can. |
+| `asc doctor --report [<hub>]` | Send the name and level of each check to the hub, for the health check of its Get started page. |
 | `asc doctor --report-reclaimable` | Show disk an old `.git`, old worktrees and cruft packs hold. It deletes nothing. |
 | `asc install-shim` | Optional: put a `git` shim beside `asc` and print the PATH line. |
 | `asc help git` | Print the compatibility command map. |

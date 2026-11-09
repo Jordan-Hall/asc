@@ -87,6 +87,13 @@ and the `.claude/settings.json` snippet.
 Each line is `ok|info|warn|fail <name>: <detail>`; only `fail` makes the exit code 1. Run
 `asc doctor --fix` for what can be repaired without administrator rights.
 
+`asc doctor --report [<hub>]` also sends the outcome to the hub, which shows it in the health check
+of its Get started page. Without `<hub>` it uses the hub of the workspace remote. It sends the name
+and level of each check (each name once, at its worst level), the version of asc and of git, and the
+operating system and architecture: no path, no detail text and no secret. It needs the token of
+`asc auth login --host <hub>` and an https hub, follows no redirect and gives up after 15 s. When
+the hub cannot take the report, the command prints why and exits 1.
+
 | Finding | Meaning and fix |
 |---|---|
 | `real-git` | No usable real git. Install git 2.40 or later, or set `asc.realGit` or `ASC_REAL_GIT`. |
