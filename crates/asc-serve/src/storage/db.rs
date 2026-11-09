@@ -107,6 +107,8 @@ pub struct MigrationRow {
     pub bytes_copied: i64,
     pub cursor: String,
     pub cancel: bool,
+    /// Set by PauseMigration: the worker leaves the migration alone until it is resumed.
+    pub paused: bool,
     pub switched: bool,
     pub mirror_since: i64,
     pub error: String,
@@ -116,7 +118,7 @@ pub struct MigrationRow {
 }
 
 const MIGRATION_COLUMNS: &str = "id, repo_id, repo_name, from_target, to_target, state, delete_source, objects_total, \
-     objects_copied, bytes_copied, cursor, cancel, switched, mirror_since, error, created_ms, updated";
+     objects_copied, bytes_copied, cursor, cancel, paused, switched, mirror_since, error, created_ms, updated";
 
 fn migration_of(r: &AnyRow) -> Result<MigrationRow> {
     let flag = |c: &str| -> Result<bool> { Ok(r.try_get::<i64, _>(c)? != 0) };
@@ -133,6 +135,7 @@ fn migration_of(r: &AnyRow) -> Result<MigrationRow> {
         bytes_copied: r.try_get("bytes_copied")?,
         cursor: r.try_get("cursor")?,
         cancel: flag("cancel")?,
+        paused: flag("paused")?,
         switched: flag("switched")?,
         mirror_since: r.try_get("mirror_since")?,
         error: r.try_get("error")?,
@@ -580,7 +583,7 @@ impl Db {
     pub async fn runnable_migrations(&self, now: i64, limit: i64) -> Result<Vec<MigrationRow>> {
         let sql = format!(
             "SELECT {MIGRATION_COLUMNS} FROM storage_migrations WHERE state IN ('queued', 'copying', 'verifying', 'switching') \
-             AND lease_until <= $1 ORDER BY created_ms LIMIT $2"
+             AND paused = 0 AND lease_until <= $1 ORDER BY created_ms LIMIT $2"
         );
         sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(now)
@@ -675,7 +678,15 @@ impl Db {
 
     pub async fn migration_mark(&self, id: &str, column: Mark, now: i64) -> Result<()> {
         let sql = match column {
-            Mark::Cancel => "UPDATE storage_migrations SET cancel = 1, updated = $1 WHERE id = $2",
+            Mark::Cancel => {
+                "UPDATE storage_migrations SET cancel = 1, paused = 0, updated = $1 WHERE id = $2"
+            }
+            // Only before the switch: once the objects have moved there is nothing left to hold.
+            Mark::Pause => {
+                "UPDATE storage_migrations SET paused = 1, updated = $1 WHERE id = $2 \
+                 AND state IN ('queued', 'copying', 'verifying') AND switched = 0 AND cancel = 0"
+            }
+            Mark::Resume => "UPDATE storage_migrations SET paused = 0, updated = $1 WHERE id = $2",
             Mark::Switched => {
                 "UPDATE storage_migrations SET switched = 1, updated = $1 WHERE id = $2"
             }
@@ -763,6 +774,8 @@ impl Db {
 #[derive(Clone, Copy, Debug)]
 pub enum Mark {
     Cancel,
+    Pause,
+    Resume,
     Switched,
     MirrorSince,
 }

@@ -312,6 +312,7 @@ fn migration_pb(m: &MigrationRow) -> wire::StorageMigration {
         created: m.created_ms / 1000,
         updated: m.updated,
         error: m.error.clone(),
+        paused: m.paused && matches!(m.state.as_str(), s::QUEUED | s::COPYING | s::VERIFYING),
     }
 }
 
@@ -661,6 +662,38 @@ impl Storage for StorageService {
             .await
             .map_err(status_of)?;
         Ok(Response::new(wire::CancelStorageMigrationResponse {
+            migration: Some(migration_pb(&m)),
+        }))
+    }
+
+    async fn pause_migration(
+        &self,
+        request: Request<wire::PauseStorageMigrationRequest>,
+    ) -> Result<Response<wire::PauseStorageMigrationResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        let caller = self.caller(&ext, &meta).await?;
+        let m = self
+            .svc
+            .pause_migration(&caller, &msg.id)
+            .await
+            .map_err(status_of)?;
+        Ok(Response::new(wire::PauseStorageMigrationResponse {
+            migration: Some(migration_pb(&m)),
+        }))
+    }
+
+    async fn resume_migration(
+        &self,
+        request: Request<wire::ResumeStorageMigrationRequest>,
+    ) -> Result<Response<wire::ResumeStorageMigrationResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        let caller = self.caller(&ext, &meta).await?;
+        let m = self
+            .svc
+            .resume_migration(&caller, &msg.id)
+            .await
+            .map_err(status_of)?;
+        Ok(Response::new(wire::ResumeStorageMigrationResponse {
             migration: Some(migration_pb(&m)),
         }))
     }

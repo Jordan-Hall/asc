@@ -28,6 +28,8 @@ service Storage {
   rpc GetMigration(GetStorageMigrationRequest) returns (GetStorageMigrationResponse);
   rpc ListMigrations(ListStorageMigrationsRequest) returns (ListStorageMigrationsResponse);
   rpc CancelMigration(CancelStorageMigrationRequest) returns (CancelStorageMigrationResponse);   // idempotent
+  rpc PauseMigration(PauseStorageMigrationRequest) returns (PauseStorageMigrationResponse);      // repo admin; idempotent; before the switch
+  rpc ResumeMigration(ResumeStorageMigrationRequest) returns (ResumeStorageMigrationResponse);   // repo admin; idempotent
   rpc GetRepoUsage(GetRepoStorageUsageRequest) returns (GetRepoStorageUsageResponse);   // repo admin; cached, scanned in the background
 }
 
@@ -193,6 +195,7 @@ message StorageMigration {
   int64 created = 10;
   int64 updated = 11;
   string error = 12;                   // sanitised
+  bool paused = 13;                    // held by PauseMigration; `state` is where it stopped
 }
 // Copy, verify, switch, and only then (with `delete_source`) delete from the source. Reads and writes keep working.
 message StartStorageMigrationRequest {
@@ -222,6 +225,20 @@ message CancelStorageMigrationRequest {
   string id = 1;
 }
 message CancelStorageMigrationResponse {
+  StorageMigration migration = 1;
+}
+// The worker stops after the chunk it is on. Writes keep going to both places, so a resume carries on from the
+// cursor. FAILED_PRECONDITION once the migration is switching or over.
+message PauseStorageMigrationRequest {
+  string id = 1;
+}
+message PauseStorageMigrationResponse {
+  StorageMigration migration = 1;
+}
+message ResumeStorageMigrationRequest {
+  string id = 1;
+}
+message ResumeStorageMigrationResponse {
   StorageMigration migration = 1;
 }
 

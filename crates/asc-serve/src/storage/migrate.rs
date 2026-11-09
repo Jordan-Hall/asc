@@ -269,6 +269,15 @@ impl Engine {
                 );
                 self.publish(&fresh, state::CANCELLED, "");
             }
+            Ok(Finish::Paused) => {
+                self.audit.record(
+                    AuditEvent::new("storage.migration.paused")
+                        .repo(&fresh.repo_name)
+                        .detail("migration", &fresh.id)
+                        .detail("objects", &fresh.objects_copied.to_string()),
+                );
+                self.publish(&fresh, PAUSED, "");
+            }
             Err(Stop::Lost) => {}
             Err(Stop::Failed(msg)) => {
                 let switched = fresh.switched;
@@ -451,6 +460,9 @@ impl Engine {
                     .await?;
                 return Ok(Finish::Cancelled);
             }
+            if holds(&row) {
+                return Ok(Finish::Paused);
+            }
             match row.state.as_str() {
                 state::QUEUED => {
                     let sources = self.sources(&row, ns).await?;
@@ -597,7 +609,12 @@ impl Engine {
                     .migration_progress(&row.id, None, copied, bytes, &cursor, now())
                     .await?;
                 self.renew(&row.id).await?;
-                if self.db.migration(&row.id).await?.is_some_and(|f| f.cancel) {
+                if self
+                    .db
+                    .migration(&row.id)
+                    .await?
+                    .is_some_and(|f| f.cancel || holds(&f))
+                {
                     return Ok(None);
                 }
                 let _ = self.events.send(Event {
@@ -643,7 +660,12 @@ impl Engine {
                 verified += i64::try_from(results.len()).unwrap_or(0);
                 bad += results.iter().filter(|ok| !**ok).count() as u64;
                 self.renew(&row.id).await?;
-                if self.db.migration(&row.id).await?.is_some_and(|f| f.cancel) {
+                if self
+                    .db
+                    .migration(&row.id)
+                    .await?
+                    .is_some_and(|f| f.cancel || holds(&f))
+                {
                     return Ok(None);
                 }
             }
@@ -675,6 +697,16 @@ impl Drop for Forget<'_> {
 enum Finish {
     Done,
     Cancelled,
+    /// Paused before the switch; the mirror and the cursor are kept for the resume.
+    Paused,
+}
+
+/// The state published when a migration stops for a pause; the row keeps its own state.
+pub const PAUSED: &str = "paused";
+
+/// Whether the worker should leave `row` for now: paused, and not yet at the switch.
+fn holds(row: &MigrationRow) -> bool {
+    row.paused && !row.switched && row.state != state::SWITCHING
 }
 
 fn parse_cursor(c: &str) -> (usize, Option<String>) {

@@ -978,6 +978,67 @@ impl Service {
         }
         self.db.migration(id).await?.ok_or(StorageError::Internal)
     }
+
+    /// Holds a migration where it is: the worker stops after the chunk it is on. Writes still go to both places,
+    /// so the copy carries on from its cursor when it is resumed. Idempotent; refused once the objects are being
+    /// switched over or the migration is over.
+    pub async fn pause_migration(
+        &self,
+        caller: &Caller,
+        id: &str,
+    ) -> Result<MigrationRow, StorageError> {
+        let m = self.migration_for(caller, id).await?;
+        if m.paused {
+            return Ok(m);
+        }
+        let pausable = matches!(
+            m.state.as_str(),
+            state::QUEUED | state::COPYING | state::VERIFYING
+        ) && !m.switched
+            && !m.cancel;
+        if !pausable {
+            return Err(StorageError::FailedPrecondition(
+                "the migration can no longer be paused".into(),
+            ));
+        }
+        self.db
+            .migration_mark(id, super::db::Mark::Pause, now())
+            .await?;
+        let m = self.db.migration(id).await?.ok_or(StorageError::Internal)?;
+        if !m.paused {
+            return Err(StorageError::FailedPrecondition(
+                "the migration can no longer be paused".into(),
+            ));
+        }
+        self.audit.record(
+            self.event("storage.migration.paused", caller)
+                .repo(&m.repo_name)
+                .detail("migration", id)
+                .detail("outcome", "pause requested"),
+        );
+        Ok(m)
+    }
+
+    /// Lets a paused migration carry on from where it stopped. Idempotent.
+    pub async fn resume_migration(
+        &self,
+        caller: &Caller,
+        id: &str,
+    ) -> Result<MigrationRow, StorageError> {
+        let m = self.migration_for(caller, id).await?;
+        if m.paused {
+            self.db
+                .migration_mark(id, super::db::Mark::Resume, now())
+                .await?;
+            self.audit.record(
+                self.event("storage.migration.resumed", caller)
+                    .repo(&m.repo_name)
+                    .detail("migration", id),
+            );
+            self.engine.kick();
+        }
+        self.db.migration(id).await?.ok_or(StorageError::Internal)
+    }
 }
 
 #[cfg(test)]
