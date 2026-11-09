@@ -475,13 +475,16 @@ impl Engine {
                     self.db
                         .migration_mark(&row.id, Mark::MirrorSince, now())
                         .await?;
-                    let mut total = 0i64;
+                    let (mut total, mut size) = (0i64, 0i64);
                     for s in &sources {
-                        total += count(s).await?;
+                        let (n, b) = count(s).await?;
+                        total += n;
+                        size = size.saturating_add(b);
                     }
                     self.db
                         .migration_progress(&row.id, Some(total), 0, 0, "", now())
                         .await?;
+                    self.db.migration_bytes_total(&row.id, size, now()).await?;
                     self.db
                         .migration_state(&row.id, state::COPYING, "", now())
                         .await?;
@@ -639,6 +642,8 @@ impl Engine {
     ) -> Result<Option<i64>, Stop> {
         let mut verified = 0i64;
         let mut bad = 0u64;
+        let mut redone = 0i64;
+        self.db.migration_mismatched(&row.id, 0, now()).await?;
         for src in sources {
             let mut list = src.store.list(Some(&src.root)).fuse();
             loop {
@@ -652,13 +657,18 @@ impl Engine {
                 if chunk.is_empty() {
                     break;
                 }
-                let results: Vec<bool> = stream::iter(chunk)
+                let results: Vec<Compared> = stream::iter(chunk)
                     .map(|meta| compare_or_repair(src, dest, meta))
                     .buffered(VERIFY_CONCURRENCY)
                     .try_collect()
                     .await?;
                 verified += i64::try_from(results.len()).unwrap_or(0);
-                bad += results.iter().filter(|ok| !**ok).count() as u64;
+                bad += results.iter().filter(|c| **c == Compared::Differs).count() as u64;
+                let again = results.iter().filter(|c| **c != Compared::Same).count();
+                if again > 0 {
+                    redone += i64::try_from(again).unwrap_or(0);
+                    self.db.migration_mismatched(&row.id, redone, now()).await?;
+                }
                 self.renew(&row.id).await?;
                 if self
                     .db
@@ -739,13 +749,26 @@ fn dest_path(dest: &Member, rel: &str) -> Result<Path, Stop> {
     under(&dest.root, rel).ok_or_else(|| Stop::new("object name is not valid"))
 }
 
-async fn count(m: &Member) -> Result<i64, Stop> {
-    let mut n = 0i64;
+/// The number of objects in a place and their bytes.
+async fn count(m: &Member) -> Result<(i64, i64), Stop> {
+    let (mut n, mut bytes) = (0i64, 0i64);
     let mut list = m.store.list(Some(&m.root)).fuse();
-    while list.try_next().await?.is_some() {
+    while let Some(meta) = list.try_next().await? {
         n += 1;
+        bytes = bytes.saturating_add(i64::try_from(meta.size).unwrap_or(i64::MAX));
     }
-    Ok(n)
+    Ok((n, bytes))
+}
+
+/// What the check found for one object.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Compared {
+    /// The copy matched.
+    Same,
+    /// The copy was missing or different and matches after being copied again.
+    Redone,
+    /// It still differs after being copied again.
+    Differs,
 }
 
 /// Copies one object unless the destination already has one of the same size. Returns the bytes
@@ -775,7 +798,11 @@ async fn copy_one(src: &Member, dest: &Member, meta: ObjectMeta) -> Result<u64, 
 
 /// Reads the object from both places and compares hashes; on a mismatch copies it again and
 /// compares once more. `Ok(false)` only if it still differs.
-async fn compare_or_repair(src: &Member, dest: &Member, meta: ObjectMeta) -> Result<bool, Stop> {
+async fn compare_or_repair(
+    src: &Member,
+    dest: &Member,
+    meta: ObjectMeta,
+) -> Result<Compared, Stop> {
     let rel = relative(&meta.location, &src.root)
         .ok_or_else(|| Stop::new("object outside the namespace"))?;
     let to = dest_path(dest, &rel)?;
@@ -783,7 +810,7 @@ async fn compare_or_repair(src: &Member, dest: &Member, meta: ObjectMeta) -> Res
         let original = match src.store.get(&meta.location).await {
             Ok(g) => g.bytes().await?,
             // Removed from the source since: the mirror removed it from the destination too.
-            Err(object_store::Error::NotFound { .. }) => return Ok(true),
+            Err(object_store::Error::NotFound { .. }) => return Ok(Compared::Same),
             Err(e) => return Err(e.into()),
         };
         let copy = match dest.store.get(&to).await {
@@ -795,7 +822,11 @@ async fn compare_or_repair(src: &Member, dest: &Member, meta: ObjectMeta) -> Res
             .as_ref()
             .is_some_and(|c| blake3::hash(c) == blake3::hash(&original))
         {
-            return Ok(true);
+            return Ok(if attempt == 0 {
+                Compared::Same
+            } else {
+                Compared::Redone
+            });
         }
         if attempt == 0 {
             dest.store
@@ -803,7 +834,7 @@ async fn compare_or_repair(src: &Member, dest: &Member, meta: ObjectMeta) -> Res
                 .await?;
         }
     }
-    Ok(false)
+    Ok(Compared::Differs)
 }
 
 async fn delete_all(m: &Member) -> Result<(), Stop> {

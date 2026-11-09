@@ -308,6 +308,8 @@ fn migration_pb(m: &MigrationRow) -> wire::StorageMigration {
         objects_total: u64::try_from(m.objects_total).unwrap_or(0),
         objects_copied: u64::try_from(m.objects_copied).unwrap_or(0),
         bytes_copied: u64::try_from(m.bytes_copied).unwrap_or(0),
+        bytes_total: u64::try_from(m.bytes_total).unwrap_or(0),
+        mismatched: u64::try_from(m.mismatched).unwrap_or(0),
         delete_source: m.delete_source,
         created: m.created_ms / 1000,
         updated: m.updated,

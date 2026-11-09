@@ -103,6 +103,10 @@ pub struct MigrationRow {
     pub state: String,
     pub delete_source: bool,
     pub objects_total: i64,
+    /// The bytes counted before the copy.
+    pub bytes_total: i64,
+    /// Copies the last verify pass found missing or different and copied again.
+    pub mismatched: i64,
     pub objects_copied: i64,
     pub bytes_copied: i64,
     pub cursor: String,
@@ -117,7 +121,7 @@ pub struct MigrationRow {
     pub updated: i64,
 }
 
-const MIGRATION_COLUMNS: &str = "id, repo_id, repo_name, from_target, to_target, state, delete_source, objects_total, \
+const MIGRATION_COLUMNS: &str = "id, repo_id, repo_name, from_target, to_target, state, delete_source, objects_total, bytes_total, mismatched, \
      objects_copied, bytes_copied, cursor, cancel, paused, switched, mirror_since, error, created_ms, updated";
 
 fn migration_of(r: &AnyRow) -> Result<MigrationRow> {
@@ -131,6 +135,8 @@ fn migration_of(r: &AnyRow) -> Result<MigrationRow> {
         state: r.try_get("state")?,
         delete_source: flag("delete_source")?,
         objects_total: r.try_get("objects_total")?,
+        bytes_total: r.try_get("bytes_total")?,
+        mismatched: r.try_get("mismatched")?,
         objects_copied: r.try_get("objects_copied")?,
         bytes_copied: r.try_get("bytes_copied")?,
         cursor: r.try_get("cursor")?,
@@ -673,6 +679,28 @@ impl Db {
         .bind(id)
         .execute(&self.pool)
         .await?;
+        Ok(())
+    }
+
+    /// Records the bytes counted before the copy.
+    pub async fn migration_bytes_total(&self, id: &str, bytes: i64, now: i64) -> Result<()> {
+        sqlx::query("UPDATE storage_migrations SET bytes_total = $1, updated = $2 WHERE id = $3")
+            .bind(bytes)
+            .bind(now)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Records how many copies the verify pass running now has redone.
+    pub async fn migration_mismatched(&self, id: &str, n: i64, now: i64) -> Result<()> {
+        sqlx::query("UPDATE storage_migrations SET mismatched = $1, updated = $2 WHERE id = $3")
+            .bind(n)
+            .bind(now)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 

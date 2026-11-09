@@ -196,6 +196,8 @@ message StorageMigration {
   int64 updated = 11;
   string error = 12;                   // sanitised
   bool paused = 13;                    // held by PauseMigration; `state` is where it stopped
+  uint64 bytes_total = 14;             // counted before the copy; 0 until then
+  uint64 mismatched = 15;              // copies the last check found missing or different and copied again
 }
 // Copy, verify, switch, and only then (with `delete_source`) delete from the source. Reads and writes keep working.
 message StartStorageMigrationRequest {
