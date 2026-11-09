@@ -1115,48 +1115,65 @@ fn summarize(
     groups: &[crate::agents::runs::RunGroup],
 ) -> Vec<wire::AgentSummary> {
     use std::collections::BTreeMap;
-    struct Acc {
+    #[derive(Default)]
+    struct Tally {
         runs: u64,
         active: u64,
         last_run: i64,
-        repos: std::collections::BTreeSet<u32>,
         people: BTreeMap<String, u64>,
     }
-    let mut by: BTreeMap<&str, Acc> = BTreeMap::new();
+    impl Tally {
+        fn add(&mut self, g: &crate::agents::runs::RunGroup) {
+            self.runs += g.runs;
+            if g.state.is_active() {
+                self.active += g.runs;
+            }
+            self.last_run = self.last_run.max(g.last_run);
+            if !g.person.is_empty() {
+                *self.people.entry(g.person.clone()).or_default() += g.runs;
+            }
+        }
+        fn people(&self) -> Vec<String> {
+            let mut people: Vec<(&String, u64)> =
+                self.people.iter().map(|(p, n)| (p, *n)).collect();
+            people.sort_by(|x, y| y.1.cmp(&x.1).then_with(|| x.0.cmp(y.0)));
+            people
+                .into_iter()
+                .take(SUMMARY_PEOPLE)
+                .map(|(p, _)| p.clone())
+                .collect()
+        }
+    }
+    let mut by: BTreeMap<&str, (Tally, BTreeMap<u32, Tally>)> = BTreeMap::new();
     for g in groups {
-        let a = by.entry(g.agent.as_str()).or_insert_with(|| Acc {
-            runs: 0,
-            active: 0,
-            last_run: 0,
-            repos: Default::default(),
-            people: BTreeMap::new(),
-        });
-        a.runs += g.runs;
-        if g.state.is_active() {
-            a.active += g.runs;
-        }
-        a.last_run = a.last_run.max(g.last_run);
+        let (all, places) = by.entry(g.agent.as_str()).or_default();
+        all.add(g);
         if let Some(i) = repos.iter().position(|r| *r == g.repo) {
-            a.repos.insert(u32::try_from(i).unwrap_or(u32::MAX));
-        }
-        if !g.person.is_empty() {
-            *a.people.entry(g.person.clone()).or_default() += g.runs;
+            places
+                .entry(u32::try_from(i).unwrap_or(u32::MAX))
+                .or_default()
+                .add(g);
         }
     }
     let mut out: Vec<wire::AgentSummary> = by
         .into_iter()
-        .map(|(agent, a)| {
-            let mut people: Vec<(String, u64)> = a.people.into_iter().collect();
-            people.sort_by(|x, y| y.1.cmp(&x.1).then_with(|| x.0.cmp(&y.0)));
-            people.truncate(SUMMARY_PEOPLE);
-            wire::AgentSummary {
-                agent: agent.to_owned(),
-                runs: a.runs,
-                active: a.active,
-                last_run: a.last_run,
-                repos: a.repos.into_iter().collect(),
-                people: people.into_iter().map(|(p, _)| p).collect(),
-            }
+        .map(|(agent, (all, places))| wire::AgentSummary {
+            agent: agent.to_owned(),
+            runs: all.runs,
+            active: all.active,
+            last_run: all.last_run,
+            repos: places.keys().copied().collect(),
+            people: all.people(),
+            places: places
+                .iter()
+                .map(|(repo, t)| wire::AgentPlace {
+                    repo: *repo,
+                    runs: t.runs,
+                    active: t.active,
+                    last_run: t.last_run,
+                    people: t.people(),
+                })
+                .collect(),
         })
         .collect();
     out.sort_by(|x, y| y.runs.cmp(&x.runs).then_with(|| x.agent.cmp(&y.agent)));

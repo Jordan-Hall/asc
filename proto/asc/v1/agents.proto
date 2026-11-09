@@ -503,6 +503,14 @@ message AgentSummary {
   int64 last_run = 4;                    // when the newest of them was created, unix seconds
   repeated uint32 repos = 5;             // where it ran: indexes into the repositories of the request, ascending
   repeated string people = 6;            // who started or created its runs, at most 5, most runs first then by name
+  repeated AgentPlace places = 7;        // the same per repository where it ran, by index ascending
+}
+message AgentPlace {
+  uint32 repo = 1;                       // index into the repositories of the request
+  uint64 runs = 2;
+  uint64 active = 3;
+  int64 last_run = 4;
+  repeated string people = 5;            // at most 5, most runs first then by name
 }
 message SummarizeAgentsResponse {
   repeated AgentSummary agents = 1;      // most runs first, then by name; at most `limit`
