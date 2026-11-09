@@ -122,8 +122,8 @@ pub struct ServerGate {
     deps: Arc<crate::deps::gate::DepsGateSlot>,
     /// The organisation settings, whose merge defaults a repository can only tighten.
     org: Arc<crate::org::OrgSlot>,
-    /// Set while a restore waits for the next start: no ref moves in the meantime.
-    read_only: Arc<std::sync::atomic::AtomicBool>,
+    /// Raised while a restore waits for the next start or maintenance is on: no ref moves.
+    read_only: Arc<crate::maintenance::ReadOnly>,
     /// The repository path rules: an update writes only where its sender may (SPEC §15.5.1).
     pathrules: Arc<crate::pathrules::PathRulesSlot>,
 }
@@ -321,15 +321,15 @@ impl ServerGate {
         ))))
     }
 
-    /// Shares the maintenance flag: while it is set every update is refused.
+    /// Shares the read-only flag: while it is raised every update is refused.
     #[must_use]
-    pub fn with_read_only(mut self, flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
+    pub fn with_read_only(mut self, flag: Arc<crate::maintenance::ReadOnly>) -> Self {
         self.read_only = flag;
         self
     }
 
-    /// The maintenance flag.
-    pub fn read_only_flag(&self) -> &Arc<std::sync::atomic::AtomicBool> {
+    /// The read-only flag.
+    pub fn read_only_flag(&self) -> &Arc<crate::maintenance::ReadOnly> {
         &self.read_only
     }
 
@@ -1144,10 +1144,8 @@ impl RefGate for ServerGate {
     }
 
     async fn check(&self, req: &GateRequest<'_>) -> Result<(), Status> {
-        if self.read_only.load(std::sync::atomic::Ordering::Relaxed) {
-            return Err(Status::unavailable(
-                "the server is read-only: a restore is staged and applies when the server restarts",
-            ));
+        if let Some(refused) = self.read_only.refusal() {
+            return Err(refused);
         }
         if let Err(status) = self.check_paths(req).await {
             let name = req

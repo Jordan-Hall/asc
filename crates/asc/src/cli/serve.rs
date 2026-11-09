@@ -155,6 +155,12 @@ mod real {
             #[arg(long, global = true)]
             all: bool,
         },
+        /// Read-only maintenance (SPEC §14.5): `on` refuses every write on every node until
+        /// `off`; `status` prints the switch.
+        Maintenance {
+            #[command(subcommand)]
+            cmd: MaintenanceSub,
+        },
         /// Sets `repos.mode`, `git_reads` and `bridge`.
         SetMode {
             #[arg(long)]
@@ -185,6 +191,34 @@ mod real {
         Status,
         Verify,
         Reindex,
+    }
+
+    #[derive(clap::Subcommand, Debug)]
+    pub enum MaintenanceSub {
+        /// Refuses every write until `off`; reads keep working.
+        On {
+            /// Shown to everyone who tries to write and on the hub's notice (at most 500
+            /// characters).
+            #[arg(long, default_value = "")]
+            message: String,
+            /// The expected length, such as `30m` or `2h`; shown, never acted on.
+            #[arg(long = "for", value_parser = parse_for)]
+            for_secs: Option<u64>,
+            /// The release being installed, shown as "upgrading to <version>".
+            #[arg(long, default_value = "")]
+            version: String,
+        },
+        /// Accepts writes again.
+        Off,
+        /// Prints whether maintenance is on, why and since when.
+        Status,
+    }
+
+    fn parse_for(text: &str) -> std::result::Result<u64, String> {
+        crate::daemon::live::prod::parse_duration(text)
+            .map(|d| d.as_secs())
+            .filter(|s| *s > 0)
+            .ok_or_else(|| "a length such as 90s, 30m or 2h".to_owned())
     }
 
     #[derive(clap::Subcommand, Debug)]
@@ -422,6 +456,22 @@ mod real {
                     PackSub::Reindex => ac::PackCmd::Reindex,
                 };
                 cli.pack(&cmd, &repos, all).await
+            }
+            AdminCmd::Maintenance { cmd } => {
+                let cmd = match cmd {
+                    MaintenanceSub::On {
+                        message,
+                        for_secs,
+                        version,
+                    } => ac::MaintenanceCmd::On {
+                        message,
+                        for_secs,
+                        version,
+                    },
+                    MaintenanceSub::Off => ac::MaintenanceCmd::Off,
+                    MaintenanceSub::Status => ac::MaintenanceCmd::Status,
+                };
+                cli.maintenance(&cmd, asc_serve::ai::clock::now()).await
             }
             AdminCmd::SetMode {
                 repo,
@@ -706,5 +756,74 @@ mod ssh_key_tests {
         ] {
             assert!(parse(bad).is_err(), "{bad:?}");
         }
+    }
+}
+
+#[cfg(all(test, feature = "serve"))]
+mod maintenance_tests {
+    use clap::Parser as _;
+
+    use super::{AdminCmd, Args, MaintenanceSub, Sub};
+
+    fn parse(args: &[&str]) -> Result<Args, clap::Error> {
+        Args::try_parse_from(std::iter::once("serve").chain(args.iter().copied()))
+    }
+
+    fn sub(args: &[&str]) -> MaintenanceSub {
+        let Some(Sub::Admin {
+            cmd: AdminCmd::Maintenance { cmd },
+        }) = parse(args).unwrap().cmd
+        else {
+            panic!("not admin maintenance");
+        };
+        cmd
+    }
+
+    #[test]
+    fn maintenance_on_off_and_status_parse() {
+        let MaintenanceSub::On {
+            message,
+            for_secs,
+            version,
+        } = sub(&[
+            "admin",
+            "maintenance",
+            "on",
+            "--message",
+            "new disks",
+            "--for",
+            "30m",
+            "--version",
+            "2.4.0",
+        ])
+        else {
+            panic!("not on");
+        };
+        assert_eq!(
+            (message.as_str(), for_secs, version.as_str()),
+            ("new disks", Some(1800), "2.4.0")
+        );
+        let MaintenanceSub::On {
+            message, for_secs, ..
+        } = sub(&["admin", "maintenance", "on"])
+        else {
+            panic!("not on");
+        };
+        assert!(message.is_empty() && for_secs.is_none());
+        assert!(matches!(
+            sub(&["admin", "maintenance", "off"]),
+            MaintenanceSub::Off
+        ));
+        assert!(matches!(
+            sub(&["admin", "maintenance", "status"]),
+            MaintenanceSub::Status
+        ));
+        for bad in ["0", "soon", "5d"] {
+            assert!(
+                parse(&["admin", "maintenance", "on", "--for", bad]).is_err(),
+                "{bad}"
+            );
+        }
+        assert!(parse(&["admin", "maintenance"]).is_err());
     }
 }

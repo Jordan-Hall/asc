@@ -227,7 +227,7 @@ pub struct HttpState {
     probes: Arc<Mutex<Vec<Arc<dyn Probe>>>>,
     stats: Option<Arc<crate::obs::Stats>>,
     /// Raised while a restore is staged (see `Extensions::read_only`).
-    maintenance: Arc<std::sync::atomic::AtomicBool>,
+    maintenance: Arc<crate::maintenance::ReadOnly>,
 }
 
 impl HttpState {
@@ -250,7 +250,7 @@ impl HttpState {
 
     /// Shares the maintenance flag the admin readiness reports.
     #[must_use]
-    pub fn with_maintenance(mut self, flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
+    pub fn with_maintenance(mut self, flag: Arc<crate::maintenance::ReadOnly>) -> Self {
         self.maintenance = flag;
         self
     }
@@ -332,8 +332,9 @@ async fn readyz_detailed(State(s): State<HttpState>) -> Response {
         axum::Json(serde_json::json!({
             "ready": failed.is_empty(),
             "failed": failed,
-            "read_only": s.maintenance.load(std::sync::atomic::Ordering::Relaxed),
-            "restore_staged": s.maintenance.load(std::sync::atomic::Ordering::Relaxed),
+            "read_only": s.maintenance.is_read_only(),
+            "restore_staged": s.maintenance.restore_staged(),
+            "maintenance": s.maintenance.notice().is_some(),
         })),
     )
         .into_response()
@@ -439,11 +440,20 @@ mod tests {
     #[tokio::test]
     async fn the_admin_readiness_says_when_a_restore_is_staged() {
         let (st, _, _) = state(WellKnown::default()).await;
-        let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = Arc::new(crate::maintenance::ReadOnly::default());
         let st = st.with_maintenance(flag.clone());
         let (_, body) = admin_get(&st, "/readyz").await;
         assert!(body.contains("\"read_only\":false"), "{body}");
-        flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        flag.set_notice(Some(crate::maintenance::Notice::default()));
+        let (_, body) = admin_get(&st, "/readyz").await;
+        assert!(
+            body.contains("\"read_only\":true")
+                && body.contains("\"maintenance\":true")
+                && body.contains("\"restore_staged\":false"),
+            "maintenance is not a staged restore: {body}"
+        );
+        flag.set_notice(None);
+        flag.stage_restore();
         let (code, body) = admin_get(&st, "/readyz").await;
         assert_eq!(code, 200, "reads still work");
         assert!(

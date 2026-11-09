@@ -1,0 +1,40 @@
+syntax = "proto3";
+package asc.v1;
+
+// Read-only maintenance of the server (SPEC §14.5). While it is on, every write is refused with UNAVAILABLE and the notice's
+// message: no ref moves (pushes, lands, cloud updates) and no object is accepted. Reads go on. The hub shows the same notice on
+// its 503 page and switches the server with SetMaintenance from its Admin Maintenance board; an operator can switch it without
+// the hub with `asc serve admin maintenance on|off`.
+//
+// The setting is one database row, so every node of a cluster follows it: each node reads it at start and every 5 seconds.
+// `until` is when the operator expects to be done; it is shown, never acted on, so maintenance ends only when switched off.
+//
+// Every call is for the site administrator: the host service with an `instance` claim of role admin, or the host service's own
+// credential. Any other caller gets PERMISSION_DENIED. SetMaintenance needs `x-asc-op-id` and is written to the audit log as
+// "server.maintenance.updated". Advertised as Version.features "maintenance.v1".
+service Maintenance {
+  rpc GetMaintenance(GetMaintenanceRequest) returns (GetMaintenanceResponse);   // site admin
+  rpc SetMaintenance(SetMaintenanceRequest) returns (SetMaintenanceResponse);   // site admin; mutating
+}
+
+message MaintenanceState {
+  bool on = 1;
+  string message = 2;          // <= 500 characters, no control characters; empty = a generic notice
+  int64 until = 3;             // unix seconds; 0 = not said
+  string version = 4;          // the version being upgraded to, [A-Za-z0-9._+-]{0,64}; empty = not an upgrade
+  int64 updated = 5;           // unix seconds of the last change; 0 = never set
+  string updated_by = 6;       // the principal id of the person who changed it, or "operator" for the admin CLI
+  bool restore_staged = 7;     // a staged restore also holds the server read-only until it restarts (docs/runbooks/backup.md)
+}
+
+message GetMaintenanceRequest {}
+message GetMaintenanceResponse { MaintenanceState state = 1; }
+
+// Replaces the notice. Off keeps the message, until and version for the next time it is switched on.
+message SetMaintenanceRequest {
+  bool on = 1;
+  string message = 2;
+  int64 until = 3;             // must not be in the past when on
+  string version = 4;
+}
+message SetMaintenanceResponse { MaintenanceState state = 1; }

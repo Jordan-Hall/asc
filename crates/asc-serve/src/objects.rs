@@ -26,7 +26,7 @@ use crate::registry::{Extensions, Registry, RegistryError, RepoEntry};
 pub struct ServerObjects {
     registry: Arc<Registry>,
     usage: Arc<crate::usage::UsageSlot>,
-    read_only: Arc<std::sync::atomic::AtomicBool>,
+    read_only: Arc<crate::maintenance::ReadOnly>,
     pathrules: Arc<crate::pathrules::PathRulesSlot>,
     objpaths: Arc<crate::pathrules::objpaths::ObjPaths>,
 }
@@ -69,9 +69,9 @@ impl ServerObjects {
         Ok(Some(scope))
     }
 
-    /// Refuses uploads while the flag is raised (a restore is staged).
+    /// Refuses uploads while the server is read-only (a staged restore or maintenance).
     #[must_use]
-    pub fn with_read_only(mut self, flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
+    pub fn with_read_only(mut self, flag: Arc<crate::maintenance::ReadOnly>) -> Self {
         self.read_only = flag;
         self
     }
@@ -111,10 +111,8 @@ impl ObjectsHandler for ServerObjects {
         ctx: &CallCtx,
         req: wire::PutObjectsRequest,
     ) -> Result<wire::PutObjectsResponse, Status> {
-        if self.read_only.load(std::sync::atomic::Ordering::Relaxed) {
-            return Err(Status::unavailable(
-                "the server is read-only: a restore is staged and applies when the server restarts",
-            ));
+        if let Some(refused) = self.read_only.refusal() {
+            return Err(refused);
         }
         let entry = self.entry(ctx).await?;
         // The change metas of the upload, so the push that names their changesets finds them.
@@ -307,5 +305,31 @@ mod tests {
         assert!(changeset(&got[1]).changes.as_slice().is_empty());
         assert_ne!(changeset(&got[0]).message, RESTRICTED_MESSAGE);
         assert_eq!(changeset(&got[2]).changes.as_slice().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn no_object_is_accepted_while_maintenance_is_on() {
+        let reg = registry().await;
+        let _e = repo(&reg).await;
+        let flag = Arc::new(crate::maintenance::ReadOnly::default());
+        let h = ServerObjects::new(reg.clone()).with_read_only(flag.clone());
+        flag.set_notice(Some(crate::maintenance::Notice {
+            message: "new disks".into(),
+            until: 0,
+            version: String::new(),
+        }));
+        let err = h
+            .put_objects(&ctx(), wire::PutObjectsRequest::default())
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Unavailable);
+        assert_eq!(
+            err.message(),
+            "the server is read-only for maintenance: new disks"
+        );
+        flag.set_notice(None);
+        h.put_objects(&ctx(), wire::PutObjectsRequest::default())
+            .await
+            .unwrap();
     }
 }

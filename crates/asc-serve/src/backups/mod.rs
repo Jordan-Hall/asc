@@ -248,8 +248,8 @@ pub struct BackupsHub {
     pruning: tokio::sync::Mutex<()>,
     key: OnceLock<Option<[u8; 32]>>,
     stopping: AtomicBool,
-    /// The maintenance flag of the ref gate, set when a restore is staged.
-    read_only: OnceLock<Arc<AtomicBool>>,
+    /// The read-only flag of the ref gate, raised when a restore is staged.
+    read_only: OnceLock<Arc<crate::maintenance::ReadOnly>>,
 }
 
 /// The place the server's single [`BackupsHub`] is registered, once.
@@ -330,15 +330,13 @@ impl BackupsHub {
 
     /// Shares the ref gate's maintenance flag, and raises it at once when a restore is already
     /// staged (the server was started with one waiting and has not applied it).
-    pub fn set_read_only(&self, flag: Arc<AtomicBool>) {
+    pub fn set_read_only(&self, flag: Arc<crate::maintenance::ReadOnly>) {
         let _ = self.read_only.set(flag);
     }
 
     /// Whether the server is in maintenance mode because a restore is staged.
     pub fn is_read_only(&self) -> bool {
-        self.read_only
-            .get()
-            .is_some_and(|f| f.load(Ordering::Relaxed))
+        self.read_only.get().is_some_and(|f| f.restore_staged())
     }
 
     /// Installs the backup key instead of reading `key_file` (tests, and a host with its own key store).
@@ -826,7 +824,7 @@ impl BackupsHub {
             self.write_marker(&run, dir, copy_seal)?;
             // From here until the restart no ref moves: whatever is written now would be lost.
             if let Some(f) = self.read_only.get() {
-                f.store(true, Ordering::Relaxed);
+                f.stage_restore();
             }
             Ok(())
         }

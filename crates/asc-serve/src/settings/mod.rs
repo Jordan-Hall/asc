@@ -17,6 +17,7 @@ use crate::ai::audit::{Audit, PoolAudit};
 use crate::backups::{BackupsHub, RealEngine};
 use crate::config::ServeConfig;
 use crate::export::ExportHub;
+use crate::maintenance::MaintenanceHub;
 use crate::org::OrgHub;
 use crate::pathrules::PathRulesHub;
 use crate::registry::{Extensions, Registry};
@@ -31,6 +32,7 @@ pub struct SettingsHubs {
     pub sessions: Arc<SessionsHub>,
     pub export: Arc<ExportHub>,
     pub pathrules: Arc<PathRulesHub>,
+    pub maintenance: Arc<MaintenanceHub>,
 }
 
 /// The place the hubs are registered, once.
@@ -81,11 +83,14 @@ pub fn register(
         sessions: SessionsHub::new(pool.clone(), audit.clone()),
         export,
         pathrules: PathRulesHub::new(pool.clone(), audit.clone()),
+        maintenance: MaintenanceHub::new(pool.clone(), ext.read_only.clone(), audit.clone()),
     });
     // The land gate, the agent runtime and the object server find the hubs through these slots.
     if let Some(s) = ext.security.get() {
         let _ = s.org_slot.set(hubs.org.clone());
         hubs.backups.set_read_only(s.read_only.clone());
+    } else {
+        hubs.backups.set_read_only(ext.read_only.clone());
     }
     if let Some(a) = ext.agents.get() {
         let _ = a.org.set(hubs.org.clone());
@@ -109,12 +114,14 @@ impl SettingsHubs {
             crate::export::FEATURE,
             crate::pathrules::FEATURE,
             crate::pathrules::ACCESS_FEATURE,
+            crate::maintenance::FEATURE,
         ]
         .map(str::to_owned)
         .to_vec()
     }
 
-    /// Starts the background workers (the backup scheduler).
+    /// Starts the background workers: the backup scheduler, the export sweeper, the usage sweep
+    /// and the maintenance poller.
     pub fn start(&self) -> Vec<JoinHandle<()>> {
         let usage = self.usage.clone();
         let sweep = tokio::spawn(async move {
@@ -126,6 +133,7 @@ impl SettingsHubs {
         vec![
             self.backups.spawn_scheduler(),
             self.export.spawn_sweeper(),
+            self.maintenance.spawn_poller(),
             sweep,
         ]
     }

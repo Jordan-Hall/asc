@@ -721,8 +721,9 @@ pub struct Extensions {
     pub pathrules: Arc<crate::pathrules::PathRulesSlot>,
     /// The usage hub, which counts the bytes the server serves.
     pub usage: Arc<crate::usage::UsageSlot>,
-    /// Raised while a restore is staged: no ref moves and no object is accepted until the restart.
-    pub read_only: Arc<std::sync::atomic::AtomicBool>,
+    /// Raised while a restore is staged or maintenance is on: no ref moves and no object is
+    /// accepted (SPEC §14.5).
+    pub read_only: Arc<crate::maintenance::ReadOnly>,
 }
 
 impl Extensions {

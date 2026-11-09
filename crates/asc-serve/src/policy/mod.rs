@@ -277,8 +277,8 @@ pub struct Security {
     pub deps_gate: Arc<crate::deps::gate::DepsGateSlot>,
     /// Where the organisation settings put themselves for the gate to find.
     pub org_slot: Arc<crate::org::OrgSlot>,
-    /// The maintenance flag the gate honours and the backup service sets.
-    pub read_only: Arc<std::sync::atomic::AtomicBool>,
+    /// The read-only flag the gate honours; the backup and maintenance services raise it.
+    pub read_only: Arc<crate::maintenance::ReadOnly>,
 }
 
 /// The place the server's single [`Security`] is registered, once (read by `build_grpc`).

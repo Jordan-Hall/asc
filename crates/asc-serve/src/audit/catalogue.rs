@@ -85,6 +85,11 @@ pub const CATALOGUE: &[ActionInfo] = &[
         &["setting", "old", "new"],
     ),
     a(
+        "server.maintenance.updated",
+        "Read-only maintenance of the server was switched or its notice changed (SPEC §14.5).",
+        &["enabled", "old_enabled", "message", "until", "version"],
+    ),
+    a(
         "host.maintenance.updated",
         "The maintenance notice of the host application was switched or changed.",
         &["enabled", "old_enabled", "message", "until"],

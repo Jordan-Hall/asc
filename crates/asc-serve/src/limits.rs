@@ -410,6 +410,11 @@ const TABLE: &[(&str, Class, &[&str])] = &[
         ],
     ),
     ("Backups", Class::Expensive, &["RunBackup", "VerifyBackup"]),
+    (
+        "Maintenance",
+        Class::Cheap,
+        &["GetMaintenance", "SetMaintenance"],
+    ),
     ("Usage", Class::Cheap, &["GetQuota", "SetQuota", "Report"]),
     ("Usage", Class::Expensive, &["GetUsage", "ListSpend"]),
     (

@@ -70,6 +70,8 @@ pub mod services {
     pub use crate::pb::inbox_server;
     pub use crate::pb::insights_client;
     pub use crate::pb::insights_server;
+    pub use crate::pb::maintenance_client;
+    pub use crate::pb::maintenance_server;
     pub use crate::pb::merge_queue_client;
     pub use crate::pb::merge_queue_server;
     pub use crate::pb::org_settings_client;

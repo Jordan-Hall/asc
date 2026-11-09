@@ -51,6 +51,7 @@ pub mod lease;
 pub mod limits;
 pub mod logging;
 pub mod mainline;
+pub mod maintenance;
 pub mod mcp;
 pub mod migrate;
 pub mod mirror;
@@ -493,6 +494,14 @@ pub fn build_grpc(ext: &Extensions, authorizer: Arc<dyn Authorizer>, info: Serve
                     info.clone(),
                 )
                 .into_service(),
+            )
+            .add_service(
+                maintenance::rpc::MaintenanceService::new(
+                    s.maintenance.clone(),
+                    authorizer.clone(),
+                    info.clone(),
+                )
+                .into_service(),
             );
     }
     if let Some(h) = ext.deps.get() {
@@ -836,6 +845,8 @@ pub async fn serve(
     }
     // The agent runtime calls the server's own services through this router, as the run's agent.
     let agent_tasks = ai_agents.start(build_grpc(&ext, authorizer.clone(), info.clone()));
+    // A server switched to maintenance starts read-only: the switch is read before any listener.
+    settings.maintenance.refresh().await;
     let settings_tasks = settings.start();
     let workflow_tasks = if workflows.cfg.enabled {
         workflows.start_workers()

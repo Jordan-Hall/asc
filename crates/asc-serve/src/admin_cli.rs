@@ -128,6 +128,22 @@ pub struct AdminCli {
     packs: Arc<crate::pack_service::PackService>,
 }
 
+/// What `maintenance` does (SPEC §14.5).
+#[derive(Debug, Clone)]
+pub enum MaintenanceCmd {
+    /// Refuses every write until switched off. `for_secs` is the expected length, shown and not
+    /// acted on.
+    On {
+        message: String,
+        for_secs: Option<u64>,
+        version: String,
+    },
+    /// Accepts writes again; the message stays stored for the next time.
+    Off,
+    /// Prints the stored switch.
+    Status,
+}
+
 /// What `pack` does.
 #[derive(Debug, Clone)]
 pub enum PackCmd {
@@ -593,6 +609,70 @@ impl AdminCli {
         }
     }
 
+    // ------------------------------------------------------------------------- maintenance
+
+    /// `maintenance on|off|status`. A running server follows the switch within
+    /// [`crate::maintenance::POLL`]; the switch is audited as the operator.
+    pub async fn maintenance(
+        &self,
+        cmd: &MaintenanceCmd,
+        now: i64,
+    ) -> Result<Report, AdminCliError> {
+        use crate::ai::audit::{Audit as _, Entry, PoolAudit};
+        use crate::maintenance::{self as m, Switch};
+        let pool = self.registry.pool();
+        let switch = match cmd {
+            MaintenanceCmd::Status => {
+                return Ok(Report::new(maintenance_text(&m::load(pool).await?), true));
+            }
+            MaintenanceCmd::On {
+                message,
+                for_secs,
+                version,
+            } => {
+                let until = match for_secs {
+                    None => 0,
+                    Some(s) => i64::try_from(*s)
+                        .ok()
+                        .and_then(|s| now.checked_add(s))
+                        .ok_or_else(|| AdminCliError::Invalid("--for is too long".into()))?,
+                };
+                Switch {
+                    on: true,
+                    message: message.trim().to_owned(),
+                    until,
+                    version: version.trim().to_owned(),
+                }
+            }
+            MaintenanceCmd::Off => {
+                let s = m::load(pool).await?;
+                Switch {
+                    on: false,
+                    message: s.message,
+                    until: 0,
+                    version: s.version,
+                }
+            }
+        };
+        let old = m::store(pool, &switch, m::OPERATOR, now)
+            .await
+            .map_err(|e| match e {
+                m::MaintenanceError::Invalid(why) => AdminCliError::Invalid(why.into()),
+                m::MaintenanceError::Sql(e) => AdminCliError::Sql(e),
+            })?;
+        let details = m::audit_details(&old, &switch);
+        PoolAudit::new(pool.clone())
+            .record(Entry {
+                target: "maintenance",
+                details: &details,
+                ..Entry::new("server.maintenance.updated", m::OPERATOR)
+            })
+            .await;
+        let mut text = maintenance_text(&m::load(pool).await?);
+        let _ = writeln!(text, "running servers follow within {}s", m::POLL.as_secs());
+        Ok(Report::new(text, true))
+    }
+
     // ---------------------------------------------------------------------------- set-mode
 
     /// `set-mode --repo <r> [--mode m] [--git-reads g] [--bridge b]`.
@@ -694,6 +774,40 @@ impl AdminCli {
         self.registry.forget(&name);
         Ok(Report::new(said, true))
     }
+}
+
+/// The `maintenance status` lines of a stored switch.
+fn maintenance_text(s: &crate::maintenance::Setting) -> String {
+    use crate::audit::export::rfc3339;
+    let mut t = String::from(if s.on {
+        "maintenance: on (writes are refused)
+"
+    } else {
+        "maintenance: off
+"
+    });
+    if s.on && !s.version.is_empty() {
+        let _ = writeln!(t, "upgrading to: {}", s.version);
+    }
+    if s.on && s.until > 0 {
+        let _ = writeln!(
+            t,
+            "expected until: {}",
+            rfc3339(s.until.saturating_mul(1000))
+        );
+    }
+    if !s.message.is_empty() {
+        let _ = writeln!(t, "message: {}", s.message);
+    }
+    if s.updated > 0 {
+        let _ = writeln!(
+            t,
+            "switched by {} at {}",
+            s.updated_by,
+            rfc3339(s.updated.saturating_mul(1000))
+        );
+    }
+    t
 }
 
 // ------------------------------------------------------------------------------ git helpers
@@ -935,6 +1049,85 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(e, AdminCliError::Invalid(_)), "{e}");
+    }
+
+    #[tokio::test]
+    async fn maintenance_switches_on_and_off_audited_as_the_operator() {
+        let f = fx().await;
+        let now = 1_800_000_000;
+        let r = f
+            .cli
+            .maintenance(&MaintenanceCmd::Status, now)
+            .await
+            .unwrap();
+        assert_eq!(r.text, "maintenance: off\n");
+        let r = f
+            .cli
+            .maintenance(
+                &MaintenanceCmd::On {
+                    message: " new disks ".into(),
+                    for_secs: Some(1800),
+                    version: "2.4.0".into(),
+                },
+                now,
+            )
+            .await
+            .unwrap();
+        assert!(r.ok);
+        assert!(
+            r.text.starts_with(
+                "maintenance: on (writes are refused)\nupgrading to: 2.4.0\nexpected until: 2027-01-15T08:30:00"
+            ) && r.text.contains("message: new disks\nswitched by operator at 2027-01-15T08:00:00")
+                && r.text.ends_with("running servers follow within 5s\n"),
+            "{}",
+            r.text
+        );
+        let s = crate::maintenance::load(f.cli.registry.pool())
+            .await
+            .unwrap();
+        assert!(s.on && s.until == now + 1800);
+        let e = f
+            .cli
+            .maintenance(
+                &MaintenanceCmd::On {
+                    message: String::new(),
+                    for_secs: None,
+                    version: "2.4 beta".into(),
+                },
+                now,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(e, AdminCliError::Invalid(_)), "{e}");
+        f.cli
+            .maintenance(&MaintenanceCmd::Off, now + 60)
+            .await
+            .unwrap();
+        let s = crate::maintenance::load(f.cli.registry.pool())
+            .await
+            .unwrap();
+        assert!(!s.on);
+        assert_eq!(
+            s.message, "new disks",
+            "the message stays for the next time"
+        );
+        let rows: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT action, actor_name, details_json FROM audit_events ORDER BY seq",
+        )
+        .fetch_all(f.cli.registry.pool())
+        .await
+        .unwrap();
+        assert_eq!(rows.len(), 2, "the refused switch is not audited");
+        assert!(
+            rows.iter()
+                .all(|r| r.0 == "server.maintenance.updated" && r.1 == "operator")
+        );
+        assert!(rows[0].2.contains("\"enabled\":\"true\""), "{}", rows[0].2);
+        assert!(
+            rows[1].2.contains("\"old_enabled\":\"true\""),
+            "{}",
+            rows[1].2
+        );
     }
 
     #[tokio::test]
