@@ -152,6 +152,10 @@ it is held, and the `storage.migration.paused` event is published. `ResumeMigrat
 (`storage.migration.resumed`); nothing already copied is copied again. Both are idempotent; pausing is refused with
 `FAILED_PRECONDITION` once the migration is switching or over. A paused migration still counts as the repository's active one, and
 `CancelMigration` on it clears the pause and cancels it as usual.
+
+`StorageMigration.bytes_total` is the size of the objects counted before the copy (0 until they are counted), next to
+`bytes_copied`. `mismatched` is how many copies the last check found missing or different and copied again; a copy that still
+differs after that fails the migration.
 Migrations hold a lease on their row and are picked up by any replica when the lease runs out, so a stopped server's migration resumes.
 
 Progress is visible through `GetMigration` and `ListMigrations`, in the log (`storage migration` lines), in the audit events
