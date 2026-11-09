@@ -223,6 +223,7 @@ service AgentTokens {
   rpc RevokeToken(RevokeAgentTokenRequest) returns (RevokeAgentTokenResponse);   // repo admin; idempotent
   rpc SetBudget(SetAgentTokenBudgetRequest) returns (SetAgentTokenBudgetResponse);   // repo admin; may raise or lower
   rpc ReportUsage(ReportAgentUsageRequest) returns (ReportAgentUsageResponse);   // the agent token itself; mutating, x-asc-op-id
+  rpc ResolveToken(ResolveAgentTokenRequest) returns (ResolveAgentTokenResponse);   // the host service only
 }
 
 enum AgentTokenState {
@@ -284,6 +285,17 @@ message GetAgentTokenRequest {
 message GetAgentTokenResponse {
   AgentToken token = 1;
   AgentBudgetUsage remaining = 2;        // limit minus usage, saturating at 0; unset fields have no limit
+}
+
+// ResolveToken: the hub was handed an agent token secret (an agent reporting content, for one) and
+// asks which token it is. Only the host service may ask; anyone else is refused. A secret that is
+// no token answers NOT_FOUND; a revoked, expired or spent token is returned with its state, and the
+// hub refuses what is not active. The secret is never returned.
+message ResolveAgentTokenRequest {
+  string secret = 1;                     // "ascat_" + 43 characters
+}
+message ResolveAgentTokenResponse {
+  AgentToken token = 1;
 }
 
 message RevokeAgentTokenRequest {

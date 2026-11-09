@@ -12,6 +12,7 @@
 //! | `AgentTokens.CreateToken`, `ListTokens`, `RevokeToken`, `SetBudget` | repository admin |
 //! | `GetToken` | repository admin, or the token itself |
 //! | `ReportUsage` | the agent token itself |
+//! | `ResolveToken` | the host service only |
 //!
 //! A token secret is in exactly one response, `CreateToken`'s, and that response is not stored for
 //! a retry of the same operation id.
@@ -21,7 +22,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use asc_core::policy::{Kind, PathGlob, Who};
-use asc_rpc::auth::{Access, AuthInterceptor, Authorizer};
+use asc_rpc::auth::{Access, AuthInterceptor, Authorizer, Credential};
 use asc_rpc::server::{CallCtx, MAX_MESSAGE, ServerInfo, wire};
 use asc_rpc::services::agent_tokens_server::{AgentTokens, AgentTokensServer};
 use asc_rpc::services::agents_server::{Agents, AgentsServer};
@@ -1069,6 +1070,38 @@ impl AgentTokens for TokenService {
                 Err(crate::update::internal("report usage", &c))
             }
         }
+    }
+
+    async fn resolve_token(
+        &self,
+        request: Request<wire::ResolveAgentTokenRequest>,
+    ) -> Result<Response<wire::ResolveAgentTokenResponse>, Status> {
+        let (_, ext, msg) = request.into_parts();
+        let caller = self
+            .env
+            .authorizer
+            .authenticate(ext.get::<Credential>())
+            .await?;
+        if !crate::authz::is_host_service(&caller.id) {
+            return Err(Status::permission_denied(
+                "only the host service resolves agent tokens",
+            ));
+        }
+        // A secret of the wrong shape is no token: the same answer as one that is not stored.
+        if !tokens::looks_like_token(&msg.secret) {
+            return Err(Status::not_found("no such token"));
+        }
+        let row = self
+            .hub
+            .core
+            .tokens
+            .by_secret(&msg.secret)
+            .await
+            .map_err(|e| db(&e))?
+            .ok_or_else(|| Status::not_found("no such token"))?;
+        Ok(Response::new(wire::ResolveAgentTokenResponse {
+            token: Some(row.to_wire(clock::now())),
+        }))
     }
 }
 

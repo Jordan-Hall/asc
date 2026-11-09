@@ -364,6 +364,7 @@ const TABLE: &[(&str, Class, &[&str])] = &[
             "GetToken",
             "ListTokens",
             "ReportUsage",
+            "ResolveToken",
             "RevokeToken",
             "SetBudget",
         ],

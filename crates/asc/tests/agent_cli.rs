@@ -421,6 +421,14 @@ impl AgentTokens for Fake {
     ) -> Result<Response<wire::ReportAgentUsageResponse>, Status> {
         Err(Status::permission_denied("a token reports its own usage"))
     }
+    async fn resolve_token(
+        &self,
+        _: Request<wire::ResolveAgentTokenRequest>,
+    ) -> Result<Response<wire::ResolveAgentTokenResponse>, Status> {
+        Err(Status::permission_denied(
+            "only the host service resolves tokens",
+        ))
+    }
 }
 
 fn key_of() -> wire::AiKey {
