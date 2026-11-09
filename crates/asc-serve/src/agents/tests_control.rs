@@ -1355,6 +1355,7 @@ async fn count_runs_counts_over_the_repositories_named_and_checks_each_of_them()
                     .collect(),
                 states: states.into_iter().map(|s| s as i32).collect(),
                 created_by: who.to_owned(),
+                since: 0,
             },
             token,
             None,
@@ -1396,6 +1397,35 @@ async fn count_runs_counts_over_the_repositories_named_and_checks_each_of_them()
         total(count(vec!["acme/app"], vec![], "nobody", "carol-token").await),
         0
     );
+    // Each repository has its own count, in the order named.
+    let r = count(vec!["acme/other", "acme/app"], vec![], "", "carol-token")
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!((r.total, r.per_repo), (1, vec![0, 1]));
+    // Since: a window that starts after the run was created counts nothing; a negative time is refused.
+    let window = |since: i64| {
+        let r = w.request(
+            wire::CountAgentRunsRequest {
+                repos: vec![wire::RepoRef {
+                    name: "acme/app".into(),
+                    id_mode: asc_rpc::IdMode::Asc as i32,
+                }],
+                states: vec![],
+                created_by: String::new(),
+                since,
+            },
+            "carol-token",
+            None,
+        );
+        let svc = w.svc.clone();
+        async move { svc.count_runs(r).await }
+    };
+    let r = window(row.created).await.unwrap().into_inner();
+    assert_eq!((r.total, r.per_repo), (1, vec![1]));
+    let r = window(row.created + 1).await.unwrap().into_inner();
+    assert_eq!((r.total, r.per_repo), (0, vec![0]));
+    assert_eq!(window(-1).await.unwrap_err().code(), Code::InvalidArgument);
     // The list of repositories is 1 to 50, each once.
     let e = count(vec![], vec![], "", "carol-token").await.unwrap_err();
     assert_eq!(e.code(), Code::InvalidArgument);
