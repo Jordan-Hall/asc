@@ -31,6 +31,8 @@ pub mod gate;
 pub mod rpc;
 
 #[cfg(test)]
+mod ref_rules_tests;
+#[cfg(test)]
 mod scan_truncation_tests;
 #[cfg(test)]
 pub(crate) mod tests;
