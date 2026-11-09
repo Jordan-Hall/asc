@@ -3222,6 +3222,16 @@ async fn an_organisation_agent_writes_only_its_paths_and_repositories() {
     assert_eq!(code(&err), "AGENT_SCOPE_DENIED");
     assert_eq!(paths(&err)[1..], ["infra/x".to_owned()]);
     assert!(paths(&err)[0].contains("src/**"), "{:?}", paths(&err));
+    // The same agent through one of its tokens is held to the same scope.
+    let tc = ctx(&crate::agents::tokens::principal_id("bot", 7, "at_one"));
+    let u = [draft(outside)];
+    let err = f
+        .gate
+        .check(&gate_req(&tc, &f.e, &u, GateMode::Submit))
+        .await
+        .unwrap_err();
+    assert_eq!(code(&err), "AGENT_SCOPE_DENIED");
+    assert_eq!(paths(&err)[1..], ["infra/x".to_owned()]);
 
     // Kept to another repository of the organisation.
     row.repos = vec!["o/other".into()];
