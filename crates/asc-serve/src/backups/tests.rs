@@ -26,6 +26,8 @@ use crate::settings::testkit::{Kit, Recorder, claim, kit, op, req};
 struct Fake {
     fail_dump: AtomicBool,
     fail_verify: AtomicBool,
+    /// Every directory a restore test ran on, and whether it held the database then.
+    tested: std::sync::Mutex<Vec<(std::path::PathBuf, bool)>>,
 }
 
 #[async_trait]
@@ -65,6 +67,15 @@ impl Engine for Fake {
             return Err("db.sqlite does not match the manifest: the backup is damaged".into());
         }
         Ok(2)
+    }
+
+    async fn restore_test(&self, dir: &Path, _: Option<[u8; 32]>) -> Result<String, String> {
+        self.tested
+            .lock()
+            .unwrap()
+            .push((dir.to_owned(), dir.join("db.sqlite").exists()));
+        let n = self.verify(dir)?;
+        Ok(format!("Restore test passed: {n} objects match"))
     }
 }
 
@@ -722,6 +733,75 @@ async fn verified_s3(f: &Fx) -> store::Run {
     let v = settle(f, &r.id).await;
     assert_eq!(v.verify, store::V_OK, "{}", v.note);
     v
+}
+
+// ------------------------------------------------------------------------------ the restore test
+
+/// Check is a restore test: a local backup is tested where it lies, a remote one is downloaded
+/// into a private scratch directory first, and the scratch directory is gone afterwards.
+#[tokio::test(flavor = "current_thread")]
+async fn verify_restores_into_a_scratch_area_and_checks_the_result() {
+    let f = fx().await;
+    let local = run_now(&f, "local-disk", 1).await;
+    f.svc
+        .verify_backup(admin(
+            &f,
+            wire::VerifyBackupRequest {
+                id: local.id.clone(),
+            },
+            2,
+        ))
+        .await
+        .unwrap();
+    let v = settle(&f, &local.id).await;
+    assert_eq!(v.verify, store::V_OK, "{}", v.note);
+    assert!(v.note.starts_with("Restore test passed"), "{}", v.note);
+    let tested = f.fake.tested.lock().unwrap().clone();
+    assert_eq!(tested, vec![(f.local.join(&local.id), true)]);
+
+    let remote = run_now(&f, "r2-backup", 3).await;
+    f.svc
+        .verify_backup(admin(
+            &f,
+            wire::VerifyBackupRequest {
+                id: remote.id.clone(),
+            },
+            4,
+        ))
+        .await
+        .unwrap();
+    let remote = settle(&f, &remote.id).await;
+    assert_eq!(remote.verify, store::V_OK, "{}", remote.note);
+    assert!(
+        remote.note.starts_with("Restore test passed"),
+        "{}",
+        remote.note
+    );
+    let (dir, had_db) = f.fake.tested.lock().unwrap().last().cloned().unwrap();
+    assert!(had_db, "the remote backup was downloaded before the test");
+    assert!(
+        dir.ends_with(std::path::Path::new("verify").join(&remote.id)),
+        "{}",
+        dir.display()
+    );
+    assert!(!dir.exists(), "the scratch area is removed after the test");
+
+    // A backup whose restore test fails is marked failed with the reason.
+    f.fake.fail_verify.store(true, Ordering::Relaxed);
+    f.svc
+        .verify_backup(admin(
+            &f,
+            wire::VerifyBackupRequest {
+                id: local.id.clone(),
+            },
+            5,
+        ))
+        .await
+        .unwrap();
+    let v = settle(&f, &local.id).await;
+    assert_eq!(v.verify, store::V_FAILED);
+    assert!(v.note.contains("damaged"), "{}", v.note);
+    f.fake.fail_verify.store(false, Ordering::Relaxed);
 }
 
 async fn put(f: &Fx, id: &str, rel: &str, bytes: Vec<u8>) {

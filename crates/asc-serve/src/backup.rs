@@ -1043,6 +1043,57 @@ mod tests {
             assert_eq!(rows(&fresh).await, 1);
         }
 
+        /// The restore test opens a scratch copy of the database, never the backup's own file,
+        /// and fails on a database that is damaged even when its digest was rewritten to match.
+        #[tokio::test]
+        async fn the_restore_test_opens_a_scratch_copy_and_checks_it() {
+            let t = tempfile::tempdir().unwrap();
+            let live = site(t.path(), "live");
+            fill(&live).await;
+            let bkey = t.path().join("backup.key");
+            private(&bkey, &[4u8; 32]);
+            let out = t.path().join("bk");
+            backup(&live.cfg, &opts(&out, &bkey)).await.unwrap();
+            let before = std::fs::read(out.join(DB_SQLITE)).unwrap();
+
+            let text = restore_test(&out, Some(&[4u8; 32])).await.unwrap();
+            assert!(
+                text.starts_with("Restore test passed: the database opened with")
+                    && text.contains("2 objects match"),
+                "{text}"
+            );
+            assert_eq!(std::fs::read(out.join(DB_SQLITE)).unwrap(), before);
+            let leftovers: Vec<_> = std::fs::read_dir(t.path())
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|e| {
+                    e.file_name()
+                        .to_string_lossy()
+                        .starts_with(".asc-restore-test-")
+                })
+                .collect();
+            assert!(leftovers.is_empty(), "the scratch area is removed");
+
+            // The sealed vault key must open.
+            let e = restore_test(&out, None).await.unwrap_err();
+            assert!(e.0.contains("no backup key"), "{e}");
+            assert!(restore_test(&out, Some(&[5u8; 32])).await.is_err());
+
+            // A database that is not a database, with the manifest rewritten to agree.
+            let junk = vec![0x5au8; before.len()];
+            std::fs::write(out.join(DB_SQLITE), &junk).unwrap();
+            let mut m: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(out.join(MANIFEST)).unwrap()).unwrap();
+            for f in m["files"].as_array_mut().unwrap() {
+                if f["path"] == DB_SQLITE {
+                    f["sha256"] = hex(&Sha256::digest(&junk)).into();
+                }
+            }
+            std::fs::write(out.join(MANIFEST), serde_json::to_vec(&m).unwrap()).unwrap();
+            verify(&out).unwrap();
+            assert!(restore_test(&out, Some(&[4u8; 32])).await.is_err());
+        }
+
         #[tokio::test]
         async fn a_damaged_backup_or_a_wrong_key_changes_nothing() {
             let t = tempfile::tempdir().unwrap();
