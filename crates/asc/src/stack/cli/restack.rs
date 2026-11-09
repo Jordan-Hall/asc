@@ -396,7 +396,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         Head::Branch(b) => Some(b),
         Head::Detached(_) => None,
     };
-    let sign = ctx.config.bool("commit.gpgsign") == Some(true);
+    let sign = crate::cli::signing::sign_by_default(&ctx.config);
     let op = StackOp {
         op_id: uuid::Uuid::now_v7(),
         head_branch,

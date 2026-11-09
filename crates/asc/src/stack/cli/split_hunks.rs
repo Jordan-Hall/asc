@@ -405,7 +405,7 @@ pub async fn run(ctx: &Ctx, a: Args, file: &Path) -> Result<ExitCode> {
     trees.push(cx.root);
 
     let op_id = uuid::Uuid::now_v7();
-    let sign = ctx.config.bool("commit.gpgsign") == Some(true);
+    let sign = crate::cli::signing::sign_by_default(&ctx.config);
     let subject =
         String::from_utf8_lossy(cx.message.split(|&b| b == b'\n').next().unwrap_or_default())
             .into_owned();

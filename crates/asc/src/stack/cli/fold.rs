@@ -59,7 +59,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let top = folded_upper.last().copied().unwrap_or(x);
     let top_root = ws.engine.get_changeset(top).await?.root;
     let op_id = uuid::Uuid::now_v7();
-    let sign = ctx.config.bool("commit.gpgsign") == Some(true);
+    let sign = crate::cli::signing::sign_by_default(&ctx.config);
     let new = write_piece(
         ctx,
         ws,

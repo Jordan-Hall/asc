@@ -701,7 +701,7 @@ async fn restack_all(ctx: &Ctx, rep: &mut Report) -> Result<()> {
                     at: steps[0],
                     at_onto: onto,
                     rest: Vec::new(),
-                    sign: ctx.config.bool("commit.gpgsign") == Some(true),
+                    sign: crate::cli::signing::sign_by_default(&ctx.config),
                 };
                 match restack::drive(ctx, ws, op, Vec::new(), onto, steps).await {
                     Ok(Flow::Done(rows)) => {

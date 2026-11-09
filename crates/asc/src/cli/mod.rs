@@ -120,6 +120,7 @@ pub mod serve_git_hook;
 pub mod sessions;
 pub mod shortlog;
 pub mod show;
+pub mod signing;
 pub mod sparse;
 pub mod stash;
 pub mod status;
@@ -265,6 +266,7 @@ pub static COMMANDS: &[Command] = &[
     entry!("agent", agent),
     entry!("backup", backup),
     entry!("usage", usage),
+    entry!("signing", signing),
     entry!("sessions", sessions),
     entry!("data-export", data_export),
     entry!("ai", ai),

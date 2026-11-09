@@ -182,7 +182,7 @@ pub(crate) async fn rewrite(
     };
     let policy = PathPolicy::Native { windows_safe: ws.repo.repo.windows_safe };
     let mut id = ws.engine.create_changeset(new.clone(), policy).await?;
-    if ctx.config.bool("commit.gpgsign") == Some(true) {
+    if crate::cli::signing::sign_by_default(&ctx.config) {
         let key = match ctx.config.get("user.signingkey") {
             Some(k) => k,
             None => crate::cli::commit::ident::display(&idents.committer),
@@ -298,7 +298,7 @@ pub(crate) async fn reparent_above(ctx: &Ctx, old: ChangesetId, new: ChangesetId
             at: steps[0],
             at_onto: new,
             rest: Vec::new(),
-            sign: ctx.config.bool("commit.gpgsign") == Some(true),
+            sign: crate::cli::signing::sign_by_default(&ctx.config),
         };
         let flow = restack::drive(ctx, ws, op, Vec::new(), new, steps).await?;
         let code = restack::emit(ctx, false, &flow)?;

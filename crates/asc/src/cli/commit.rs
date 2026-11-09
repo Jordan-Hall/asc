@@ -673,7 +673,7 @@ async fn flow(
     };
     let sign_key = match &a.gpg_sign {
         Some(key) => Some(key.clone()),
-        None if !a.no_gpg_sign && ctx.config.bool("commit.gpgsign") == Some(true) => Some(None),
+        None if !a.no_gpg_sign && crate::cli::signing::sign_by_default(&ctx.config) => Some(None),
         None => None,
     };
     if let Some(key) = sign_key {

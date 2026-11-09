@@ -583,10 +583,10 @@ async fn restack(ctx: &Ctx, ws: &WsCtx, cfg: LiveConfig, remote: &str) -> Result
     if !needs && !move_trunk {
         return Ok(Done::new("fetched", ""));
     }
-    if needs && ctx.config.bool("commit.gpgsign") == Some(true) {
+    if needs && crate::cli::signing::sign_by_default(&ctx.config) {
         return notice(
             ws,
-            Notice::SignFailed("commit.gpgSign is on and a background run cannot sign".into()),
+            Notice::SignFailed("signing is on (commit.gpgSign or asc.signByDefault) and a background run cannot sign".into()),
         )
         .await;
     }

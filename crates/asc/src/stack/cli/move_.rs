@@ -144,7 +144,7 @@ pub(crate) async fn commit_pairs(
         at: first_old,
         at_onto: first_new,
         rest: Vec::new(),
-        sign: ctx.config.bool("commit.gpgsign") == Some(true),
+        sign: crate::cli::signing::sign_by_default(&ctx.config),
     };
     apply(ctx, ws, &op, pairs).await
 }
@@ -267,7 +267,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     for &cs in &moved {
         made.push(made_of(&l, cs).await?);
     }
-    let sign = ctx.config.bool("commit.gpgsign") == Some(true);
+    let sign = crate::cli::signing::sign_by_default(&ctx.config);
     let op_id = uuid::Uuid::now_v7();
     pre_rebase(ctx, ws, target, "move").await?;
 

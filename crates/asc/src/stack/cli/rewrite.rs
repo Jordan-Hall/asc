@@ -171,7 +171,7 @@ pub(crate) async fn finish(
         at: upper.first().copied().unwrap_or(onto),
         at_onto: onto,
         rest: Vec::new(),
-        sign: ctx.config.bool("commit.gpgsign") == Some(true),
+        sign: crate::cli::signing::sign_by_default(&ctx.config),
     };
     drive(ctx, ws, op, pairs, onto, upper).await
 }

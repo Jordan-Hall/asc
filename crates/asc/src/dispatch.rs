@@ -226,6 +226,7 @@ pub const ASC_ONLY_VERBS: &[&str] = &[
     "agent",
     "backup",
     "usage",
+    "signing",
     "sessions",
     "data-export",
     "ai",

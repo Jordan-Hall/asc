@@ -181,7 +181,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         .collect();
     let mut steps = new_order;
     steps.extend(rest.iter().copied());
-    let sign = ctx.config.bool("commit.gpgsign") == Some(true);
+    let sign = crate::cli::signing::sign_by_default(&ctx.config);
     let op_id = uuid::Uuid::now_v7();
     pre_rebase(ctx, ws, base, "reorder").await?;
     let n = new_made.len();

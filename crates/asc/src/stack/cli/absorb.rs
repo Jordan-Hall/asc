@@ -501,7 +501,7 @@ impl CommitSigner for Gpg<'_> {
 }
 
 fn signer(ctx: &Ctx) -> Result<Option<Gpg<'_>>> {
-    if ctx.config.bool("commit.gpgsign") != Some(true) {
+    if !crate::cli::signing::sign_by_default(&ctx.config) {
         return Ok(None);
     }
     let key = match ctx.config.get("user.signingkey") {

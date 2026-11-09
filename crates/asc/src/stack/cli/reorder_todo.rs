@@ -221,7 +221,7 @@ pub async fn run(ctx: &Ctx, a: &Args, file: &Path) -> Result<ExitCode> {
     }
 
     let base = ws.engine.get_changeset(selected[0]).await?.parents[0];
-    let sign = ctx.config.bool("commit.gpgsign") == Some(true) && !a.dry_run;
+    let sign = crate::cli::signing::sign_by_default(&ctx.config) && !a.dry_run;
     let op_id = uuid::Uuid::now_v7();
     pre_rebase(ctx, ws, base, "reorder").await?;
 
