@@ -814,6 +814,12 @@ the export is not ready), `RESOURCE_EXHAUSTED` (one export per 24 hours, 50 shar
   signature) and at agent run creation (organisation switch, instance switch, monthly ceiling).
 * People and Teams pages: `ListAgents{org}`, `CreateAgent`, `UpdateAgent{state: PAUSED}`, `DeleteAgent`. Server settings: `GetInstanceAgents`,
   `SetInstanceAgents` (site administrator).
+* An agent identity's scope is enforced on every draft and submission of the principal `agent:<name>` in a repository of that organisation,
+  with or without a repository policy and before the policy's own agent rules: `paused` refuses everything, a non-empty `repos` refuses any
+  other repository, and a non-empty `paths` refuses a change that touches a path no pattern matches (empty `paths` sets no path limit).
+  Refusals are `AGENT_SCOPE_DENIED` with the reason first and up to 20 refused paths. An agent the organisation has not registered, or a
+  repository owned by a person, has no organisation scope. When the organisation settings cannot be read the push is refused (`UNAVAILABLE`).
+  The agent may be a member of a team (`PathRules.SetTeamMembers` with `agent:<name>`), so `team:<name>` rules apply to it too.
 
 ### Sessions (`asc.v1.Sessions`, subject `user:<login>`)
 
