@@ -594,8 +594,11 @@ impl ServerGate {
             return Ok(None);
         };
         let repo = entry.name.as_str().to_ascii_lowercase();
+        // A token's principal is `agent:<name>:<owner id>:<token id>` (agents::tokens::principal_id); the
+        // organisation registers `<name>`, which never holds a `:`.
+        let name = who.name.split(':').next().unwrap_or_default();
         let row = hub
-            .agent_of_repo(&repo, &who.name)
+            .agent_of_repo(&repo, name)
             .await
             .map_err(|e| Status::unavailable(format!("gate: organisation agents: {e:?}")))?;
         let Some(row) = row else {
