@@ -1,5 +1,6 @@
 //! The `asc.v1.Insights` tonic service. Every call needs repo read; the answer is about the
-//! repository of the call only (docs/BUILDOUT.md section 24).
+//! repository of the call only (docs/BUILDOUT.md section 24), except `ListOwnerContributors`,
+//! which sums several repositories of one owner ([`super::owner`]).
 
 use std::sync::Arc;
 
@@ -61,5 +62,21 @@ impl Insights for InsightsService {
             .stats_contributors(&ctx, msg)
             .await
             .map(Response::new)
+    }
+
+    async fn list_owner_contributors(
+        &self,
+        request: Request<wire::ListOwnerContributorsRequest>,
+    ) -> Result<Response<wire::ListOwnerContributorsResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        super::owner::list(
+            &self.hub,
+            &*self.env.authorizer,
+            &meta,
+            ext.get::<asc_rpc::auth::Credential>(),
+            msg,
+        )
+        .await
+        .map(Response::new)
     }
 }

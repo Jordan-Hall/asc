@@ -999,6 +999,7 @@ Every method of the build-out services (98). A test keeps this list equal to the
 - `asc.v1.DepsService/ProposeUpdate` — repo maintainer; mutating; never trunk
 - `asc.v1.Insights/GetStats` — repo read; expensive; landed, stacks opened, review time, author mix
 - `asc.v1.Insights/ListContributors` — repo read; expensive; landed and reviews per person and agent
+- `asc.v1.Insights/ListOwnerContributors` — read on each repository counted (an organisation read claim from the hub); expensive; the contributors of up to 64 repositories of one owner, summed
 - `asc.v1.Releases/DraftNotes` — repo read; expensive; the changes since a release, grouped
 - `asc.v1.Releases/Next` — repo read; changes since the latest release and a proposed tag
 - `asc.v1.Releases/Create` — repo write; mutating; a draft or a published release

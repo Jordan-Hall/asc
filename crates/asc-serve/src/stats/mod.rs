@@ -11,6 +11,7 @@
 //! Bounds: at most [`MAX_LANDED`] landed rows and [`MAX_VERDICTS`] verdicts are read; a cut sets
 //! `truncated`. Everything is scoped to the repository of the call; the caller needs repo read.
 
+pub mod owner;
 pub mod rpc;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -578,6 +579,18 @@ impl Reviews {
         ctx: &CallCtx,
         req: wire::ListContributorsRequest,
     ) -> Result<wire::ListContributorsResponse, Status> {
+        let mut out = self.contributors_all(ctx, req).await?;
+        out.contributors.truncate(MAX_CONTRIBUTORS);
+        Ok(out)
+    }
+
+    /// Every contributor of the window, in the order of [`Self::stats_contributors`], not cut at
+    /// [`MAX_CONTRIBUTORS`]: the owner total sums whole lists.
+    pub(crate) async fn contributors_all(
+        &self,
+        ctx: &CallCtx,
+        req: wire::ListContributorsRequest,
+    ) -> Result<wire::ListContributorsResponse, Status> {
         let w = Window::new(req.days, req.until)?;
         let entry = self.open(ctx).await?;
         let data = self.stats_data(&entry, ctx, &w).await?;
@@ -676,7 +689,6 @@ impl Reviews {
                 .then(b.reviews_given.cmp(&a.reviews_given))
                 .then(a.name.cmp(&b.name))
         });
-        list.truncate(MAX_CONTRIBUTORS);
         Ok(wire::ListContributorsResponse {
             contributors: list,
             landed: total,

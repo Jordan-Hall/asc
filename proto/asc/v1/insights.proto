@@ -12,6 +12,8 @@ import "asc/v1/repo.proto";
 service Insights {
   rpc GetStats(InsightsStatsRequest) returns (InsightsStatsResponse);                  // repo read; expensive
   rpc ListContributors(ListContributorsRequest) returns (ListContributorsResponse);    // repo read; expensive
+  // Read on each repository counted (see ListOwnerContributorsRequest); expensive. Advertised as "insights-owner.v1".
+  rpc ListOwnerContributors(ListOwnerContributorsRequest) returns (ListOwnerContributorsResponse);
 }
 
 // Who made a change: a person, or an agent (an agent run's change, or a change published under an `agent:` principal).
@@ -87,4 +89,34 @@ message ListContributorsResponse {
   repeated Contributor contributors = 1;   // landed first, then reviews given; at most 200
   uint32 landed = 2;
   bool truncated = 3;
+}
+
+// The contributors of several repositories of one owner, summed by person: the organisation People page. `repos` are
+// "owner/name" (1 to 64, all of `owner`). The host service with a forwarded claim for the organisation `owner` (read) names the
+// repositories its permission model lets that person read, and each one is counted; a claim that does not verify for the
+// organisation is PERMISSION_DENIED. Any other caller is asked about each repository in turn, and one it may not read (or that
+// does not exist) is left out without a word, so the answer never tells a private repository from a missing one.
+message ListOwnerContributorsRequest {
+  string owner = 1;
+  repeated string repos = 2;
+  uint32 days = 3;               // 1 to 366; 0 means 30
+  AuthorKind kind = 4;
+  int64 until = 5;               // 0 means now
+}
+
+message OwnerContributor {
+  string name = 1;               // the login of a person, the name of an agent
+  AuthorKind kind = 2;
+  uint32 landed = 3;             // summed over the repositories counted
+  uint32 reviews_given = 4;
+  uint32 repos = 5;              // repositories counted where this one landed or reviewed in the window
+  repeated uint32 weekly_landed = 6; // the 12 weeks ending at `until`, oldest first
+  uint64 user_id = 7;            // the hub's id of the person when a repository recorded one; 0 otherwise
+}
+
+message ListOwnerContributorsResponse {
+  repeated OwnerContributor contributors = 1;   // landed first, then reviews given, then name; at most 200
+  uint32 landed = 2;                            // all landed changes of the window by the listed kinds
+  uint32 counted_repos = 3;                     // repositories the caller may read that were counted
+  bool truncated = 4;                           // a bound cut the data of a repository: the numbers are lower bounds
 }
