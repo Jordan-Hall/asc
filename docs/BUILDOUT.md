@@ -223,7 +223,7 @@ and evaluated through the API and the hub shows it; every key below is parsed st
   See `docs/AUDIT.md`.
 - **Action catalogue** (dotted; units add theirs here): `policy.proposed`, `repo.ref.update`, `repo.ref.undo`, `stack.reverted`,
   `stack.restacked`, `queue.enqueued`, `queue.dequeued`, `queue.landed`, `queue.paused`, `secret.finding.updated`, `signing.key.added`,
-  `signing.key.revoked`, `signing.signature.submitted`, `storage.target.created`, `.updated`, `.verified`, `.enabled`, `.deleted`,
+  `signing.key.revoked`, `signing.defaults.set`, `signing.signature.submitted`, `storage.target.created`, `.updated`, `.verified`, `.enabled`, `.deleted`,
   `storage.migration.started`, `.finished`, `ai.key.created`, `.updated`, `.tested`, `.deleted`, `vault.rotated`, `agent.token.created`,
   `.revoked`, `agent.run.created`, `.cancelled`, `.finished`, `workflow.enabled`, `workflow.triggered`, `workflow.approval.decided`.
 - **Hub:** `/<owner>/<repo>/settings/asc/audit`, `/org/<org>/settings/asc/audit`, `/-/admin/asc/audit`, with filters and an export button
@@ -263,8 +263,14 @@ and evaluated through the API and the hub shows it; every key below is parsed st
   earlier `VALID` stays explainable. Policy `[signing] require_signed = true` makes landing on trunk need `VALID` for every change; the
   queue revalidates it (section 7). Server-made commits (`Commit`/`Merge` with `sign`) are signed with `[signing] server_key_file`.
 - **Config:** `[signing] server_key_file`, `max_keys_per_user` (32). **Errors:** `UNSIGNED_CHANGE`, `SIGNATURE_INVALID`, `SIGNING_KEY_LIMIT`.
-- **Audit:** `signing.key.added`, `signing.key.revoked`, `signing.signature.submitted`.
-- **Hub:** SSH signing keys under user settings; a "Verified" badge on versions of a change (`Verify`), the reason on hover.
+- **Audit:** `signing.key.added`, `signing.key.revoked`, `signing.defaults.set` (only when the value changes),
+  `signing.signature.submitted`.
+- **Defaults:** `GetSigningDefaults`/`SetSigningDefaults` keep one switch per user, `sign_by_default` (table
+  `signing_defaults`, migration 0607). It asks the user's clients to sign every new change; it is not a policy and the
+  server refuses nothing because of it. `asc signing default [on|off]` reads or sets it and keeps it as
+  `asc.signByDefault`; commands that write a change sign when `commit.gpgSign` is true, or when it is unset and
+  `asc.signByDefault` is true.
+- **Hub:** SSH signing keys under user settings, with the sign-by-default switch; a "Verified" badge on versions of a change (`Verify`), the reason on hover.
 - **Tests:** each key kind valid, wrong namespace, wrong message, key of another user, expired, revoked, option-bearing key lines
   refused, duplicate fingerprint, 100-item verify bound.
 
@@ -898,6 +904,8 @@ Every method of the build-out services (98). A test keeps this list equal to the
 - `asc.v1.Signing/SubmitSignature` — repo write; mutating
 - `asc.v1.Signing/Verify` — repo read; cheap
 - `asc.v1.Signing/GetServerKey` — any caller; the key that signs server-made commits
+- `asc.v1.Signing/GetSigningDefaults` — own defaults; another user's needs a site administrator
+- `asc.v1.Signing/SetSigningDefaults` — user identity; mutating; audited as `signing.defaults.set`
 
 **Audit** (`audit.proto`)
 
