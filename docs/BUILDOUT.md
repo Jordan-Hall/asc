@@ -610,6 +610,9 @@ A client calls it with the user's own credential.
   `repo IN (...)`; names are compared lower-case. The caller needs read on every repository named and one refusal fails the whole call, so a
   count never mixes in a repository the caller may not see. No list, an empty list, more than 50 or a repository named twice is
   `INVALID_ARGUMENT`.
+- `since` (unix seconds; 0: any time) counts only the runs created at or after it; a negative value is `INVALID_ARGUMENT`. The answer carries
+  `per_repo`, the count of each repository in the order of the request, beside `total`: the agent activity chip of the Explore rows asks
+  once for a whole page. The query is `GROUP BY repo` over the same filter, so the cost does not change.
 
 ## 23. Agent profile privacy
 
@@ -982,7 +985,7 @@ Every method of the build-out services (98). A test keeps this list equal to the
 - `asc.v1.Agents/GetSpend` — repo read
 - `asc.v1.Agents/SetMonthlyBudget` — repo admin; mutating
 - `asc.v1.Agents/GetPerson` — repo read; the profile a person lets agents read, asked of the hub each time; fails closed
-- `asc.v1.Agents/CountRuns` — repo read on every repository named; cheap
+- `asc.v1.Agents/CountRuns` — repo read on every repository named; cheap; per repository and since a time on request
 
 **AgentTokens** (`agents.proto`)
 
