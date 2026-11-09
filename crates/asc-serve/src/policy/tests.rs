@@ -2822,16 +2822,38 @@ async fn while_a_restore_is_staged_no_ref_moves() {
     let a = commit(&f.e, &[], &[("x", b"1")]).await;
     f.set_master(a).await;
     let b = commit(&f.e, &[a], &[("y", b"2")]).await;
-    f.gate
-        .read_only_flag()
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    f.gate.read_only_flag().stage_restore();
     let err = f.land(ALICE, b).await.unwrap_err();
     assert_eq!(err.code(), tonic::Code::Unavailable);
-    assert!(err.message().contains("read-only"), "{}", err.message());
+    assert!(
+        err.message().contains("a restore is staged"),
+        "{}",
+        err.message()
+    );
     assert_eq!(f.tip().await, a);
+}
+
+#[tokio::test]
+async fn while_maintenance_is_on_no_ref_moves_and_the_notice_says_why() {
+    let f = fx().await;
+    let a = commit(&f.e, &[], &[("x", b"1")]).await;
+    f.set_master(a).await;
+    let b = commit(&f.e, &[a], &[("y", b"2")]).await;
     f.gate
         .read_only_flag()
-        .store(false, std::sync::atomic::Ordering::Relaxed);
+        .set_notice(Some(crate::maintenance::Notice {
+            message: "moving to new disks".into(),
+            until: 0,
+            version: "2.4.0".into(),
+        }));
+    let err = f.land(ALICE, b).await.unwrap_err();
+    assert_eq!(err.code(), tonic::Code::Unavailable);
+    assert_eq!(
+        err.message(),
+        "the server is read-only for maintenance (upgrading to 2.4.0): moving to new disks"
+    );
+    assert_eq!(f.tip().await, a);
+    f.gate.read_only_flag().set_notice(None);
     f.land(ALICE, b).await.unwrap();
     assert_eq!(f.tip().await, b);
 }
