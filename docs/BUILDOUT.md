@@ -365,7 +365,7 @@ the `MergeQueue` service: its methods answer `UNIMPLEMENTED` from the router unt
 ## 10. Bring your own AI keys
 
 - **RPCs** (`aiproviders.proto`, `ai-keys.v1`): `AiProviders.CreateKey`, `ListKeys`, `GetKey`, `UpdateKey`, `DeleteKey`, `TestKey`,
-  `Usage`, `ListModels`, `ReplaceKey`, `ListFeatures`, `SetFeature`.
+  `Usage`, `ListModels`, `ReplaceKey`, `ListFeatures`, `SetFeature`, `ListActivity`.
 - **Providers:** Anthropic, OpenAI, Google and OpenAI-compatible endpoints; the client is a small trait in `asc-serve/src/aikeys/provider.rs`
   with one implementation per provider, built on the network guard. A key is `UNTESTED` until `TestKey` succeeds (one minimal request) and
   unusable until `ACTIVE`; a 401 or 403 later marks it `FAILED`. Monthly cap: the sum of recorded cost for the calendar month (UTC)
@@ -373,6 +373,14 @@ the `MergeQueue` service: its methods answer `UNIMPLEMENTED` from the router unt
 - **Data:** `ai_keys(id, owner_kind, owner_name, label, provider, base_url, default_model, sealed_key, key_gen, state, monthly_cap,
   created, updated, tested_at, last_error)` and `ai_usage(key_id, day, repo, agent, model, requests, input_tokens, output_tokens,
   cost_micro_usd)`.
+- **Activity:** every recorded call also adds to one row of `ai_activity(key_id, owner_kind, owner_name, kind, subject, actor, repo,
+  agent, model, first_at, last_at, requests, input_tokens, output_tokens, cost_micro_usd, unpriced)`, keyed by key, kind, subject and
+  actor. The kinds: an agent run (subject the run id, actor the handle that started it), a review summary (subject the change id, actor
+  the person who asked), a key test (subject the UTC day, no actor), and other calls (no subject or actor). `ListActivity` lists one key's
+  rows, newest use first, 50 a page (at most 100), with an opaque page token; a key of another owner, or a person who does not administer
+  the owner, gets `NOT_FOUND`. Rows are kept 90 days after their last call: older rows are never listed, and the key's next call deletes
+  them. The data export holds the activity of the person's own keys, and the rows where the person is the actor on another owner's key
+  without that key's id.
 - **Config:** `[aikeys] max_keys_per_owner` (32), `instance_monthly_cap_micro_usd` (0 = none), price table path `price_file`
   (JSON model to micro-USD per million tokens; unknown model costs are recorded as 0 and flagged in `Usage`).
   Google (Gemini) keys use the Gemini API (`generateContent`, `x-goog-api-key` header, never a URL parameter; https to
@@ -980,6 +988,7 @@ Every method of the build-out services (98). A test keeps this list equal to the
 - `asc.v1.AiProviders/ReplaceKey` — owner admin; mutating; the new key is tried first and replaces the old only when the provider accepts it
 - `asc.v1.AiProviders/ListFeatures` — owner admin; every feature that uses AI, with the setting that applies to the owner
 - `asc.v1.AiProviders/SetFeature` — owner admin; mutating
+- `asc.v1.AiProviders/ListActivity` — owner admin; cheap, paged; who used one key, for which run or change, and what it cost
 
 **Agents** (`agents.proto`)
 
