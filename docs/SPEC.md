@@ -1481,7 +1481,7 @@ Where: **L** local; **L+f** local, fetching missing objects; **S** server RPC wh
 | `rebase` | local engine; `--onto`, `--continue`, `--abort`, `--skip`, `-i` (git's todo format and editor), `--autosquash`, `--exec`, `--update-refs` | L+f |
 | `cherry-pick`, `revert` | local engine; `-n`, `-x`, `-m <n>`, `--continue/--abort/--skip` | L+f |
 | `stash` | `push [-u] [-m] [-- paths]`, `pop`, `apply`, `list`, `show [-p]`, `drop`, `clear`, `branch`. git's stash structure (W with parents [HEAD, I], optional U) on `refs/stash`, plus reflog | L |
-| `log` | `--oneline`, `--graph`, `--format`, `-p`, `--stat`, `--name-status`, `--follow`, `-- <path>`, `--since`/`--until`, `--author`, `--grep`, `-n`, `--first-parent`, `--all`, `--decorate`, `--reverse`, ranges | L / S |
+| `log` | `--oneline`, `--graph` (with `-- <path>` history is simplified as git's default does; not with `--follow` or a server history), `--format`, `-p`, `--stat`, `--name-status`, `--follow`, `-- <path>`, `--since`/`--until`, `--author`, `--grep`, `-n`, `--first-parent`, `--all`, `--decorate`, `--reverse`, ranges | L / S |
 | `show` | `<rev>`, `<rev>:<path>`, `--stat`, `--name-only`, `--format` | L+f / S |
 | `diff` | worktree/index/HEAD (L); `<a> <b>`, `<a>...<b>` (L, or S with `--remote <repo>` and no checkout); all formats; `--cached`, `-M`, `--no-index` (native), `--classify` (asc-only, §8.10) | L+f / S |
 | `blame` | `-L`, `--porcelain`, `--incremental`, `-w`, `-M`, `--reverse` (S when a server remote exists, else local). Dirty files are blamed against the working copy locally | S / L |
