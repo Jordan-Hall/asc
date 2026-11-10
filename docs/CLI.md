@@ -98,7 +98,7 @@ Configuration keys are in [`CONFIG.md`](CONFIG.md). Getting started is in
 
 | Command | What it does | Example |
 |---|---|---|
-| `log` | History. | `asc log --oneline -n 20` |
+| `log` | History. `--follow` walks as git does (renames found by content when none was recorded, merges only with `--first-parent`, `--skip` over every walked commit) and draws with `--graph`, git's `...` marking hidden commits. | `asc log --oneline --graph --follow -- src/main.rs` |
 | `show` | Shows an object. | `asc show HEAD` |
 | `diff` | Compares revisions, the index and the tree. | `asc diff --stat master...HEAD` |
 | `blame` | Last change per line. | `asc blame -L 10,20 src/lib.rs` |
