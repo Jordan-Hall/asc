@@ -98,14 +98,11 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         Some(v) => {
             let msg = wire::SetSigningDefaultsRequest { sign_by_default: v };
             let r = conn
-                .call(true, |s, op| {
-                    let m = msg.clone();
-                    async move {
-                        Ok(client(&s)
-                            .set_signing_defaults(s.wire.request(m, op))
-                            .await?
-                            .into_inner())
-                    }
+                .call(true, |s, op| async move {
+                    Ok(client(&s)
+                        .set_signing_defaults(s.wire.request(msg, op))
+                        .await?
+                        .into_inner())
                 })
                 .await?;
             (r.sign_by_default, r.updated)
