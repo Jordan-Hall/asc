@@ -99,6 +99,7 @@ scenarios! {
     remote_bucket = "remote-bucket",
     push_reject = "push-reject",
     push_mirror = "push-mirror",
+    log_graph_paths = "log-graph-paths",
     fetch_agent_refs = "fetch-agent-refs",
     git_remote_roundtrip = "git-remote-roundtrip",
     apply_basic = "apply-basic",
