@@ -256,22 +256,28 @@ fn a_single_abort_while_unborn_is_refused_as_git_does() {
 }
 
 // git's own abort of a sequence started on an unborn branch fails to read the empty record it
-// wrote, or moves the branch to the commit it was picking; asc returns the branch to unborn.
+// wrote, or moves the branch to the commit it was picking; asc refuses it and changes nothing.
+// fidelity: U-3
 #[test]
-fn an_abort_of_a_sequence_returns_the_branch_to_unborn() {
+fn an_abort_of_a_sequence_started_unborn_is_refused() {
     let p = history();
     p.orphan("un");
-    let before = p.run_asc(&["status", "--porcelain"]).stdout;
     // `one` applies as a root commit; `three` changes `f` from 2, which is not there.
     conflicting_pick(&p, &["cherry-pick", "master~3", "master~1"]);
+    let head = p.run_asc(&["rev-parse", "HEAD"]).stdout;
+    let index = p.run_asc(&["ls-files", "-s"]).stdout;
     let out = p.run_asc(&["cherry-pick", "--abort"]);
-    assert_eq!(out.code, 0, "{}", out.stderr);
-    let head = p.run_asc(&["rev-parse", "--verify", "-q", "HEAD"]);
-    assert_ne!(head.code, 0, "HEAD is {}", head.stdout);
-    let status = p.run_asc(&["status", "--porcelain"]);
-    assert_eq!(status.stdout, before);
-    let state = p.run_asc(&["cherry-pick", "--continue"]);
-    assert_ne!(state.code, 0, "the sequence is gone");
+    assert_eq!(out.code, 128, "{}", out.stderr);
+    assert!(
+        out.stderr.contains("(git-fidelity U-3)") && out.stderr.contains("--quit"),
+        "{}",
+        out.stderr
+    );
+    assert_eq!(p.run_asc(&["rev-parse", "HEAD"]).stdout, head);
+    assert_eq!(p.run_asc(&["ls-files", "-s"]).stdout, index);
+    let quit = p.run_asc(&["cherry-pick", "--quit"]);
+    assert_eq!(quit.code, 0, "{}", quit.stderr);
+    assert_eq!(p.run_asc(&["rev-parse", "HEAD"]).stdout, head);
 }
 
 #[test]
