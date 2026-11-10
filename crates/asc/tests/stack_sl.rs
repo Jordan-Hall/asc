@@ -374,9 +374,12 @@ fn stack_without_a_known_word_says_so() {
     let none = r.asc(&["stack"]);
     assert_eq!(none.code, 129, "{}", none.stderr);
     let unknown = r.asc(&["stack", "nosuchword"]);
-    assert_ne!(unknown.code, 0);
+    assert_eq!(unknown.code, 129, "{}", unknown.stderr);
     assert!(
-        unknown.stderr.contains("not supported yet"),
+        unknown.stderr.starts_with(
+            "asc stack: 'nosuchword' is not a stack command
+usage: asc stack <"
+        ),
         "{}",
         unknown.stderr
     );

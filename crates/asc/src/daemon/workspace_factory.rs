@@ -441,6 +441,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn without_the_daemon_factory_a_virtual_conversion_says_why() {
+        let f = Fixture::new().await;
+        workspaces::set_mode(&f.db, f.ws, Mode::Virtual)
+            .await
+            .unwrap();
+        let ws = workspaces::get(&f.db, f.ws).await.unwrap().unwrap();
+        let e = crate::ext::NoSink.convert_plain(&ws).await.unwrap_err();
+        let text = e.to_string();
+        assert!(text.starts_with("asc: 'worktree convert': "), "{text}");
+        assert!(text.contains("virtual workspaces"), "{text}");
+        assert!(!text.contains("not supported yet"), "{text}");
+        assert!(!text.ends_with("use --mode plain"), "{text}");
+        workspaces::set_mode(&f.db, f.ws, Mode::Plain)
+            .await
+            .unwrap();
+        let ws = workspaces::get(&f.db, f.ws).await.unwrap().unwrap();
+        crate::ext::NoSink.convert_plain(&ws).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn converting_a_virtual_workspace_materialises_it_and_keeps_edits() {
         let f = Fixture::new().await;
         let a = f

@@ -175,3 +175,17 @@ fn user_scope_writes_keys_and_never_widens() {
         .success()
     );
 }
+
+#[test]
+fn install_after_a_flag_is_a_usage_error_and_writes_nothing() {
+    let r = repo();
+    let out = r.run(&["mcp", "--read-only", "install"]);
+    assert_eq!(out.status.code(), Some(129), "{}", text(&out.stderr));
+    assert!(
+        text(&out.stderr).starts_with("usage: asc mcp"),
+        "{}",
+        text(&out.stderr)
+    );
+    assert!(!text(&out.stderr).contains("not supported yet"));
+    assert!(!r.root.join(".mcp.json").exists());
+}
