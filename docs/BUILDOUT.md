@@ -58,7 +58,9 @@ Rules, all fail closed:
 * Every repository-scoped RPC checks the claim against the access it needs (`read`, `write` or `admin`). Audit scopes (repository
   admin; organisation owner; site administrator for `instance`; the person's own account), AI keys, storage targets and the vault
   are decided by the claim for the repository, organisation, account or instance they name. The signing keys pages act as the
-  person of an account claim (`user:<login>`, `read` to list, `write` to add or revoke).
+  person of an account claim (`user:<login>`, `read` to list, `write` to add or revoke). The subject is the login lower
+  cased; the user entry keeps the login as the person spells it (`7:Alice` is checked against `user:alice`) and is the
+  handle the keys are stored under.
 * Audit events of such a call name the person as the actor and the host service as `on_behalf_of` (the relay); a stored answer
   of a mutating call is bound to the person and the subject as well as to the host principal, so it never replays to another
   person or another target.
