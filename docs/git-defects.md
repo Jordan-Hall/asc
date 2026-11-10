@@ -36,3 +36,12 @@ None. A defect in an on-disk or wire format that asc must replicate to interoper
 - **Proof:** `crates/asc/tests/cli_pick_unborn.rs::an_abort_of_a_sequence_started_unborn_is_refused`
 - **Status:** proven
 - **SPEC:** §4.4
+
+### U-4 A merge that adds two names differing only in case writes one over the other on a case-insensitive work tree
+- **Git:** with `core.ignorecase=true`, when one side adds `a.txt` and the other adds `A.txt`, ort merges cleanly and commits both names, then checks both out to the same file: the second overwrites the first without a message, and `status` shows the lost one as modified. The same holds for `cherry-pick`, `rebase`, `stash apply` and the autostash. `merge-tree` writes no work tree and is unaffected.
+- **Ideal:** a merge does not lose file content in the work tree without saying so (`git-merge` documents that conflicts and blocked paths stop the merge before anything is overwritten).
+- **Decision:** refuse (asc refuses the command before anything is written, naming both paths; `merge-tree` and a work tree with `core.ignorecase=false` behave as git)
+- **Refusal:** error
+- **Proof:** `crates/asc/tests/cli_merge_file_dir.rs::a_case_pair_on_a_case_insensitive_work_tree_is_refused_and_nothing_moves`
+- **Status:** proven
+- **SPEC:** §4.4

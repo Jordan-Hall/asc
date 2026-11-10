@@ -27,6 +27,8 @@ One bullet per `refuse` or `idealize` decision. The lint (Q01) checks that each 
 
 - **U-3** (refuse) `cherry-pick --abort` or `revert --abort` of a sequence started on an unborn branch exits 128 with `cannot abort a cherry-pick started on an unborn branch (git-fidelity U-3)` and changes nothing; git fails to read its own record, or moves the branch to the commit it was picking. SPEC §4.4.
 
+- **U-4** (refuse) With `core.ignorecase=true`, a `merge`, `cherry-pick`, `revert`, `rebase` or `stash apply` whose sides add two names that differ only in case exits 128 with `'a.txt' and 'A.txt' differ only in case and this work tree cannot hold both (core.ignorecase); nothing was changed (git-fidelity U-4)` and changes nothing; git commits both and silently writes one file over the other. SPEC §4.4.
+
 Q-2, Q-4 and Q-5 are `replicate` and have no bullet.
 
 ## Own divergences
