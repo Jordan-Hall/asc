@@ -325,3 +325,96 @@ async fn sign_out_everywhere_else_keeps_the_one_in_use() {
     // Nothing to sign out: zero, not an error.
     assert_eq!(others("tok:t2", 4).await.unwrap().into_inner().revoked, 0);
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_retry_answers_once_and_callers_without_a_right_see_nothing() {
+    let f = fx().await;
+    seed(&f).await;
+    let revoke = |id: &str, n| {
+        f.svc.revoke_session(as_user(
+            &f,
+            wire::RevokeSessionRequest {
+                login: String::new(),
+                id: id.into(),
+            },
+            "alice",
+            Role::Write,
+            n,
+        ))
+    };
+    // The same operation id twice: one revocation and one audit record; the retry gets the answer.
+    revoke("tok:t1", 1).await.unwrap();
+    revoke("tok:t1", 1).await.unwrap();
+    assert_eq!(f.audit.of("session.revoked").len(), 1);
+    // A mutating call without an operation id is refused before anything happens.
+    let e = f
+        .svc
+        .revoke_session(claim(
+            req(
+                wire::RevokeSessionRequest {
+                    login: String::new(),
+                    id: "tok:t2".into(),
+                },
+                "host-token",
+                None,
+            ),
+            &f.k,
+            "7:alice",
+            Role::Write,
+            "user:alice",
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Code::InvalidArgument);
+    // No credential at all.
+    let e = f
+        .svc
+        .list_sessions(tonic::Request::new(list_req("alice")))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Code::Unauthenticated);
+    // A claim signed with another key does not speak for alice.
+    let forged = asc_rpc::forwarded::ForwardedVerifier::new(vec![9u8; 32]).unwrap();
+    let e = f
+        .svc
+        .list_sessions(crate::settings::testkit::claim_with(
+            req(list_req("alice"), "host-token", None),
+            &forged,
+            "7:alice",
+            Role::Read,
+            "user:alice",
+        ))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(e.code(), Code::PermissionDenied | Code::Unauthenticated),
+        "{e:?}"
+    );
+    // A read-only person of another account: refused, and alice's credentials are unchanged.
+    let e = f
+        .svc
+        .list_sessions(req(list_req("alice"), "reader-token", None))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Code::PermissionDenied);
+    let e = f
+        .svc
+        .revoke_session(req(
+            wire::RevokeSessionRequest {
+                login: "alice".into(),
+                id: "tok:t2".into(),
+            },
+            "bob-token",
+            Some(&op(9)),
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Code::PermissionDenied);
+    let left = f
+        .svc
+        .list_sessions(req(list_req(""), "alice-token", None))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(left.sessions.len(), 4);
+}
