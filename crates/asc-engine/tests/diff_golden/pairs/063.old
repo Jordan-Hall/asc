@@ -1,43 +1,148 @@
-# Staging ASC Hub (the ASC fork of Forgejo) for Coolify. See docs/asc/STAGING.md in the fork.
-# Own SQLite database in its own named volume: shares nothing with production Forgejo or Postgres.
-# Set ASC_HUB_IMAGE_TAG to the sha12 tag of the image; ASC_HUB_IMAGE_REPO to ghcr.io/jordan-hall/asc-hub for the GitHub build.
-services:
-  forgejo:
-    image: ${ASC_HUB_IMAGE_REPO:-forge.example.org/asc/asc-hub}:${ASC_HUB_IMAGE_TAG:?pin the sha12 tag}
-    restart: unless-stopped
-    environment:
-      - SERVICE_FQDN_FORGEJO_3000
-      - FORGEJO__database__DB_TYPE=sqlite3
-      - FORGEJO__database__PATH=/var/lib/gitea/data/forgejo.db
-      - FORGEJO__server__ROOT_URL=https://forge-staging.example.org
-      - FORGEJO__server__HTTP_PORT=3000
-      - FORGEJO__DEFAULT__APP_NAME=ASC Hub
-      - FORGEJO__server__DISABLE_SSH=true
-      - FORGEJO__ui__DEFAULT_THEME=asc-auto
-      - FORGEJO__ui__THEMES=asc-auto,asc-light,asc-dark,forgejo-auto,forgejo-light,forgejo-dark,gitea-auto,gitea-light,gitea-dark,forgejo-auto-deuteranopia-protanopia,forgejo-light-deuteranopia-protanopia,forgejo-dark-deuteranopia-protanopia,forgejo-auto-tritanopia,forgejo-light-tritanopia,forgejo-dark-tritanopia
-      - FORGEJO__security__INSTALL_LOCK=true
-      - FORGEJO__service__DISABLE_REGISTRATION=true
-      - FORGEJO__actions__ENABLED=true
-    volumes:
-      - forgejo-staging-data:/var/lib/gitea
-    tmpfs:
-      - /tmp:uid=1000,gid=1000,mode=1777,size=256m
-    read_only: true
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    deploy:
-      resources:
-        limits:
-          memory: 1g
-          pids: 512
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3000/api/healthz >/dev/null || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 60s
+//! The account, organisation and administration settings services the hub's boards call
+//! (docs/BUILDOUT.md sections 26 to 31): backups, usage, organisation settings, sessions,
+//! data export, the sharing of AI keys and per-directory path rules.
+//!
+//! [`access`] is the one rule they share. [`register`] builds every hub on the server's
+//! database and installs them in [`SettingsSlot`]; `build_grpc` serves the services from there.
 
-volumes:
-  forgejo-staging-data:
+pub mod access;
+#[cfg(test)]
+pub(crate) mod testkit;
+
+use std::sync::{Arc, OnceLock};
+
+use tokio::task::JoinHandle;
+
+use crate::ai::audit::{Audit, PoolAudit};
+use crate::backups::{BackupsHub, RealEngine};
+use crate::config::ServeConfig;
+use crate::export::ExportHub;
+use crate::maintenance::MaintenanceHub;
+use crate::org::OrgHub;
+use crate::pathrules::PathRulesHub;
+use crate::registry::{Extensions, Registry};
+use crate::sessions::SessionsHub;
+use crate::usage::UsageHub;
+
+/// Every hub of the settings services.
+pub struct SettingsHubs {
+    pub backups: Arc<BackupsHub>,
+    pub usage: Arc<UsageHub>,
+    pub org: Arc<OrgHub>,
+    pub sessions: Arc<SessionsHub>,
+    pub export: Arc<ExportHub>,
+    pub pathrules: Arc<PathRulesHub>,
+    pub maintenance: Arc<MaintenanceHub>,
+}
+
+/// The place the hubs are registered, once.
+#[derive(Default)]
+pub struct SettingsSlot(OnceLock<Arc<SettingsHubs>>);
+
+impl SettingsSlot {
+    pub fn set(&self, hubs: Arc<SettingsHubs>) -> bool {
+        self.0.set(hubs).is_ok()
+    }
+
+    pub fn get(&self) -> Option<&Arc<SettingsHubs>> {
+        self.0.get()
+    }
+}
+
+/// Builds the hubs and installs them. An invalid configuration or a second registration is an
+/// error the server refuses to start with.
+pub fn register(
+    ext: &Extensions,
+    registry: &Arc<Registry>,
+    cfg: &ServeConfig,
+) -> Result<Arc<SettingsHubs>, String> {
+    cfg.backups.validate()?;
+    cfg.usage.validate()?;
+    let pool = registry.pool().clone();
+    let audit: Arc<dyn Audit> = Arc::new(PoolAudit::new(pool.clone()));
+    let backups = BackupsHub::new(
+        pool.clone(),
+        cfg.backups.clone(),
+        Arc::new(RealEngine {
+            cfg: Arc::new(cfg.clone()),
+        }),
+        crate::backups::state_dir(cfg),
+        audit.clone(),
+    );
+    let usage = UsageHub::new(pool.clone(), cfg.usage.clone(), audit.clone());
+    let export = ExportHub::new(
+        pool.clone(),
+        crate::workdir::default_dir(cfg, "exports"),
+        audit.clone(),
+    );
+    export.set_usage(usage.clone());
+    let hubs = Arc::new(SettingsHubs {
+        backups,
+        usage,
+        org: OrgHub::new(pool.clone(), audit.clone()),
+        sessions: SessionsHub::new(pool.clone(), audit.clone()),
+        export,
+        pathrules: PathRulesHub::new(pool.clone(), audit.clone()),
+        maintenance: MaintenanceHub::new(pool.clone(), ext.read_only.clone(), audit.clone()),
+    });
+    // The land gate, the agent runtime and the object server find the hubs through these slots.
+    if let Some(s) = ext.security.get() {
+        let _ = s.org_slot.set(hubs.org.clone());
+        hubs.backups.set_read_only(s.read_only.clone());
+    } else {
+        hubs.backups.set_read_only(ext.read_only.clone());
+    }
+    if let Some(a) = ext.agents.get() {
+        let _ = a.org.set(hubs.org.clone());
+    }
+    let _ = ext.usage.set(hubs.usage.clone());
+    let _ = ext.pathrules.set(hubs.pathrules.clone());
+    if !ext.settings.set(hubs.clone()) {
+        return Err("the settings services were already registered".into());
+    }
+    Ok(hubs)
+}
+
+impl SettingsHubs {
+    /// What `Version.features` adds.
+    pub fn features(&self) -> Vec<String> {
+        [
+            crate::backups::FEATURE,
+            crate::usage::FEATURE,
+            crate::org::FEATURE,
+            crate::sessions::FEATURE,
+            crate::export::FEATURE,
+            crate::pathrules::FEATURE,
+            crate::pathrules::ACCESS_FEATURE,
+            crate::maintenance::FEATURE,
+        ]
+        .map(str::to_owned)
+        .to_vec()
+    }
+
+    /// Starts the background workers: the backup scheduler, the export sweeper, the usage sweep
+    /// and the maintenance poller.
+    pub fn start(&self) -> Vec<JoinHandle<()>> {
+        let usage = self.usage.clone();
+        let sweep = tokio::spawn(async move {
+            loop {
+                usage.sweep().await;
+                tokio::time::sleep(std::time::Duration::from_secs(6 * 3600)).await;
+            }
+        });
+        vec![
+            self.backups.spawn_scheduler(),
+            self.export.spawn_sweeper(),
+            self.maintenance.spawn_poller(),
+            sweep,
+        ]
+    }
+
+    /// Tells the workers to stop.
+    pub fn stop(&self, tasks: &[JoinHandle<()>]) {
+        self.backups.stop();
+        for t in tasks {
+            t.abort();
+        }
+    }
+}

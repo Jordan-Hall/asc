@@ -1,43 +1,96 @@
-# Staging ASC Hub (the ASC fork of Forgejo) for Coolify. See docs/asc/STAGING.md in the fork.
-# Own SQLite database in its own named volume: shares nothing with production Forgejo or Postgres.
-# Set ASC_HUB_IMAGE_TAG to the sha12 tag published by the fork's asc-image workflow.
-services:
-  forgejo:
-    image: forge.example.org/asc/asc-hub:${ASC_HUB_IMAGE_TAG:?pin the sha12 tag}
-    restart: unless-stopped
-    environment:
-      - SERVICE_FQDN_FORGEJO_3000
-      - FORGEJO__database__DB_TYPE=sqlite3
-      - FORGEJO__database__PATH=/var/lib/gitea/data/forgejo.db
-      - FORGEJO__server__ROOT_URL=https://forge-staging.example.org
-      - FORGEJO__server__HTTP_PORT=3000
-      - FORGEJO__DEFAULT__APP_NAME=ASC Hub
-      - FORGEJO__server__DISABLE_SSH=true
-      - FORGEJO__ui__DEFAULT_THEME=asc-auto
-      - FORGEJO__ui__THEMES=asc-auto,asc-light,asc-dark,forgejo-auto,forgejo-light,forgejo-dark,gitea-auto,gitea-light,gitea-dark,forgejo-auto-deuteranopia-protanopia,forgejo-light-deuteranopia-protanopia,forgejo-dark-deuteranopia-protanopia,forgejo-auto-tritanopia,forgejo-light-tritanopia,forgejo-dark-tritanopia
-      - FORGEJO__security__INSTALL_LOCK=true
-      - FORGEJO__service__DISABLE_REGISTRATION=true
-      - FORGEJO__actions__ENABLED=true
-    volumes:
-      - forgejo-staging-data:/var/lib/gitea
-    tmpfs:
-      - /tmp:uid=1000,gid=1000,mode=1777,size=256m
-    read_only: true
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    deploy:
-      resources:
-        limits:
-          memory: 1g
-          pids: 512
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3000/api/healthz >/dev/null || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 60s
+[package]
+name = "asc"
+version = "0.1.3"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
 
-volumes:
-  forgejo-staging-data:
+[lints]
+workspace = true
+
+[features]
+default = ["serve", "vfs-projfs", "vfs-fuse", "git-compat", "git-ssh", "http3", "forgejo"]
+# The git smart-HTTP layer (SPEC 25); forwards to `asc-git` and, when `serve` is on, `asc-serve`.
+git-compat = ["asc-git/git-compat", "asc-serve?/git-compat"]
+# SSH public keys in the token store and the SSH listener (SPEC 25.11); the SSH library lives in
+# `asc-serve` only, so this adds `asc serve ssh-key` and nothing to `asc-git`.
+git-ssh = ["git-compat", "asc-serve?/git-ssh"]
+serve = ["dep:asc-serve"]
+# The optional Forgejo adapter of `asc serve` (hooks, `provider = "forgejo"`, push webhook).
+forgejo = ["asc-serve?/forgejo"]
+# HTTP/3 (U89b): the HTTPS client upgrades to h3 after `Alt-Svc`, and `asc serve` listens for QUIC
+# when `[tls]` and `http3_port` are set. Off, no QUIC crate is built.
+http3 = ["asc-rpc/http3", "asc-serve?/http3"]
+vfs-projfs = ["dep:asc-vfs", "asc-vfs/projfs"]
+vfs-fuse = ["dep:asc-vfs", "asc-vfs/fuse"]
+
+[dependencies]
+asc-core = { workspace = true }
+asc-buildcache = { workspace = true }
+asc-store = { workspace = true }
+asc-engine = { workspace = true }
+asc-graph = { workspace = true }
+asc-git = { workspace = true }
+asc-rpc = { workspace = true }
+asc-mcp = { workspace = true }
+asc-wc = { workspace = true }
+asc-ci = { workspace = true }
+asc-codeintel = { workspace = true }
+asc-state = { workspace = true }
+asc-serve = { workspace = true, optional = true }
+anyhow = { workspace = true }
+bstr = { workspace = true }
+async-trait = { workspace = true }
+base64 = { workspace = true }
+bytes = { workspace = true }
+clap = { workspace = true }
+futures = { workspace = true }
+gix = { workspace = true }
+gix-attributes = { workspace = true }
+gix-config = { workspace = true }
+gix-date = { workspace = true }
+gix-sec = { workspace = true }
+prost-reflect = { workspace = true }
+regex = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+linkme = { workspace = true }
+automod = { workspace = true }
+serde = { workspace = true }
+sqlx = { workspace = true }
+tonic = { workspace = true }
+minisign-verify = { workspace = true }
+sha2 = { workspace = true }
+reqwest = { workspace = true }
+http = { workspace = true }
+object_store = { workspace = true }
+url = { workspace = true }
+zip = { workspace = true }
+roaring = { workspace = true }
+tantivy = { workspace = true }
+blake3 = { workspace = true }
+toml_edit = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+similar = { workspace = true }
+toml = { workspace = true }
+axum = { workspace = true }
+rustls = { workspace = true }
+rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "ring", "pem"] }
+
+# vfs-projfs is Windows-only, vfs-fuse is Linux-only; the dep is optional on both.
+[target.'cfg(windows)'.dependencies]
+asc-vfs = { workspace = true, optional = true }
+# Ownership check of the safe.directory gate (cli/safe_dir.rs).
+windows-sys = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+asc-vfs = { workspace = true, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+# Effective uid for the safe.directory gate (cli/safe_dir.rs).
+rustix = { workspace = true, features = ["process", "stdio"] }

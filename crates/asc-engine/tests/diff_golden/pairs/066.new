@@ -1,43 +1,82 @@
-# Staging ASC Hub (the ASC fork of Forgejo) for Coolify. See docs/asc/STAGING.md in the fork.
-# Own SQLite database in its own named volume: shares nothing with production Forgejo or Postgres.
-# Set ASC_HUB_IMAGE_TAG to the sha12 tag of the image; ASC_HUB_IMAGE_REPO to ghcr.io/jordan-hall/asc-hub for the GitHub build.
-services:
-  forgejo:
-    image: ${ASC_HUB_IMAGE_REPO:-forge.example.org/asc/asc-hub}:${ASC_HUB_IMAGE_TAG:?pin the sha12 tag}
-    restart: unless-stopped
-    environment:
-      - SERVICE_FQDN_FORGEJO_3000
-      - FORGEJO__database__DB_TYPE=sqlite3
-      - FORGEJO__database__PATH=/var/lib/gitea/data/forgejo.db
-      - FORGEJO__server__ROOT_URL=https://forge-staging.example.org
-      - FORGEJO__server__HTTP_PORT=3000
-      - FORGEJO__DEFAULT__APP_NAME=ASC Hub
-      - FORGEJO__server__DISABLE_SSH=true
-      - FORGEJO__ui__DEFAULT_THEME=asc-auto
-      - FORGEJO__ui__THEMES=asc-auto,asc-light,asc-dark,forgejo-auto,forgejo-light,forgejo-dark,gitea-auto,gitea-light,gitea-dark,forgejo-auto-deuteranopia-protanopia,forgejo-light-deuteranopia-protanopia,forgejo-dark-deuteranopia-protanopia,forgejo-auto-tritanopia,forgejo-light-tritanopia,forgejo-dark-tritanopia
-      - FORGEJO__security__INSTALL_LOCK=true
-      - FORGEJO__service__DISABLE_REGISTRATION=true
-      - FORGEJO__actions__ENABLED=true
-    volumes:
-      - forgejo-staging-data:/var/lib/gitea
-    tmpfs:
-      - /tmp:uid=1000,gid=1000,mode=1777,size=256m
-    read_only: true
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    deploy:
-      resources:
-        limits:
-          memory: 1g
-          pids: 512
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3000/api/healthz >/dev/null || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 60s
+//! `asc fold [<change>] [--keep] [--stack]` (SPEC §20.2, §20.7): folds a change into its parent
+//! change and reparents the changes above it.
+//!
+//! The folded commit has the change's tree on the parent's parent, so the changes above restack
+//! onto it with no merge. It keeps the parent's message and author (`--keep`: the folded
+//! change's message) and the change id of the earliest folded change, the parent's. `--stack`
+//! folds the change and every change above it into the parent.
 
-volumes:
-  forgejo-staging-data:
+use std::process::ExitCode;
+
+use asc_core::change::RewriteOp;
+use asc_core::id::ChangesetId;
+
+use super::info::resolve_change;
+use super::rewrite::{Piece, emit, finish, locate, record, refuse_in_progress, write_piece};
+use super::sl::Local;
+use crate::cli::common::{CliError, Ctx, Result};
+use crate::native::NativeSpec;
+
+#[derive(clap::Parser, Debug)]
+#[command(name = "fold", disable_help_flag = true, disable_version_flag = true)]
+pub struct Args {
+    /// The change to fold; default the current HEAD.
+    pub change: Option<String>,
+    /// Keep the folded change's message instead of the parent's.
+    #[arg(long)]
+    pub keep: bool,
+    /// Fold the change and everything above it into the parent.
+    #[arg(long)]
+    pub stack: bool,
+    #[arg(long)]
+    pub json: bool,
+}
+
+pub const NATIVE: &[NativeSpec] =
+    &[NativeSpec { cmd: "fold", flags: &["--keep", "--stack", "--json"], placeholders: &[] }];
+
+super::verb!(FOLD, "fold");
+
+pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
+    let l = Local::open(ctx).await?;
+    let ws = l.ws;
+    refuse_in_progress(ws, "fold")?;
+    let st = l.stacks().await?;
+    let (x, _) = resolve_change(ctx, &l, &st, a.change.as_deref()).await?;
+    let loc = locate(&st, x, "fold").await?;
+    drop(st);
+    let [.., p, _] = loc.lower.as_slice() else {
+        return Err(CliError::Raw("asc: fold: the change has no parent change to fold into".into(), 1));
+    };
+    let p = *p;
+    let cp = ws.engine.get_changeset(p).await?;
+    let cx = ws.engine.get_changeset(x).await?;
+    if cp.parents.len() != 1 {
+        return Err(CliError::Raw("asc: fold: the parent change is a merge".into(), 1));
+    }
+    let (folded_upper, steps): (Vec<ChangesetId>, Vec<ChangesetId>) =
+        if a.stack { (loc.upper.clone(), Vec::new()) } else { (Vec::new(), loc.upper.clone()) };
+    let top = folded_upper.last().copied().unwrap_or(x);
+    let top_root = ws.engine.get_changeset(top).await?.root;
+    let op_id = uuid::Uuid::now_v7();
+    let sign = crate::cli::signing::sign_by_default(&ctx.config);
+    let new = write_piece(
+        ctx,
+        ws,
+        Piece {
+            parent: cp.parents[0],
+            root: top_root,
+            author: cp.author.clone(),
+            message: if a.keep { cx.message.clone() } else { cp.message.clone() },
+        },
+        sign,
+    )
+    .await?;
+    let mut preds = vec![p, x];
+    preds.extend(folded_upper.iter().copied());
+    let made = record(ws, new, &preds, RewriteOp::Fold, None, op_id).await?;
+    let pairs: Vec<(ChangesetId, ChangesetId)> = preds.iter().map(|&o| (o, new)).collect();
+    let n = pairs.len();
+    let flow = finish(ctx, ws, op_id, pairs, steps, new).await?;
+    emit(ctx, a.json, "fold", "Folded", &[made], n, &flow)
+}

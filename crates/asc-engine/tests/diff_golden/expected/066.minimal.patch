@@ -1,16 +1,13 @@
 diff --git a/file b/file
-index bae19fa..5b61cfc 100644
+index 2a765ec..e966e51 100644
 --- a/file
 +++ b/file
-@@ -1,9 +1,9 @@
- # Staging ASC Hub (the ASC fork of Forgejo) for Coolify. See docs/asc/STAGING.md in the fork.
- # Own SQLite database in its own named volume: shares nothing with production Forgejo or Postgres.
--# Set ASC_HUB_IMAGE_TAG to the sha12 tag published by the fork's asc-image workflow.
-+# Set ASC_HUB_IMAGE_TAG to the sha12 tag of the image; ASC_HUB_IMAGE_REPO to ghcr.io/jordan-hall/asc-hub for the GitHub build.
- services:
-   forgejo:
--    image: forge.example.org/asc/asc-hub:${ASC_HUB_IMAGE_TAG:?pin the sha12 tag}
-+    image: ${ASC_HUB_IMAGE_REPO:-forge.example.org/asc/asc-hub}:${ASC_HUB_IMAGE_TAG:?pin the sha12 tag}
-     restart: unless-stopped
-     environment:
-       - SERVICE_FQDN_FORGEJO_3000
+@@ -59,7 +59,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
+     let top = folded_upper.last().copied().unwrap_or(x);
+     let top_root = ws.engine.get_changeset(top).await?.root;
+     let op_id = uuid::Uuid::now_v7();
+-    let sign = ctx.config.bool("commit.gpgsign") == Some(true);
++    let sign = crate::cli::signing::sign_by_default(&ctx.config);
+     let new = write_piece(
+         ctx,
+         ws,
