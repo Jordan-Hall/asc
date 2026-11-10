@@ -919,3 +919,56 @@ async fn the_site_administrator_reads_the_activity_of_the_whole_server() {
         assert_eq!(e.code(), Code::InvalidArgument);
     }
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_replayed_report_adds_bandwidth_once() {
+    let f = fx().await;
+    let msg = || wire::ReportUsageRequest {
+        repo: "acme/web".into(),
+        storage_bytes: Some(10),
+        bandwidth_bytes: 5,
+        byo_storage: false,
+        at: 0,
+    };
+    f.svc.report(as_admin(&f, msg(), 1)).await.unwrap();
+    f.svc.report(as_admin(&f, msg(), 1)).await.unwrap();
+    // No credential, and no operation id, are refused before anything is added.
+    let mut anon = tonic::Request::new(msg());
+    anon.metadata_mut()
+        .insert("x-asc-op-id", op(2).parse().unwrap());
+    assert_eq!(
+        f.svc.report(anon).await.unwrap_err().code(),
+        Code::Unauthenticated
+    );
+    assert_eq!(
+        f.svc
+            .report(req(msg(), "host-token", None))
+            .await
+            .unwrap_err()
+            .code(),
+        Code::InvalidArgument
+    );
+    let now = clock::now();
+    let t = f
+        .hub
+        .totals(
+            &crate::settings::access::Subject::Org("acme".into()),
+            Period::parse("", now).unwrap(),
+            now,
+        )
+        .await
+        .unwrap();
+    assert_eq!((t.bandwidth_bytes, t.storage_bytes), (5, 10));
+    // A new id is a new report.
+    f.svc.report(as_admin(&f, msg(), 3)).await.unwrap();
+    let t = f
+        .hub
+        .totals(
+            &crate::settings::access::Subject::Org("acme".into()),
+            Period::parse("", now).unwrap(),
+            now,
+        )
+        .await
+        .unwrap();
+    assert_eq!(t.bandwidth_bytes, 10);
+}
