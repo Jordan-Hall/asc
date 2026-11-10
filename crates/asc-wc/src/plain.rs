@@ -578,10 +578,15 @@ async fn materialise_smudged<O: Objects, R: Refs>(
     if !stats.finish().smudges(smudge) {
         return Ok(());
     }
-    let mut name = tmp.as_os_str().to_owned();
-    name.push(".eol");
-    let converted = PathBuf::from(name);
-    let mut out = io::BufWriter::new(fs::File::create(&converted).map_err(io_at(&converted))?);
+    // A fresh name, opened only if nothing is there yet, so no existing entry or link is
+    // followed.
+    let converted = temp_beside(tmp);
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&converted)
+        .map_err(io_at(&converted))?;
+    let mut out = io::BufWriter::new(file);
     let mut conv = crate::eol::LfToCrlf::default();
     let mut buf = Vec::new();
     let written = for_each_piece(tmp, |piece| {
@@ -591,6 +596,8 @@ async fn materialise_smudged<O: Objects, R: Refs>(
     })
     .and_then(|()| out.flush().map_err(io_at(&converted)));
     drop(out);
+    let written =
+        written.and_then(|()| set_mode(&converted, kind == Kind::Exec).map_err(io_at(&converted)));
     if let Err(e) = written {
         let _ = fs::remove_file(&converted);
         return Err(e);
