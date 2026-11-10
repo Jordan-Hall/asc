@@ -1359,35 +1359,9 @@ async fn collect_range(
 /// tips (kept in log order), a commit comes once all its children in the range came, the parent
 /// pushed last is taken first; then the list is turned round so parents come first.
 fn graph_order_reversed(log: Vec<Ranged>) -> Vec<Ranged> {
-    let index: HashMap<ChangesetId, usize> =
-        log.iter().enumerate().map(|(n, r)| (r.id, n)).collect();
-    let mut children = vec![0usize; log.len()];
-    for r in &log {
-        for p in &r.parents {
-            if let Some(&n) = index.get(p) {
-                children[n] += 1;
-            }
-        }
-    }
-    let mut stack: Vec<usize> = (0..log.len()).filter(|&n| children[n] == 0).rev().collect();
-    let mut order: Vec<usize> = Vec::with_capacity(log.len());
-    while let Some(n) = stack.pop() {
-        order.push(n);
-        for p in &log[n].parents {
-            if let Some(&m) = index.get(p) {
-                children[m] -= 1;
-                if children[m] == 0 {
-                    stack.push(m);
-                }
-            }
-        }
-    }
-    let mut slots: Vec<Option<Ranged>> = log.into_iter().map(Some).collect();
-    order
-        .into_iter()
-        .rev()
-        .filter_map(|n| slots[n].take())
-        .collect()
+    let mut out = super::log::walk::graph_order(log, |r| r.id, |r| &r.parents);
+    out.reverse();
+    out
 }
 
 /// The commits of the range whose patch a commit of `orig..upstream` already makes (git's

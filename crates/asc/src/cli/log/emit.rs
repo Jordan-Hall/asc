@@ -351,6 +351,14 @@ impl<'a> Printer<'a> {
         Ok((tree_oid(&tree), parents))
     }
 
+    /// Passes a commit the walk hides through the graph without printing it, so the next commit
+    /// shown starts with git's `...`.
+    pub fn pass(&mut self, id: ChangesetId, parents: Vec<ChangesetId>) {
+        if let Some(g) = &mut self.graph {
+            g.update(id, parents, false);
+        }
+    }
+
     /// Prints one commit.
     pub async fn print<W: Write>(
         &mut self,
@@ -531,7 +539,7 @@ impl<'a> Printer<'a> {
             }
             _ => return Ok(()),
         };
-        let Some(text) = self.diff.render(self.ws, old, new).await? else {
+        let Some(text) = self.diff.render(self.ws, old, new, &e.followed).await? else {
             return Ok(());
         };
         let oneline = matches!(&self.kind, Kind::Builtin(Builtin::Oneline));

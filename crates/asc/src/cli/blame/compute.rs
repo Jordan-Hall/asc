@@ -138,7 +138,7 @@ fn from_blame(b: &Blame) -> Vec<Piece> {
         .collect()
 }
 
-fn is_file(e: &Entry) -> bool {
+pub(crate) fn is_file(e: &Entry) -> bool {
     !matches!(e.kind, Kind::Dir | Kind::Gitlink)
 }
 
@@ -147,7 +147,7 @@ pub async fn entry_at(ws: &WsCtx, cs: ChangesetId, path: &RepoPath) -> Result<Op
     Ok(ws.engine.lookup(c.root, path).await?.filter(is_file))
 }
 
-async fn content(ws: &WsCtx, e: &Entry) -> Result<Bytes> {
+pub(crate) async fn content(ws: &WsCtx, e: &Entry) -> Result<Bytes> {
     ws.engine
         .read_file(FileId::from_bytes(e.id), e.size)
         .await
@@ -407,7 +407,7 @@ async fn most_alike(
 
 /// The file `cs` deleted that `path` (added in `cs`) most likely came from, with its entry in
 /// the first parent.
-async fn rename_source(
+pub(crate) async fn rename_source(
     ws: &WsCtx,
     cs: ChangesetId,
     path: &RepoPath,

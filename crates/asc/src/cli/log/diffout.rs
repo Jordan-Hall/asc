@@ -3,6 +3,7 @@
 //! shortstat, summary, then the patch.
 
 use asc_core::id::TreeId;
+use asc_core::path::RepoPath;
 use asc_engine::diff::{
     self, DiffCtx, DiffOptions, NoAttributes, RenameOptions, write_numstat, write_patch,
     write_shortstat, write_stat,
@@ -115,10 +116,23 @@ impl DiffSetup {
     }
 
     /// The diff from `old` to `new`; `None` when the trees do not differ in the pathspec.
-    pub async fn render(&self, ws: &WsCtx, old: TreeId, new: TreeId) -> Result<Option<Vec<u8>>> {
+    /// `followed`, when not empty, replaces the pathspec: the paths `--follow` tracks at
+    /// this commit, so a rename shows as its pair.
+    pub async fn render(
+        &self,
+        ws: &WsCtx,
+        old: TreeId,
+        new: TreeId,
+        followed: &[RepoPath],
+    ) -> Result<Option<Vec<u8>>> {
+        let spec = if followed.is_empty() {
+            None
+        } else {
+            Some(Pathspec::parse(followed.iter().map(|p| p.as_bytes())).map_err(fatal)?)
+        };
         let changes = ws
             .engine
-            .diff_trees(old, new, self.spec.as_ref(), &self.opts)
+            .diff_trees(old, new, spec.as_ref().or(self.spec.as_ref()), &self.opts)
             .await
             .map_err(fatal)?;
         if changes.is_empty() {

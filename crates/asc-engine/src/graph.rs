@@ -841,6 +841,9 @@ struct Walk<'g, S, J> {
 struct Step {
     /// The id, when it matched the filters.
     matched: Option<ChangesetId>,
+    /// The entry passed every filter but the followed path: git's `--follow` counts `--skip`
+    /// over these, shown or not.
+    walked: bool,
     generation: u32,
     /// The entry is a history boundary: its parents were not queued.
     boundary: bool,
@@ -958,6 +961,11 @@ impl<'g, S: GraphSource, J: JumpIndex> Walk<'g, S, J> {
                     self.enter_merge(Some(step)).await?;
                     continue;
                 }
+                if self.q.follow && step.walked && self.skip_left > 0 {
+                    // git skips walked commits under `--follow`, whether the path shows them.
+                    self.skip_left -= 1;
+                    continue;
+                }
                 match step.matched {
                     Some(id) => id,
                     None => continue,
@@ -1003,9 +1011,9 @@ impl<'g, S: GraphSource, J: JumpIndex> Walk<'g, S, J> {
         } else {
             Some(self.graph.source.changeset(id).await?)
         };
-        let (matched, parent_path) = match &header {
+        let (matched, walked, parent_path) = match &header {
             Some(cs) => self.filter(cs, entry.path.as_ref()),
-            None => (!entry.excluded, entry.path.clone()),
+            None => (!entry.excluded, !entry.excluded, entry.path.clone()),
         };
         if boundary {
             self.boundaries.push((id, entry.excluded, parent_path));
@@ -1036,6 +1044,7 @@ impl<'g, S: GraphSource, J: JumpIndex> Walk<'g, S, J> {
         }
         Ok(Some(Step {
             matched: matched.then_some(id),
+            walked,
             generation: node.generation,
             boundary,
         }))
@@ -1160,14 +1169,21 @@ impl<'g, S: GraphSource, J: JumpIndex> Walk<'g, S, J> {
             || q.until.is_some()
     }
 
-    /// Whether `cs` matches, and the path to follow into its parents.
-    fn filter(&self, cs: &Changeset, followed: Option<&RepoPath>) -> (bool, Option<RepoPath>) {
+    /// Whether `cs` matches, whether it passes every filter but the followed path, and the path
+    /// to follow into its parents. Under `--follow` a merge shows only with `--first-parent`, as
+    /// git's log diffs a merge against its first parent then and not at all otherwise.
+    fn filter(
+        &self,
+        cs: &Changeset,
+        followed: Option<&RepoPath>,
+    ) -> (bool, bool, Option<RepoPath>) {
         let q = &self.q;
         let mut next_path = followed.cloned();
-        let mut ok = true;
+        let mut path_ok = true;
         let changes = cs.changes.as_slice();
         if let Some(cur) = followed {
-            ok = changes.iter().any(|(k, _)| touches(k, cur));
+            path_ok = (q.first_parent || cs.parents.len() < 2)
+                && changes.iter().any(|(k, _)| touches(k, cur));
             if let Some(Change::Write {
                 copy_from: Some(src),
                 ..
@@ -1176,12 +1192,12 @@ impl<'g, S: GraphSource, J: JumpIndex> Walk<'g, S, J> {
                 next_path = Some(src.clone());
             }
         } else if !q.paths.is_empty() {
-            ok = changes
+            path_ok = changes
                 .iter()
                 .any(|(k, _)| q.paths.iter().any(|p| touches(k, p)));
         }
         let t = cs.committer.time();
-        ok = ok && q.since.is_none_or(|s| t >= s) && q.until.is_none_or(|u| t <= u);
+        let mut ok = q.since.is_none_or(|s| t >= s) && q.until.is_none_or(|u| t <= u);
         if let Some(a) = q.author.as_deref().filter(|a| !a.is_empty()) {
             let sig = [cs.author.name(), b" <", cs.author.email(), b">"].concat();
             ok = ok && sig.windows(a.len()).any(|w| w == a);
@@ -1189,7 +1205,7 @@ impl<'g, S: GraphSource, J: JumpIndex> Walk<'g, S, J> {
         if let Some(re) = &self.grep {
             ok = ok && re.is_match(&cs.message);
         }
-        (ok, next_path)
+        (path_ok && ok, ok, next_path)
     }
 }
 
@@ -1649,6 +1665,43 @@ mod tests {
             ..inc(&[ids[5]])
         };
         assert!(matches!(g.log_page(bad).await, Err(Error::Query(_))));
+    }
+
+    #[tokio::test]
+    async fn follow_skips_walked_commits() {
+        let (ids, g) = graph(&history_with_paths());
+        let q = |skip| LogQuery {
+            paths: vec![p("new.txt")],
+            follow: true,
+            skip,
+            ..inc(&[ids[5]])
+        };
+        // ids[5] does not touch the path but is walked, so it is the one skipped.
+        assert_eq!(all(&g, q(1)).await, vec![ids[4], ids[2], ids[0]]);
+        assert_eq!(all(&g, q(2)).await, vec![ids[2], ids[0]]);
+        let plain = LogQuery {
+            follow: false,
+            ..q(1)
+        };
+        assert_eq!(all(&g, plain).await, vec![ids[2]]);
+    }
+
+    #[tokio::test]
+    async fn follow_shows_merges_only_with_first_parent() {
+        let mut s = vec![spec(&[], 1), spec(&[0], 2), spec(&[0], 3), spec(&[2, 1], 4)];
+        s[0].changes = vec![("a.txt", None)];
+        s[1].changes = vec![("a.txt", None)];
+        s[2].changes = vec![("other.txt", None)];
+        s[3].changes = vec![("a.txt", None)];
+        let (ids, g) = graph(&s);
+        let q = |first_parent| LogQuery {
+            paths: vec![p("a.txt")],
+            follow: true,
+            first_parent,
+            ..inc(&[ids[3]])
+        };
+        assert_eq!(all(&g, q(false)).await, vec![ids[1], ids[0]]);
+        assert_eq!(all(&g, q(true)).await, vec![ids[3], ids[0]]);
     }
 
     #[tokio::test]

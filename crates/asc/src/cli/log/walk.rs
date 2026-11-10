@@ -2,15 +2,24 @@
 //! [`HistoryApi`] (the local engine, or the server's when the default remote is one) when a
 //! path filter, `--follow` or a server decides the walk. The filters git applies per commit
 //! (author, committer, message, parents, `--until`) are applied here to both.
+//!
+//! A local `--follow` walks as git's does: the whole history in git's order, one path followed
+//! from commit to commit and moved to the source when a commit adds it by a rename (recorded, or
+//! found by content as git's `-M50%` finds it), merges shown only with `--first-parent`, `--skip`
+//! counted over every commit walked and `-n` over the shown. With `--graph` each shown commit keeps its real parents and a hidden one still passes
+//! through the graph, which prints git's `...` before the next shown commit. A server history's
+//! graph is drawn from its own entries, sorted in graph order.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use asc_core::id::{ChangesetId, GitOid};
-use asc_core::object::Changeset;
+use asc_core::object::{Change, Changeset};
+use asc_core::path::RepoPath;
 use asc_engine::graph::LogQuery;
 use asc_engine::history::{HistoryApi, LogEntry, PageToken};
 
+use super::super::blame::compute::{content, entry_at, is_file, rename_source};
 use super::opts::Opts;
 use super::order::{Ordered, Sort};
 use super::revs::Selection;
@@ -55,6 +64,9 @@ pub struct Entry {
     pub shown_parents: Vec<ChangesetId>,
     /// The `<` side of `A...B`.
     pub left: bool,
+    /// Under `--follow`, the paths its diff shows: the followed path, and the rename's
+    /// source when the commit moved it.
+    pub followed: Vec<RepoPath>,
 }
 
 fn fatal(e: impl std::fmt::Display) -> CliError {
@@ -269,7 +281,10 @@ impl Filter {
 
 /// Where commits come from.
 enum Source<'a> {
-    Ordered(Box<Ordered<'a>>),
+    /// git's order; with a path, only the commits `--follow` shows under it.
+    Ordered(Box<Ordered<'a>>, Option<RepoPath>),
+    /// A whole server history, already in graph order.
+    Sorted(VecDeque<LogEntry>),
     Paged {
         api: &'a dyn HistoryApi,
         query: Box<LogQuery>,
@@ -280,6 +295,13 @@ enum Source<'a> {
     },
 }
 
+/// One step of the walk.
+pub enum Walked {
+    Shown(Entry),
+    /// A commit `--follow` walked but does not show, with the parents the graph draws.
+    Hidden(ChangesetId, Vec<ChangesetId>),
+}
+
 /// A streaming walk over the selected history.
 pub struct Walker<'a> {
     ws: &'a WsCtx,
@@ -288,6 +310,8 @@ pub struct Walker<'a> {
     first_parent: bool,
     skip: usize,
     limit: Option<usize>,
+    /// Hidden commits are returned (to the graph) rather than passed over.
+    hidden: bool,
 }
 
 impl<'a> Walker<'a> {
@@ -297,16 +321,43 @@ impl<'a> Walker<'a> {
         // The graph of a pathspec simplifies history in the local walk, as git's does.
         let simplify = opts.graph && !sel.paths.is_empty() && !opts.follow && !hist.is_remote();
         let paged = (!sel.paths.is_empty() || opts.follow || hist.is_remote()) && !simplify;
-        if paged && opts.graph {
-            return Err(CliError::Fatal(
-                "asc: --graph is not supported with --follow or a server history yet".into(),
-            ));
-        }
         if opts.follow && sel.paths.len() != 1 {
             return Err(CliError::Raw(
                 "fatal: --follow requires exactly one pathspec".into(),
                 128,
             ));
+        }
+        let local_follow = opts.follow && !hist.is_remote();
+        if local_follow || (paged && opts.graph) {
+            let src = if local_follow {
+                let sort = match (opts.order, opts.graph) {
+                    (Some(s), _) => s,
+                    (None, true) => Sort::Topo,
+                    (None, false) => Sort::Date,
+                };
+                let all = Ordered::new(ws, sel, opts.first_parent, sort, since, &[]).await?;
+                Source::Ordered(Box::new(all), Some(sel.paths[0].clone()))
+            } else {
+                let query = LogQuery {
+                    include: sel.include.clone(),
+                    exclude: sel.exclude.clone(),
+                    first_parent: opts.first_parent,
+                    paths: sel.paths.clone(),
+                    follow: opts.follow,
+                    since,
+                    ..LogQuery::default()
+                };
+                Source::Sorted(graph_sorted(drain(hist.api(ws), &query).await?))
+            };
+            return Ok(Self {
+                ws,
+                src,
+                filter,
+                first_parent: opts.first_parent,
+                skip: opts.skip,
+                limit: opts.max_count,
+                hidden: opts.graph,
+            });
         }
         let (mut skip, mut limit) = (opts.skip, opts.max_count);
         let src = if paged {
@@ -338,9 +389,10 @@ impl<'a> Walker<'a> {
                 (None, true) => Sort::Topo,
                 (None, false) => Sort::Date,
             };
-            Source::Ordered(Box::new(
-                Ordered::new(ws, sel, opts.first_parent, sort, since, &sel.paths).await?,
-            ))
+            Source::Ordered(
+                Box::new(Ordered::new(ws, sel, opts.first_parent, sort, since, &sel.paths).await?),
+                None,
+            )
         };
         Ok(Self {
             ws,
@@ -349,6 +401,7 @@ impl<'a> Walker<'a> {
             first_parent: opts.first_parent,
             skip,
             limit,
+            hidden: false,
         })
     }
 
@@ -366,19 +419,36 @@ impl<'a> Walker<'a> {
         Ok((cs, git, generation))
     }
 
-    /// The next commit, or `None` at the end.
+    /// The next commit shown, or `None` at the end.
     pub async fn next(&mut self) -> Result<Option<Entry>> {
+        loop {
+            match self.walk().await? {
+                Some(Walked::Shown(e)) => return Ok(Some(e)),
+                Some(Walked::Hidden(..)) => {}
+                None => return Ok(None),
+            }
+        }
+    }
+
+    /// The next commit shown, or hidden when the graph wants it; `None` at the end.
+    pub async fn walk(&mut self) -> Result<Option<Walked>> {
         loop {
             if self.limit == Some(0) {
                 return Ok(None);
             }
             let (id, git, generation, shown, left) = match &mut self.src {
-                Source::Ordered(o) => {
+                Source::Ordered(o, _) => {
                     let Some(item) = o.next().await? else {
                         return Ok(None);
                     };
                     let shown = o.shown_parents(&item);
                     (item.id, None, 0, Some(shown), item.left)
+                }
+                Source::Sorted(queue) => {
+                    let Some(e) = queue.pop_front() else {
+                        return Ok(None);
+                    };
+                    (e.id, e.git, e.generation, None, false)
                 }
                 Source::Paged {
                     api,
@@ -416,9 +486,6 @@ impl<'a> Walker<'a> {
                 self.skip -= 1;
                 continue;
             }
-            if let Some(l) = &mut self.limit {
-                *l -= 1;
-            }
             let shown_parents = shown.unwrap_or_else(|| {
                 let take = if self.first_parent {
                     1
@@ -427,21 +494,192 @@ impl<'a> Walker<'a> {
                 };
                 cs.parents[..take.min(cs.parents.len())].to_vec()
             });
-            return Ok(Some(Entry {
+            let (ws, first_parent) = (self.ws, self.first_parent);
+            let mut followed = Vec::new();
+            let hide = match &mut self.src {
+                Source::Ordered(_, Some(path)) => {
+                    followed.push(path.clone());
+                    let shown = follow(ws, id, &cs, path, first_parent).await?;
+                    if *path != followed[0] {
+                        followed.push(path.clone());
+                    }
+                    !shown
+                }
+                _ => false,
+            };
+            if hide {
+                if self.hidden {
+                    return Ok(Some(Walked::Hidden(id, shown_parents)));
+                }
+                continue;
+            }
+            if let Some(l) = &mut self.limit {
+                *l -= 1;
+            }
+            return Ok(Some(Walked::Shown(Entry {
                 id,
                 git,
                 generation,
                 cs,
                 shown_parents,
                 left,
-            }));
+                followed,
+            })));
         }
     }
+}
+
+/// One commit of git's `--follow` walk: whether `cs` shows under `path`, which moves to the
+/// file `cs` renamed into it. A merge shows (diffed against its first parent) only with
+/// `--first-parent`; git's log does not diff it otherwise.
+async fn follow(
+    ws: &WsCtx,
+    id: ChangesetId,
+    cs: &Changeset,
+    path: &mut RepoPath,
+    first_parent: bool,
+) -> Result<bool> {
+    if cs.parents.len() > 1 && !first_parent {
+        return Ok(false);
+    }
+    let touched = cs
+        .changes
+        .as_slice()
+        .iter()
+        .any(|(k, _)| k == &*path || k.starts_with_dir(path) || path.starts_with_dir(k));
+    if !touched {
+        return Ok(false);
+    }
+    let Some(&parent) = cs.parents.first() else {
+        return Ok(true);
+    };
+    let Some(Change::Write { copy_from, .. }) = cs.changes.get(path) else {
+        return Ok(true);
+    };
+    if entry_at(ws, parent, path).await?.is_some() {
+        return Ok(true);
+    }
+    // Added here: a rename moves the followed path to its source.
+    let source = match copy_from {
+        Some(src) if matches!(cs.changes.get(src), Some(Change::Delete)) => Some(src.clone()),
+        _ => match ws.engine.lookup(cs.root, path).await?.filter(is_file) {
+            Some(e) => {
+                let data = content(ws, &e).await?;
+                rename_source(ws, id, path, &data).await?.map(|(_, p, _)| p)
+            }
+            None => None,
+        },
+    };
+    if let Some(src) = source {
+        *path = src;
+    }
+    Ok(true)
+}
+
+/// The most entries a graph of a paged history holds.
+const MAX_GRAPH: usize = 1 << 20;
+
+/// Every entry of a paged log, in the service's order.
+async fn drain(api: &dyn HistoryApi, query: &LogQuery) -> Result<Vec<LogEntry>> {
+    let mut out = Vec::new();
+    let mut page: Option<PageToken> = None;
+    loop {
+        let got = api.log(query, page.as_ref()).await.map_err(fatal)?;
+        out.extend(got.entries);
+        if out.len() > MAX_GRAPH {
+            return Err(CliError::Fatal(
+                "asc: the history is too long to draw as a graph".into(),
+            ));
+        }
+        match got.next {
+            Some(next) => page = Some(next),
+            None => return Ok(out),
+        }
+    }
+}
+
+/// git's topological sort in graph order (`REV_SORT_IN_GRAPH_ORDER`): the tips in the given
+/// order, a commit once every child among `items` came, the parent pushed last taken first.
+/// Parents outside `items` are ignored.
+pub(crate) fn graph_order<T>(
+    items: Vec<T>,
+    id: impl Fn(&T) -> ChangesetId,
+    parents: impl Fn(&T) -> &[ChangesetId],
+) -> Vec<T> {
+    let index: HashMap<ChangesetId, usize> =
+        items.iter().enumerate().map(|(n, t)| (id(t), n)).collect();
+    let mut children = vec![0usize; items.len()];
+    for t in &items {
+        for p in parents(t) {
+            if let Some(&n) = index.get(p) {
+                children[n] += 1;
+            }
+        }
+    }
+    let mut stack: Vec<usize> = (0..items.len())
+        .filter(|&n| children[n] == 0)
+        .rev()
+        .collect();
+    let mut order: Vec<usize> = Vec::with_capacity(items.len());
+    while let Some(n) = stack.pop() {
+        order.push(n);
+        for p in parents(&items[n]) {
+            if let Some(&m) = index.get(p) {
+                children[m] -= 1;
+                if children[m] == 0 {
+                    stack.push(m);
+                }
+            }
+        }
+    }
+    let mut slots: Vec<Option<T>> = items.into_iter().map(Some).collect();
+    order.into_iter().filter_map(|n| slots[n].take()).collect()
+}
+
+fn graph_sorted(entries: Vec<LogEntry>) -> VecDeque<LogEntry> {
+    graph_order(entries, |e| e.id, |e| &e.parents).into()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn entry(id: u8, parents: &[u8]) -> LogEntry {
+        LogEntry {
+            id: ChangesetId::from_bytes([id; 32]),
+            generation: 0,
+            parents: parents
+                .iter()
+                .map(|&p| ChangesetId::from_bytes([p; 32]))
+                .collect(),
+            git: None,
+        }
+    }
+
+    fn ids(q: VecDeque<LogEntry>) -> Vec<u8> {
+        q.iter().map(|e| e.id.as_bytes()[0]).collect()
+    }
+
+    #[test]
+    fn graph_sorted_puts_children_first_and_takes_the_last_parent_first() {
+        // 5 merges 4 (first parent) and 3; the server lists them by date.
+        let log = vec![
+            entry(5, &[4, 3]),
+            entry(3, &[1]),
+            entry(4, &[2]),
+            entry(2, &[1]),
+            entry(1, &[]),
+        ];
+        assert_eq!(ids(graph_sorted(log)), [5, 3, 4, 2, 1]);
+    }
+
+    #[test]
+    fn graph_sorted_keeps_tip_order_and_ignores_missing_parents() {
+        // 9 and 8 are tips; 7's parent 6 is not among the entries.
+        let log = vec![entry(9, &[7]), entry(8, &[7]), entry(7, &[6])];
+        assert_eq!(ids(graph_sorted(log)), [9, 8, 7]);
+        assert!(graph_sorted(Vec::new()).is_empty());
+    }
 
     #[test]
     fn basic_regex_translation() {

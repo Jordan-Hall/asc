@@ -33,7 +33,7 @@ pub mod walk;
 
 use emit::{Cmd, Printer};
 use opts::Opts;
-use walk::{Entry, Hist, Walker};
+use walk::{Entry, Hist, Walked, Walker};
 
 #[derive(clap::Parser, Debug)]
 #[command(name = "log", disable_help_flag = true, disable_version_flag = true)]
@@ -232,8 +232,11 @@ async fn log(ctx: &Ctx, o: Opts) -> Result<ExitCode> {
             r
         } else {
             let mut r = Ok(());
-            while let Some(e) = walker.next().await? {
-                r = printer.print(&mut out, &e, None).await;
+            while let Some(step) = walker.walk().await? {
+                match step {
+                    Walked::Shown(e) => r = printer.print(&mut out, &e, None).await,
+                    Walked::Hidden(id, parents) => printer.pass(id, parents),
+                }
                 if r.is_err() {
                     break;
                 }
@@ -318,5 +321,6 @@ pub async fn load(ws: &WsCtx, id: ChangesetId) -> Result<Entry> {
         cs,
         shown_parents,
         left: false,
+        followed: Vec::new(),
     })
 }

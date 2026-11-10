@@ -21,7 +21,7 @@ use super::pager::PagerWant;
 use super::restore::resolve_commit;
 use crate::native::NativeSpec;
 
-mod compute;
+pub(crate) mod compute;
 mod emit;
 mod opts;
 
