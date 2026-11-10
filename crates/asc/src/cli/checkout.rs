@@ -97,7 +97,7 @@ async fn post_checkout_files(ctx: &Ctx, ws: &WsCtx) -> Result<ExitCode> {
         Some(c) => ws.engine.git_commit_of(c).await.map_err(fatal)?,
         None => crate::hooks_runner::null_oid(),
     };
-    let runner = Runner::for_ctx(ctx)?;
+    let runner = Runner::for_ctx(ctx).await?;
     let hook = Hook::PostCheckout {
         old: head,
         new: head,

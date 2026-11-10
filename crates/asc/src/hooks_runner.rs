@@ -14,7 +14,7 @@ use std::sync::{Arc, OnceLock};
 use asc_core::git::ObjectKind;
 use asc_core::id::{GitOid, RefTarget};
 use asc_git::realgit::{RealGit, Resolver};
-use asc_state::state::git_map;
+use asc_state::state::{git_map, workspaces};
 use asc_state::{AscHome, StateDb};
 use asc_store::refs::RepoKey;
 use async_trait::async_trait;
@@ -338,6 +338,11 @@ pub enum Gate {
 pub struct Runner {
     workdir: PathBuf,
     hooks_dir: PathBuf,
+    /// `hooks` in the synthetic gitdir of the repository's main workspace, looked in first when
+    /// `core.hooksPath` is unset: it is what `rev-parse --absolute-git-dir` names there, and a
+    /// tool installing a hook under it expects it to run in every work tree, as git's
+    /// `.git/hooks` does.
+    main_hooks: Option<PathBuf>,
     shell: PathBuf,
 }
 
@@ -353,15 +358,18 @@ static BOUND: OnceLock<Site> = OnceLock::new();
 impl Runner {
     /// A runner for the workspace of `ctx`. The first call also binds it for
     /// [`RefTxnRunner`], so the hook sees the invocation's `-c` values and `PATH`.
-    pub fn for_ctx(ctx: &Ctx) -> Result<Self, CliError> {
+    pub async fn for_ctx(ctx: &Ctx) -> Result<Self, CliError> {
         let ws = ctx.ws()?;
+        let main_hooks = main_hooks_of(&ctx.config, &ws.home, &ws.db, ws.repo.key).await?;
         let runner = Self {
-            workdir: ws.projection.toplevel().to_owned(),
+            // git runs a hook at the root of the work tree as the user named it.
+            workdir: ws.root_shown(),
             hooks_dir: hooks_dir_of(
                 &ctx.config,
                 ws.projection.toplevel(),
                 ws.projection.common_dir(),
             ),
+            main_hooks,
             shell: ctx.shell(),
         };
         let _ = BOUND.set(Site {
@@ -377,7 +385,12 @@ impl Runner {
     }
 
     fn script(&self, name: &str) -> Option<PathBuf> {
-        let path = self.hooks_dir.join(name);
+        let path = self
+            .main_hooks
+            .iter()
+            .map(|dir| dir.join(name))
+            .find(|p| p.is_file())
+            .unwrap_or_else(|| self.hooks_dir.join(name));
         let meta = std::fs::metadata(&path).ok()?;
         if !meta.is_file() {
             return None;
@@ -563,10 +576,33 @@ async fn find_site() -> Option<Site> {
     let config =
         ConfigSnapshot::load_with(&env, &get, Some(&local), &owned_by_current_user).ok()?;
     let db = StateDb::open(&admitted.home).await.ok()?;
+    let row = workspaces::get(&db, admitted.projection.workspace())
+        .await
+        .ok()??;
+    let main_hooks = main_hooks_of(&config, &admitted.home, &db, row.ws.repo)
+        .await
+        .ok()?;
     Some(Site {
-        runner: runner_for(&admitted, &config),
+        runner: runner_for(&admitted, &config, main_hooks),
         db,
     })
+}
+
+/// `hooks` in the synthetic gitdir of the repository's main workspace (its first), unless
+/// `core.hooksPath` names the hooks.
+async fn main_hooks_of(
+    config: &ConfigSnapshot,
+    home: &AscHome,
+    db: &StateDb,
+    repo: RepoKey,
+) -> Result<Option<PathBuf>, CliError> {
+    if config.path("core.hooksPath").is_some() {
+        return Ok(None);
+    }
+    let all = workspaces::list(db, Some(repo)).await?;
+    Ok(all
+        .first()
+        .map(|main| home.gitdir(main.ws.id).join("hooks")))
 }
 
 /// The hooks directory: `core.hooksPath` from the trust-filtered `config` (against the
@@ -593,7 +629,11 @@ fn resolve_real_git(config: &ConfigSnapshot, home: &AscHome) -> Option<RealGit> 
 }
 
 /// The runner of an admitted workspace, configured only through the filtered `config`.
-fn runner_for(admitted: &common::Admitted, config: &ConfigSnapshot) -> Runner {
+fn runner_for(
+    admitted: &common::Admitted,
+    config: &ConfigSnapshot,
+    main_hooks: Option<PathBuf>,
+) -> Runner {
     let real = resolve_real_git(config, &admitted.home);
     Runner {
         workdir: admitted.projection.toplevel().to_owned(),
@@ -602,6 +642,7 @@ fn runner_for(admitted: &common::Admitted, config: &ConfigSnapshot) -> Runner {
             admitted.projection.toplevel(),
             admitted.projection.common_dir(),
         ),
+        main_hooks,
         shell: child::shell(real.as_ref()),
     }
 }
@@ -660,7 +701,7 @@ mod tests {
         let config =
             ConfigSnapshot::load_with(&GitEnv::from_vars(&get), &get, Some(&local), owned).unwrap();
         let admitted = common::Admitted { projection, home };
-        let runner = runner_for(&admitted, &config);
+        let runner = runner_for(&admitted, &config, None);
         assert_eq!(runner.workdir, admitted.projection.toplevel());
         (dir, runner, config)
     }

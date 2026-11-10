@@ -730,7 +730,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
                 remote: git_of(ws, p.old).await,
             });
         }
-        let runner = Runner::for_ctx(ctx)?;
+        let runner = Runner::for_ctx(ctx).await?;
         let hook = Hook::PrePush {
             remote: opened.name.clone(),
             url: opened.url.clone(),

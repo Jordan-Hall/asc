@@ -64,7 +64,7 @@ super::verb!(UNCOMMIT, "uncommit");
 
 /// Runs `post-rewrite amend` for one rewritten pair.
 pub(crate) async fn post_rewrite(ctx: &Ctx, ws: &WsCtx, verb: &str, old: ChangesetId, new: ChangesetId) -> Result<()> {
-    let runner = Runner::for_ctx(ctx)?;
+    let runner = Runner::for_ctx(ctx).await?;
     let env = HookEnv::of(ctx, verb);
     let pair = (conflict::git_id(ws, old).await?, conflict::git_id(ws, new).await?);
     let _ = runner.run(Hook::PostRewrite { kind: RewriteKind::Amend, pairs: vec![pair] }, &env).await?;

@@ -802,7 +802,7 @@ async fn start(ctx: &Ctx, ws: &WsCtx, gitdir: &Path, a: Args) -> Result<ExitCode
     }
 
     if !a.no_verify {
-        let runner = Runner::for_ctx(ctx)?;
+        let runner = Runner::for_ctx(ctx).await?;
         let env = HookEnv::of(ctx, "rebase");
         let hook = Hook::PreRebase {
             upstream: upstream_text.clone(),
@@ -1563,7 +1563,7 @@ async fn pick(ctx: &Ctx, ws: &WsCtx, run: &mut Run, item: &Item) -> Result<Step>
     }
     // git writes the message to COMMIT_EDITMSG and lets prepare-commit-msg change it.
     let msg_file = run.gitdir.join("COMMIT_EDITMSG");
-    let runner = Runner::for_ctx(ctx)?;
+    let runner = Runner::for_ctx(ctx).await?;
     // Without the hook git leaves COMMIT_EDITMSG alone.
     let hooked = runner.exists(&Hook::PrepareCommitMsg {
         file: msg_file.clone(),
@@ -1845,7 +1845,7 @@ async fn amend_head(
         buf.extend_from_slice(&message::template(comment, shown.as_bytes(), &status, None));
     }
     std::fs::write(&edit_file, &buf)?;
-    let runner = Runner::for_ctx(ctx)?;
+    let runner = Runner::for_ctx(ctx).await?;
     let mut env = HookEnv::of(ctx, "rebase").with_index(run.gitdir.join("index"));
     if !a.edit {
         env = env.without_editor();
@@ -2447,7 +2447,7 @@ async fn finish(ctx: &Ctx, ws: &WsCtx, run: &mut Run) -> Result<ExitCode> {
     let moved = apply_update_refs(ctx, ws, run).await?;
     let pairs = rewritten_pairs(run)?;
     if !pairs.is_empty() {
-        let runner = Runner::for_ctx(ctx)?;
+        let runner = Runner::for_ctx(ctx).await?;
         let env = HookEnv::of(ctx, "rebase");
         let _ = runner
             .run(
@@ -2721,7 +2721,7 @@ async fn resume(ctx: &Ctx, ws: &WsCtx, run: &mut Run) -> Result<ExitCode> {
                 false,
             )
             .await?;
-            let runner = Runner::for_ctx(ctx)?;
+            let runner = Runner::for_ctx(ctx).await?;
             let env = HookEnv::of(ctx, "rebase")
                 .with_index(run.gitdir.join("index"))
                 .without_editor();

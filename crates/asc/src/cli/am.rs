@@ -697,7 +697,7 @@ async fn drive(
         seqstate::write(dir, "patch", &mail.patch)?;
         seqstate::write(dir, "author-script", author.as_bytes())?;
         seqstate::write(dir, "final-commit", &commit_message(&mail))?;
-        let runner = Runner::for_ctx(ctx)?;
+        let runner = Runner::for_ctx(ctx).await?;
         let env = HookEnv::of(ctx, "am")
             .with_index(gitdir.join("index"))
             .without_editor();
@@ -843,7 +843,7 @@ async fn commit(ctx: &Ctx, ws: &WsCtx, gitdir: &Path, dir: &Path, run: &Run) -> 
     if !unmerged.is_empty() {
         return Err(fatal("asc: the index has unmerged paths"));
     }
-    let runner = Runner::for_ctx(ctx)?;
+    let runner = Runner::for_ctx(ctx).await?;
     let env = HookEnv::of(ctx, "am")
         .with_index(gitdir.join("index"))
         .without_editor();

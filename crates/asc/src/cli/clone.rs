@@ -659,7 +659,7 @@ async fn build(
 
     let mut code = 0u8;
     if !o.no_checkout {
-        let runner = Runner::for_ctx(&fresh)?;
+        let runner = Runner::for_ctx(&fresh).await?;
         let hook = Hook::PostCheckout {
             old: null_oid(),
             new: git,

@@ -737,7 +737,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
             .await
             .map_err(fatal)?;
     }
-    let runner = Runner::for_ctx(ctx)?;
+    let runner = Runner::for_ctx(ctx).await?;
     let env = HookEnv::of(ctx, "absorb");
     let _ = runner
         .run(

@@ -212,7 +212,7 @@ async fn into(ctx: &Ctx, a: &Args, word: &str) -> Result<ExitCode> {
     }
     reword::move_refs(ctx, ws, target, new, op, "modify --into: follow the amend").await?;
 
-    let runner = Runner::for_ctx(ctx)?;
+    let runner = Runner::for_ctx(ctx).await?;
     let env = HookEnv::of(ctx, "modify");
     let pair = (conflict::git_id(ws, target).await?, conflict::git_id(ws, new).await?);
     let _ = runner.run(Hook::PostRewrite { kind: RewriteKind::Amend, pairs: vec![pair] }, &env).await?;

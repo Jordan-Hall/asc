@@ -512,7 +512,7 @@ fn pick_mode(
 pub(crate) async fn add(ctx: &Ctx, o: AddOpts) -> Result<Added> {
     let ws = ctx.ws()?;
     // Bind the hook runner to this workspace before anything else can bind another.
-    let _ = Runner::for_ctx(ctx)?;
+    let _ = Runner::for_ctx(ctx).await?;
     if o.virtual_mode && ext::workspace_factory().virtual_mode().is_none() {
         return Err(fatal(format!(
             "asc: {}",
@@ -644,7 +644,7 @@ pub(crate) async fn add(ctx: &Ctx, o: AddOpts) -> Result<Added> {
     if !o.quiet {
         println!("HEAD is now at {}", commit_line(ctx, ws, commit).await?);
     }
-    let runner = Runner::for_ctx(&new_ctx)?;
+    let runner = Runner::for_ctx(&new_ctx).await?;
     let hook = Hook::PostCheckout {
         old: null_oid(),
         new: git,

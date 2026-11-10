@@ -717,7 +717,7 @@ pub(crate) async fn apply(
         reattach(ctx, dest).await?;
     }
 
-    let runner = Runner::for_ctx(ctx)?;
+    let runner = Runner::for_ctx(ctx).await?;
     let env = HookEnv::of(ctx, "restack");
     let _ = runner.run(Hook::PostRewrite { kind: RewriteKind::Rebase, pairs: hook_pairs }, &env).await?;
     Ok(out)

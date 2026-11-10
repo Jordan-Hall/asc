@@ -1443,7 +1443,7 @@ pub(crate) async fn perform(ctx: &Ctx, m: Move) -> Result<ExitCode> {
         Some(c) => ws.engine.git_commit_of(c).await.map_err(fatal)?,
         None => null_oid(),
     };
-    let runner = Runner::for_ctx(ctx)?;
+    let runner = Runner::for_ctx(ctx).await?;
     let hook = Hook::PostCheckout {
         old: old_git,
         new: target_git.unwrap_or_else(null_oid),

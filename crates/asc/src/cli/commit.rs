@@ -158,7 +158,7 @@ enum Scope {
 pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
     let ws = ctx.ws()?;
     let ws_id = ws.workspace.ws.id;
-    let runner = Runner::for_ctx(ctx)?;
+    let runner = Runner::for_ctx(ctx).await?;
     let before = ws.head_commit().await?;
     let snapshot = stage::snapshot(&ws.db, ws_id).await?;
     let mut session = Session {

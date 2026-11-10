@@ -156,7 +156,7 @@ pub(crate) async fn pre_rebase(
     upstream: ChangesetId,
     verb: &str,
 ) -> Result<()> {
-    let runner = Runner::for_ctx(ctx)?;
+    let runner = Runner::for_ctx(ctx).await?;
     let env = HookEnv::of(ctx, verb);
     let hook = Hook::PreRebase {
         upstream: conflict::git_id(ws, upstream).await?.to_string(),

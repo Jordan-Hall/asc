@@ -566,7 +566,7 @@ fn inside(ctx: &Ctx, dir: &Path) -> bool {
 fn location(ctx: &Ctx, ws: &WsCtx, arg: &str, out: &mut Output) -> Result<bool> {
     let p = &ws.projection;
     let text = match arg {
-        "--show-toplevel" => display(p.toplevel()),
+        "--show-toplevel" => display(&ws.root_shown()),
         "--git-dir" | "--absolute-git-dir" => display(p.git_dir()),
         "--git-common-dir" => display(p.common_dir()),
         "--is-inside-work-tree" => {

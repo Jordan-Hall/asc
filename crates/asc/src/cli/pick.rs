@@ -733,7 +733,7 @@ async fn commit_result(
         show_date,
     )
     .await?;
-    let runner = Runner::for_ctx(ctx)?;
+    let runner = Runner::for_ctx(ctx).await?;
     let env = HookEnv::of(ctx, replay.command())
         .with_index(gitdir.join("index"))
         .without_editor();

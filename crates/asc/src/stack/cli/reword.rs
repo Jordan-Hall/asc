@@ -375,7 +375,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     drop(l);
 
     let old = ws.engine.get_changeset(cs).await?;
-    let runner = Runner::for_ctx(ctx)?;
+    let runner = Runner::for_ctx(ctx).await?;
     let file = ws.projection.git_dir().join("COMMIT_EDITMSG");
     let use_editor = a.message.is_empty();
     let initial = if use_editor { old.message.to_vec() } else { join_messages(&a.message) };

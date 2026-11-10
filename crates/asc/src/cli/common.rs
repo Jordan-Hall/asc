@@ -265,6 +265,19 @@ pub struct WsCtx {
 }
 
 impl WsCtx {
+    /// The work tree root as git names it: for a nested workspace, mounted elsewhere and linked
+    /// from the requested path (SPEC §9.3), the requested path; else the projection's root.
+    pub fn root_shown(&self) -> PathBuf {
+        let w = &self.workspace.ws;
+        let top = self.projection.toplevel();
+        let canon = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_owned());
+        if w.path != w.mount && canon(top) == canon(Path::new(&w.mount)) {
+            PathBuf::from(&w.path)
+        } else {
+            top.to_owned()
+        }
+    }
+
     /// Opens the state of the admitted workspace.
     pub async fn open(admitted: Admitted, config: &ConfigSnapshot) -> Result<Self> {
         // The home `admit` checked against, never one derived from the gitdir's path.

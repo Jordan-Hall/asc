@@ -906,7 +906,7 @@ async fn stage_rows_against_head(
 }
 
 async fn post_merge(ctx: &Ctx, ws: &WsCtx, squash: bool) -> Result<()> {
-    let runner = Runner::for_ctx(ctx)?;
+    let runner = Runner::for_ctx(ctx).await?;
     let env = HookEnv::of(ctx, "merge")
         .with_index(ws.projection.git_dir().join("index"))
         .without_editor();
@@ -1107,7 +1107,7 @@ async fn conclude(
     }
 
     // The automatic commit: hooks, the message as the hooks left it, the commit, the ref move.
-    let runner = Runner::for_ctx(ctx)?;
+    let runner = Runner::for_ctx(ctx).await?;
     let env = HookEnv::of(ctx, "merge")
         .with_index(gitdir.join("index"))
         .without_editor();
