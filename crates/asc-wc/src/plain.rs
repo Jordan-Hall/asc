@@ -1,7 +1,6 @@
 //! Plain working copy (SPEC §10.4): materialise trees from the machine store and switch between
 //! them, updating only changed paths and keeping the synthetic index in step.
 
-use std::borrow::Cow;
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::{self, Write};
@@ -560,7 +559,8 @@ async fn materialise<O: Objects, R: Refs>(
 }
 
 /// Writes `file` to `tmp` as a regular file with the line endings a checkout under `smudge`
-/// gives (git's `crlf_to_worktree`).
+/// gives (git's `crlf_to_worktree`). The file is read in pieces, once to count its line endings
+/// and once more to convert it into a sibling file, so a large blob is never held in memory.
 async fn materialise_smudged<O: Objects, R: Refs>(
     wc: &Wc<'_, O, R>,
     kind: Kind,
@@ -570,11 +570,47 @@ async fn materialise_smudged<O: Objects, R: Refs>(
     tmp: &Path,
 ) -> Result<()> {
     materialise(wc, kind, file, size, tmp).await?;
-    let data = fs::read(tmp).map_err(io_at(tmp))?;
-    if let Cow::Owned(converted) = crate::eol::to_worktree(&data, smudge) {
-        fs::write(tmp, converted).map_err(io_at(tmp))?;
+    let mut stats = crate::eol::Stats::default();
+    for_each_piece(tmp, |piece| {
+        stats.feed(piece);
+        Ok(())
+    })?;
+    if !stats.finish().smudges(smudge) {
+        return Ok(());
     }
-    Ok(())
+    let mut name = tmp.as_os_str().to_owned();
+    name.push(".eol");
+    let converted = PathBuf::from(name);
+    let mut out = io::BufWriter::new(fs::File::create(&converted).map_err(io_at(&converted))?);
+    let mut conv = crate::eol::LfToCrlf::default();
+    let mut buf = Vec::new();
+    let written = for_each_piece(tmp, |piece| {
+        buf.clear();
+        conv.convert(piece, &mut buf);
+        out.write_all(&buf)
+    })
+    .and_then(|()| out.flush().map_err(io_at(&converted)));
+    drop(out);
+    if let Err(e) = written {
+        let _ = fs::remove_file(&converted);
+        return Err(e);
+    }
+    fs::rename(&converted, tmp).map_err(io_at(tmp))
+}
+
+/// Calls `each` with the content of the file at `path`, one buffer-sized piece at a time.
+fn for_each_piece(path: &Path, mut each: impl FnMut(&[u8]) -> io::Result<()>) -> Result<()> {
+    let mut file = fs::File::open(path).map_err(io_at(path))?;
+    let mut buf = vec![0u8; 1 << 16];
+    loop {
+        let n = match io::Read::read(&mut file, &mut buf) {
+            Ok(0) => return Ok(()),
+            Ok(n) => n,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(io_at(path)(e)),
+        };
+        each(&buf[..n]).map_err(io_at(path))?;
+    }
 }
 
 /// Links `tmp` to the sealed area file of blob `git`, writing and sealing that file first when

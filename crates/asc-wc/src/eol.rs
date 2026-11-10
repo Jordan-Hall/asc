@@ -115,15 +115,28 @@ pub fn to_worktree(data: &[u8], s: Smudge) -> Cow<'_, [u8]> {
     }
     let lone_lf = usize::try_from(stats.lone_lf).unwrap_or(0);
     let mut out = Vec::with_capacity(data.len() + lone_lf);
-    let mut prev = 0u8;
-    for &b in data {
-        if b == b'\n' && prev != b'\r' {
-            out.push(b'\r');
-        }
-        out.push(b);
-        prev = b;
-    }
+    LfToCrlf::default().convert(data, &mut out);
     Cow::Owned(out)
+}
+
+/// The LF to CRLF rewrite of a checkout, fed one piece of the content at a time: a CR at the end
+/// of one piece pairs with an LF at the start of the next.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LfToCrlf {
+    prev: u8,
+}
+
+impl LfToCrlf {
+    /// Appends the rewrite of the next piece `data` to `out`.
+    pub fn convert(&mut self, data: &[u8], out: &mut Vec<u8>) {
+        for &b in data {
+            if b == b'\n' && self.prev != b'\r' {
+                out.push(b'\r');
+            }
+            out.push(b);
+            self.prev = b;
+        }
+    }
 }
 
 /// What is stored for the work tree content `data` under the ingest normalisation `eol`;
@@ -180,6 +193,16 @@ mod tests {
         assert_eq!(&*to_worktree(b"a\nb\n", Smudge::AutoCrlf), b"a\r\nb\r\n");
         assert_eq!(&*to_worktree(b"a\r\nb\n", Smudge::AutoCrlf), b"a\r\nb\n");
         assert_eq!(&*to_worktree(b"a\n\0", Smudge::AutoCrlf), b"a\n\0");
+    }
+
+    #[test]
+    fn lf_to_crlf_pairs_a_cr_across_pieces() {
+        let mut conv = LfToCrlf::default();
+        let mut out = Vec::new();
+        conv.convert(b"a\r", &mut out);
+        conv.convert(b"\nb\n", &mut out);
+        conv.convert(b"\n", &mut out);
+        assert_eq!(out, b"a\r\nb\r\n\r\n");
         assert!(matches!(to_worktree(b"none", Smudge::Crlf), Cow::Borrowed(_)));
     }
 
