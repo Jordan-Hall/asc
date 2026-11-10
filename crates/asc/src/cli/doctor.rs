@@ -1936,13 +1936,25 @@ mod tests {
         // A plain work tree converts line endings at checkout; a virtual one does not.
         assert_eq!(unapplied_attribute("eol=crlf", false), None);
         assert_eq!(unapplied_attribute("text", false), None);
-        assert_eq!(unapplied_attribute("eol=crlf", true).as_deref(), Some("eol"));
-        assert_eq!(unapplied_attribute("crlf=input", true).as_deref(), Some("crlf"));
+        assert_eq!(
+            unapplied_attribute("eol=crlf", true).as_deref(),
+            Some("eol")
+        );
+        assert_eq!(
+            unapplied_attribute("crlf=input", true).as_deref(),
+            Some("crlf")
+        );
         assert_eq!(unapplied_attribute("-text", true).as_deref(), None);
         assert_eq!(unapplied_attribute("text", true).as_deref(), Some("text"));
         assert_eq!(unapplied_attribute("filter=lfs", false), None);
-        assert_eq!(unapplied_attribute("filter=x", false).as_deref(), Some("filter"));
-        assert_eq!(unapplied_attribute("ident", false).as_deref(), Some("ident"));
+        assert_eq!(
+            unapplied_attribute("filter=x", false).as_deref(),
+            Some("filter")
+        );
+        assert_eq!(
+            unapplied_attribute("ident", false).as_deref(),
+            Some("ident")
+        );
         assert_eq!(unapplied_attribute("binary", true), None);
     }
 

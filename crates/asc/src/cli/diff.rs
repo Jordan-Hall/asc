@@ -630,4 +630,3 @@ async fn run_no_index(ctx: &Ctx, mut c: Common, fmt: Formats) -> Result<ExitCode
     )
     .await
 }
-

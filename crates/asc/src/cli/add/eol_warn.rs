@@ -16,8 +16,8 @@ use std::io::{self, Read};
 use std::path::Path;
 
 use asc_core::path::RepoPath;
-pub use asc_wc::eol::Stats;
 use asc_wc::eol::Smudge;
+pub use asc_wc::eol::Stats;
 use asc_wc::status::Eol;
 
 use super::attrs::{EolAttr, PathAttrs};
@@ -103,9 +103,10 @@ impl EolConfig {
     pub fn resolve(&self, mut a: PathAttrs) -> PathAttrs {
         (a.eol, a.smudge) = match self.action(&a) {
             None => (Eol::Keep, Smudge::None),
-            Some(Action { auto: true, crlf }) => {
-                (Eol::Auto, if crlf { Smudge::AutoCrlf } else { Smudge::None })
-            }
+            Some(Action { auto: true, crlf }) => (
+                Eol::Auto,
+                if crlf { Smudge::AutoCrlf } else { Smudge::None },
+            ),
             Some(Action { auto: false, crlf }) => {
                 (Eol::Text, if crlf { Smudge::Crlf } else { Smudge::None })
             }
@@ -196,7 +197,10 @@ mod tests {
         let mixed = Stats::of(b"a\r\nb\n");
         assert_eq!(cfg(None, true).warning(&auto, &mixed, false), Some(LF));
         assert_eq!(cfg(None, false).warning(&auto, &mixed, false), Some(CRLF));
-        assert_eq!(cfg(None, true).warning(&auto, &Stats::of(b"\0\n"), false), None);
+        assert_eq!(
+            cfg(None, true).warning(&auto, &Stats::of(b"\0\n"), false),
+            None
+        );
     }
 
     #[test]

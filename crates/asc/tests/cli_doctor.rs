@@ -296,7 +296,10 @@ async fn workspace_checks_report_ignore_shadows_and_include_if_drift() {
     assert!(!shadow.contains("same"), "{shadow}");
     // A plain work tree converts line endings at checkout, so only `ident` is reported.
     let attrs = line(&o, "warn  gitattributes");
-    assert!(attrs.contains("'ident'") && attrs.contains("is not supported"), "{attrs}");
+    assert!(
+        attrs.contains("'ident'") && attrs.contains("is not supported"),
+        "{attrs}"
+    );
     assert!(!o.contains("'eol'"), "{o}");
     line(&o, "warn  autocrlf");
     let drift = line(&o, "warn  include-if");

@@ -407,7 +407,10 @@ async fn temp_set(
     let (index, _) = super::restore::index_tree(ws, head_root).await?;
     let mut read = Vec::with_capacity(matched.len());
     for (path, _) in &matched {
-        read.push((path.clone(), stagebuild::staged_file(ws, index, path).await?));
+        read.push((
+            path.clone(),
+            stagebuild::staged_file(ws, index, path).await?,
+        ));
     }
     let eols = super::add::read_eols(ctx, ws, &read).await?;
     for (path, kind) in matched {

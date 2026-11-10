@@ -8,8 +8,8 @@ use std::path::Path;
 
 use asc_core::codec::Enveloped;
 use asc_core::content::{Body, ingest};
-use asc_core::id::FileId;
 use asc_core::git::ObjectKind;
+use asc_core::id::FileId;
 use asc_core::id::TreeId;
 use asc_core::object::{Change, Kind};
 use asc_core::path::RepoPath;
@@ -223,7 +223,10 @@ pub async fn stat_dirty_rows(ctx: &Ctx, ws: &WsCtx) -> Result<Vec<StageRow>> {
     let mut read = Vec::new();
     for change in &state.unstaged {
         if change.kind != ChangeKind::Deleted {
-            read.push((change.path.clone(), staged_file(ws, index, &change.path).await?));
+            read.push((
+                change.path.clone(),
+                staged_file(ws, index, &change.path).await?,
+            ));
         }
     }
     let eols = crate::cli::add::read_eols(ctx, ws, &read).await?;

@@ -609,7 +609,8 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     };
     let opened = remote::open(ctx, ws, &target, intent).await?;
     let server = opened.server.clone();
-    if mirror && let Some(s) = &server
+    if mirror
+        && let Some(s) = &server
         && push_map::branchless_server(ctx, s).await?
     {
         return Err(CliError::Fatal(
