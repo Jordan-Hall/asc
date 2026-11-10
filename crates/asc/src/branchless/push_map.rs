@@ -48,6 +48,14 @@ pub const FEATURE: &str = "branchless.v1";
 pub const MERGE_REASON: &str =
     "asc: stack contains a merge commit; rebase it or submit changes individually";
 
+/// Why a branchless server refuses a pushed ref that is neither shared nor a branch (SPEC
+/// §21.4.2): printed as the reason of `! [remote rejected] <ref> -> <ref>`.
+pub const NOT_SHARED: &str = "asc: ref not shared in this repository";
+
+/// The last line of `push --all` to a branchless server (SPEC §21.4.2): `--all` sends every
+/// branch (non-shared ones as user refs) and submits no stack.
+pub const ALL_NOTE: &str = "asc: --all does not submit stacks; use asc submit";
+
 /// Most changes one push sends (the server's `Changes` limit per stack, as `asc submit`).
 pub const MAX_CHANGES: usize = 256;
 
@@ -409,6 +417,13 @@ impl Mapping {
         }
         out
     }
+}
+
+/// Whether this client is branchless and the server says the repo is too.
+pub async fn branchless_server(ctx: &Ctx, server: &ServerRemote) -> Result<bool> {
+    let settings = Settings::resolve(&ctx.config, &ctx.env, &|k| std::env::var(k).ok())
+        .map_err(CliError::Fatal)?;
+    Ok(settings.branchless && probe(server).await.is_some())
 }
 
 /// Decides the mapping of `candidates` (the branch refs a push creates or moves, with their new

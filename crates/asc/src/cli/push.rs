@@ -712,6 +712,14 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         }
     }
 
+    // `--all` to a branchless server sends branches only; the push says so last (SPEC §21.4.2).
+    let all_note = match &server {
+        Some(s) if o.all && !o.quiet && !o.dry_run && !land => {
+            plans.iter().any(|p| p.kind.sends()) && push_map::branchless_server(ctx, s).await?
+        }
+        _ => false,
+    };
+
     // pre-push: before any upload, with git ids.
     if !o.no_verify && !o.dry_run {
         let mut lines = Vec::new();
@@ -754,6 +762,8 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let mut raced = false;
     let mut mapped = false;
     let mut refusal: Option<String> = None;
+    // A branchless server refused a ref that is not shared (SPEC §21.4.2): nothing moved.
+    let mut not_shared: Option<String> = None;
     let mut outcome: Option<crate::remote::server::UpdateOutcome> = None;
     let (linked, mounted) = if to_send.is_empty() {
         (Vec::new(), Vec::new())
@@ -857,6 +867,9 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
                 }
             }
             Err(SyncError::Refs(RefError::Conflict { .. })) => raced = true,
+            Err(SyncError::Rejected { name, reason }) if reason == push_map::NOT_SHARED => {
+                not_shared = Some(String::from_utf8_lossy(name.as_bytes()).into_owned());
+            }
             // A refusal of the server (a change this user may not update, a hook) fails the
             // whole update: nothing moved, and the branch line says why.
             Err(e) if mapped && push_map::refusal_reason(&e).is_some() => {
@@ -895,6 +908,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         && !o.dry_run
         && !raced
         && refusal.is_none()
+        && not_shared.is_none()
     {
         for p in &plans {
             if matches!(p.kind, Kind::Rejected(_) | Kind::RemoteRejected(_)) {
@@ -924,6 +938,13 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
             Kind::Rejected("fetch first")
         } else if let Some(reason) = refusal.as_ref().filter(|_| p.kind.sends()) {
             Kind::RemoteRejected(reason.clone())
+        } else if let Some(name) = not_shared.as_ref().filter(|_| p.kind.sends()) {
+            // The update is atomic: the other refs it carried failed with it.
+            Kind::RemoteRejected(if *name == p.spec.dst {
+                push_map::NOT_SHARED.to_owned()
+            } else {
+                "atomic push failed".to_owned()
+            })
         } else {
             p.kind.clone()
         };
@@ -1086,6 +1107,9 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     }
     for note in land_notes {
         eprintln!("{note}");
+    }
+    if all_note {
+        eprintln!("remote: {}", push_map::ALL_NOTE);
     }
     Ok(if any_rejected {
         ExitCode::from(1)

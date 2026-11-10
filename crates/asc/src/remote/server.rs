@@ -874,6 +874,19 @@ impl ServerRemote {
                     None => sync::Error::Remote("rejected update without a name".into()),
                 }
             }
+            CallError::Rpc(RpcError::RefNotShared(info)) => {
+                match info
+                    .paths
+                    .first()
+                    .and_then(|p| asc_core::path::RefName::new_onelevel(p.as_bytes()).ok())
+                {
+                    Some(name) => sync::Error::Rejected {
+                        name,
+                        reason: crate::branchless::push_map::NOT_SHARED,
+                    },
+                    None => sync::Error::Remote(crate::branchless::push_map::NOT_SHARED.to_owned()),
+                }
+            }
             CallError::Rpc(RpcError::MirrorMode(_)) => sync::Error::Remote(
                 "this repository is in mirror mode; push to the forge with git-remote mode".into(),
             ),
