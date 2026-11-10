@@ -787,3 +787,80 @@ async fn who_may_ask_and_who_may_write() {
         ("carol", 44)
     );
 }
+
+#[tokio::test]
+async fn a_retried_create_or_publish_gets_the_first_answer_and_no_one_else_replays_it() {
+    let (f, _) = world().await;
+    let auth = StaticTokens::new()
+        .with_token(WRITER, "44:carol", Access::Write)
+        .with_token("other-writer", "45:erin", Access::Write);
+    let s = ReleasesService::new(
+        Arc::new(Reviews::new(f.reg.clone())),
+        Arc::new(auth),
+        asc_rpc::server::ServerInfo::default(),
+    );
+    fn with_op<T>(mut r: tonic::Request<T>, op: &str) -> tonic::Request<T> {
+        r.metadata_mut().insert("x-asc-op-id", op.parse().unwrap());
+        r
+    }
+    let op = uuid::Uuid::new_v4().to_string();
+    let mut draft = create("v7.0.0");
+    draft.draft = true;
+    let first = s
+        .create(with_op(req(draft.clone(), WRITER, false), &op))
+        .await
+        .unwrap()
+        .into_inner();
+    let again = s
+        .create(with_op(req(draft.clone(), WRITER, false), &op))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(first, again);
+    // A new id is a new call: the tag is taken.
+    assert_eq!(
+        s.create(req(draft.clone(), WRITER, true))
+            .await
+            .unwrap_err()
+            .code(),
+        Code::AlreadyExists
+    );
+    // Another writer cannot replay carol's id.
+    assert_eq!(
+        s.create(with_op(req(draft, "other-writer", false), &op))
+            .await
+            .unwrap_err()
+            .code(),
+        Code::InvalidArgument
+    );
+    let rows: i64 =
+        sqlx::query_scalar("SELECT CAST(COUNT(*) AS BIGINT) FROM releases WHERE tag = 'v7.0.0'")
+            .fetch_one(f.reg.pool())
+            .await
+            .unwrap();
+    assert_eq!(rows, 1);
+
+    let publish = || wire::PublishReleaseRequest {
+        repo: repo_ref(),
+        tag: "v7.0.0".into(),
+    };
+    let op = uuid::Uuid::new_v4().to_string();
+    let done = s
+        .publish(with_op(req(publish(), WRITER, false), &op))
+        .await
+        .unwrap()
+        .into_inner();
+    let retried = s
+        .publish(with_op(req(publish(), WRITER, false), &op))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(done, retried);
+    assert_eq!(
+        s.publish(req(publish(), WRITER, true))
+            .await
+            .unwrap_err()
+            .code(),
+        Code::FailedPrecondition
+    );
+}
