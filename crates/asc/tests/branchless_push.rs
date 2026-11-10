@@ -57,6 +57,9 @@ struct State {
     reject: Mutex<Option<RpcError>>,
     /// `RepoConfig.branchless`.
     branchless: AtomicBool,
+    /// A ref under this prefix is refused with `REF_NOT_SHARED`, as the server's ref policy
+    /// refuses a ref outside a repository's `shared_refs` that is not a branch.
+    unshared: Mutex<Option<String>>,
     /// Every RPC path served, in order.
     calls: Mutex<Vec<String>>,
 }
@@ -122,6 +125,14 @@ impl RefsHandler for Refs {
         req: wire::UpdateRefsRequest,
     ) -> Result<wire::UpdateRefsResponse, Status> {
         self.st.updates.lock().unwrap().push(req.clone());
+        if let Some(prefix) = self.st.unshared.lock().unwrap().clone()
+            && let Some(u) = req.updates.iter().find(|u| u.name.starts_with(&prefix))
+        {
+            return Err(rpc_status(&RpcError::RefNotShared(ErrorInfo {
+                paths: vec![u.name.clone()],
+                ..ErrorInfo::default()
+            })));
+        }
         let (agit, plain): (Vec<_>, Vec<_>) = req
             .updates
             .iter()
@@ -808,4 +819,84 @@ fn the_output_of_a_mapped_push_equals_gits() {
     );
     assert!(a.stderr.contains("[deleted]"), "{}", a.stderr);
     same_as_git("--delete", &a, &b);
+}
+
+// fidelity: D-5
+#[test]
+fn a_tag_outside_the_shared_refs_is_rejected_and_nothing_moves() {
+    let fx = Fx::new();
+    fx.commit("c1");
+    fx.ok(&["tag", "v1"]);
+    *fx.server.st.unshared.lock().unwrap() = Some("refs/tags/".to_owned());
+    fx.server.forget();
+    let r = fx.asc(&["push", "origin", "v1"]);
+    assert_eq!(r.code, 1, "{}", r.stderr);
+    assert!(
+        r.stderr.contains(
+            " ! [remote rejected] v1 -> v1 (asc: ref not shared in this repository)
+"
+        ),
+        "{}",
+        r.stderr
+    );
+    assert!(
+        r.stderr.contains("error: failed to push some refs to "),
+        "{}",
+        r.stderr
+    );
+    assert!(!fx.remote_has("refs/tags/v1"));
+
+    // In one update with a branch: the update is atomic, so the branch fails with it.
+    fx.server.forget();
+    let r = fx.asc(&["push", "origin", "v1", "feat"]);
+    assert_eq!(r.code, 1, "{}", r.stderr);
+    assert!(
+        r.stderr
+            .contains("(asc: ref not shared in this repository)"),
+        "{}",
+        r.stderr
+    );
+    assert!(
+        r.stderr
+            .contains(" ! [remote rejected] feat -> feat (atomic push failed)"),
+        "{}",
+        r.stderr
+    );
+    assert!(!fx.remote_has("refs/heads/feat"));
+}
+
+// fidelity: D-6
+#[test]
+fn push_all_ends_with_the_no_submit_line_only_in_branchless_mode() {
+    const LINE: &str = "remote: asc: --all does not submit stacks; use asc submit
+";
+    let fx = Fx::new();
+    fx.commit("c1");
+    let r = fx.asc(&["push", "--all", "origin"]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(r.stderr.ends_with(LINE), "{}", r.stderr);
+    assert!(fx.remote_has("refs/heads/feat"));
+
+    // Nothing to send: git's "Everything up-to-date" alone.
+    let r = fx.asc(&["push", "--all", "origin"]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(!r.stderr.contains(LINE), "{}", r.stderr);
+
+    // A branch-mode client, or a repository the server keeps in branch mode: git's output.
+    fx.commit("c2");
+    let r = fx.asc(&["-c", "asc.branchless=false", "push", "--all", "origin"]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(!r.stderr.contains(LINE), "{}", r.stderr);
+    fx.commit("c3");
+    fx.server.st.branchless.store(false, Ordering::SeqCst);
+    let r = fx.asc(&["push", "--all", "origin"]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(!r.stderr.contains(LINE), "{}", r.stderr);
+
+    // `-q` prints nothing.
+    fx.commit("c4");
+    fx.server.st.branchless.store(true, Ordering::SeqCst);
+    let r = fx.asc(&["push", "-q", "--all", "origin"]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert_eq!(r.stderr, "");
 }
