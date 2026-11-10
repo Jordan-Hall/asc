@@ -127,6 +127,8 @@ scenarios! {
     notes_show = "notes-show",
     stack_invisible = "stack-invisible",
     rev_parse_abbrev = "rev-parse-abbrev",
+    eol_checkout = "eol-checkout",
+    eol_warnings = "eol-warnings",
     rev_parse_unknown_option = "rev-parse-unknown-option",
     branchless_push_tag = "branchless-push-tag",
     branchless_push_all = "branchless-push-all",

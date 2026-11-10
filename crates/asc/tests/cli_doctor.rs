@@ -276,7 +276,7 @@ async fn workspace_checks_report_ignore_shadows_and_include_if_drift() {
     fs::create_dir_all(f.root.join("same")).unwrap();
     fs::write(f.root.join("same/.gitignore"), "x\n").unwrap();
     fs::write(f.root.join("same/.ascignore"), "x\n").unwrap();
-    fs::write(f.root.join(".gitattributes"), "*.txt eol=crlf\n").unwrap();
+    fs::write(f.root.join(".gitattributes"), "*.txt eol=crlf\n*.c ident\n").unwrap();
     let root = f.root.display().to_string().replace('\\', "/");
     fs::write(
         f.sandbox.user.join(".gitconfig"),
@@ -294,7 +294,10 @@ async fn workspace_checks_report_ignore_shadows_and_include_if_drift() {
     let shadow = line(&o, "warn  ascignore");
     assert!(shadow.contains("1 directory"), "{shadow}");
     assert!(!shadow.contains("same"), "{shadow}");
-    assert!(line(&o, "warn  gitattributes").contains("'eol'"), "{o}");
+    // A plain work tree converts line endings at checkout, so only `ident` is reported.
+    let attrs = line(&o, "warn  gitattributes");
+    assert!(attrs.contains("'ident'") && attrs.contains("is not supported"), "{attrs}");
+    assert!(!o.contains("'eol'"), "{o}");
     line(&o, "warn  autocrlf");
     let drift = line(&o, "warn  include-if");
     assert!(drift.contains("applies in asc"), "{drift}");
