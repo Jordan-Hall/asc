@@ -476,6 +476,14 @@ impl AiProviders for Fake {
         }))
     }
 
+    async fn list_activity(
+        &self,
+        r: Request<wire::ListAiActivityRequest>,
+    ) -> Result<Response<wire::ListAiActivityResponse>, Status> {
+        self.note(&r);
+        Ok(Response::new(wire::ListAiActivityResponse::default()))
+    }
+
     async fn list_keys(
         &self,
         r: Request<wire::ListAiKeysRequest>,
