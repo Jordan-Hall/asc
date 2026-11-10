@@ -330,7 +330,7 @@ Ref names follow `git check-ref-format`. Namespaces: `refs/heads/*`, `refs/users
 |---|---|
 | Decoding any object | `Name`/`RepoPath` validity (§2.3) |
 | Importing git history | Nothing more. History is never rejected for Windows names or case collisions **[fix: missing-from-all]** |
-| New native changesets (local commit, push, server mutation) in a repo with `windows_safe = true` (default) | For each path **added or changed** by the changeset: `windows_valid` for every component, `checkout_safe`, and no case-fold collision with a sibling in the resulting tree. Pre-existing violations elsewhere are not re-checked. |
+| New native changesets (local commit, push, server mutation) in a repo with `windows_safe = true` (default) | For each path **added or changed** by the changeset: `windows_valid` for every component, `checkout_safe`, and no case-fold collision with a sibling in the resulting tree. Pre-existing violations elsewhere are not re-checked. In a merge, a path whose entry is the one another parent has is not new (that parent was checked when it was made), so a case pair whose names come from the parents stands, as ort keeps it (§4.4). |
 | Materialising (VFS, plain) | `checkout_safe` always. On Windows, entries that are not `windows_valid`, or that case-collide with an earlier sibling (in byte order), are not projected. They are listed by `asc status` under "unrepresentable on this OS", keep their index entries with the skip-worktree bit, and are never reported as deleted. |
 
 ### 2.9 Git mapping (`asc-core::git`)
