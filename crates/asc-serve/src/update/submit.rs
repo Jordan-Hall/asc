@@ -794,7 +794,7 @@ and more",
 
     /// A forge whose proc-receive answers with `answer` and counts the calls.
     struct ProcForge {
-        answer: Result<Vec<crate::forgejo::ProcRefResult>, String>,
+        answer: Result<Vec<crate::update::ProcRefResult>, String>,
         calls: std::sync::atomic::AtomicUsize,
     }
 
@@ -803,7 +803,7 @@ and more",
         async fn proc_receive(
             &self,
             _req: &crate::update::HookRequest<'_>,
-        ) -> Result<Vec<crate::forgejo::ProcRefResult>, crate::update::HookRejected> {
+        ) -> Result<Vec<crate::update::ProcRefResult>, crate::update::HookRejected> {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.answer.clone().map_err(crate::update::HookRejected)
         }
@@ -819,7 +819,7 @@ and more",
 
     #[tokio::test]
     async fn the_forge_is_asked_for_every_change_and_its_refusal_publishes_nothing() {
-        use crate::forgejo::ProcRefResult;
+        use crate::update::ProcRefResult;
         use std::sync::atomic::Ordering;
         let r = registry().await;
         let e = repo(&r).await;

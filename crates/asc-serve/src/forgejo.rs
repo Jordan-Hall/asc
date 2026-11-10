@@ -1488,24 +1488,7 @@ impl HookOptions {
     }
 }
 
-/// One entry of Forgejo's proc-receive answer.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
-pub struct ProcRefResult {
-    #[serde(default, rename = "OldOID")]
-    pub old_oid: String,
-    #[serde(default, rename = "NewOID")]
-    pub new_oid: String,
-    #[serde(default, rename = "Ref")]
-    pub ref_name: String,
-    #[serde(default, rename = "OriginalRef")]
-    pub original_ref: String,
-    #[serde(default, rename = "IsForcePush")]
-    pub is_force_push: bool,
-    #[serde(default, rename = "IsCreatePR")]
-    pub is_create_pr: bool,
-    #[serde(default, rename = "Err")]
-    pub err: String,
-}
+pub use crate::update::ProcRefResult;
 
 #[derive(Deserialize, Default)]
 struct ProcAnswer {

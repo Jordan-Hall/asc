@@ -1505,6 +1505,7 @@ impl Admission {
     /// of `limits.git`'s per-principal and per-replica fetch slots, held until the permit is
     /// dropped. A push is a `cheap` call here; its own caps are the push slots (U82). The meter
     /// charges the command's bytes, in and out, to the principal's `objects` bucket as they move.
+    #[cfg(feature = "git-ssh")]
     pub(crate) fn admit_pack(
         &self,
         principal: &str,
@@ -1579,12 +1580,14 @@ struct Meter {
 }
 
 /// Charges the bytes of one git pack command on a stream transport to its principal.
+#[cfg(feature = "git-ssh")]
 #[derive(Clone)]
 pub(crate) struct PackMeter {
     limiter: Arc<Tiered>,
     who: Caller,
 }
 
+#[cfg(feature = "git-ssh")]
 impl PackMeter {
     /// Takes `bytes` from the principal's `objects` bucket; the error is the status to give back.
     pub(crate) fn charge(&self, bytes: u64) -> Result<(), Status> {

@@ -38,6 +38,26 @@ use crate::refpolicy::UserRefWriter;
 use crate::registry::{Extensions, Registry, RegistryError, RepoEntry, RepoMode};
 use crate::{refauthz, refpolicy};
 
+/// The forge's answer for one ref of an AGit `refs/for/*` push (its proc-receive result; the field
+/// names are the forge's JSON). Forge-neutral: without a forge the list is empty.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+pub struct ProcRefResult {
+    #[serde(default, rename = "OldOID")]
+    pub old_oid: String,
+    #[serde(default, rename = "NewOID")]
+    pub new_oid: String,
+    #[serde(default, rename = "Ref")]
+    pub ref_name: String,
+    #[serde(default, rename = "OriginalRef")]
+    pub original_ref: String,
+    #[serde(default, rename = "IsForcePush")]
+    pub is_force_push: bool,
+    #[serde(default, rename = "IsCreatePR")]
+    pub is_create_pr: bool,
+    #[serde(default, rename = "Err")]
+    pub err: String,
+}
+
 /// What the ref log records as `via` for a push through `UpdateRefs`.
 const DEFAULT_VIA: &str = "asc-push";
 /// Push options per request, and the longest one.
@@ -106,7 +126,7 @@ pub trait PushHooks: Send + Sync {
     async fn proc_receive(
         &self,
         _req: &HookRequest<'_>,
-    ) -> Result<Vec<crate::forgejo::ProcRefResult>, HookRejected> {
+    ) -> Result<Vec<ProcRefResult>, HookRejected> {
         Ok(Vec::new())
     }
 
