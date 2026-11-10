@@ -130,6 +130,7 @@ scenarios! {
     name_rev_basic = "name-rev-basic",
     range_diff_basic = "range-diff-basic",
     cherry_basic = "cherry-basic",
+    unborn_pick_rebase = "unborn-pick-rebase",
     notes_show = "notes-show",
     stack_invisible = "stack-invisible",
     rev_parse_abbrev = "rev-parse-abbrev",
