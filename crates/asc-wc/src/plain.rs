@@ -940,6 +940,50 @@ mod tests {
         }
     }
 
+    /// Every file is checked out with CRLF line endings.
+    struct AllCrlf;
+
+    impl EolRules for AllCrlf {
+        fn eol(&self, _: &RepoPath) -> status::Eol {
+            status::Eol::Keep
+        }
+
+        fn checkout(&self, _: &RepoPath) -> Smudge {
+            Smudge::Crlf
+        }
+    }
+
+    #[tokio::test]
+    async fn a_converted_checkout_streams_keeps_the_mode_and_leaves_no_temporary_file() {
+        let fx = Fixture::new();
+        // A CRLF straddles the 64 KiB read size, so the pair spans two pieces.
+        let mut big = vec![b'x'; (1 << 16) - 1];
+        big.extend_from_slice(b"\r\nnext\nlast\n");
+        let script: &[u8] = b"#!/bin/sh\necho\n";
+        let to = fx
+            .tree(&[("big.txt", F, &big), ("run.sh", Kind::Exec, script)])
+            .await;
+        let mut wc = fx.wc();
+        wc.eol = &AllCrlf;
+        checkout(&wc, fx.empty(), to, Mode::Safe).await.unwrap();
+        let mut want = vec![b'x'; (1 << 16) - 1];
+        want.extend_from_slice(b"\r\nnext\r\nlast\r\n");
+        assert_eq!(fx.read("big.txt"), want);
+        assert_eq!(fx.read("run.sh"), b"#!/bin/sh\r\necho\r\n");
+        let names: Vec<String> = fs::read_dir(&fx.root)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with(".asc-tmp-"))
+            .collect();
+        assert!(names.is_empty(), "{names:?}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let m = fs::metadata(fx.root.join("run.sh")).unwrap();
+            assert_ne!(m.permissions().mode() & 0o111, 0);
+        }
+    }
+
     #[tokio::test]
     async fn a_committed_link_into_a_shared_area_is_never_made() {
         let fx = Fixture::new();
