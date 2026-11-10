@@ -102,6 +102,8 @@ pub(crate) async fn root_of(ws: &WsCtx, commit: Option<ChangesetId>) -> Result<T
 /// resolve (an unborn HEAD included).
 pub(crate) async fn resolve_commit(ctx: &Ctx, spec: &str) -> Result<Option<ChangesetId>> {
     let ws = ctx.ws()?;
+    // A git id, full or abbreviated, `@{upstream}` and `HEAD@{n}` first become engine revspecs.
+    let spec = &super::revparse::expand(ctx, ws, spec).await?;
     let head_len = if spec.starts_with("HEAD") {
         4
     } else {

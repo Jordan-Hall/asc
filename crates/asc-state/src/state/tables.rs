@@ -182,6 +182,61 @@ pub mod git_map {
         asc.map(|b| fixed(b, "git_map.asc")).transpose()
     }
 
+    /// The git objects of `kind` whose hex id starts with `prefix` (lowercase hex), at most
+    /// `limit` of them, with their asc ids. Empty when `prefix` is not hex.
+    pub async fn git_prefix(
+        db: &StateDb,
+        repo: RepoKey,
+        prefix: &str,
+        kind: ObjectKind,
+        limit: i64,
+    ) -> Result<Vec<(GitOid, [u8; 32])>> {
+        let Some(nibbles) = prefix
+            .bytes()
+            .map(|b| {
+                char::from(b)
+                    .to_digit(16)
+                    .and_then(|d| u8::try_from(d).ok())
+            })
+            .collect::<Option<Vec<u8>>>()
+        else {
+            return Ok(Vec::new());
+        };
+        // Blobs compare bytewise: every id with the prefix sorts in `[low, high]`.
+        let low: Vec<u8> = nibbles
+            .chunks(2)
+            .map(|c| c[0] << 4 | c.get(1).copied().unwrap_or(0))
+            .collect();
+        let mut high = low.clone();
+        if nibbles.len() % 2 == 1
+            && let Some(last) = high.last_mut()
+        {
+            *last |= 0x0f;
+        }
+        high.resize(20, 0xff);
+        let rows = sqlx::query(
+            "SELECT git, asc FROM git_map WHERE repo_id = ? AND kind = ? AND git >= ? AND git <= ? \
+             ORDER BY git LIMIT ?",
+        )
+        .bind(repo.0)
+        .bind(kind_to_i64(kind))
+        .bind(low)
+        .bind(high)
+        .bind(limit)
+        .fetch_all(db.pool())
+        .await?;
+        rows.iter()
+            .map(|r| {
+                let git: Vec<u8> = r.try_get("git")?;
+                let asc: Vec<u8> = r.try_get("asc")?;
+                Ok((
+                    GitOid::from_bytes(fixed(git, "git_map.git")?),
+                    fixed(asc, "git_map.asc")?,
+                ))
+            })
+            .collect()
+    }
+
     /// Every git object an asc id maps to (a file id can back several blobs only by collision;
     /// a changeset has one commit).
     pub async fn asc_to_git(

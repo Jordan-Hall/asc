@@ -133,7 +133,7 @@ fn head_branch(ws: &WsCtx) -> Result<Option<String>> {
 }
 
 /// Rewrites what the engine's resolver cannot see: a full git id, `@{upstream}`, and `HEAD@{n}`.
-async fn expand(ctx: &Ctx, ws: &WsCtx, word: &str) -> Result<String> {
+pub(crate) async fn expand(ctx: &Ctx, ws: &WsCtx, word: &str) -> Result<String> {
     if let Some((name, inner, rest)) = brace(word) {
         if matches!(inner, "u" | "upstream") {
             return Ok(format!("{}{rest}", upstream_of(ctx, ws, name)?));
@@ -152,7 +152,39 @@ async fn expand(ctx: &Ctx, ws: &WsCtx, word: &str) -> Result<String> {
     {
         return Ok(format!("{}{}", ChangesetId::from_bytes(asc), &word[40..]));
     }
+    if let Some(asc) = short_commit(ws, word).await? {
+        let cut = word.find(['~', '^']).unwrap_or(word.len());
+        return Ok(format!("{asc}{}", &word[cut..]));
+    }
     Ok(word.to_owned())
+}
+
+/// The commit an abbreviated git id (4 to 39 hex digits, before any `~` or `^`) names, when
+/// exactly one known commit has it and no ref of that name exists, as git resolves it.
+async fn short_commit(ws: &WsCtx, word: &str) -> Result<Option<ChangesetId>> {
+    let lead = &word[..word.find(['~', '^']).unwrap_or(word.len())];
+    if !(4..40).contains(&lead.len()) || !lead.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Ok(None);
+    }
+    let hits = asc_state::state::git_map::git_prefix(
+        &ws.db,
+        ws.repo.key,
+        &lead.to_ascii_lowercase(),
+        ObjectKind::Commit,
+        2,
+    )
+    .await?;
+    if ref_of(ws, lead).await?.is_some() {
+        // The ref wins; git warns when the name is also an abbreviated id.
+        if hits.len() == 1 {
+            eprintln!("warning: refname '{lead}' is ambiguous.");
+        }
+        return Ok(None);
+    }
+    Ok(match hits.as_slice() {
+        [(_, asc)] => Some(ChangesetId::from_bytes(*asc)),
+        _ => None,
+    })
 }
 
 /// The asc id of the git object `hex` of `kind`, from the git map.
