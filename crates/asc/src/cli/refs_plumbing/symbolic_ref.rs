@@ -1,6 +1,7 @@
 //! `symbolic-ref` (SPEC §11.2): `HEAD` is the one symbolic ref an asc repository has. Reading it
 //! prints the branch it names; pointing it elsewhere moves HEAD and keeps the staged state as git
-//! does (SPEC §9.5).
+//! does (SPEC §9.5). `-d` answers as git does in a repository with no other symbolic ref: HEAD
+//! may not be deleted, and any other name is not a symbolic ref.
 
 use std::ffi::OsString;
 use std::process::ExitCode;
@@ -190,9 +191,13 @@ pub async fn run(ctx: &Ctx, args: Vec<OsString>) -> Result<ExitCode> {
     let o = parse(&args)?;
     let ws = ctx.ws()?;
     match (o.delete, o.operands.as_slice()) {
-        (true, [_]) => Err(CliError::Fatal(
-            "asc: deleting a symbolic ref is not supported".into(),
+        // HEAD is the only symbolic ref, and git refuses to delete it.
+        (true, [name]) if name == "HEAD" => Err(CliError::Fatal(
+            "deleting 'HEAD' is not allowed".into(),
         )),
+        (true, [name]) => Err(CliError::Fatal(format!(
+            "Cannot delete {name}, not a symbolic ref"
+        ))),
         (false, [name]) => read(ws, &o, name).await,
         (false, [name, target]) => {
             if name != "HEAD" {
