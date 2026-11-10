@@ -323,8 +323,9 @@ pub fn rss_bytes() -> Option<u64> {
 }
 
 /// The memory this process owns: its resident set without the file-backed pages of the
-/// executable and its libraries. On Linux that is `RssAnon + RssShmem`; elsewhere the platform
-/// cannot split the figure and it is [`rss_bytes`]. The file-backed part is shared with every
+/// executable and its libraries. On Linux that is `RssAnon + RssShmem`; on Windows the private
+/// committed bytes, capped by the working set (private resident pages are in both); elsewhere
+/// the platform cannot split the figure and it is [`rss_bytes`]. The file-backed part is shared with every
 /// other process that maps the same image and the kernel drops it under pressure, but it grows
 /// with the size of the binary (relocations touch much of a position-independent image), so it
 /// says little about what the daemon allocates.
@@ -385,25 +386,33 @@ mod imp {
 #[allow(unsafe_code)] // one Win32 call, with a zeroed out-struct and its true size.
 mod imp {
     use windows_sys::Win32::System::ProcessStatus::{
-        GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+        GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX,
     };
     use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
+    /// The extended counters: the working set and the private committed bytes.
+    fn counters() -> Option<PROCESS_MEMORY_COUNTERS_EX> {
+        // SAFETY: `counters` is a plain-data struct that the call fills; `cb` is its size, the
+        // extended struct starts with the basic one so the cast is the documented use, and the
+        // pseudo handle of the current process needs no closing.
+        unsafe {
+            let mut counters: PROCESS_MEMORY_COUNTERS_EX = std::mem::zeroed();
+            counters.cb = u32::try_from(std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>()).ok()?;
+            let ptr = (&raw mut counters).cast::<PROCESS_MEMORY_COUNTERS>();
+            if GetProcessMemoryInfo(GetCurrentProcess(), ptr, counters.cb) == 0 {
+                return None;
+            }
+            Some(counters)
+        }
+    }
+
     pub fn private_rss_bytes() -> Option<u64> {
-        rss_bytes()
+        let c = counters()?;
+        Some(c.PrivateUsage.min(c.WorkingSetSize) as u64)
     }
 
     pub fn rss_bytes() -> Option<u64> {
-        // SAFETY: `counters` is a plain-data struct that the call fills; `cb` is its size and
-        // the pseudo handle of the current process needs no closing.
-        unsafe {
-            let mut counters: PROCESS_MEMORY_COUNTERS = std::mem::zeroed();
-            counters.cb = u32::try_from(std::mem::size_of::<PROCESS_MEMORY_COUNTERS>()).ok()?;
-            if GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.cb) == 0 {
-                return None;
-            }
-            Some(counters.WorkingSetSize as u64)
-        }
+        Some(counters()?.WorkingSetSize as u64)
     }
 }
 
