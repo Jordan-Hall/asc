@@ -675,6 +675,8 @@ fn drive(
     let spawned = std_thread.spawn(move || {
         let activity = child.activity();
         let deadline = Instant::now() + limits.request_timeout;
+        // A push's input ends with its request body, so git ends by itself once the client is gone.
+        let push = matches!(input, Feed::Stream(_));
         let stdin = child.stdin.take();
         let writer = match (stdin, input) {
             (Some(mut stdin), Feed::Bytes(body)) => {
@@ -710,6 +712,7 @@ fn drive(
         };
         let mut out_bytes = 0u64;
         let mut sent_any = false;
+        let mut reader_gone = false;
         if let Some(mut stdout) = child.stdout.take() {
             let mut buf = vec![0u8; CHUNK];
             loop {
@@ -718,10 +721,21 @@ fn drive(
                     Ok(n) => {
                         activity.touch();
                         out_bytes += n as u64;
+                        if reader_gone {
+                            continue;
+                        }
                         let msg = Msg::Data(Bytes::copy_from_slice(&buf[..n]));
                         if !send_bounded(&tx, msg, limits.idle_timeout, deadline) {
                             // The client went away or stopped reading: the child has no reader.
-                            // SIGTERM first: a git killed outright leaves its push quarantine.
+                            if push {
+                                // Its input has ended or will (the body pump is bounded), so git
+                                // fails on the short pack and removes its quarantine itself; the rest
+                                // of its small answer is read and dropped. A signal to the group
+                                // races git's own cleanup and can leave the quarantine behind.
+                                reader_gone = true;
+                                continue;
+                            }
+                            // A fetch would keep packing for no one. SIGTERM first, then SIGKILL.
                             child.terminate(Duration::from_secs(2));
                             break;
                         }
