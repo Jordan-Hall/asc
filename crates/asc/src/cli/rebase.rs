@@ -32,8 +32,12 @@
 //! root, a merge into `[new root]` fast-forwards, and a fixup there is rescheduled with git's
 //! "cannot fixup root commit". With `--onto` the range is the commits the new base lacks.
 //!
-//! Not served: `--rebase-merges=rebase-cousins` (it acts as the default
-//! mode), conflicts while recreating a merge (the rebase stops and `--abort` returns), octopus
+//! `--rebase-merges[=<mode>]` and `rebase.rebaseMerges` follow git: a boolean value turns the
+//! mode on or off, `no-rebase-cousins` (the default) resets a branch whose base lies outside the
+//! range to that base, `rebase-cousins` resets it to `onto`, and the option (a bare `-r` means
+//! `no-rebase-cousins`) wins over the configuration. Any other mode is fatal.
+//!
+//! Not served: conflicts while recreating a merge (the rebase stops and `--abort` returns), octopus
 //! merges, merge strategies other than `ort`, and git's patch-id detection of commits already
 //! upstream (such a commit becomes empty on replay and is dropped, kept or stops the rebase as
 //! `--empty` says, instead of being left out of the list up front). `pre-rebase`, `post-rewrite`
@@ -621,6 +625,8 @@ impl Run {
 pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let ws = ctx.ws()?;
     let gitdir = ws.projection.git_dir().to_owned();
+    // git reads the mode while it parses the options, before any `--continue`.
+    let merges = merges_mode(ctx, &a)?;
     let modes = [a.cont, a.skip, a.abort, a.quit, a.edit_todo]
         .iter()
         .filter(|&&m| m)
@@ -666,7 +672,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     if a.words.len() > most {
         return Err(CliError::Usage(USAGE.to_owned()));
     }
-    start(ctx, ws, &gitdir, a).await
+    start(ctx, ws, &gitdir, a, merges).await
 }
 
 fn word(os: &OsString) -> String {
@@ -736,7 +742,62 @@ fn empty_mode(word: &str) -> Option<Empty> {
     }
 }
 
-async fn start(ctx: &Ctx, ws: &WsCtx, gitdir: &Path, a: Args) -> Result<ExitCode> {
+/// Whether merges are rebuilt and, if so, whether cousins move onto the new base.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Merges {
+    Off,
+    On { cousins: bool },
+}
+
+/// git's `parse_rebase_merges_value`.
+fn cousins_mode(v: &str) -> Result<bool> {
+    match v {
+        "no-rebase-cousins" => Ok(false),
+        "rebase-cousins" => Ok(true),
+        _ => Err(fatal(format!("Unknown rebase-merges mode: {v}"))),
+    }
+}
+
+/// `rebase.rebaseMerges`, then `--rebase-merges[=<mode>]` and `--no-rebase-merges`, as git reads
+/// them: a boolean value switches the mode, a mode name switches it on, and the option, bare or
+/// with a mode, wins over the configured mode (an empty value warns and acts as bare).
+fn merges_mode(ctx: &Ctx, a: &Args) -> Result<Merges> {
+    let key = "rebase.rebaseMerges";
+    let (mut on, mut cousins) = match ctx.config.bool(key) {
+        Some(b) => (b, false),
+        None => match ctx.config.get(key) {
+            Some(v) => (true, cousins_mode(&v)?),
+            None => (false, false),
+        },
+    };
+    match a.rebase_merges.as_deref() {
+        None => {}
+        Some("") => {
+            cousins = false;
+            eprintln!(
+            "warning: --rebase-merges with an empty string argument is deprecated and will stop \
+             working in a future version of Git. Use --rebase-merges without an argument instead, \
+             which does the same thing."
+            );
+        }
+        Some(v) => cousins = cousins_mode(v)?,
+    }
+    if a.rebase_merges.is_some() {
+        on = true;
+    }
+    if a.no_rebase_merges {
+        on = false;
+    }
+    Ok(if on { Merges::On { cousins } } else { Merges::Off })
+}
+
+async fn start(
+    ctx: &Ctx,
+    ws: &WsCtx,
+    gitdir: &Path,
+    a: Args,
+    merges: Merges,
+) -> Result<ExitCode> {
     if state_dir(gitdir).exists() {
         return Err(already(gitdir));
     }
@@ -889,7 +950,7 @@ async fn start(ctx: &Ctx, ws: &WsCtx, gitdir: &Path, a: Args) -> Result<ExitCode
     } else {
         a.update_refs || (explicit && config_true("rebase.updateRefs"))
     };
-    let rebase_merges = a.rebase_merges.is_some() && !a.no_rebase_merges;
+    let rebase_merges = merges != Merges::Off;
     let keep_empty = !a.no_keep_empty;
     let empty = empty_arg.unwrap_or(if explicit {
         Empty::Stop
@@ -974,6 +1035,7 @@ async fn start(ctx: &Ctx, ws: &WsCtx, gitdir: &Path, a: Args) -> Result<ExitCode
                 bottom: base.or(upstream).unwrap_or(onto),
                 orig,
                 root_onto: root && a.onto.is_some(),
+                cousins: merges == Merges::On { cousins: true },
             },
             keep_empty,
             comment,
@@ -1248,7 +1310,7 @@ async fn collect_range(
     if entries.len() > MAX_TODO {
         return Err(fatal("asc: too many commits to rebase"));
     }
-    let mut out: Vec<Ranged> = entries
+    let out: Vec<Ranged> = entries
         .into_iter()
         .map(|e| Ranged {
             id: e.id,
@@ -1256,8 +1318,42 @@ async fn collect_range(
             generation: e.generation,
         })
         .collect();
-    out.reverse();
-    Ok(out)
+    Ok(graph_order_reversed(out))
+}
+
+/// git's `sort_in_topological_order` in graph order, reversed as the sequencer lists it: from the
+/// tips (kept in log order), a commit comes once all its children in the range came, the parent
+/// pushed last is taken first; then the list is turned round so parents come first.
+fn graph_order_reversed(log: Vec<Ranged>) -> Vec<Ranged> {
+    let index: HashMap<ChangesetId, usize> =
+        log.iter().enumerate().map(|(n, r)| (r.id, n)).collect();
+    let mut children = vec![0usize; log.len()];
+    for r in &log {
+        for p in &r.parents {
+            if let Some(&n) = index.get(p) {
+                children[n] += 1;
+            }
+        }
+    }
+    let mut stack: Vec<usize> = (0..log.len()).filter(|&n| children[n] == 0).rev().collect();
+    let mut order: Vec<usize> = Vec::with_capacity(log.len());
+    while let Some(n) = stack.pop() {
+        order.push(n);
+        for p in &log[n].parents {
+            if let Some(&m) = index.get(p) {
+                children[m] -= 1;
+                if children[m] == 0 {
+                    stack.push(m);
+                }
+            }
+        }
+    }
+    let mut slots: Vec<Option<Ranged>> = log.into_iter().map(Some).collect();
+    order
+        .into_iter()
+        .rev()
+        .filter_map(|n| slots[n].take())
+        .collect()
 }
 
 async fn is_empty_commit(ws: &WsCtx, cs: &Changeset) -> Result<bool> {
@@ -1377,6 +1473,9 @@ struct Span {
     orig: ChangesetId,
     /// `--root --onto`: a root branch resets to `onto` rather than to `[new root]`.
     root_onto: bool,
+    /// `rebase-cousins`: a branch whose base is neither labelled nor in the range starts from
+    /// `onto`, and so does a root branch.
+    cousins: bool,
 }
 
 /// The list with `--rebase-merges` (git's `make_script_with_merges`): `label`, `reset` and
@@ -1393,6 +1492,7 @@ async fn merges_todo(
         bottom,
         orig,
         root_onto,
+        cousins,
     } = span;
     let cc = comment as char;
     // Parents first: generation orders them, the log order breaks ties.
@@ -1506,11 +1606,12 @@ async fn merges_todo(
         // A root commit starts its branch from no parent at all, or from the new base when
         // `--root` came with `--onto`.
         let reset = match first.parents.first().copied() {
-            None if root_onto => "onto".to_owned(),
+            None if root_onto || cousins => "onto".to_owned(),
             None => NEW_ROOT.to_owned(),
             Some(base) => {
                 let base_label = match labels.by_commit.get(&base) {
                     Some(l) => l.clone(),
+                    None if cousins => "onto".to_owned(),
                     None => {
                         let g = conflict::git_id(ws, base).await?;
                         labels.give(base, &g.to_string()[..abbrev])
