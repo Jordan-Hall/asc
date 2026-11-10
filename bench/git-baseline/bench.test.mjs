@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { fastImportStream, markdown, parseArgs, stats } from './lib.mjs';
+import { benchMeta, fastImportStream, markdown, parseArgs, stats } from './lib.mjs';
 
 test('parseArgs defaults and validation', () => {
   assert.deepEqual(parseArgs([]).sizes, ['small', 'medium']);
@@ -50,4 +50,13 @@ test('markdown with asc results shows asc column, ratio and unsupported status',
 
 test('default asc path keeps its separators', () => {
   assert.equal(parseArgs([], {}).asc, 'D:/dev/monorepo');
+});
+
+test('meta keeps the asc version apart from the source repo of the asc size', () => {
+  const m = benchMeta({ git: 'git x', asc: 'asc y', platform: 'linux', runs: 3, sizes: ['small', 'asc'], ascSource: '/src/repo' });
+  assert.equal(m.asc, 'asc y');
+  assert.equal(m.ascSource, '/src/repo');
+  const n = benchMeta({ git: 'git x', platform: 'linux', runs: 3, sizes: ['small'], ascSource: '/src/repo' });
+  assert.equal(n.asc, null);
+  assert.equal(n.ascSource, null);
 });
