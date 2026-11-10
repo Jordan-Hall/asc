@@ -76,6 +76,8 @@ pub struct GitRemote {
     objects: Arc<ObjectStack>,
     map: Arc<StateMap>,
     synced: OnceCell<Vec<RefEntry>>,
+    /// Every ref of the remote is listed, not only its branches and tags (`push --mirror`).
+    every_ref: bool,
 }
 
 impl GitRemote {
@@ -102,6 +104,7 @@ impl GitRemote {
                 repo: ws.repo.key,
             }),
             synced: OnceCell::new(),
+            every_ref: false,
         })
     }
 
@@ -117,9 +120,10 @@ impl GitRemote {
     /// `git fetch`, then import every ref tip the map does not know yet.
     async fn sync(&self) -> Result<Vec<RefEntry>> {
         let (repo, url, ns) = (self.repo.clone(), self.url.clone(), self.ns.clone());
+        let every_ref = self.every_ref;
         let tracked = Self::blocking(move || {
-            repo.fetch(&url, &ns)?;
-            repo.tracked(&ns)
+            repo.fetch(&url, &ns, every_ref)?;
+            repo.tracked(&ns, every_ref)
         })
         .await?;
         let tips: Vec<Tip> = tracked
@@ -231,7 +235,8 @@ impl Remote for GitRemote {
     async fn update_refs(&self, updates: &[RefUpdate]) -> Result<()> {
         let tracked: HashMap<String, GitOid> = {
             let (repo, ns) = (self.repo.clone(), self.ns.clone());
-            Self::blocking(move || repo.tracked(&ns))
+            let every_ref = self.every_ref;
+            Self::blocking(move || repo.tracked(&ns, every_ref))
                 .await?
                 .into_iter()
                 .collect()
@@ -324,10 +329,11 @@ pub fn open(
     stored: String,
     configured: bool,
     spec: RemoteSpec,
-    _intent: Intent,
+    intent: Intent,
 ) -> crate::cli::common::Result<Opened> {
     super::server::check_transport(&stored)?;
-    let remote = GitRemote::new(ctx, ws, &name, &stored)?;
+    let mut remote = GitRemote::new(ctx, ws, &name, &stored)?;
+    remote.every_ref = intent == Intent::Mirror;
     Ok(Opened {
         name,
         configured,

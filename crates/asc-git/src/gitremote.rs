@@ -318,9 +318,10 @@ impl GitRemoteRepo {
         format!("refs/ascr/{ns}/")
     }
 
-    /// `git fetch <url>` of every branch and tag into `refs/ascr/<ns>/`, pruning what the remote
-    /// dropped. Credentials, `url.<base>.insteadOf` and the transports are real git's.
-    pub fn fetch(&self, url: &str, ns: &str) -> Result<()> {
+    /// `git fetch <url>` of every branch and tag (with `every_ref`, of every ref under `refs/`,
+    /// which a mirror push needs) into `refs/ascr/<ns>/`, pruning what the remote dropped.
+    /// Credentials, `url.<base>.insteadOf` and the transports are real git's.
+    pub fn fetch(&self, url: &str, ns: &str, every_ref: bool) -> Result<()> {
         let url = transport_url(url)?;
         let p = Self::tracked_prefix(ns);
         let mut cmd = self.command()?;
@@ -334,9 +335,13 @@ impl GitRemoteRepo {
             "--no-show-forced-updates",
             "--",
         ])
-        .arg(&url)
-        .arg(format!("+refs/heads/*:{p}heads/*"))
-        .arg(format!("+refs/tags/*:{p}tags/*"));
+        .arg(&url);
+        if every_ref {
+            cmd.arg(format!("+refs/*:{p}*"));
+        } else {
+            cmd.arg(format!("+refs/heads/*:{p}heads/*"))
+                .arg(format!("+refs/tags/*:{p}tags/*"));
+        }
         let r = run(cmd, MAX_LISTING)?;
         if r.ok { Ok(()) } else { Err(failed(&r)) }
     }
@@ -405,14 +410,18 @@ impl GitRemoteRepo {
     }
 
     /// The remote's refs as last fetched, with their ordinary names (`refs/heads/x`,
-    /// `refs/tags/x`).
-    pub fn tracked(&self, ns: &str) -> Result<Vec<(String, GitOid)>> {
+    /// `refs/tags/x`): the branches and tags, or with `every_ref` every ref a mirror fetch
+    /// brought.
+    pub fn tracked(&self, ns: &str, every_ref: bool) -> Result<Vec<(String, GitOid)>> {
         let p = Self::tracked_prefix(ns);
         Ok(self
             .list(&p)?
             .into_iter()
             .filter_map(|(name, oid)| {
                 name.strip_prefix(&p)
+                    .filter(|rest| {
+                        every_ref || rest.starts_with("heads/") || rest.starts_with("tags/")
+                    })
                     .map(|rest| (format!("refs/{rest}"), oid))
             })
             .collect())
@@ -426,9 +435,7 @@ impl GitRemoteRepo {
             let Some(rest) = dst.strip_prefix("refs/") else {
                 continue;
             };
-            if !(rest.starts_with("heads/") || rest.starts_with("tags/"))
-                || dst.contains(['\0', '\n'])
-            {
+            if dst.contains(['\0', '\n']) {
                 continue;
             }
             match new {

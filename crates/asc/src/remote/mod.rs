@@ -126,6 +126,9 @@ pub struct Opened {
 pub enum Intent {
     Read,
     Write,
+    /// A write of every ref (`push --mirror`): a git remote lists every ref, not only the
+    /// branches and tags.
+    Mirror,
 }
 
 /// The `ascRefs` setting of a configured remote.
@@ -257,7 +260,7 @@ pub async fn open_url(
     else {
         return Err(not_a_bucket(&stored, &spec));
     };
-    if intent == Intent::Write {
+    if intent != Intent::Read {
         bucket::ensure_local_dir(bucket_url)?;
     } else if !bucket::exists(bucket_url) {
         return Err(CliError::Fatal(format!(

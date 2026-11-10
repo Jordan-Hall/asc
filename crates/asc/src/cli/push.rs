@@ -9,7 +9,7 @@
 //! the compare-and-set of the ref and the demotion are the engine's. Remote-tracking refs move
 //! through `Ctx::update_local_refs` from the engine's `local_updates`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::ffi::OsString;
 use std::process::ExitCode;
 
@@ -55,6 +55,7 @@ pub const NATIVE: &[NativeSpec] = &[NativeSpec {
         "--delete",
         "--tags",
         "--all",
+        "--branches",
         "-o",
         "--push-option",
         "-n",
@@ -88,6 +89,7 @@ struct Opts {
     delete: bool,
     tags: bool,
     all: bool,
+    mirror: bool,
     set_upstream: bool,
     dry_run: bool,
     porcelain: bool,
@@ -117,7 +119,8 @@ fn parse(argv: &[OsString]) -> Result<Opts> {
             "--no-force-with-lease" => o.lease = None,
             "-d" | "--delete" => o.delete = true,
             "--tags" => o.tags = true,
-            "--all" => o.all = true,
+            "--all" | "--branches" => o.all = true,
+            "--mirror" => o.mirror = true,
             "-n" | "--dry-run" => o.dry_run = true,
             "--porcelain" => o.porcelain = true,
             "--no-verify" => o.no_verify = true,
@@ -132,7 +135,6 @@ fn parse(argv: &[OsString]) -> Result<Opts> {
             | "--no-recurse-submodules"
             | "--atomic"
             | "--force-if-includes" => {}
-            "--mirror" => return Err(CliError::Fatal("asc: --mirror is not supported".into())),
             w if w.starts_with("--force-with-lease=") => {
                 o.lease = Some(Some(w["--force-with-lease=".len()..].to_owned()));
             }
@@ -143,6 +145,77 @@ fn parse(argv: &[OsString]) -> Result<Opts> {
         }
     }
     Ok(o)
+}
+
+/// git's check that at most one of the options choosing which refs to push is given.
+fn incompatible(o: &Opts) -> Result<()> {
+    let set: Vec<&str> = [
+        (o.delete, "--delete"),
+        (o.tags, "--tags"),
+        (o.all, "--all/--branches"),
+        (o.mirror, "--mirror"),
+    ]
+    .into_iter()
+    .filter_map(|(on, name)| on.then_some(name))
+    .collect();
+    let text = match set.as_slice() {
+        [a, b] => format!("options '{a}' and '{b}' cannot be used together"),
+        [a, b, c] => format!("options '{a}', '{b}', and '{c}' cannot be used together"),
+        [a, b, c, d] => format!("options '{a}', '{b}', '{c}', and '{d}' cannot be used together"),
+        _ => return Ok(()),
+    };
+    Err(CliError::Fatal(text))
+}
+
+/// asc's own refs (stacks, hidden changes, autostashes): never mirrored, never deleted by a
+/// mirror.
+const ASC_REFS: &str = "refs/asc/";
+
+/// The most refs one push sends.
+const MAX_PUSH_REFS: usize = 10_000;
+
+/// The updates of `--mirror`: every ref of the remote, forced to the local value or deleted
+/// when there is none, then every local ref the remote lacks; each list in name order, as git
+/// sends them.
+async fn mirror_specs(ws: &WsCtx, remote_refs: &HashMap<String, RefTarget>) -> Result<Vec<Spec>> {
+    let local: BTreeSet<String> = ws
+        .db
+        .refs()
+        .list(ws.repo.key, "refs/")
+        .await?
+        .into_iter()
+        .map(|e| String::from_utf8_lossy(e.name.as_bytes()).into_owned())
+        .filter(|n| !n.starts_with(ASC_REFS))
+        .collect();
+    let mut remote: Vec<&String> = remote_refs
+        .keys()
+        .filter(|n| n.starts_with("refs/") && !n.starts_with(ASC_REFS))
+        .collect();
+    remote.sort();
+    let mut out: Vec<Spec> = remote
+        .into_iter()
+        .map(|name| Spec {
+            src: local.contains(name).then(|| name.clone()),
+            dst: name.clone(),
+            force: true,
+        })
+        .collect();
+    out.extend(
+        local
+            .iter()
+            .filter(|n| !remote_refs.contains_key(*n))
+            .map(|name| Spec {
+                src: Some(name.clone()),
+                dst: name.clone(),
+                force: true,
+            }),
+    );
+    if out.len() > MAX_PUSH_REFS {
+        return Err(CliError::Fatal(
+            "asc: too many refs to push in one command".into(),
+        ));
+    }
+    Ok(out)
 }
 
 /// One requested update: `+src:dst`.
@@ -193,9 +266,11 @@ fn full_heads(name: &str) -> String {
     }
 }
 
+/// A ref name as git shows it in a push report (`prettify_refname`).
 fn short(full: &str) -> String {
     full.strip_prefix("refs/heads/")
         .or_else(|| full.strip_prefix("refs/tags/"))
+        .or_else(|| full.strip_prefix("refs/remotes/"))
         .unwrap_or(full)
         .to_owned()
 }
@@ -236,7 +311,7 @@ async fn specs(
     let mut out = Vec::new();
     let mut upstream: Option<(String, String)> = None;
     if o.all {
-        if !rest.is_empty() || o.delete {
+        if !rest.is_empty() {
             return Err(CliError::Fatal(
                 "--all can't be combined with refspecs".into(),
             ));
@@ -375,7 +450,7 @@ async fn specs(
             });
         }
     }
-    if out.len() > 10_000 {
+    if out.len() > MAX_PUSH_REFS {
         return Err(CliError::Fatal(
             "asc: too many refs to push in one command".into(),
         ));
@@ -507,13 +582,40 @@ fn advice(ctx: &Ctx, key: &str) -> bool {
 pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let ws = ctx.ws()?;
     let o = parse(&a.rest)?;
+    incompatible(&o)?;
     let prog = ctx.prog.name();
     let (target, rest) = match o.words.split_first() {
         Some((first, rest)) => (first.clone(), rest.to_vec()),
         None => (push_remote(ctx, ws)?, Vec::new()),
     };
-    let opened = remote::open(ctx, ws, &target, Intent::Write).await?;
+    // `remote.<name>.mirror` makes every push to the remote a mirror, unless `--all` or
+    // `--tags` chooses the refs.
+    let mirror = o.mirror
+        || (!o.all
+            && !o.tags
+            && ctx
+                .config
+                .bool(&format!("remote.{target}.mirror"))
+                .unwrap_or(false));
+    if mirror && !rest.is_empty() {
+        return Err(CliError::Fatal(
+            "--mirror can't be combined with refspecs".into(),
+        ));
+    }
+    let intent = if mirror {
+        Intent::Mirror
+    } else {
+        Intent::Write
+    };
+    let opened = remote::open(ctx, ws, &target, intent).await?;
     let server = opened.server.clone();
+    if mirror && let Some(s) = &server
+        && push_map::branchless_server(ctx, s).await?
+    {
+        return Err(CliError::Fatal(
+            "asc: --mirror is not supported on a branchless repository (it would delete refs you cannot see); use --all and --delete".into(),
+        ));
+    }
     let (option_land, options) = push_land::split_options(&o.push_options);
     let land = o.land || option_land;
     if land && server.is_none() {
@@ -562,7 +664,11 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
 
-    let (requested, upstream) = specs(ctx, ws, &o, &opened.name, &rest).await?;
+    let (requested, upstream) = if mirror {
+        (Vec::new(), None)
+    } else {
+        specs(ctx, ws, &o, &opened.name, &rest).await?
+    };
     let remote_refs: HashMap<String, RefTarget> = opened
         .remote
         .list_refs()
@@ -576,6 +682,11 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
             )
         })
         .collect();
+    let requested = if mirror {
+        mirror_specs(ws, &remote_refs).await?
+    } else {
+        requested
+    };
 
     let mut plans: Vec<Plan> = Vec::new();
     for spec in requested {
@@ -693,6 +804,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let mut mapping = push_map::Mapping::default();
     if let Some(s) = &server
         && !o.all
+        && !mirror
         && !land
     {
         let candidates: Vec<(String, ChangesetId)> = plans
@@ -933,8 +1045,8 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let mut hints: Vec<&'static str> = Vec::new();
     let head_branch = current_branch(ws)?.map(|b| format!("refs/heads/{b}"));
     let mut any_rejected = raced;
-    for p in &plans {
-        let kind = if raced && p.kind.sends() {
+    let final_kind = |p: &Plan| -> Kind {
+        if raced && p.kind.sends() {
             Kind::Rejected("fetch first")
         } else if let Some(reason) = refusal.as_ref().filter(|_| p.kind.sends()) {
             Kind::RemoteRejected(reason.clone())
@@ -947,7 +1059,16 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
             })
         } else {
             p.kind.clone()
-        };
+        }
+    };
+    // git reports the refs that were up to date first, then those that moved, then the rest.
+    let mut reported: Vec<(&Plan, Kind)> = plans.iter().map(|p| (p, final_kind(p))).collect();
+    reported.sort_by_key(|(_, k)| match k {
+        Kind::UpToDate => 0,
+        Kind::New | Kind::FastForward | Kind::Forced | Kind::Delete => 1,
+        Kind::Rejected(_) | Kind::RemoteRejected(_) => 2,
+    });
+    for (p, kind) in reported {
         let from = if p.new.is_some() {
             short(&p.src_label)
         } else {
@@ -970,10 +1091,10 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
             Kind::New => {
                 let word = if p.spec.dst.starts_with("refs/tags/") {
                     "[new tag]"
-                } else if push_land::is_agit(&p.spec.dst) {
-                    "[new reference]"
-                } else {
+                } else if p.spec.dst.starts_with("refs/heads/") {
                     "[new branch]"
+                } else {
+                    "[new reference]"
                 };
                 ('*', word.to_owned(), landed_note)
             }
@@ -1157,6 +1278,7 @@ mod tests {
         assert_eq!(short("refs/heads/a/b"), "a/b");
         assert_eq!(short("refs/tags/v1"), "v1");
         assert_eq!(short("refs/other/x"), "refs/other/x");
+        assert_eq!(short("refs/remotes/origin/x"), "origin/x");
         assert_eq!(full_heads("x"), "refs/heads/x");
         assert_eq!(full_heads("refs/tags/x"), "refs/tags/x");
     }
@@ -1172,6 +1294,31 @@ mod tests {
         assert_eq!(o.lease, Some(Some("master:abc".to_owned())));
         assert_eq!(o.words, ["origin", "master"]);
         assert!(parse(&[OsString::from("--bogus")]).is_err());
-        assert!(parse(&[OsString::from("--mirror")]).is_err());
+        assert!(parse(&[OsString::from("--mirror")]).unwrap().mirror);
+        assert!(parse(&[OsString::from("--branches")]).unwrap().all);
+    }
+
+    #[test]
+    fn ref_selection_options_exclude_each_other_as_in_git() {
+        let msg = |args: &[&str]| {
+            let argv: Vec<OsString> = args.iter().map(Into::into).collect();
+            match incompatible(&parse(&argv).unwrap()) {
+                Err(CliError::Fatal(m)) => m,
+                other => panic!("{other:?}"),
+            }
+        };
+        assert_eq!(
+            msg(&["--all", "--mirror"]),
+            "options '--all/--branches' and '--mirror' cannot be used together"
+        );
+        assert_eq!(
+            msg(&["--mirror", "--delete", "--tags"]),
+            "options '--delete', '--tags', and '--mirror' cannot be used together"
+        );
+        assert_eq!(
+            msg(&["--all", "-d"]),
+            "options '--delete' and '--all/--branches' cannot be used together"
+        );
+        assert!(incompatible(&parse(&[OsString::from("--mirror")]).unwrap()).is_ok());
     }
 }
