@@ -226,6 +226,75 @@ async fn garage_list_paginates() {
     list_paginates(Target::garage().unwrap()).await;
 }
 
+/// Packs on a real bucket: the job packs old loose objects into `pack/` files and deletes the
+/// loose copies, every object still reads, verify finds no problem, and a fresh reader (another
+/// server on the same bucket) finds them through the bucket's own index; reindex rebuilds it.
+async fn packs_roundtrip(t: Target) {
+    use asc_store::gc::NoFence;
+    use asc_store::pack::PackConfig;
+    use std::time::{Duration, SystemTime};
+
+    let (store, root) = t.open(false);
+    let cfg = PackConfig {
+        enabled: true,
+        min_age: Duration::from_secs(60),
+        min_loose: 1,
+        negative_ttl: Duration::ZERO,
+        ..PackConfig::default()
+    };
+    let writer = BucketObjects::new(store.clone(), root.clone()).with_bucket_packs(cfg);
+    let items: Vec<(ObjKey, Bytes)> = (0..40u32)
+        .map(|n| {
+            let data = format!("packed object {n}");
+            (
+                ObjKey::File(FileId::of(data.as_bytes())),
+                encode_stored(data.as_bytes()),
+            )
+        })
+        .collect();
+    for (k, v) in &items {
+        writer.put(k, v.clone()).await.unwrap();
+    }
+    let later = SystemTime::now() + Duration::from_secs(7200);
+    let rep = writer.pack_run(&NoFence, later, false).await.unwrap();
+    assert_eq!((rep.packed, rep.loose_deleted), (40, 40), "{rep:?}");
+    assert!(rep.packs_written >= 1, "{rep:?}");
+    for (k, _) in &items {
+        let loose = Path::from(format!("{root}/{}", k.path()));
+        assert!(
+            matches!(
+                store.head(&loose).await,
+                Err(object_store::Error::NotFound { .. })
+            ),
+            "{k} is still loose"
+        );
+    }
+    let keys: Vec<ObjKey> = items.iter().map(|(k, _)| *k).collect();
+    for (k, v) in &items {
+        assert_eq!(writer.get_stored(k).await.unwrap().as_ref(), Some(v), "{k}");
+    }
+    assert!(writer.has_many(&keys).await.unwrap().iter().all(|&b| b));
+    let verify = writer.pack_verify().await.unwrap();
+    assert_eq!(verify.objects, 40, "{verify:?}");
+    assert!(verify.problems.is_empty(), "{verify:?}");
+
+    let reader =
+        BucketObjects::new(store.clone(), root.clone()).with_bucket_packs(PackConfig::default());
+    for (k, v) in &items {
+        assert_eq!(reader.get_stored(k).await.unwrap().as_ref(), Some(v), "{k}");
+    }
+    let re = reader.pack_reindex().await.unwrap();
+    assert_eq!(re.objects, 40, "{re:?}");
+    assert!(re.skipped.is_empty(), "{re:?}");
+    assert!(reader.has_many(&keys).await.unwrap().iter().all(|&b| b));
+}
+
+#[tokio::test]
+#[ignore = "needs Garage from docker-compose.it.yml"]
+async fn garage_packs_roundtrip() {
+    packs_roundtrip(Target::garage().unwrap()).await;
+}
+
 /// A store that ignores `If-None-Match` lets a repeated `Create` through. The strict store reports
 /// that honestly (no silent downgrade), so the probe can refuse `BucketRefs`; the default store
 /// keeps working for content-addressed keys.
