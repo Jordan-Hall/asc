@@ -82,25 +82,10 @@ fn parse(args: &[OsString]) -> Result<Opts> {
 
 /// `bytes` through the conversion `eol` asks for.
 fn normalize(bytes: Vec<u8>, eol: Eol) -> Vec<u8> {
-    if eol == Eol::Keep {
-        return bytes;
+    match asc_wc::eol::to_git(&bytes, eol) {
+        std::borrow::Cow::Borrowed(_) => bytes,
+        std::borrow::Cow::Owned(out) => out,
     }
-    let nul = bytes.iter().take(BINARY_PROBE).any(|&b| b == 0);
-    let lone_cr = bytes
-        .iter()
-        .enumerate()
-        .any(|(i, &b)| b == b'\r' && bytes.get(i + 1) != Some(&b'\n'));
-    if eol == Eol::Auto && (nul || lone_cr) {
-        return bytes;
-    }
-    let mut out = Vec::with_capacity(bytes.len());
-    for (i, &b) in bytes.iter().enumerate() {
-        if b == b'\r' && bytes.get(i + 1) == Some(&b'\n') {
-            continue;
-        }
-        out.push(b);
-    }
-    out
 }
 
 /// Writes the file's objects to the object stack and records its git id.

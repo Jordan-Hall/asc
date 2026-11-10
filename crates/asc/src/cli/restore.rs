@@ -30,10 +30,10 @@ use asc_wc::compose_plain::{Replace, clear, is_restricted_projection, restrict};
 use asc_wc::ignore::IgnoreSources;
 use asc_wc::plain::{self, Mode, Projected, Sparse, Wc};
 use asc_wc::redirect::Redirections;
-use asc_wc::status::NoEol;
 use futures::TryStreamExt;
 
 use super::common::{CliEngine, CliError, Ctx, ObjectStack, Result, WsCtx};
+use crate::cli::add::attrs::AttrEol;
 use crate::dispatch::Program;
 use crate::ext;
 use crate::native::NativeSpec;
@@ -396,6 +396,8 @@ pub(crate) struct WcParts {
     projected: Option<Box<dyn Projected>>,
     /// `asc.worktree.link = symlink`: the shared blob area a plain checkout links into.
     shared: Option<PathBuf>,
+    /// Line-ending conversion: what status hashes and what a checkout writes.
+    eol: AttrEol,
 }
 
 impl WcParts {
@@ -444,6 +446,7 @@ impl WcParts {
             index,
             projected,
             shared,
+            eol: AttrEol::new(super::add::workspace_attrs(ctx, ws)?),
         })
     }
 
@@ -461,7 +464,7 @@ impl WcParts {
             sparse: self.sparse.as_ref(),
             redirections: &self.redirections,
             ignore: &self.ignore,
-            eol: &NoEol,
+            eol: &self.eol,
             projected: self.projected.as_deref(),
             shared: self.shared.as_deref(),
         }

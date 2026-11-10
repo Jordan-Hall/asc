@@ -17,7 +17,7 @@ use asc_store::storeset::StoreSet;
 use asc_wc::SafeRoot;
 use asc_wc::plain::{Sparse, Wc};
 use asc_wc::redirect::Redirections;
-use asc_wc::status::{NoEol, compute};
+use asc_wc::status::compute;
 
 use super::hash_object::store;
 use super::index::Index;
@@ -229,6 +229,7 @@ async fn needing_update(ctx: &Ctx, ws: &WsCtx) -> Result<Vec<String>> {
         store: CacheDir::open(ws.home.store(), ws.home.tmp())?,
         cache: CacheDir::open(ws.home.cache(), ws.home.tmp())?,
     };
+    let rules = crate::cli::add::attrs::AttrEol::new(workspace_attrs(ctx, ws)?);
     let wc = Wc {
         engine: &ws.engine,
         store: &store,
@@ -239,7 +240,7 @@ async fn needing_update(ctx: &Ctx, ws: &WsCtx) -> Result<Vec<String>> {
         sparse: sparse.as_ref(),
         redirections: &redirections,
         ignore: &sources,
-        eol: &NoEol,
+        eol: &rules,
         projected: None,
         shared: None,
     };

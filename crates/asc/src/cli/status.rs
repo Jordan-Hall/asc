@@ -28,7 +28,7 @@ use asc_wc::SafeRoot;
 use asc_wc::ignore::{IgnoreSources, IgnoreStack, shadow_warning};
 use asc_wc::plain::{Sparse, Wc};
 use asc_wc::redirect::Redirections;
-use asc_wc::status::{ChangeKind, NoEol, Untracked, compute};
+use asc_wc::status::{ChangeKind, Untracked, compute};
 use prost_reflect::{DescriptorPool, DynamicMessage, Value};
 
 use super::common::{CliEngine, CliError, Ctx, Result, WsCtx};
@@ -651,6 +651,7 @@ async fn gather(ctx: &Ctx, ws: &WsCtx, o: &Opts) -> Result<Report> {
     };
     let symlinks = ctx.config.bool("core.symlinks").unwrap_or(!cfg!(windows));
     let projected = super::projected::for_workspace(ws);
+    let rules = super::add::attrs::AttrEol::new(super::add::workspace_attrs(ctx, ws)?);
     let wc = Wc {
         engine: &ws.engine,
         store: &store,
@@ -661,7 +662,7 @@ async fn gather(ctx: &Ctx, ws: &WsCtx, o: &Opts) -> Result<Report> {
         sparse: sparse.as_ref(),
         redirections: &redirections,
         ignore: &sources,
-        eol: &NoEol,
+        eol: &rules,
         projected: projected.as_deref(),
         shared: None,
     };

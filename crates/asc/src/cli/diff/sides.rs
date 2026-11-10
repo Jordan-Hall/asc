@@ -141,8 +141,14 @@ async fn work_deltas(
 ) -> Result<BTreeMap<RepoPath, Delta>> {
     let root = ws.projection.toplevel();
     let symlinks = ctx.config.bool("core.symlinks").unwrap_or(!cfg!(windows));
-    let tree =
-        WorkTree::new(root, &ws.projection.git_dir().join("index"), symlinks).map_err(fatal)?;
+    let rules = crate::cli::add::attrs::AttrEol::new(crate::cli::add::workspace_attrs(ctx, ws)?);
+    let tree = WorkTree::new(
+        root,
+        &ws.projection.git_dir().join("index"),
+        symlinks,
+        Box::new(rules),
+    )
+    .map_err(fatal)?;
     let sparse = ws
         .workspace
         .ws
@@ -165,7 +171,8 @@ async fn work_deltas(
                     out.insert(path, Delta { old, new: None });
                     continue;
                 };
-                let new = local.add(&path, abs, entry.kind, entry.size, entry.git);
+                let eol = tree.eol(&path);
+                let new = local.add(&path, abs, entry.kind, entry.size, entry.git, eol);
                 out.insert(
                     path,
                     Delta {
@@ -182,8 +189,9 @@ async fn work_deltas(
                 size,
                 git,
                 abs,
+                eol,
             } => {
-                let new = local.add(&path, abs, kind, size, git);
+                let new = local.add(&path, abs, kind, size, git, eol);
                 out.insert(
                     path,
                     Delta {

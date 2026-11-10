@@ -11,7 +11,10 @@ use std::rc::Rc;
 
 use asc_core::path::RepoPath;
 use asc_wc::SafeRoot;
+use asc_wc::eol::Smudge;
 use asc_wc::status::{Eol, EolRules};
+
+use super::eol_warn::EolConfig;
 use bstr::ByteSlice;
 use gix_attributes::glob::pattern::Case;
 use gix_attributes::search::{MetadataCollection, Outcome};
@@ -35,9 +38,35 @@ pub struct Unsupported(pub String);
 /// What `add` does with one path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PathAttrs {
+    /// What is stored for the work tree content: the attributes, else `core.autocrlf`.
     pub eol: Eol,
+    /// What a checkout writes: the attributes with `core.autocrlf` and `core.eol`.
+    pub smudge: Smudge,
     /// `filter=lfs`: ignored, the content is stored natively (SPEC §2.4.1).
     pub lfs: bool,
+    /// git's `text` attribute, else the legacy `crlf`: `Text` set, `Keep` unset, `Auto` for
+    /// `auto`, `None` unspecified. git's line-ending warnings read it with the config.
+    pub text: Option<Eol>,
+    /// git's `eol` attribute.
+    pub eol_attr: Option<EolAttr>,
+}
+
+/// git's `eol` attribute: the line ending a checkout writes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EolAttr {
+    Lf,
+    Crlf,
+}
+
+impl PathAttrs {
+    /// No attributes: what an unreadable attributes file gives.
+    pub const NONE: Self = Self {
+        eol: Eol::Keep,
+        smudge: Smudge::None,
+        lfs: false,
+        text: None,
+        eol_attr: None,
+    };
 }
 
 /// Per-directory attribute searches, built on demand and cached.
@@ -51,6 +80,8 @@ pub struct Attrs {
     dirs: HashMap<Vec<u8>, Rc<Search>>,
     base: Search,
     buf: Vec<u8>,
+    /// The line-ending configuration the attributes are read with.
+    cfg: EolConfig,
 }
 
 impl Attrs {
@@ -69,7 +100,20 @@ impl Attrs {
             dirs: HashMap::new(),
             base,
             buf,
+            cfg: EolConfig::NONE,
         })
+    }
+
+    /// Forgets the per-directory files read so far, so the next lookups read them again.
+    pub fn forget(&mut self) {
+        self.dirs.clear();
+    }
+
+    /// The same lookup read with the line-ending configuration `cfg`.
+    #[must_use]
+    pub fn with_config(mut self, cfg: EolConfig) -> Self {
+        self.cfg = cfg;
+        self
     }
 
     fn search(&mut self, dir: &[u8]) -> io::Result<Rc<Search>> {
@@ -135,10 +179,7 @@ impl Attrs {
             .map_or(&[][..], |i| &bytes[..i]);
         // An unreadable attributes file reads as absent, like git.
         let Ok(search) = self.search(dir) else {
-            return Ok(PathAttrs {
-                eol: Eol::Keep,
-                lfs: false,
-            });
+            return Ok(self.cfg.resolve(PathAttrs::NONE));
         };
         self.outcome
             .initialize_with_selection(&self.collection, SELECTED);
@@ -167,25 +208,30 @@ impl Attrs {
             return Err(Unsupported(format!("filter={driver}")));
         }
         // git's `text` attribute, else the legacy `crlf`; `eol=lf|crlf` makes an unspecified text
-        // a text, and `-text` (so `binary`) wins over it.
+        // a text, and `-text` (so `binary`) wins over it. `input` (git's `CRLF_TEXT_INPUT`, the
+        // legacy `crlf=input`) is text that a checkout always writes with LF, whatever `eol` says.
         let from = |name: &str| match found.get(name) {
-            Some(StateRef::Set) => Some(Eol::Text),
-            Some(StateRef::Unset) => Some(Eol::Keep),
-            Some(StateRef::Value(v)) if v.as_bstr() == "auto" => Some(Eol::Auto),
+            Some(StateRef::Set) => Some((Eol::Text, false)),
+            Some(StateRef::Unset) => Some((Eol::Keep, false)),
+            Some(StateRef::Value(v)) if v.as_bstr() == "auto" => Some((Eol::Auto, false)),
+            Some(StateRef::Value(v)) if v.as_bstr() == "input" => Some((Eol::Text, true)),
             _ => None,
         };
-        let action = from("text").or_else(|| from("crlf"));
-        let mut eol = action.unwrap_or(Eol::Keep);
-        if action != Some(Eol::Keep)
-            && matches!(value("eol").as_deref(), Some("lf" | "crlf"))
-            && eol == Eol::Keep
-        {
-            eol = Eol::Text;
-        }
-        Ok(PathAttrs {
-            eol,
+        let (action, input) = from("text")
+            .or_else(|| from("crlf"))
+            .map_or((None, false), |(a, i)| (Some(a), i));
+        let eol_attr = match value("eol").as_deref() {
+            _ if input => Some(EolAttr::Lf),
+            Some("lf") => Some(EolAttr::Lf),
+            Some("crlf") => Some(EolAttr::Crlf),
+            _ => None,
+        };
+        Ok(self.cfg.resolve(PathAttrs {
             lfs: filter.is_some(),
-        })
+            text: action,
+            eol_attr,
+            ..PathAttrs::NONE
+        }))
     }
 }
 
@@ -205,6 +251,17 @@ impl EolRules for AttrEol {
             .borrow_mut()
             .lookup(path)
             .map_or(Eol::Keep, |a| a.eol)
+    }
+
+    fn checkout(&self, path: &RepoPath) -> Smudge {
+        self.0
+            .borrow_mut()
+            .lookup(path)
+            .map_or(Smudge::None, |a| a.smudge)
+    }
+
+    fn reread(&self) {
+        self.0.borrow_mut().forget();
     }
 }
 
@@ -240,6 +297,22 @@ mod tests {
         assert_eq!(a.lookup(&p("a.dat")).unwrap().eol, Eol::Keep);
         assert_eq!(a.lookup(&p("a.crlf")).unwrap().eol, Eol::Text);
         assert_eq!(a.lookup(&p("plain")).unwrap().eol, Eol::Keep);
+    }
+
+    #[test]
+    fn legacy_crlf_attribute() {
+        let (_d, mut a) = attrs(&[(
+            ".gitattributes",
+            "*.in crlf=input eol=crlf\n*.raw -crlf\n*.t crlf\n*.both -text crlf\n",
+        )]);
+        // `crlf=input` is text checked out with LF, whatever `eol` says.
+        let input = a.lookup(&p("a.in")).unwrap();
+        assert_eq!((input.eol, input.eol_attr), (Eol::Text, Some(EolAttr::Lf)));
+        assert_eq!(input.smudge, Smudge::None);
+        assert_eq!(a.lookup(&p("a.raw")).unwrap().eol, Eol::Keep);
+        assert_eq!(a.lookup(&p("a.t")).unwrap().eol, Eol::Text);
+        // `text` wins over `crlf`.
+        assert_eq!(a.lookup(&p("a.both")).unwrap().eol, Eol::Keep);
     }
 
     #[test]

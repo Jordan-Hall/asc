@@ -8,7 +8,7 @@ use std::io;
 use std::path::Path;
 use std::time::SystemTime;
 
-use asc_core::id::GitOid;
+use asc_core::id::{FileId, GitOid};
 use asc_core::object::Kind;
 use asc_core::path::RepoPath;
 use asc_git::index::{IndexEntry, IndexFile, StatTime};
@@ -45,6 +45,8 @@ pub enum Op {
         ita: bool,
         /// What the path is staged as now (a work tree without an exec bit keeps its mode).
         prev: Option<Kind>,
+        /// The regular-file content staged for the path now, for git's line-ending notice.
+        staged: Option<(FileId, u64)>,
     },
     /// Stage the removal of `path`.
     Remove(RepoPath),
@@ -328,6 +330,9 @@ pub async fn plan(
                             attrs: a,
                             ita: false,
                             prev: leaf.map(|l| l.kind),
+                            staged: leaf
+                                .filter(|l| matches!(l.kind, Kind::File | Kind::Exec))
+                                .map(|l| (l.file, l.size)),
                         });
                     }
                     Err(e) if lookup_error.is_none() => {
@@ -498,6 +503,7 @@ impl Walker<'_> {
                 attrs,
                 ita: self.opts.intent,
                 prev: None,
+                staged: None,
             });
         }
         Ok(())

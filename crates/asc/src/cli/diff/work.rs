@@ -15,7 +15,7 @@ use asc_core::path::RepoPath;
 use asc_engine::diff::{self, ContentSource, MAX_READ_FILE_BYTES};
 use asc_git::index::{IndexEntry, IndexFile, PlainStat, StatSource};
 use asc_wc::SafeRoot;
-use asc_wc::status::Eol;
+use asc_wc::status::{Eol, EolRules};
 use async_trait::async_trait;
 use bytes::Bytes;
 
@@ -30,7 +30,8 @@ const LOCAL_TAG: [u8; 24] = [0xC6; 24];
 /// from their file, every other entry from the engine.
 pub struct LocalFiles<'a> {
     engine: Option<&'a CliEngine>,
-    files: Vec<PathBuf>,
+    /// Each file with the line-ending normalisation its content is read with.
+    files: Vec<(PathBuf, Eol)>,
 }
 
 impl<'a> LocalFiles<'a> {
@@ -49,7 +50,8 @@ impl<'a> LocalFiles<'a> {
         }
     }
 
-    /// An entry for the file at `abs`; its content is read from there on demand.
+    /// An entry for the file at `abs`; its content is read from there on demand, through the
+    /// line-ending normalisation `eol` (what git would store for it).
     pub fn add(
         &mut self,
         path: &RepoPath,
@@ -57,11 +59,12 @@ impl<'a> LocalFiles<'a> {
         kind: Kind,
         size: u64,
         git: GitOid,
+        eol: Eol,
     ) -> Entry {
         let mut id = [0u8; 32];
         id[..8].copy_from_slice(&(self.files.len() as u64).to_le_bytes());
         id[8..].copy_from_slice(&LOCAL_TAG);
-        self.files.push(abs);
+        self.files.push((abs, eol));
         Entry {
             name: path.file_name(),
             kind,
@@ -71,14 +74,14 @@ impl<'a> LocalFiles<'a> {
         }
     }
 
-    fn slot(&self, entry: &Entry) -> Option<&Path> {
+    fn slot(&self, entry: &Entry) -> Option<(&Path, Eol)> {
         if entry.id[8..] != LOCAL_TAG {
             return None;
         }
         let at = u64::from_le_bytes(entry.id[..8].try_into().ok()?);
         self.files
             .get(usize::try_from(at).ok()?)
-            .map(PathBuf::as_path)
+            .map(|(p, eol)| (p.as_path(), *eol))
     }
 }
 
@@ -91,8 +94,8 @@ fn io_err(e: io::Error) -> diff::Error {
     diff::Error::Io(e)
 }
 
-/// The bytes at `abs`: a link's target, else the file.
-async fn read_local(abs: &Path) -> Result<Bytes, diff::Error> {
+/// The bytes at `abs`: a link's target, else the file through the normalisation `eol`.
+async fn read_local(abs: &Path, eol: Eol) -> Result<Bytes, diff::Error> {
     let meta = asc_wc::shared::metadata(abs).map_err(io_err)?;
     if meta.file_type().is_symlink() {
         return link_target(abs).map(Bytes::from).map_err(io_err);
@@ -103,14 +106,18 @@ async fn read_local(abs: &Path) -> Result<Bytes, diff::Error> {
             abs.display()
         ))));
     }
-    tokio::fs::read(abs).await.map(Bytes::from).map_err(io_err)
+    let data = tokio::fs::read(abs).await.map_err(io_err)?;
+    Ok(match asc_wc::eol::to_git(&data, eol) {
+        std::borrow::Cow::Borrowed(_) => Bytes::from(data),
+        std::borrow::Cow::Owned(out) => Bytes::from(out),
+    })
 }
 
 #[async_trait]
 impl ContentSource for LocalFiles<'_> {
     async fn read(&self, entry: &Entry) -> diff::Result<Bytes> {
         match self.slot(entry) {
-            Some(abs) => read_local(abs).await,
+            Some((abs, eol)) => read_local(abs, eol).await,
             None => match self.engine {
                 Some(engine) => ContentSource::read(engine, entry).await,
                 None => Err(diff::Error::MissingFile(FileId::from_bytes(entry.id))),
@@ -131,6 +138,8 @@ pub enum Work {
         size: u64,
         git: GitOid,
         abs: PathBuf,
+        /// The normalisation the content is read with.
+        eol: Eol,
     },
 }
 
@@ -141,10 +150,16 @@ pub struct WorkTree {
     cache: HashMap<Vec<u8>, IndexEntry>,
     index_mtime: Option<SystemTime>,
     symlinks: bool,
+    rules: Box<dyn EolRules>,
 }
 
 impl WorkTree {
-    pub fn new(root: &Path, index_path: &Path, symlinks: bool) -> io::Result<Self> {
+    pub fn new(
+        root: &Path,
+        index_path: &Path,
+        symlinks: bool,
+        rules: Box<dyn EolRules>,
+    ) -> io::Result<Self> {
         let index = IndexFile::read_or_empty(index_path).map_err(io::Error::other)?;
         let cache = index
             .entries
@@ -159,7 +174,13 @@ impl WorkTree {
             cache,
             index_mtime: index.mtime,
             symlinks,
+            rules,
         })
+    }
+
+    /// The normalisation git reads the work tree file at `path` with.
+    pub fn eol(&self, path: &RepoPath) -> Eol {
+        self.rules.eol(path)
     }
 
     /// Whether the stat data of the index entry for `path` vouches for the file at `abs`.
@@ -219,10 +240,20 @@ impl WorkTree {
         if !is_link && kind == entry.kind && self.vouched(path, entry) {
             return Ok(Work::Same);
         }
+        let mut eol = Eol::Keep;
         let git = if is_link {
             blob_oid(&link_target(&abs)?)
         } else {
-            file_blob_oid(&abs, Eol::Keep)?
+            eol = self.rules.eol(path);
+            let git = file_blob_oid(&abs, eol)?;
+            // Under `text=auto` CRLFs staged as such are kept (git's `has_crlf_in_index`).
+            if eol == Eol::Auto && git != entry.git && file_blob_oid(&abs, Eol::Keep)? == entry.git
+            {
+                eol = Eol::Keep;
+                entry.git
+            } else {
+                git
+            }
         };
         if kind == entry.kind && git == entry.git {
             return Ok(Work::Same);
@@ -232,6 +263,7 @@ impl WorkTree {
             size: meta.len(),
             git,
             abs,
+            eol,
         })
     }
 }

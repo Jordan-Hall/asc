@@ -4,10 +4,12 @@
 
 pub mod attrs;
 pub mod convert;
+pub mod eol_warn;
 pub mod scan;
 pub mod spec;
 pub mod target;
 
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
@@ -15,7 +17,9 @@ use std::process::ExitCode;
 
 use asc_core::codec::Enveloped;
 use asc_core::content::{Body, Ingested, ingest};
+use asc_core::id::FileId;
 use asc_core::object::Kind;
+use asc_core::path::RepoPath;
 use asc_engine::derive::GitMapRow;
 use asc_state::state::git_map;
 use asc_state::state::stage::Leaf;
@@ -118,6 +122,7 @@ pub fn workspace_attrs(ctx: &Ctx, ws: &WsCtx) -> Result<Attrs> {
             .map(|c| c.join("git").join("attributes"))
     });
     Attrs::load(ws.projection.toplevel(), ws.projection.common_dir(), global)
+        .map(|a| a.with_config(eol_warn::EolConfig::new(ctx)))
         .map_err(|e| CliError::Fatal(format!("cannot read attributes: {e}")))
 }
 
@@ -197,6 +202,7 @@ async fn execute(ctx: &Ctx, ws: &WsCtx, target: &mut Target, ops: Vec<Op>) -> Re
     let tmp = ws.home.tmp();
     let filemode = ctx.config.bool("core.filemode").unwrap_or(cfg!(unix));
     let core_symlinks = ctx.config.bool("core.symlinks").unwrap_or(cfg!(unix));
+    let eol = eol_warn::EolConfig::new(ctx);
     let (mut edits, mut mapped) = (Vec::new(), Vec::new());
     for op in ops {
         match op {
@@ -206,6 +212,7 @@ async fn execute(ctx: &Ctx, ws: &WsCtx, target: &mut Target, ops: Vec<Op>) -> Re
                 attrs,
                 ita,
                 prev,
+                staged,
             } => {
                 let fail = |e: &dyn std::fmt::Display| {
                     eprintln!("error: open(\"{path}\"): {e}");
@@ -225,7 +232,12 @@ async fn execute(ctx: &Ctx, ws: &WsCtx, target: &mut Target, ops: Vec<Op>) -> Re
                         convert::link_target(&abs).map_err(|e| fail(&e))?,
                     ))
                 } else {
-                    convert::ingest_file(&abs, attrs.eol, &tmp)
+                    let store_as = if eol.converts(&attrs) {
+                        warn_eol(ws, &eol, &path, &attrs, &abs, staged).await
+                    } else {
+                        attrs.eol
+                    };
+                    convert::ingest_file(&abs, store_as, &tmp)
                 }
                 .map_err(|e| fail(&e))?;
                 let exec = convert::exec_bit(&meta).filter(|_| filemode);
@@ -248,6 +260,69 @@ async fn execute(ctx: &Ctx, ws: &WsCtx, target: &mut Target, ops: Vec<Op>) -> Re
     }
     git_map::insert_many(&ws.db, ws.repo.key, &mapped).await?;
     target.apply(ctx, edits).await
+}
+
+/// git's line-ending notice for the work tree file `abs` it reads into the index; `staged` is
+/// the content staged for the path now. A file it cannot read gets none: ingest reports that.
+/// Returns the normalisation to store the file with: under `text=auto` CRLFs already staged as
+/// text are kept, as git's `has_crlf_in_index` does.
+pub(crate) async fn warn_eol(
+    ws: &WsCtx,
+    eol: &eol_warn::EolConfig,
+    path: &RepoPath,
+    attrs: &attrs::PathAttrs,
+    abs: &std::path::Path,
+    staged: Option<(FileId, u64)>,
+) -> asc_wc::status::Eol {
+    let Ok(stats) = eol_warn::file_stats(abs) else {
+        return attrs.eol;
+    };
+    let mut index_crlf = false;
+    if eol.needs_index(attrs, &stats)
+        && let Some((file, size)) = staged
+        && let Ok(bytes) = ws.engine.read_file(file, size).await
+    {
+        index_crlf = eol_warn::Stats::of(&bytes).text_with_crlf();
+    }
+    if let Some(what) = eol.warning(attrs, &stats, index_crlf) {
+        eol_warn::print(path, what);
+    }
+    if index_crlf && attrs.eol == asc_wc::status::Eol::Auto {
+        asc_wc::status::Eol::Keep
+    } else {
+        attrs.eol
+    }
+}
+
+/// What another command that reads work tree files into an index the way `git update-index
+/// --add` does (`stash`, `commit -a`, `commit <paths>`, a rebase's autostash, `diff`) stores for
+/// each of `paths`, given the content staged for it now; it prints git's line-ending notices on
+/// the way. Links, unreadable files and paths with attributes `add` refuses are not converted.
+pub(crate) async fn read_eols(
+    ctx: &Ctx,
+    ws: &WsCtx,
+    paths: &[(RepoPath, Option<(FileId, u64)>)],
+) -> Result<HashMap<RepoPath, asc_wc::status::Eol>> {
+    let mut out = HashMap::new();
+    let eol = eol_warn::EolConfig::new(ctx);
+    let mut attrs = workspace_attrs(ctx, ws)?;
+    let gate = SafeRoot::new(ws.projection.toplevel());
+    for (path, staged) in paths {
+        let Ok(a) = attrs.lookup(path) else { continue };
+        if !eol.converts(&a) {
+            continue;
+        }
+        let Some(abs) = gate.resolve(path) else {
+            continue;
+        };
+        if asc_wc::shared::metadata(&abs).is_ok_and(|m| m.is_file()) {
+            out.insert(
+                path.clone(),
+                warn_eol(ws, &eol, path, &a, &abs, *staged).await,
+            );
+        }
+    }
+    Ok(out)
 }
 
 /// The kind a work tree entry is staged as: `exec` is its exec bit where the file system has one,

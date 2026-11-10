@@ -8,6 +8,7 @@ use std::path::Path;
 
 use asc_core::codec::Enveloped;
 use asc_core::content::{Body, ingest};
+use asc_core::id::FileId;
 use asc_core::git::ObjectKind;
 use asc_core::id::TreeId;
 use asc_core::object::{Change, Kind};
@@ -26,10 +27,11 @@ use asc_wc::SafeRoot;
 use asc_wc::ignore::IgnoreSources;
 use asc_wc::plain::{Sparse, Wc};
 use asc_wc::redirect::Redirections;
-use asc_wc::status::{self, ChangeKind, NoEol};
+use asc_wc::status::{self, ChangeKind, Eol};
 use futures::TryStreamExt;
 
-use crate::cli::common::{CliError, Result, WsCtx};
+use crate::cli::add::attrs::AttrEol;
+use crate::cli::common::{CliError, Ctx, Result, WsCtx};
 
 fn fatal(text: impl Into<String>) -> CliError {
     CliError::Fatal(text.into())
@@ -83,7 +85,12 @@ pub async fn rows_to_changes(
 
 /// A leaf for the file at `path` in the work tree, ingested into `store/`; `None` when the path
 /// does not exist. `prev` keeps the executable bit where the file system has none.
-pub async fn ingest_path(ws: &WsCtx, path: &RepoPath, prev: Option<Kind>) -> Result<Option<Leaf>> {
+pub async fn ingest_path(
+    ws: &WsCtx,
+    path: &RepoPath,
+    prev: Option<Kind>,
+    eol: Eol,
+) -> Result<Option<Leaf>> {
     // Behind a symlinked or reparse-point ancestor the path is outside the work tree: it is gone.
     let Some(abs) = SafeRoot::new(ws.projection.toplevel()).resolve(path) else {
         return Ok(None);
@@ -98,7 +105,7 @@ pub async fn ingest_path(ws: &WsCtx, path: &RepoPath, prev: Option<Kind>) -> Res
         let text = target.to_string_lossy().replace('\\', "/");
         ingest(std::io::Cursor::new(text.into_bytes()))
     } else if meta.is_file() {
-        ingest(fs::File::open(&abs)?)
+        crate::cli::add::convert::ingest_file(&abs, eol, &ws.home.tmp())
     } else {
         return Err(fatal(format!("asc: cannot stage {path}: not a file")));
     }
@@ -159,17 +166,22 @@ fn is_exec(_meta: &fs::Metadata, prev: Option<Kind>) -> bool {
     prev == Some(Kind::Exec)
 }
 
-/// The row that stages the work tree's state of `path` (a staged delete when it is gone).
-pub async fn row_of_path(ws: &WsCtx, path: &RepoPath, prev: Option<Kind>) -> Result<StageRow> {
-    let leaf = ingest_path(ws, path, prev).await?;
+/// The row that stages the work tree's state of `path` (a staged delete when it is gone), its
+/// content stored with the line-ending normalisation `eol`.
+pub async fn row_of_path(
+    ws: &WsCtx,
+    path: &RepoPath,
+    prev: Option<Kind>,
+    eol: Eol,
+) -> Result<StageRow> {
+    let leaf = ingest_path(ws, path, prev, eol).await?;
     Ok(StageRow::from_leaf(path.as_bytes().to_vec(), leaf.as_ref()))
 }
 
 /// `commit -a`: a row for every tracked path whose work tree state differs from the stage.
-pub async fn stat_dirty_rows(
-    ws: &WsCtx,
-    config: &crate::cli::config::ConfigSnapshot,
-) -> Result<Vec<StageRow>> {
+pub async fn stat_dirty_rows(ctx: &Ctx, ws: &WsCtx) -> Result<Vec<StageRow>> {
+    let config = &ctx.config;
+    let rules = AttrEol::new(crate::cli::add::workspace_attrs(ctx, ws)?);
     let root = ws.projection.toplevel();
     let store = StoreSet {
         store: CacheDir::open(ws.home.store(), ws.home.tmp())?,
@@ -199,23 +211,49 @@ pub async fn stat_dirty_rows(
         sparse: sparse.as_ref(),
         redirections: &redirections,
         ignore: &ignore,
-        eol: &NoEol,
+        eol: &rules,
         projected: None,
         shared: None,
     };
     let state = status::compute(&wc, &ws.db, &ws.workspace)
         .await
         .map_err(|e| fatal(e.to_string()))?;
+    let head = crate::cli::diff::sides::head_root(ws).await?;
+    let (index, _) = crate::cli::restore::index_tree(ws, head).await?;
+    let mut read = Vec::new();
+    for change in &state.unstaged {
+        if change.kind != ChangeKind::Deleted {
+            read.push((change.path.clone(), staged_file(ws, index, &change.path).await?));
+        }
+    }
+    let eols = crate::cli::add::read_eols(ctx, ws, &read).await?;
     let mut rows = Vec::new();
     for change in state.unstaged {
         match change.kind {
             ChangeKind::Deleted => {
                 rows.push(StageRow::from_leaf(change.path.as_bytes().to_vec(), None))
             }
-            _ => rows.push(row_of_path(ws, &change.path, None).await?),
+            _ => {
+                let eol = eols.get(&change.path).copied().unwrap_or(Eol::Keep);
+                rows.push(row_of_path(ws, &change.path, None, eol).await?);
+            }
         }
     }
     Ok(rows)
+}
+
+/// The regular file `index` holds at `path`, as the content [`crate::cli::add::read_eols`] reads.
+pub async fn staged_file(
+    ws: &WsCtx,
+    index: TreeId,
+    path: &RepoPath,
+) -> Result<Option<(FileId, u64)>> {
+    Ok(ws
+        .engine
+        .lookup(index, path)
+        .await?
+        .filter(|e| matches!(e.kind, Kind::File | Kind::Exec))
+        .map(|e| (FileId::from_bytes(e.id), e.size)))
 }
 
 /// `path` as typed in `cwd_prefix` (the current directory below the root) to a root-relative

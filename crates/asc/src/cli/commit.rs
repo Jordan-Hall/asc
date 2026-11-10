@@ -376,6 +376,7 @@ async fn initial_message(
 
 /// Step 1 for `<paths>` / `--only` / `-i`: registers the temporary set and renders its file.
 async fn temp_set(
+    ctx: &Ctx,
     ws: &WsCtx,
     scope: Scope,
     spec_args: &[String],
@@ -403,8 +404,18 @@ async fn temp_set(
     } else {
         Vec::new()
     };
+    let (index, _) = super::restore::index_tree(ws, head_root).await?;
+    let mut read = Vec::with_capacity(matched.len());
+    for (path, _) in &matched {
+        read.push((path.clone(), stagebuild::staged_file(ws, index, path).await?));
+    }
+    let eols = super::add::read_eols(ctx, ws, &read).await?;
     for (path, kind) in matched {
-        let row = stagebuild::row_of_path(ws, &path, kind).await?;
+        let eol = eols
+            .get(&path)
+            .copied()
+            .unwrap_or(asc_wc::status::Eol::Keep);
+        let row = stagebuild::row_of_path(ws, &path, kind, eol).await?;
         rows.retain(|r| r.path != row.path);
         rows.push(row);
     }
@@ -508,14 +519,14 @@ async fn flow(
 
     // Step 1: `-a` stages the stat-dirty tracked files; a path list builds the temporary set.
     if a.all {
-        let rows = stagebuild::stat_dirty_rows(ws, &ctx.config).await?;
+        let rows = stagebuild::stat_dirty_rows(ctx, ws).await?;
         stage::upsert(&ws.db, ws_id, set0, &rows).await?;
     }
     let use_set = if scope == Scope::Staged {
         set0
     } else {
         let file = gitdir.join("asc-commit-index");
-        let set = temp_set(ws, scope, &paths, &prefix, head_root, &file).await?;
+        let set = temp_set(ctx, ws, scope, &paths, &prefix, head_root, &file).await?;
         session.temp = Some((set, file.clone()));
         index_file = file;
         StageSet::Temp(set)

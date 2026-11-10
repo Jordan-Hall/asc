@@ -96,7 +96,14 @@ fn entry(
         };
         (kind, file_blob_oid(abs, Eol::Keep).map_err(CliError::Io)?)
     };
-    Ok(local.add(name, abs.to_owned(), kind, meta.len(), git))
+    Ok(local.add(
+        name,
+        abs.to_owned(),
+        kind,
+        meta.len(),
+        git,
+        asc_wc::status::Eol::Keep,
+    ))
 }
 
 fn repo_path(name: &str) -> Result<RepoPath> {

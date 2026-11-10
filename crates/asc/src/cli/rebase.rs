@@ -3277,7 +3277,7 @@ async fn create_autostash(
     if !unmerged.is_empty() {
         return Err(fatal("cannot rebase: you have unmerged files"));
     }
-    let dirty = stagebuild::stat_dirty_rows(ws, &ctx.config).await?;
+    let dirty = stagebuild::stat_dirty_rows(ctx, ws).await?;
     let changes = stagebuild::rows_to_changes(ws, index_root, &dirty).await?;
     let work_root = ws.engine.apply(index_root, &changes).await?;
     stagebuild::index_spine(ws, work_root, &changes).await?;

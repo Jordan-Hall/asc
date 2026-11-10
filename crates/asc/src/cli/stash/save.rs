@@ -7,13 +7,14 @@
 
 use std::ffi::OsString;
 
-use asc_core::id::{ChangesetId, TreeId};
+use asc_core::id::{ChangesetId, FileId, TreeId};
+use asc_core::object::Kind;
 use asc_core::path::RepoPath;
 use asc_git::projection::Head;
 use asc_state::state::stage::{self, StageRow, StageSet};
 use asc_state::state::workspaces;
 use asc_wc::ignore::IgnoreSources;
-use asc_wc::status;
+use asc_wc::status::{self, Eol};
 
 use super::stack;
 use crate::cli::commit::message;
@@ -122,17 +123,16 @@ pub async fn make(ctx: &Ctx, ws: &WsCtx, o: &Opts, notice: bool) -> Result<Optio
         .await
         .map_err(fatal)?;
 
-    // The work tree state of the changed tracked paths, on top of the index tree.
-    let mut rows: Vec<StageRow> = Vec::new();
+    // The changed tracked paths, with what the index holds for each (`None` once deleted).
+    let mut changed: Vec<(RepoPath, Option<Option<asc_core::object::Entry>>)> = Vec::new();
     let mut dirty = Vec::new();
     for c in st.unstaged.iter().filter(|c| matches(&c.path)) {
-        let row = if c.kind == status::ChangeKind::Deleted {
-            StageRow::from_leaf(c.path.as_bytes().to_vec(), None)
+        let staged = if c.kind == status::ChangeKind::Deleted {
+            None
         } else {
-            let prev = ws.engine.lookup(index, &c.path).await?.map(|e| e.kind);
-            stagebuild::row_of_path(ws, &c.path, prev).await?
+            Some(ws.engine.lookup(index, &c.path).await?)
         };
-        rows.push(row);
+        changed.push((c.path.clone(), staged));
         dirty.push(c.path.clone());
     }
     let staged = ws
@@ -181,11 +181,39 @@ pub async fn make(ctx: &Ctx, ws: &WsCtx, o: &Opts, notice: bool) -> Result<Optio
             1,
         ));
     }
-    if rows.is_empty() && staged.is_empty() && untracked.is_empty() {
+    if changed.is_empty() && staged.is_empty() && untracked.is_empty() {
         if notice {
             println!("No local changes to save");
         }
         return Ok(None);
+    }
+
+    // git reads the untracked files into a scratch index first, then the changed tracked ones,
+    // converting their line endings and warning for each a checkout would not give back.
+    let mut read: Vec<(RepoPath, Option<(FileId, u64)>)> =
+        untracked.iter().map(|p| (p.clone(), None)).collect();
+    for (path, staged) in &changed {
+        if let Some(entry) = staged {
+            let staged = entry
+                .as_ref()
+                .filter(|e| matches!(e.kind, Kind::File | Kind::Exec))
+                .map(|e| (FileId::from_bytes(e.id), e.size));
+            read.push((path.clone(), staged));
+        }
+    }
+    let eols = crate::cli::add::read_eols(ctx, ws, &read).await?;
+    let eol_of = |p: &RepoPath| eols.get(p).copied().unwrap_or(Eol::Keep);
+
+    // The work tree state of the changed tracked paths, on top of the index tree.
+    let mut rows: Vec<StageRow> = Vec::with_capacity(changed.len());
+    for (path, staged) in &changed {
+        rows.push(match staged {
+            None => StageRow::from_leaf(path.as_bytes().to_vec(), None),
+            Some(entry) => {
+                let prev = entry.as_ref().map(|e| e.kind);
+                stagebuild::row_of_path(ws, path, prev, eol_of(path)).await?
+            }
+        });
     }
 
     let changes = stagebuild::rows_to_changes(ws, index, &rows).await?;
@@ -207,14 +235,14 @@ pub async fn make(ctx: &Ctx, ws: &WsCtx, o: &Opts, notice: bool) -> Result<Optio
     if !untracked.is_empty() && o.fold_untracked {
         let mut urows = Vec::with_capacity(untracked.len());
         for p in &untracked {
-            urows.push(stagebuild::row_of_path(ws, p, None).await?);
+            urows.push(stagebuild::row_of_path(ws, p, None, eol_of(p)).await?);
         }
         let uchanges = stagebuild::rows_to_changes(ws, w_tree, &urows).await?;
         w_tree = ws.engine.apply(w_tree, &uchanges).await?;
     } else if !untracked.is_empty() {
         let mut urows = Vec::with_capacity(untracked.len());
         for p in &untracked {
-            urows.push(stagebuild::row_of_path(ws, p, None).await?);
+            urows.push(stagebuild::row_of_path(ws, p, None, eol_of(p)).await?);
         }
         let uchanges = stagebuild::rows_to_changes(ws, empty, &urows).await?;
         let u_tree = ws.engine.apply(empty, &uchanges).await?;
@@ -266,6 +294,10 @@ pub async fn clean(ctx: &Ctx, ws: &WsCtx, o: &Opts, made: &Made) -> Result<()> {
         seqstate::clear_merge(ws.projection.git_dir());
         seqstate::clear_replay(ws.projection.git_dir());
     }
+    // git removes the stashed untracked files (`git clean`) before it resets, so an untracked
+    // `.gitattributes` does not convert the files the reset writes. They are not in the index: a
+    // scratch stat cache takes the writes.
+    sync_worktree(ctx, CliEngine::empty_tree_id(), &made.untracked, false).await?;
     if o.keep_index {
         sync_worktree(ctx, made.index, &made.dirty, true).await?;
     } else {
@@ -299,8 +331,6 @@ pub async fn clean(ctx: &Ctx, ws: &WsCtx, o: &Opts, made: &Made) -> Result<()> {
             }
         }
     }
-    // The untracked files are not in the index: a scratch stat cache takes the writes.
-    sync_worktree(ctx, CliEngine::empty_tree_id(), &made.untracked, false).await?;
     Ok(())
 }
 
