@@ -1114,3 +1114,133 @@ fn config_validates_the_auth_keys() {
         );
     }
 }
+
+#[tokio::test]
+async fn public_repos_are_read_without_a_token_and_never_written() {
+    let f = fixture().await;
+    let authz =
+        TokenStoreAuthz::new(f.store.clone()).with_public(vec!["oss/*".into(), "acme/docs".into()]);
+    // Anyone reads what the patterns cover, as the anonymous caller.
+    let p = authz
+        .authorize(None, "oss/tool", Access::Read)
+        .await
+        .unwrap();
+    assert_eq!(p.id, "0:anonymous");
+    assert!(
+        authz
+            .authorize(None, "acme/docs", Access::Read)
+            .await
+            .is_ok()
+    );
+    // Nothing else, and never a write.
+    for (repo, access) in [
+        ("acme/web", Access::Read),
+        ("oss/tool", Access::Write),
+        ("oss/tool", Access::Admin),
+        ("acme/docs2", Access::Read),
+    ] {
+        assert_eq!(
+            authz.authorize(None, repo, access).await,
+            Err(AuthError::Unauthenticated),
+            "{repo} {access:?}"
+        );
+    }
+    // A token without a grant there still reads as itself, and cannot write.
+    let pat = f
+        .mint(TokenKind::Pat, Some("alice"), &["acme/web"], Access::Write)
+        .await;
+    let t = BearerToken::new(&pat).unwrap();
+    assert_eq!(
+        authz
+            .authorize(Some(&t), "oss/tool", Access::Read)
+            .await
+            .unwrap()
+            .id,
+        "pat:alice"
+    );
+    assert_eq!(
+        authz.authorize(Some(&t), "oss/tool", Access::Write).await,
+        Err(AuthError::Forbidden)
+    );
+    // A token that is not live is refused, even for a public read.
+    let unknown = format!("asp_{}_{}", "0".repeat(16), "A".repeat(43));
+    let t = BearerToken::new(&unknown).unwrap();
+    assert_eq!(
+        authz.authorize(Some(&t), "oss/tool", Access::Read).await,
+        Err(AuthError::Unauthenticated)
+    );
+    // Without the setting every read needs a token.
+    assert_eq!(
+        f.authz.authorize(None, "oss/tool", Access::Read).await,
+        Err(AuthError::Unauthenticated)
+    );
+}
+
+#[tokio::test]
+async fn the_server_reads_public_repos_from_the_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir
+        .path()
+        .join("asc.db")
+        .to_string_lossy()
+        .replace('\\', "/");
+    let key = dir
+        .path()
+        .join("token.key")
+        .to_string_lossy()
+        .replace('\\', "/");
+    let cfg = ServeConfig::parse(&format!(
+        "store = \"memory:///\"\ndb = \"sqlite:{db}?mode=rwc\"\n[auth]\nprovider = \"token_store\"\ntoken_key_file = \"{key}\"\npublic_repos = [\"oss/*\"]\n"
+    ))
+    .unwrap();
+    asc_serve::run_migrate(&cfg).await.unwrap();
+    token_cli::create(
+        &cfg,
+        CreateArgs {
+            kind: TokenKind::Deploy,
+            user: None,
+            repos: vec!["acme/web".into()],
+            access: Access::Read,
+            expires: None,
+            label: String::new(),
+        },
+    )
+    .await
+    .unwrap();
+    let server = asc_serve::authz::authorizer(&cfg).await.unwrap();
+    assert!(
+        server
+            .authorize(None, "oss/tool", Access::Read)
+            .await
+            .is_ok()
+    );
+    assert_eq!(
+        server.authorize(None, "acme/web", Access::Read).await,
+        Err(AuthError::Unauthenticated)
+    );
+}
+
+#[test]
+fn config_validates_public_repos() {
+    let base = "store = \"memory:///\"\ndb = \"sqlite:x.db\"\n[auth]\n";
+    let store = "provider = \"token_store\"\ntoken_key_file = \"/etc/asc/k\"\n";
+    let ok = ServeConfig::parse(&format!(
+        "{base}{store}public_repos = [\"*\", \"oss/*\", \"acme/docs\"]\n"
+    ))
+    .unwrap();
+    assert_eq!(ok.auth.public_repos.len(), 3);
+    for bad in ["\"oss\"", "\"oss/*/x\"", "\"\"", "\"/x\""] {
+        assert!(
+            ServeConfig::parse(&format!("{base}{store}public_repos = [{bad}]\n")).is_err(),
+            "{bad}"
+        );
+    }
+    // The forge decides what is public; the setting is refused there.
+    #[cfg(feature = "forgejo")]
+    assert!(
+        ServeConfig::parse(&format!(
+            "{base}provider = \"forgejo\"\npublic_repos = [\"oss/*\"]\n[forgejo]\nurl = \"https://f.example\"\n"
+        ))
+        .is_err()
+    );
+}
