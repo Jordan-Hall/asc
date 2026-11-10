@@ -388,11 +388,7 @@ impl ServerRefs {
             .await
             .map_err(|e| {
                 // Name the repository whose side refused, so the person knows which one.
-                Status::with_details(
-                    e.code(),
-                    format!("{}: {}", s.ctx.repo, e.message()),
-                    e.details().to_vec().into(),
-                )
+                asc_rpc::server::restate(&e, e.code(), format!("{}: {}", s.ctx.repo, e.message()))
             })?;
         }
         tx.commit().await.map_err(|e| internal("commit", &e))

@@ -824,10 +824,10 @@ fn fetch_first(status: Status) -> Status {
         return status;
     };
     let name = i.paths.first().map_or("", String::as_str);
-    Status::with_details(
+    asc_rpc::server::restate(
+        &status,
         status.code(),
         format!("! [rejected] {name} (fetch first)"),
-        bytes::Bytes::copy_from_slice(status.details()),
     )
 }
 
@@ -1773,6 +1773,10 @@ mod tests {
             .unwrap_err();
         assert_eq!(code(&s), "NOT_FAST_FORWARD");
         assert_eq!(s.message(), "! [rejected] refs/heads/master (fetch first)");
+        assert!(
+            asc_rpc::server::details_agree(&s),
+            "the trailer restates the rejection"
+        );
         assert_eq!(f.git_of("refs/heads/master").await, c2);
         // A fast-forward on the same land branch is a plain CAS, not a land: no rewrite.
         let c3 = f.forge.commit(Some(&c2), &[("a", "3")]);
@@ -2505,6 +2509,10 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(s.message(), "! [rejected] refs/heads/master (fetch first)");
+        assert!(
+            asc_rpc::server::details_agree(&s),
+            "the trailer restates the rejection"
+        );
     }
 
     #[tokio::test]

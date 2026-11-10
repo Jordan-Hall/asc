@@ -841,11 +841,10 @@ fn refusal(why: &'static str, shown: &str) -> Status {
         _ => {
             let typed = rpc(RpcError::RefUndoProtected(info(vec![shown.to_owned()])));
             // The typed code and details stay; the message says which rule applied.
-            Status::with_details_and_metadata(
+            asc_rpc::server::restate(
+                &typed,
                 typed.code(),
                 format!("{why} (Stacks.RevertLanded makes new changes instead)"),
-                Bytes::copy_from_slice(typed.details()),
-                typed.metadata().clone(),
             )
         }
     }

@@ -268,20 +268,18 @@ impl Projects for ProjectsService {
 pub fn config_status(path: &RepoPath, message: &str) -> Status {
     let mut info = ErrorInfo::default();
     info.paths.push(path.to_string());
-    let mut status = crate::server::rpc_status(&RpcError::ProjectsConfig(info));
+    let status = crate::server::rpc_status(&RpcError::ProjectsConfig(info));
     // `rpc_status` maps the code to FAILED_PRECONDITION; SPEC §12A.8 says INVALID_ARGUMENT.
-    let detail = Bytes::copy_from_slice(status.details());
     let clean: String = message
         .chars()
         .filter(|c| !c.is_control())
         .take(512)
         .collect();
-    status = Status::with_details(
+    crate::server::restate(
+        &status,
         tonic::Code::InvalidArgument,
         format!("{path}: {clean}"),
-        detail,
-    );
-    status
+    )
 }
 
 // ------------------------------------------------------------------------------ enums

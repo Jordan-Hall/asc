@@ -41,7 +41,7 @@ const MAX_REQUEST: usize = 64 * 1024;
 const MAX_PAGE_TOKEN: usize = 256;
 
 fn with_message(status: Status, message: &str) -> Status {
-    Status::with_details(status.code(), message, status.details().to_vec().into())
+    asc_rpc::server::restate(&status, status.code(), message)
 }
 
 fn blocked(reason: crate::netguard::BlockReason) -> Status {

@@ -286,6 +286,33 @@ pub fn rpc_status(e: &RpcError) -> Status {
     Status::with_details(code, message, Bytes::from(status.encode_to_vec()))
 }
 
+/// `s` with another code and message, its details and metadata kept. The `google.rpc.Status` in
+/// `grpc-status-details-bin` is re-encoded with the new code and message: gRPC clients (grpc-go among
+/// them) refuse a status whose trailer disagrees with `grpc-status` and `grpc-message` and report a
+/// bare INTERNAL "grpc-status-details-bin mismatch" instead of the error. A bare `ErrorDetail` of
+/// an older server is kept as is.
+pub fn restate(s: &Status, code: tonic::Code, message: impl Into<String>) -> Status {
+    let message = message.into();
+    let details = match GoogleStatus::decode(s.details()) {
+        Ok(mut g) if !s.details().is_empty() => {
+            g.code = code as i32;
+            g.message = message.clone();
+            Bytes::from(g.encode_to_vec())
+        }
+        _ => Bytes::copy_from_slice(s.details()),
+    };
+    Status::with_details_and_metadata(code, message, details, s.metadata().clone())
+}
+
+/// Whether the `google.rpc.Status` in `s`'s details, if it has one, carries `s`'s own code and
+/// message, which is what grpc-go checks before it reads the error. A status without one agrees.
+pub fn details_agree(s: &Status) -> bool {
+    match GoogleStatus::decode(s.details()) {
+        Ok(g) if !s.details().is_empty() => g.code == s.code() as i32 && g.message == s.message(),
+        _ => true,
+    }
+}
+
 /// The encoded `asc.v1.ErrorDetail` of a status, or empty: the bytes of the `Any` inside a
 /// `google.rpc.Status`, or the whole trailer when it is a bare `ErrorDetail` of an older server.
 pub fn status_error_detail_bytes(s: &Status) -> Bytes {
