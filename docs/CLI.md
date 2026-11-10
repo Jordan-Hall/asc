@@ -7,7 +7,7 @@ rules cover the whole page:
   exit codes, `--porcelain`, `-z` and `--format` (see [`CHEATSHEET.md`](CHEATSHEET.md)). Its row here
   shows one common use; `asc help <command>` shows asc's notes and then the compatibility manual.
 - The other commands (the stack verbs, `agent`, `ci`, `workflow`, `search`, `serve` ...)
-  is described by its own flags below. Most of them take `--json`, which prints one JSON object
+  are described by their rows below, which `asc <command> --help` prints. Most of them take `--json`, which prints one JSON object
   (or JSON lines for streams) instead of text. The `--remote <name|url>` flag, where a command has
   it, picks the server; the default is `origin`.
 
@@ -37,11 +37,17 @@ Configuration keys are in [`CONFIG.md`](CONFIG.md). Getting started is in
 | `auth login` | Stores a token through the system credential helpers (never required first: clone, fetch, pull, push, submit and ls-remote sign in on demand at a terminal). The token is read from standard input, never from an argument. | `printf '%s' "$TOKEN" \| asc auth login --host https://asc.example.org --token-stdin` |
 | `auth logout` | Forgets the stored token for a host: in the credential helpers and in the token asc keeps itself (keychain or private file). | `asc auth logout --host https://asc.example.org` |
 | `signing default` | Shows or sets (`on`, `off`) whether every new change is signed without `-S`. The switch belongs to your account on the server, so the web settings page and every machine agree; the command keeps a copy in `asc.signByDefault`. A set `commit.gpgSign` wins. `--remote`, `--json`. | `asc signing default on` |
+| `sessions list` | Lists the tokens, SSH keys and agent tokens of your account (`--login` another account, site administrators only). | `asc sessions list` |
+| `sessions revoke` | Signs out one of them by id (`tok:ID`, `ssh:ID` or `agt:ID`). | `asc sessions revoke tok:41` |
+| `sessions others` | Signs out everything but the credential in use, or the one `--keep` names. | `asc sessions others` |
+| `data-export request`, `list`, `delete` | Asks for an archive of your data (JSON Lines), lists the archives or deletes one. | `asc data-export request` |
+| `data-export download` | Writes an archive to a new file only you can read; it refuses an existing file. | `asc data-export download 3 -o my-data.jsonl` |
+| `usage` | What your account, an organization (`--owner org:NAME`) or the whole server (`--owner instance`) used this month or in `--period YYYY-MM`; `--spend key\|user\|repo\|day\|month` groups the AI spend instead. | `asc usage --owner org:acme --spend key` |
 | `doctor` | Checks the install, git and the store. `--fix` repairs what needs no administrator rights; `--workflows` lists push triggers on non-shared branches. | `asc doctor --json` |
 | `install-shim` | Optional git compatibility: puts a `git` next to `asc` so `git` is asc inside an asc workspace and real git elsewhere. | `asc install-shim` |
 | `upgrade` | Signature-verified upgrade, side by side. The release source is `asc.releasesUrl`, `ASC_DOWNLOAD_BASE_URL` or `--from <dir>`. | `asc upgrade --check` |
 | `self-update` | The same as `upgrade`, under the name the installers use. | `asc self-update --check` |
-| `help` | asc's notes for a command, then git's manual; `asc help git` prints the compatibility command map. | `asc help git` |
+| `help` | asc's notes for a command, then git's manual; for a command git does not have, its rows of this page. `asc <command> --help` and `-h` do the same, `asc --help` ends with the groups of this page, and `asc help git` prints the compatibility command map. | `asc agent token --help` |
 | `daemon start`, `stop`, `status` | Starts, stops or reports the background daemon (uploads, live updates, the virtual file system). | `asc daemon status` |
 | `debug stats` | The size of the cache and the store and the bytes each workspace holds. | `asc debug stats --json` |
 | `debug hydrations` | Which processes made files download. `--by-process` groups them. | `asc debug hydrations --by-process` |
@@ -220,6 +226,12 @@ All take `--json` and `--remote <name\|url>`. The scope is `--rev <rev>`, `--cha
 | `ci artifact upload` | Uploads files as a named artifact. `--root` sets the base directory, `--overwrite` replaces an artifact of that name. | `asc ci artifact upload build-logs target/logs --overwrite` |
 | `ci artifact download` | Downloads an artifact into `--path` (default: the current directory). | `asc ci artifact download build-logs --path ./logs` |
 | `ci artifact list` | Lists artifact names, newest first, optionally those starting with a prefix. | `asc ci artifact list build-` |
+| `deps scan` | Reads the dependency files of a revision, looks the packages up and records the findings. `--rev`, `--ecosystem`, `--refresh`. | `asc deps scan --ecosystem cargo` |
+| `deps findings` | Lists the findings. `--state`, `--ecosystem`, `--severity`, `--package`. | `asc deps findings --severity high` |
+| `deps updates` | Lists the updates that are available. `--security` only security fixes, `--ignored` also ignored ones. | `asc deps updates --security` |
+| `deps propose` | Records updates as changes on `agent/deps` refs. `--max-kind patch\|minor\|major`, `--max-groups`, `--dry-run`. | `asc deps propose --security --dry-run` |
+| `deps dismiss`, `reopen` | Dismisses a finding with a reason (`not-used`, `tolerable`, `inaccurate`, `fix-started`), or reopens it. | `asc deps dismiss 12 --reason not-used` |
+| `deps config get`, `set` | Shows the settings in `.asc/deps.toml`, or proposes a change to them. | `asc deps config get` |
 
 ## 9. Agents and workflows
 
@@ -240,6 +252,9 @@ All take `--json` and `--remote <name\|url>`. The scope is `--rev <rev>`, `--cha
 | `agent key replace` | Replaces the value of a key; the provider checks the new value first and the old one is kept when it is refused. | `asc agent key replace key_1 --key-env ANTHROPIC_API_KEY` |
 | `agent feature list` | Lists each AI feature with its key, cap and this month's spending. | `asc agent feature list --owner org:acme` |
 | `agent feature set`, `clear` | Chooses the key and monthly cap of a feature for an owner, or removes the setting so a less specific owner's applies. | `asc agent feature set review-summaries --key key_1 --monthly-cap 20` |
+| `ai share` | Shares an AI key with a person, an organization or a repository (`--with user:N\|org:N\|repo:O/N`); `--no-use` shows only the label, `--see-spend` lets the grantee's administrators see their cost. | `asc ai share key_1 --with org:acme` |
+| `ai shares`, `unshare` | Lists the shares of a key, or removes one. | `asc ai unshare key_1 sh_2` |
+| `ai caps` | Shows or sets when a key warns (`--warn <percent>`) and whether calls stop at the monthly cap (`--stop`, `--no-stop`). | `asc ai caps key_1 --warn 80 --stop` |
 | `workflow list` | Lists the workflows on trunk. | `asc workflow list` |
 | `workflow show` | Shows one workflow and its file. | `asc workflow show build` |
 | `workflow validate` | Checks a workflow file. | `asc workflow validate build -F .asc/workflows/build.toml` |
@@ -278,6 +293,10 @@ All take `--json` and `--remote <name\|url>`. The scope is `--rev <rev>`, `--cha
 | `serve admin outbox drain` | Reports or waits for undelivered outbox rows. | `asc serve admin outbox drain --wait --timeout 300` |
 | `serve admin maintenance` | Read-only maintenance on every node (SPEC §14.5): `on [--message M] [--for 30m] [--version V]`, `off`, `status`. Reads keep working. | `asc serve admin maintenance on --message "new disks" --for 30m` |
 | `serve admin set-mode` | Sets a repository's mode (`mirror` or `primary`) and `git_reads`. | `asc serve admin set-mode --repo acme/payments --mode primary` |
+| `backup list`, `targets` | The history, schedule and state of the server's backups, or the targets its configuration names (site administrators). | `asc backup list` |
+| `backup run`, `verify` | Starts a backup now (`--target`), or checks one. | `asc backup run --target offsite` |
+| `backup schedule` | Shows or changes the schedule: `--enable`, `--disable`, `--every-hours 1-168`, `--at HH:MM` (UTC), `--target`, `--keep-days`, `--keep-weeks`. | `asc backup schedule --every-hours 24 --at 02:00` |
+| `backup restore` | Stages a restore of a verified backup; the server applies it when it next starts. `--confirm RESTORE`. | `asc backup restore 9 --confirm RESTORE` |
 | `api` | Calls any RPC. `--list` lists them, `--docs` prints the reference, `--stdio` is the bridge the editor plugins use. | `asc api Repo/ListRefs --json '{"repo":{"name":"acme/payments"}}'` |
 | `mcp` | The MCP server on standard input and output. Read-only unless `--write[=local\|remote]`; `--remote <url>` proxies to a hosted server. See [`mcp.md`](mcp.md). | `asc mcp --toolsets core,search` |
 | `mcp install` | Writes the client configuration for a project or the user. | `asc mcp install --scope project` |
