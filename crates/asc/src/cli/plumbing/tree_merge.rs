@@ -223,11 +223,7 @@ fn merged_entry<E>(
 }
 
 /// git's `deleted_entry`: the path leaves the index, refusing when its file is not up to date.
-fn deleted_entry<E>(
-    path: &[u8],
-    old: Option<&Ent>,
-    uptodate: &mut Check<'_, E>,
-) -> StepResult<E> {
+fn deleted_entry<E>(path: &[u8], old: Option<&Ent>, uptodate: &mut Check<'_, E>) -> StepResult<E> {
     match old {
         Some(old) if !uptodate(path, old)? => Ok(Err(Refusal::NotUptodate(path.to_vec()))),
         _ => Ok(Ok(Step::none())),

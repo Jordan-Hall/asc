@@ -192,9 +192,9 @@ pub async fn run(ctx: &Ctx, args: Vec<OsString>) -> Result<ExitCode> {
     let ws = ctx.ws()?;
     match (o.delete, o.operands.as_slice()) {
         // HEAD is the only symbolic ref, and git refuses to delete it.
-        (true, [name]) if name == "HEAD" => Err(CliError::Fatal(
-            "deleting 'HEAD' is not allowed".into(),
-        )),
+        (true, [name]) if name == "HEAD" => {
+            Err(CliError::Fatal("deleting 'HEAD' is not allowed".into()))
+        }
         (true, [name]) => Err(CliError::Fatal(format!(
             "Cannot delete {name}, not a symbolic ref"
         ))),

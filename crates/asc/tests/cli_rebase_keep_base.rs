@@ -143,7 +143,6 @@ impl Pair {
         );
         a
     }
-
 }
 
 /// master: base, m1. topic (from base): t1, t2. HEAD is master.
@@ -193,7 +192,14 @@ fn keep_base_from_a_detached_head_with_a_branch_uses_the_branch() {
 #[test]
 fn keep_base_refusals_match_git() {
     let p = forked();
-    p.same_failure(&["rebase", "--keep-base", "--onto", "master", "master", "topic"]);
+    p.same_failure(&[
+        "rebase",
+        "--keep-base",
+        "--onto",
+        "master",
+        "master",
+        "topic",
+    ]);
     p.same_failure(&["rebase", "--keep-base", "nope", "topic"]);
     p.both(&["switch", "-q", "--orphan", "lone"]);
     p.edit("l", "l\n", "lone");
