@@ -103,7 +103,7 @@ Configuration keys are in [`CONFIG.md`](CONFIG.md). Getting started is in
 | `diff` | Compares revisions, the index and the tree. | `asc diff --stat master...HEAD` |
 | `blame` | Last change per line. | `asc blame -L 10,20 src/lib.rs` |
 | `grep` | Searches tracked files. | `asc grep -n "TODO" -- src` |
-| `rev-parse` | Resolves names. | `asc rev-parse HEAD` |
+| `rev-parse` | Resolves names, full and abbreviated git ids included. | `asc rev-parse HEAD` |
 | `rev-list` | Lists commits. | `asc rev-list --count master..HEAD` |
 | `merge-base` | Finds a common ancestor. | `asc merge-base master HEAD` |
 | `describe` | Names a commit from tags. | `asc describe --tags` |
@@ -125,7 +125,7 @@ Configuration keys are in [`CONFIG.md`](CONFIG.md). Getting started is in
 | Command | What it does | Example |
 |---|---|---|
 | `merge` | Joins histories. | `asc merge topic` |
-| `rebase` | Replays commits. `-i` opens the todo list. | `asc rebase --onto master topic~3 topic` |
+| `rebase` | Replays commits. `-i` opens the todo list; `--root` replays the branch from its first commit. | `asc rebase --onto master topic~3 topic` |
 | `cherry-pick` | Applies commits. | `asc cherry-pick abc1234` |
 | `revert` | Reverts commits. | `asc revert HEAD` |
 | `apply` | Applies a patch to the tree. | `asc apply fix.patch` |
