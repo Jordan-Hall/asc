@@ -247,3 +247,26 @@ migration (happy path, delete source, failure and second try, resume after a sto
 a damaged copy, moving back), health and recovery. `netguard.rs` and `vault/` have their own unit tests, and
 `crates/asc-store/src/s3.rs` tests the target settings. The compose `garage` service remains available for running the same flow against
 a real S3 implementation with `allow_loopback_http`.
+
+## Real-provider runs
+
+`asc doctor --store` from the release rehearsal binary (`asc-0.1.3-x86_64-unknown-linux-gnu.tar.gz`, commit `d03014beb900`,
+release run 42920063535) against a fresh single-node Garage on loopback, 2026-11-10. URL
+`s3://asc-doctor/probe?endpoint=http://127.0.0.1:3910&region=garage&path_style=true`, `ASC_ALLOW_LOOPBACK_HTTP=1`, a key with read,
+write and owner on the bucket.
+
+| Case | Garage v1.3.1 | Garage v2.3.0 | Garage v2.4.1 |
+|---|---|---|---|
+| `store-transport` | ok | ok | ok |
+| `store-connect`, right key | ok: the store answers a listing | ok | ok |
+| `store` (create-only probe) | fail: ignores create-only puts, `BucketRefs` is refused | same | same |
+| `store-integrity`, empty bucket | info: no objects to sample | same | same |
+| wrong secret | fail at `store-connect`: 403 `AccessDenied`, invalid signature | same | same |
+| missing bucket | fail at `store-connect`: 404 `NoSuchBucket` | same | same |
+
+The probe outcome matches `docs/garage-compat.md`: Garage accepts `If-None-Match: *` and ignores it, so a Garage bucket serves
+objects and packs but not `BucketRefs`. The S3 suites (`it_s3`, `it_bucketrefs`, including the pack round trip) run against the
+same three versions in the `garage` job of `.github/workflows/ci.yml`.
+
+Still to run: the same check against the staging bucket (it needs a bucket and a key scoped to it on the staging Garage) and
+`TestKey` against a real AI provider key.
