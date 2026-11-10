@@ -12,7 +12,8 @@ Options: `--sizes small,medium,asc`, `--runs N` (1..100, plus one untimed warm-u
 `--out DIR`, `--work DIR` (scratch location, default OS temp), `--asc PATH` (default
 `D:\dev\monorepo`, or `ASC_BENCH_ASC`), `--keep` (keep scratch repos).
 
-Outputs `results.json` (per-run ms, min/median/mean/max/stddev; `asc` is `null` without `ASC_BIN`,
+Outputs `results.json` (`meta.asc` is the asc version and `meta.ascSource` the repo the `asc` size is
+cut from; per-run ms, min/median/mean/max/stddev; `asc` is `null` without `ASC_BIN`,
 otherwise the same stats or `{status: "unsupported"|"error", error}`) and `results.md`.
 
 asc column
