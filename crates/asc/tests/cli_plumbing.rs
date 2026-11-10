@@ -2192,6 +2192,18 @@ async fn symbolic_ref_keeps_the_staged_state() {
     b.same(&["symbolic-ref", "-q", "refs/heads/master"]);
     b.same(&["symbolic-ref", "nonexistent"]);
     b.same(&["symbolic-ref"]);
+    // Deleting: HEAD is refused and no other name is a symbolic ref; nothing changes.
+    for args in [
+        &["symbolic-ref", "-d", "HEAD"][..],
+        &["symbolic-ref", "--delete", "-q", "HEAD"],
+        &["symbolic-ref", "-d", "refs/heads/master"],
+        &["symbolic-ref", "-d", "-q", "refs/heads/nope"],
+        &["symbolic-ref", "-d", "HEAD", "refs/heads/side"],
+    ] {
+        let (a, g) = (b.asc(args), b.git(args));
+        assert_eq!((a.code, a.stderr), (g.code, g.stderr), "{args:?}");
+    }
+    b.same(&["symbolic-ref", "HEAD"]);
 
     // HEAD to another branch: the stage keeps its content, status compares it with the new HEAD.
     b.same(&["symbolic-ref", "HEAD", "refs/heads/side"]);
