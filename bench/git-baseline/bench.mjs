@@ -5,7 +5,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync
 import { tmpdir } from 'node:os';
 import { basename, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { OPS, SIZES, fastImportStream, markdown, parseArgs, stats } from './lib.mjs';
+import { OPS, SIZES, benchMeta, fastImportStream, markdown, parseArgs, stats } from './lib.mjs';
 
 const log = (m) => process.stderr.write(`${m}
 `);
@@ -151,7 +151,15 @@ function main() {
   const ascBin = process.env.ASC_BIN ? resolve(process.env.ASC_BIN) : null;
   if (ascBin && !existsSync(ascBin)) throw new Error(`ASC_BIN not found: ${ascBin}`);
   const asc = ascBin ? makeRunner(work, ascBin, true) : null;
-  const doc = { meta: { git: git(work, ['--version']).trim(), asc: asc ? asc(work, ['--version']).trim() : null, platform: process.platform, runs: o.runs, sizes: o.sizes, asc: o.sizes.includes('asc') ? o.asc : null, repos: {} }, results: [] };
+  const meta = benchMeta({
+    git: git(work, ['--version']).trim(),
+    asc: asc ? asc(work, ['--version']).trim() : null,
+    platform: process.platform,
+    runs: o.runs,
+    sizes: o.sizes,
+    ascSource: o.asc,
+  });
+  const doc = { meta, results: [] };
   try {
     for (const size of o.sizes) {
       const dir = prepare(git, work, size, o.asc);

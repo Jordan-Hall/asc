@@ -65,6 +65,12 @@ export function fastImportStream(files, commits) {
 const cell = (c) => (c === null || c === undefined ? 'n/a' : (c.status ?? String(c.median)));
 
 // Table of median ms per size; with asc results, an asc column and an asc/git ratio per size.
+// The meta block of results.json: `asc` is the asc version (null without ASC_BIN), `ascSource` the repo
+// the `asc` size is cut from (null when that size is not run).
+export function benchMeta({ git, asc, platform, runs, sizes, ascSource }) {
+  return { git, asc: asc ?? null, platform, runs, sizes, ascSource: sizes.includes('asc') ? ascSource : null, repos: {} };
+}
+
 export function markdown(doc) {
   const withAsc = doc.results.some((r) => r.asc);
   const head = [`# ${withAsc ? 'asc vs git' : 'Git baseline'} (${doc.meta.git}${doc.meta.asc ? `; ${doc.meta.asc}` : ''}, ${doc.meta.runs} runs, median ms)`, ''];
