@@ -3,9 +3,11 @@
 //! A name is split into its directory view and its file view, and each is merged on its own: a
 //! directory view recurses (skipping every subtree one side left unchanged), a file view merges
 //! content only when both sides changed it differently. When both views survive, the path is a
-//! file/directory conflict and our side is kept.
+//! file/directory conflict: the directory keeps the name and the file moves aside to
+//! `<name>~<label of its side>` (`_0`, `_1`, ... appended while that name is taken), as git's ort
+//! does.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use asc_core::git::tree_oid;
@@ -68,6 +70,46 @@ fn kind_group(kind: Kind) -> u8 {
         Kind::Gitlink => 2,
         Kind::Dir => 3,
     }
+}
+
+/// A file that lost its name to a directory: it moves aside in [`Engine::merge_entries`],
+/// which knows every name of the directory.
+struct Displaced {
+    /// The merged file (still under its old name).
+    file: Entry,
+    /// The file view of the three sides.
+    stages: Stages,
+    /// Whether the file is on our side (the label of the new name).
+    ours: bool,
+}
+
+/// What one name merges to: the entry kept under the name, and a file moved aside.
+struct NameMerge {
+    entry: Option<Entry>,
+    displaced: Option<Displaced>,
+}
+
+/// The name a displaced file gets: `<name>~<label>` with each `/` of the label made `_`, then
+/// `_0`, `_1`, ... appended while the name is taken (git's `unique_path`).
+fn aside_name(name: &Name, label: &str, taken: &HashSet<Vec<u8>>) -> Result<Name, PathError> {
+    let mut base = name.as_bytes().to_vec();
+    base.push(b'~');
+    base.extend(label.bytes().map(|b| if b == b'/' { b'_' } else { b }));
+    let mut candidate = base.clone();
+    let mut suffix = 0u32;
+    while taken.contains(&candidate) {
+        candidate = base.clone();
+        candidate.extend_from_slice(format!("_{suffix}").as_bytes());
+        suffix += 1;
+    }
+    Name::new(candidate)
+}
+
+fn renamed(e: &Option<Entry>, name: &Name) -> Option<Entry> {
+    e.as_ref().map(|e| Entry {
+        name: name.clone(),
+        ..e.clone()
+    })
 }
 
 fn split(entry: &Option<Entry>) -> (Option<Entry>, Option<Entry>) {
@@ -160,14 +202,18 @@ impl<O: Objects, R: Refs> Engine<O, R> {
                 let [base, ours, theirs] = sides;
                 jobs.push((name, Stages { base, ours, theirs }));
             }
-            let merged: Vec<(Stages, Option<Entry>, Vec<Conflict>)> = stream::iter(jobs)
+            let mut taken: HashSet<Vec<u8>> = lists
+                .iter()
+                .flat_map(|l| l.iter().map(|e| e.name.as_bytes().to_vec()))
+                .collect();
+            let merged: Vec<(Stages, NameMerge, Vec<Conflict>)> = stream::iter(jobs)
                 .map(|(name, stages)| async move {
                     let path = child_path(prefix, &name)?;
                     let mut found = Vec::new();
-                    let entry = self
+                    let got = self
                         .merge_name(&name, &path, &stages, opts, &mut found)
                         .await?;
-                    Ok::<_, Error>((stages, entry, found))
+                    Ok::<_, Error>((stages, got, found))
                 })
                 .buffered(MERGE_FANOUT)
                 .try_collect()
@@ -176,9 +222,31 @@ impl<O: Objects, R: Refs> Engine<O, R> {
             let mut entries = Vec::with_capacity(merged.len());
             let mut ours_new: HashMap<Vec<u8>, usize> = HashMap::new();
             let mut theirs_new: Vec<(Vec<u8>, usize)> = Vec::new();
-            for (stages, entry, found) in merged {
+            let mut aside: Vec<Entry> = Vec::new();
+            for (stages, got, found) in merged {
                 out.extend(found);
-                let Some(entry) = entry else { continue };
+                if let Some(d) = got.displaced {
+                    let label = if d.ours {
+                        &opts.labels.ours
+                    } else {
+                        &opts.labels.theirs
+                    };
+                    let to = aside_name(&d.file.name, label, &taken)?;
+                    taken.insert(to.as_bytes().to_vec());
+                    out.push(Conflict {
+                        path: child_path(prefix, &to)?,
+                        kind: ConflictKind::FileDir,
+                        stages: Stages {
+                            base: renamed(&d.stages.base, &to),
+                            ours: renamed(&d.stages.ours, &to),
+                            theirs: renamed(&d.stages.theirs, &to),
+                        },
+                        marked_id: None,
+                        from: Some(child_path(prefix, &d.file.name)?),
+                    });
+                    aside.push(Entry { name: to, ..d.file });
+                }
+                let Some(entry) = got.entry else { continue };
                 if stages.base.is_none() {
                     let fold = casefold(entry.name.as_bytes());
                     match (&stages.ours, &stages.theirs) {
@@ -202,14 +270,20 @@ impl<O: Objects, R: Refs> Engine<O, R> {
                             theirs: Some(entries[ti].clone()),
                         },
                         marked_id: None,
+                        from: None,
                     });
                 }
+            }
+            if !aside.is_empty() {
+                entries.extend(aside);
+                entries.sort_by(|a, b| a.name.cmp(&b.name));
             }
             Ok(entries)
         })
     }
 
-    /// The merged entry at one name, or `None` when it ends up absent.
+    /// The merged entry at one name (`None` when it ends up absent), and the file that moves
+    /// aside when a directory and a file both survive.
     async fn merge_name(
         &self,
         name: &Name,
@@ -217,7 +291,7 @@ impl<O: Objects, R: Refs> Engine<O, R> {
         st: &Stages,
         opts: &MergeOptions,
         out: &mut Vec<Conflict>,
-    ) -> Result<Option<Entry>> {
+    ) -> Result<NameMerge> {
         let (db, fb) = split(&st.base);
         let (d_ours, f_ours) = split(&st.ours);
         let (d_theirs, f_theirs) = split(&st.theirs);
@@ -251,34 +325,41 @@ impl<O: Objects, R: Refs> Engine<O, R> {
         } else {
             None
         };
+        let kept = |entry| NameMerge {
+            entry,
+            displaced: None,
+        };
         match (dir, file) {
             (Some(d), Some(f)) => {
-                out.push(Conflict {
-                    path: path.clone(),
-                    kind: ConflictKind::FileDir,
-                    stages: st.clone(),
-                    marked_id: None,
-                });
-                if st.ours.as_ref().is_some_and(|e| e.kind != Kind::Dir) {
-                    out.extend(file_found);
-                    Ok(Some(f))
-                } else {
-                    out.extend(dir_found);
-                    Ok(Some(d))
-                }
+                // The file view can only be an addition or a modify/delete (one side holds the
+                // directory); the conflict of the moved file carries its stages, so the file
+                // view's own conflict is not kept twice.
+                out.extend(dir_found);
+                Ok(NameMerge {
+                    entry: Some(d),
+                    displaced: Some(Displaced {
+                        file: f,
+                        stages: Stages {
+                            base: fb,
+                            ours: f_ours.clone(),
+                            theirs: f_theirs,
+                        },
+                        ours: f_ours.is_some(),
+                    }),
+                })
             }
             (Some(d), None) => {
                 out.extend(dir_found);
-                Ok(Some(d))
+                Ok(kept(Some(d)))
             }
             (None, Some(f)) => {
                 out.extend(file_found);
-                Ok(Some(f))
+                Ok(kept(Some(f)))
             }
             (None, None) => {
                 out.extend(dir_found);
                 out.extend(file_found);
-                Ok(None)
+                Ok(kept(None))
             }
         }
     }
@@ -350,6 +431,7 @@ impl<O: Objects, R: Refs> Engine<O, R> {
                     kind: ConflictKind::ModifyDelete,
                     stages,
                     marked_id: None,
+                    from: None,
                 });
                 return Ok(Some(kept.clone()));
             }
@@ -366,6 +448,7 @@ impl<O: Objects, R: Refs> Engine<O, R> {
                 kind,
                 stages,
                 marked_id: None,
+                from: None,
             });
             Ok(Some(o.clone()))
         };
@@ -414,6 +497,7 @@ impl<O: Objects, R: Refs> Engine<O, R> {
                 kind,
                 stages,
                 marked_id: Some(blob.file),
+                from: None,
             });
         }
         Ok(Some(Entry {
@@ -638,15 +722,79 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn file_against_directory_keeps_ours() {
+    async fn file_against_directory_moves_the_file_aside() {
         let e = engine();
+        // Ours adds the file: it moves to `x~ours`, at stage 2 only.
         let got = merge(&e, &[], &[("x", "file\n")], &[("x/y", "deep\n")], &opts()).await;
         assert_eq!(got.conflicts.len(), 1);
-        assert_eq!(got.conflicts[0].kind, ConflictKind::FileDir);
-        assert_eq!(read(&e, got.root, "x").await, Some(b"file\n".to_vec()));
-        let got = merge(&e, &[], &[("x/y", "deep\n")], &[("x", "file\n")], &opts()).await;
-        assert_eq!(got.conflicts[0].kind, ConflictKind::FileDir);
+        let c = &got.conflicts[0];
+        assert_eq!(c.kind, ConflictKind::FileDir);
+        assert_eq!(c.path.as_bytes(), b"x~ours");
+        assert_eq!(c.from.as_ref().map(RepoPath::as_bytes), Some(&b"x"[..]));
+        assert!(c.stages.base.is_none() && c.stages.theirs.is_none());
+        assert_eq!(c.stages.ours.as_ref().unwrap().name.as_bytes(), b"x~ours");
         assert_eq!(read(&e, got.root, "x/y").await, Some(b"deep\n".to_vec()));
+        assert_eq!(read(&e, got.root, "x~ours").await, Some(b"file\n".to_vec()));
+        // Theirs adds the file: `x~theirs`, at stage 3.
+        let got = merge(&e, &[], &[("x/y", "deep\n")], &[("x", "file\n")], &opts()).await;
+        let c = &got.conflicts[0];
+        assert_eq!(c.path.as_bytes(), b"x~theirs");
+        assert!(c.stages.ours.is_none() && c.stages.theirs.is_some());
+        assert_eq!(read(&e, got.root, "x/y").await, Some(b"deep\n".to_vec()));
+        assert_eq!(
+            read(&e, got.root, "x~theirs").await,
+            Some(b"file\n".to_vec())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_modified_file_against_a_new_directory_keeps_its_base_stage() {
+        let e = engine();
+        let got = merge(
+            &e,
+            &[("x", "one\n")],
+            &[("x", "two\n")],
+            &[("x/y", "deep\n")],
+            &opts(),
+        )
+        .await;
+        assert_eq!(got.conflicts.len(), 1);
+        let c = &got.conflicts[0];
+        assert_eq!(
+            (c.kind, c.path.as_bytes()),
+            (ConflictKind::FileDir, &b"x~ours"[..])
+        );
+        assert!(c.stages.base.is_some() && c.stages.ours.is_some() && c.stages.theirs.is_none());
+        assert_eq!(read(&e, got.root, "x~ours").await, Some(b"two\n".to_vec()));
+    }
+
+    #[tokio::test]
+    async fn the_aside_name_flattens_slashes_and_skips_taken_names() {
+        let e = engine();
+        let mut o = opts();
+        o.labels.ours = "feature/a".into();
+        let got = merge(
+            &e,
+            &[],
+            &[("x", "file\n"), ("x~feature_a", "taken\n")],
+            &[("x/y", "deep\n"), ("x~feature_a_0", "taken too\n")],
+            &o,
+        )
+        .await;
+        let c = got
+            .conflicts
+            .iter()
+            .find(|c| c.kind == ConflictKind::FileDir)
+            .unwrap();
+        assert_eq!(c.path.as_bytes(), b"x~feature_a_1");
+        assert_eq!(
+            read(&e, got.root, "x~feature_a_1").await,
+            Some(b"file\n".to_vec())
+        );
+        assert_eq!(
+            read(&e, got.root, "x~feature_a").await,
+            Some(b"taken\n".to_vec())
+        );
     }
 
     #[tokio::test]

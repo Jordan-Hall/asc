@@ -250,6 +250,9 @@ pub struct Conflict {
     /// The stored file holding the merged text with conflict markers (`Content` and `AddAdd`
     /// text conflicts); this is also the file in the merged tree.
     pub marked_id: Option<FileId>,
+    /// A `FileDir` conflict: the path the file had, where the directory now is. `path` is
+    /// where the file went (`<from>~<label of its side>`, as git's ort names it).
+    pub from: Option<RepoPath>,
 }
 
 /// A merged tree and its conflicts, sorted by path.

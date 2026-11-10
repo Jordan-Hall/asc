@@ -19,7 +19,7 @@ use asc_core::sig::Signature;
 use asc_engine::commit::{NewChangeset, PathPolicy};
 use asc_engine::derive::{Gen, index_commit_git};
 use asc_engine::merge::{
-    ConflictKind, ConflictStyle, DriverRequest, DriverResult, Favor, Labels, MergeAttr,
+    Conflict, ConflictKind, ConflictStyle, DriverRequest, DriverResult, Favor, Labels, MergeAttr,
     MergeAttributes, MergeDrivers, MergeOptions, MergeOutcome,
 };
 use asc_git::projection::Head;
@@ -452,12 +452,36 @@ pub fn messages(
                     "CONFLICT (modify/delete): {p} deleted in {deleted} and modified in {modified}.  Version {modified} of {p} left in tree."
                 ));
             }
-            ConflictKind::FileDir | ConflictKind::CaseFold => {
+            ConflictKind::FileDir => lines.extend(file_dir_lines(c, ours, theirs)),
+            ConflictKind::CaseFold => {
                 lines.push(format!("CONFLICT (file/directory): {p}"));
             }
         }
     }
     by_path.into_values().flatten().collect()
+}
+
+/// git's lines for a file moved aside by a directory: the file/directory line, then, when the
+/// file had a base and only one side kept it, the modify/delete line for its new path.
+pub fn file_dir_lines(c: &Conflict, ours: &str, theirs: &str) -> Vec<String> {
+    let p = &c.path;
+    let Some(from) = &c.from else {
+        return vec![format!("CONFLICT (file/directory): {p}")];
+    };
+    let (side, other) = if c.stages.ours.is_some() {
+        (ours, theirs)
+    } else {
+        (theirs, ours)
+    };
+    let mut lines = vec![format!(
+        "CONFLICT (file/directory): directory in the way of {from} from {side}; moving it to {p} instead."
+    )];
+    if c.stages.base.is_some() && (c.stages.ours.is_some() != c.stages.theirs.is_some()) {
+        lines.push(format!(
+            "CONFLICT (modify/delete): {p} deleted in {other} and modified in {side}.  Version {side} of {p} left in tree."
+        ));
+    }
+    lines
 }
 
 /// Prints the merge messages to stdout.
@@ -486,11 +510,9 @@ pub fn conflicts_block(outcome: &MergeOutcome, comment: u8) -> Vec<u8> {
 
 /// Refuses a conflict kind asc cannot materialise the way git does.
 pub fn refuse_unsupported(outcome: &MergeOutcome) -> Result<()> {
-    if let Some(c) = outcome
-        .conflicts
-        .iter()
-        .find(|c| matches!(c.kind, ConflictKind::FileDir | ConflictKind::CaseFold))
-    {
+    if let Some(c) = outcome.conflicts.iter().find(|c| {
+        c.kind == ConflictKind::CaseFold || (c.kind == ConflictKind::FileDir && c.from.is_none())
+    }) {
         return Err(fatal(format!(
             "asc: a file/directory or case conflict at '{}' is not supported yet; nothing was changed",
             c.path
@@ -661,7 +683,8 @@ pub async fn materialise(
         let merged = ws.engine.lookup(outcome.root, path).await?;
         match (&head, &merged) {
             (_, Some(m)) if m.kind != Kind::Dir => rows.push(leaf_row(path, 0, m)),
-            (Some(h), None) if h.kind != Kind::Dir => {
+            // Gone, or a directory now (a file moved aside for it): the file leaves the index.
+            (Some(h), _) if h.kind != Kind::Dir => {
                 rows.push(StageRow::from_leaf(path.as_bytes().to_vec(), None))
             }
             _ => {}
@@ -835,6 +858,7 @@ mod tests {
             kind,
             stages,
             marked_id: None,
+            from: None,
         }
     }
 

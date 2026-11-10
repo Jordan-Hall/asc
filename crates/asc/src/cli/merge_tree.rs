@@ -383,11 +383,33 @@ fn write_nul_messages(
     differ: &BTreeSet<RepoPath>,
     names: &[String],
 ) {
-    let mut entries: Vec<(RepoPath, usize, String, String)> = Vec::new();
+    // (primary path, order under it, every path of the record, type, message)
+    let mut entries: Vec<(RepoPath, usize, Vec<RepoPath>, String, String)> = Vec::new();
     for (path, kind, text) in typed_messages(outcome, differ) {
-        entries.push((path, 0, kind, text));
+        entries.push((path.clone(), 0, vec![path], kind, text));
     }
     for c in &outcome.conflicts {
+        if let (ConflictKind::FileDir, Some(from)) = (c.kind, &c.from) {
+            let lines = conflict::file_dir_lines(c, &names[0], &names[1]);
+            for (i, line) in lines.into_iter().enumerate() {
+                let (paths, kind) = if i == 0 {
+                    (
+                        vec![c.path.clone(), from.clone()],
+                        "CONFLICT (file/directory)",
+                    )
+                } else {
+                    (vec![c.path.clone()], "CONFLICT (modify/delete)")
+                };
+                entries.push((
+                    c.path.clone(),
+                    1 + i,
+                    paths,
+                    kind.to_owned(),
+                    format!("{line}\n"),
+                ));
+            }
+            continue;
+        }
         let (kind, text) = match c.kind {
             ConflictKind::Content | ConflictKind::Binary => (
                 "CONFLICT (contents)",
@@ -413,13 +435,21 @@ fn write_nul_messages(
             }
             ConflictKind::FileDir | ConflictKind::CaseFold => continue,
         };
-        entries.push((c.path.clone(), 1, kind.to_owned(), text));
+        entries.push((
+            c.path.clone(),
+            1,
+            vec![c.path.clone()],
+            kind.to_owned(),
+            text,
+        ));
     }
     entries.sort_by(|a, b| (&a.0, a.1).cmp(&(&b.0, b.1)));
-    for (path, _, kind, text) in entries {
-        out.extend_from_slice(b"1\0");
-        out.extend_from_slice(path.as_bytes());
-        out.push(0);
+    for (_, _, paths, kind, text) in entries {
+        out.extend_from_slice(format!("{}\0", paths.len()).as_bytes());
+        for path in paths {
+            out.extend_from_slice(path.as_bytes());
+            out.push(0);
+        }
         out.extend_from_slice(kind.as_bytes());
         out.push(0);
         out.extend_from_slice(text.as_bytes());

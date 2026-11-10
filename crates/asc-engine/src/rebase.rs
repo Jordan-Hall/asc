@@ -149,6 +149,7 @@ impl<O: Objects, R: Refs> Engine<O, R> {
                             theirs: self.lookup(cs.root, a).await?,
                         },
                         marked_id: None,
+                        from: None,
                     });
                 }
             }
