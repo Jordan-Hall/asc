@@ -8,6 +8,7 @@ import { DepsService } from "../src/gen/asc/v1/deps_pb";
 
 const METHODS = [
   "Scan",
+  "ScanStatus",
   "ListFindings",
   "ListUpdates",
   "ProposeUpdate",
@@ -17,7 +18,7 @@ const METHODS = [
 ];
 
 describe("DepsService", () => {
-  test("the generated service has the seven RPCs", () => {
+  test("the generated service has the eight RPCs", () => {
     expect(DepsService.typeName).toBe("asc.v1.DepsService");
     expect(DepsService.methods.map((m) => m.name).sort()).toEqual([...METHODS].sort());
   });
