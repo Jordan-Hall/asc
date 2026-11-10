@@ -39,10 +39,18 @@ pub enum Eol {
     Auto,
 }
 
-/// Attribute lookup for ingest normalisation. The attribute-aware implementation lives with
-/// `asc add`; status only needs the answer per path.
+/// Line-ending conversion per path: on ingest ([`Eol`]) and on checkout
+/// ([`crate::eol::Smudge`]). The attribute-aware implementation lives with `asc add`.
 pub trait EolRules {
     fn eol(&self, path: &RepoPath) -> Eol;
+
+    /// What a checkout does to the line endings of `path`.
+    fn checkout(&self, _path: &RepoPath) -> crate::eol::Smudge {
+        crate::eol::Smudge::None
+    }
+
+    /// The attribute files on disk changed: what was read of them is read again.
+    fn reread(&self) {}
 }
 
 /// No attributes: nothing is normalised.
@@ -194,7 +202,16 @@ pub(crate) fn probe(
     let oid = if symlink {
         hash_bytes(&link_target(&abs)?)?
     } else {
-        hash_file(&abs, eol.eol(path))?
+        let rule = eol.eol(path);
+        let oid = hash_file(&abs, rule)?;
+        match cached {
+            // Under `text=auto` git keeps the CRLFs of content staged with them (its
+            // `has_crlf_in_index`), so a file that still holds exactly that content is unchanged.
+            Some(e) if rule == Eol::Auto && e.oid != oid && hash_file(&abs, Eol::Keep)? == e.oid => {
+                e.oid
+            }
+            _ => oid,
+        }
     };
     Ok(Probe::File { oid, symlink, exec })
 }

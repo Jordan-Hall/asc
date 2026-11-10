@@ -1,6 +1,7 @@
 //! Plain working copy (SPEC §10.4): materialise trees from the machine store and switch between
 //! them, updating only changed paths and keeping the synthetic index in step.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::{self, Write};
@@ -25,6 +26,7 @@ use asc_store::objects::{Error as StoreError, Objects};
 use asc_store::refs::Refs;
 use asc_store::storeset::StoreSet;
 
+use crate::eol::Smudge;
 use crate::ignore::IgnoreSources;
 use crate::redirect::Redirections;
 use crate::safe_path::{Verified, case_collisions, is_link, remove_link, try_fs_path};
@@ -219,12 +221,25 @@ pub async fn checkout<O: Objects, R: Refs>(
     for path in &plan.deletes {
         report.removed += u64::from(remove_path(wc.root, path, &mut verified)?);
     }
+    // As git's checkout reads attributes from the new index, the attribute files are written
+    // first and every other file is converted by the attributes of the tree being checked out.
+    let (attr_files, rest): (Vec<_>, Vec<_>) =
+        plan.updates.iter().partition(|(p, _)| is_attribute_file(p));
     let mut fresh: Vec<(RepoPath, Entry)> = Vec::new();
-    for (path, change) in &plan.updates {
+    for (path, change) in &attr_files {
         fresh.push((path.clone(), entry_of(path, change)?));
         write_path(wc, path, change, force, &mut verified).await?;
         report.written += 1;
     }
+    if !attr_files.is_empty() || plan.deletes.iter().any(is_attribute_file) {
+        wc.eol.reread();
+    }
+    for (path, change) in &rest {
+        fresh.push((path.clone(), entry_of(path, change)?));
+        write_path(wc, path, change, force, &mut verified).await?;
+        report.written += 1;
+    }
+    fresh.sort_by(|a, b| a.0.cmp(&b.0));
     for (path, change) in outside {
         if !matches!(change, Change::Delete) {
             fresh.push((path.clone(), entry_of(&path, &change)?));
@@ -233,6 +248,12 @@ pub async fn checkout<O: Objects, R: Refs>(
     }
     rewrite_index(wc, &mut index, &plan.deletes, &report.skipped, fresh)?;
     Ok(report)
+}
+
+/// Whether `path` is a `.gitattributes` or `.ascattributes` file.
+fn is_attribute_file(path: &RepoPath) -> bool {
+    let name = path.as_bytes().rsplit(|&b| b == b'/').next().unwrap_or_default();
+    name == b".gitattributes" || name == b".ascattributes"
 }
 
 fn entry_of(path: &RepoPath, change: &Change) -> Result<Entry> {
@@ -444,7 +465,16 @@ async fn write_path<O: Objects, R: Refs>(
             ..
         } => {
             let tmp = temp_beside(&dest);
+            let smudge = if *kind == Kind::Symlink {
+                Smudge::None
+            } else {
+                wc.eol.checkout(path)
+            };
             let made = match wc.shared {
+                // A converted file differs from its blob, so it is never a shared link.
+                _ if smudge != Smudge::None => {
+                    materialise_smudged(wc, *kind, *file, *size, smudge, &tmp).await
+                }
                 Some(area) if *kind != Kind::Symlink => {
                     match link_shared(wc, area, *kind, *file, *size, *git, &tmp).await {
                         Ok(true) => Ok(()),
@@ -527,6 +557,24 @@ async fn materialise<O: Objects, R: Refs>(
         write_chunked(wc.store, file, tmp).await?;
     }
     set_mode(tmp, kind == Kind::Exec).map_err(io_at(tmp))
+}
+
+/// Writes `file` to `tmp` as a regular file with the line endings a checkout under `smudge`
+/// gives (git's `crlf_to_worktree`).
+async fn materialise_smudged<O: Objects, R: Refs>(
+    wc: &Wc<'_, O, R>,
+    kind: Kind,
+    file: FileId,
+    size: u64,
+    smudge: Smudge,
+    tmp: &Path,
+) -> Result<()> {
+    materialise(wc, kind, file, size, tmp).await?;
+    let data = fs::read(tmp).map_err(io_at(tmp))?;
+    if let Cow::Owned(converted) = crate::eol::to_worktree(&data, smudge) {
+        fs::write(tmp, converted).map_err(io_at(tmp))?;
+    }
+    Ok(())
 }
 
 /// Links `tmp` to the sealed area file of blob `git`, writing and sealing that file first when
