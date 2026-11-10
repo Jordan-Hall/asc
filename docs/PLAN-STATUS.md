@@ -2,7 +2,7 @@
 
 Audited 2026-10-25 against `docs/PLAN.md` (master). Evidence is the oldest commit naming the unit, or a file path. Excluded: K* units, P04-P07 and P01a-P44b. Forgejo-side units are checked in `D:/dev/forgejo` and `D:/dev/forgejo-runner`. "Implemented" means code landed; acceptance commands were not re-run.
 
-Not complete: C37, C41b, C44, C47, I24, P58
+Not complete: none. Re-checked 2026-11-10: the six hub units this audit listed as not complete (C37, C41b, C44, C47, I24, P58) are in the hub (ASC Hub, branch asc/v16); their rows below name the files.
 
 | Unit | Title | Status | Evidence |
 |---|---|---|---|
@@ -175,19 +175,19 @@ Not complete: C37, C41b, C44, C47, I24, P58
 | C34 | PR ↔ change, `stack_parent_id`, the `merge_base` rule and its recomputation patch, AGit lo | implemented | forgejo repo c348fc7221 |
 | C35 | `SetReviewState` notifier on PR, review and check events | implemented | forgejo repo 6acd5c6032 |
 | C36 | Stack panel, needs-restack banner, mid-stack merge block (web and `POST /pulls/{n}/merge`) | implemented | forgejo repo acf55a84f5 |
-| C37 | Versions dropdown, interdiff, since-last-review | partial | forgejo: services/pull/asc_versions.go and templates/repo/pulls/asc_versions.tmpl exist but are uncommitted (in progress) |
+| C37 | Versions dropdown, interdiff, since-last-review | implemented | hub: `routers/web/repo/pull_asc_versions.go`, `templates/repo/pulls/asc_versions.tmpl` |
 | C38 | Merge stack (N), post-merge `RestackChanges`, approvals kept | implemented | forgejo repo d23c205806 |
 | C39 | Stack queue: merge-when-ready cascade, order, pause, revalidate, the `RequestMerge` intern | implemented | forgejo repo 3593f94ca6 |
 | C40 | Actions stack context (K14 extension) | implemented | forgejo repo 5c5537f9b0 |
 | C41a | Inbox state model (whose turn, pin, snooze) | implemented | forgejo repo bcee3ebea4 |
-| C41b | Inbox API `GET /api/v1/user/asc/inbox` | missing | forgejo: no /api/v1/user/asc/inbox route (C41c page committed without it) |
+| C41b | Inbox API `GET /api/v1/user/asc/inbox` | implemented | hub: `routers/api/v1/user/asc_inbox.go` (`ListAscInbox`), route in `routers/api/v1/api.go` |
 | C41c | Inbox page | implemented | forgejo repo f8dd7aca7a |
 | C42 | Commit graph page over `CommitGraph` | implemented | forgejo repo c463bba90a |
 | C43 | Overlap and mergeability badges, stack compare view | implemented | forgejo repo 71021be626 |
-| C44 | Suggested changesets (v1.x) | missing | forgejo: no suggested-changesets code (v1.x) |
+| C44 | Suggested changesets (v1.x) | implemented | hub: `services/pull/asc_suggestion.go`, `routers/web/repo/pull_asc_suggestion.go` |
 | C45 | Git import writes `ChangeMeta` (jj header, Gerrit trailer, scoped id) | implemented | dc771a1 |
 | C46 | Branch-chain PR retarget (SPEC §20.5 flow 6) | implemented | forgejo repo e8b7c43b6e |
-| C47 | "Restore version" (moves `refs/pull/<n>/head` to a kept version) | missing | forgejo: no Restore version code |
+| C47 | "Restore version" (moves `refs/pull/<n>/head` to a kept version) | implemented | hub: `routers/web/repo/pull_asc_restore.go` |
 | C48 | "Revert landed stack" (`Apply(REVERT)` over `FindLanding`, newest first) | implemented | forgejo repo 590f949e64 |
 | C49 | `Watch KIND_STACK` events (server emit, client delivery) | implemented | crates/asc/src/daemon/watch_stack.rs, tests/stack_watch.rs (no unit-named commit) |
 | C50 | `RequestMerge` RPC (proxies to the forge's queue) | implemented | crates/asc-serve/src/changes/request_merge.rs (no unit-named commit) |
@@ -288,7 +288,7 @@ Not complete: C37, C41b, C44, C47, I24, P58
 | I21 | Wire mcp.md's `search` tool (M15) to `CodeIntel`: mode mapping, additive fields, tool desc | implemented | f50216f |
 | I22 | Output renderer: token budget, `also_at` dedup, redaction, control-char stripping, provena | implemented | a59c00a |
 | I23 | Forgejo `asc` code-indexer backend | implemented | forgejo repo e4e5c8ccb9 |
-| I24 | Repo search page: modes, scope selector, coverage note; shows server-redacted text only | missing | forgejo: no repo search page with modes, scope and coverage note |
+| I24 | Repo search page: modes, scope selector, coverage note; shows server-redacted text only | implemented | hub: `routers/web/repo/asc_search_page.go`, `asc_search_scope.go` |
 | I25 | File-view symbol panel and outline; PR "find usages in base" | implemented | forgejo repo 62c6c15200 |
 | I26 | `/explore/code` fan-out and the `/api/v1/.../asc/{search,symbols,semantic}` API | implemented | forgejo repo 27f88e84be |
 | I27 | `bench/codeintel`: scenarios against rg, git grep and Zoekt; gates of §8 | implemented | f0628d9 |
@@ -315,7 +315,7 @@ Not complete: C37, C41b, C44, C47, I24, P58
 | P55 | Spike: OAuth loopback (moved port, `state`, PKCE, variable-port redirect against P06) | implemented | 791b803 |
 | P56 | `asc-ui` split dialog (hunks and lines per piece) and submit dialog (draft/publish, reviewe | implemented | 0af79e5 |
 | P57 | asc API additions A1, A2, A4: `CommitGraphResponse` first-page `total` and `ref_markers`, a | implemented | 84b3a4a |
-| P58 | Inbox count: `section`, `limit`, `X-Total-Count`, `If-None-Match` | missing | forgejo: no inbox section/limit/X-Total-Count/ETag handling |
+| P58 | Inbox count: `section`, `limit`, `X-Total-Count`, `If-None-Match` | implemented | hub: `routers/api/v1/user/asc_inbox.go` (`section` filter, ETag and 304), `/api/v1/user/asc/inbox/count` (`CountAscInbox`) |
 | P59 | IDE live toggle, restack item and live-conflict notice | implemented | ba07955 |
 | A01 | `asc/actions` mirror | implemented | e2d2055 |
 | O02 | Release and distribution | implemented | bdd40d7 |
