@@ -417,6 +417,11 @@ mod tests {
             .expect("run");
         assert!(!out.status.success());
         let err = String::from_utf8_lossy(&out.stderr);
-        assert!(err.contains("not a git repository"), "stderr: {err}");
+        // Git versions word the refusal differently; both mean the gitdir is not a repository.
+        assert!(
+            err.contains("not a git repository")
+                || err.contains("does not point to a valid repository"),
+            "stderr: {err}"
+        );
     }
 }
