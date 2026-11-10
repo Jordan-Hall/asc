@@ -2,7 +2,7 @@
 
 Measured results for asc-store's S3 layer against real Garage. The suite is `cargo test -p asc-store --features it-s3`
 (the `garage_*` tests of `it_s3.rs` and `it_bucketrefs.rs`), run by `build/ci/garage-it.sh` and by the `garage-compat`
-job in `.forgejo/workflows/asc-ci.yml`. No Docker is involved: the script starts the static Garage binary, builds the
+job in `.forgejo/workflows/asc-ci.yml` and the `garage` job in `.github/workflows/ci.yml`. No Docker is involved: the script starts the static Garage binary, builds the
 layout, imports the fixed test key and creates bucket `asc-it` with the `garage` CLI (the admin API differs between v1 and
 v2, the CLI does not).
 
@@ -46,6 +46,7 @@ script rewrites it to `replication_factor = 1` in its temp copy, which all three
 | `garage_open_roundtrip` (`s3::open_with` URL: path-style, region `garage`, put, get, ranged get, CopyObject, list, delete, 404) | pass | pass | pass |
 | `garage_large_value_is_multipart` (32 MiB + 1 KiB through `open_with`, multipart upload and read back) | pass | pass | pass |
 | `garage_list_paginates` (1200 keys, more than one ListObjectsV2 page) | pass | pass | pass |
+| `garage_packs_roundtrip` (`BucketObjects` with bucket packs: pack 40 loose objects, loose copies gone, reads, `pack_verify`, a fresh reader through the bucket index, `pack_reindex`) | pass | pass | pass |
 | `garage_strict_store_does_not_downgrade` (`open_strict` probe, `open_with` Create twice) | pass | pass | pass |
 | `garage_probe_is_reported` (raw store, `probe`) | pass (probe fails) | pass (probe fails) | pass (probe fails) |
 | 6 of 6 | 6 pass, 0 fail | 6 pass, 0 fail | 6 pass, 0 fail |
