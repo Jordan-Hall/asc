@@ -2,7 +2,7 @@
 
 Upstream bugs in pinned git (v2.55.0) or in a library it uses: behaviour nobody intends and the docs do not describe. Method and grammar: `docs/git-fidelity.md`. Odd-but-intended behaviour is in `git-quirks.md`. Ids carry a hyphen (`U-1`) because PLAN's `U01` to `U89` are units. Each entry has exactly one decision; a `refuse` or `idealize` entry also has a bullet under `## Upstream` in `divergences.md`.
 
-Seeded 2026-10-23. Counts: 2 defects (replicate 0, refuse 2, idealize 0). Nothing here has been reported upstream; a report, when made, goes in the entry as `- **Upstream:** <link>`.
+Seeded 2026-10-23. Counts: 3 defects (replicate 0, refuse 3, idealize 0). Nothing here has been reported upstream; a report, when made, goes in the entry as `- **Upstream:** <link>`.
 
 ## Git defects kept
 
@@ -27,3 +27,12 @@ None. A defect in an on-disk or wire format that asc must replicate to interoper
 - **Proof:** `tests/compat/scenarios/apply-unsafe-asc.t`
 - **Status:** proven
 - **SPEC:** §2.8, CARRY "Patch apply paths"
+
+### U-3 `cherry-pick --abort` and `revert --abort` of a sequence started on an unborn branch
+- **Git:** a multi-commit pick started on a branch with no commits records an empty `sequencer/head` and `sequencer/abort-safety`. If the first pick stops on a conflict, `--abort` fails with `fatal: could not parse .git/sequencer/abort-safety` and the sequence stays. If a root commit was made first, `--abort` moves the branch to the commit that was being picked, carrying that commit's history into the branch.
+- **Ideal:** `--abort` returns to the state before the command: the branch unborn and the tree empty.
+- **Decision:** refuse (asc refuses the abort, changes nothing and points at `--quit`, which ends the sequence and keeps any commits it made)
+- **Refusal:** error
+- **Proof:** `crates/asc/tests/cli_pick_unborn.rs::an_abort_of_a_sequence_started_unborn_is_refused`
+- **Status:** proven
+- **SPEC:** §4.4

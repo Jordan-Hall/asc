@@ -11,7 +11,7 @@ Each divergence has exactly one **class**:
 | `auth` | asc authenticates differently from git on purpose (SPEC §15.6). |
 | `branchless` | a remote effect of branchless mode (SPEC §20.1 D5, §21.1 BD7, §21.4.2). |
 
-Seeded 2026-10-23. Counts: upstream 7 (refuse 6, idealize 1), own 7 (`workspace-gitdir` 4, `auth` 1, `branchless` 2).
+Seeded 2026-10-23. Counts: upstream 8 (refuse 7, idealize 1), own 7 (`workspace-gitdir` 4, `auth` 1, `branchless` 2).
 
 ## Upstream
 
@@ -24,6 +24,8 @@ One bullet per `refuse` or `idealize` decision. The lint (Q01) checks that each 
 - **Q-8** (refuse) `parse_tag` refuses a tag with a header beyond `tagger`; import keeps the raw tag, so the id is unchanged. Error `(git-fidelity Q-8)`. SPEC §2.9.
 - **U-1** (refuse) asc forwards no `http.extraHeader` to another origin after a redirect; libcurl forwards the non-sensitive ones. Omission, asserted by test. SPEC §15.6.4 item 3.
 - **U-2** (refuse) A patch that names a `.git` alias only as the source of a rename, deletion or mode change is refused up front as unsafe; git reports a missing file. Error `(git-fidelity U-2)`, from `asc apply`. SPEC §2.8.
+
+- **U-3** (refuse) `cherry-pick --abort` or `revert --abort` of a sequence started on an unborn branch exits 128 with `cannot abort a cherry-pick started on an unborn branch (git-fidelity U-3)` and changes nothing; git fails to read its own record, or moves the branch to the commit it was picking. SPEC §4.4.
 
 Q-2, Q-4 and Q-5 are `replicate` and have no bullet.
 
