@@ -775,7 +775,7 @@ fn merges_mode(ctx: &Ctx, a: &Args) -> Result<Merges> {
         Some("") => {
             cousins = false;
             eprintln!(
-            "warning: --rebase-merges with an empty string argument is deprecated and will stop \
+                "warning: --rebase-merges with an empty string argument is deprecated and will stop \
              working in a future version of Git. Use --rebase-merges without an argument instead, \
              which does the same thing."
             );
@@ -788,16 +788,14 @@ fn merges_mode(ctx: &Ctx, a: &Args) -> Result<Merges> {
     if a.no_rebase_merges {
         on = false;
     }
-    Ok(if on { Merges::On { cousins } } else { Merges::Off })
+    Ok(if on {
+        Merges::On { cousins }
+    } else {
+        Merges::Off
+    })
 }
 
-async fn start(
-    ctx: &Ctx,
-    ws: &WsCtx,
-    gitdir: &Path,
-    a: Args,
-    merges: Merges,
-) -> Result<ExitCode> {
+async fn start(ctx: &Ctx, ws: &WsCtx, gitdir: &Path, a: Args, merges: Merges) -> Result<ExitCode> {
     if state_dir(gitdir).exists() {
         return Err(already(gitdir));
     }
@@ -3625,5 +3623,55 @@ mod tests {
         )
         .unwrap();
         assert!(read_update_refs(dir.path()).is_err());
+    }
+    fn ranged(id: u8, parents: &[u8]) -> Ranged {
+        Ranged {
+            id: ChangesetId::from_bytes([id; 32]),
+            parents: parents
+                .iter()
+                .map(|&p| ChangesetId::from_bytes([p; 32]))
+                .collect(),
+            generation: 0,
+        }
+    }
+
+    #[test]
+    fn graph_order_takes_the_last_parent_first_and_lists_parents_first() {
+        // m merges t (first parent) and s; the log lists them by date.
+        let log = vec![
+            ranged(4, &[3, 2]),
+            ranged(3, &[1]),
+            ranged(2, &[]),
+            ranged(1, &[]),
+        ];
+        let ids: Vec<u8> = graph_order_reversed(log)
+            .iter()
+            .map(|r| r.id.as_bytes()[0])
+            .collect();
+        assert_eq!(ids, [1, 3, 2, 4]);
+    }
+
+    #[test]
+    fn graph_order_waits_for_every_child() {
+        // 1 is the parent of both 2 and 3; it comes before both once turned round.
+        let log = vec![
+            ranged(4, &[2, 3]),
+            ranged(3, &[1]),
+            ranged(2, &[1]),
+            ranged(1, &[]),
+        ];
+        let ids: Vec<u8> = graph_order_reversed(log)
+            .iter()
+            .map(|r| r.id.as_bytes()[0])
+            .collect();
+        assert_eq!(ids, [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn cousins_mode_takes_only_git_names() {
+        assert!(!cousins_mode("no-rebase-cousins").unwrap());
+        assert!(cousins_mode("rebase-cousins").unwrap());
+        assert!(cousins_mode("true").is_err());
+        assert!(cousins_mode("Rebase-Cousins").is_err());
     }
 }

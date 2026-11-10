@@ -69,6 +69,7 @@ scenarios! {
     rebase_i_errors = "rebase-i-errors",
     rebase_i_update_refs = "rebase-i-update-refs",
     rebase_i_merges = "rebase-i-merges",
+    rebase_merges_cousins = "rebase-merges-cousins",
     rebase_i_hooks = "rebase-i-hooks",
     rebase_i_empty = "rebase-i-empty",
     revert_basic = "revert-basic",
