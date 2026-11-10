@@ -23,7 +23,10 @@
 //! collects. Refs move through `Ctx::update_local_refs`; HEAD stays detached until the last
 //! command.
 //!
-//! Not served: `--root`, `--keep-base`, `--rebase-merges=rebase-cousins` (it acts as the default
+//! `--keep-base` starts from `<upstream>...<branch>`, the one merge base of the upstream and the
+//! branch rebased (the current one when no `<branch>` is given), as git does.
+//!
+//! Not served: `--root`, `--rebase-merges=rebase-cousins` (it acts as the default
 //! mode), conflicts while recreating a merge (the rebase stops and `--abort` returns), octopus
 //! merges, merge strategies other than `ort`, and git's patch-id detection of commits already
 //! upstream (such a commit becomes empty on replay and is dropped, kept or stops the rebase as
@@ -77,6 +80,10 @@ const MAX_LINE: usize = todo::MAX_LINE;
 pub struct Args {
     #[arg(long = "onto")]
     pub onto: Option<String>,
+    #[arg(long = "keep-base")]
+    pub keep_base: bool,
+    #[arg(long = "no-keep-base")]
+    pub no_keep_base: bool,
     #[arg(long = "continue")]
     pub cont: bool,
     #[arg(long = "skip")]
@@ -132,6 +139,8 @@ pub const NATIVE: &[NativeSpec] = &[NativeSpec {
     cmd: "rebase",
     flags: &[
         "--onto",
+        "--keep-base",
+        "--no-keep-base",
         "--continue",
         "--skip",
         "--abort",
@@ -657,6 +666,12 @@ async fn start(ctx: &Ctx, ws: &WsCtx, gitdir: &Path, a: Args) -> Result<ExitCode
     if state_dir(gitdir).exists() {
         return Err(already(gitdir));
     }
+    let keep_base = a.keep_base && !a.no_keep_base;
+    if keep_base && a.onto.is_some() {
+        return Err(fatal(
+            "options '--keep-base' and '--onto' cannot be used together",
+        ));
+    }
     let explicit = a.interactive;
     let empty_arg = match a.empty.as_deref() {
         Some(w) => Some(empty_mode(w).ok_or_else(|| {
@@ -695,10 +710,6 @@ async fn start(ctx: &Ctx, ws: &WsCtx, gitdir: &Path, a: Args) -> Result<ExitCode
     let Some(head) = head else {
         return Err(fatal("Could not resolve HEAD to a commit"));
     };
-    let onto_text = a.onto.clone().unwrap_or_else(|| upstream_text.clone());
-    let onto = commit_named(ctx, &onto_text)
-        .await?
-        .ok_or_else(|| fatal(format!("Does not point to a valid commit '{onto_text}'")))?;
     // The branch to rebase: the argument, or the current one.
     let branch_arg = a.words.get(1).map(word);
     let (orig, head_name, switch_to) = match &branch_arg {
@@ -732,6 +743,28 @@ async fn start(ctx: &Ctx, ws: &WsCtx, gitdir: &Path, a: Args) -> Result<ExitCode
                 .map_or_else(|| "detached HEAD".to_owned(), |b| format!("refs/heads/{b}")),
             None,
         ),
+    };
+    let (onto_text, onto) = if keep_base {
+        // `<upstream>...<branch>`: the one merge base of the upstream and the branch rebased.
+        let bases = HistoryApi::merge_base(&ws.engine, upstream, &[orig], true)
+            .await
+            .map_err(fatal)?;
+        let [base] = bases.as_slice() else {
+            return Err(fatal(format!(
+                "'{upstream_text}': need exactly one merge base with branch"
+            )));
+        };
+        let side = branch_arg
+            .as_deref()
+            .or(cur_branch.as_deref())
+            .unwrap_or("HEAD");
+        (format!("{upstream_text}...{side}"), *base)
+    } else {
+        let onto_text = a.onto.clone().unwrap_or_else(|| upstream_text.clone());
+        let onto = commit_named(ctx, &onto_text)
+            .await?
+            .ok_or_else(|| fatal(format!("Does not point to a valid commit '{onto_text}'")))?;
+        (onto_text, onto)
     };
     let head_root = root_of(ws, Some(head)).await?;
     let mut stash = None;
