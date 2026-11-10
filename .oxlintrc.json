@@ -15,6 +15,7 @@
     "**/dist/**",
     "**/.turbo/**",
     "**/src/gen/**",
-    "target/**"
+    "target/**",
+    "crates/**/tests/fixtures/**"
   ]
 }

@@ -1,0 +1,16 @@
+# cargo-nextest profiles. `ci` is what .github/workflows/ci.yml runs.
+
+[profile.ci]
+fail-fast = false
+# A hung test is named and stopped instead of holding the job until its timeout.
+slow-timeout = { period = "120s", terminate-after = 5 }
+
+# Retry-safe: these binaries pick a free port by binding port 0, dropping the listener and handing the
+# number to a server started afterwards, so another process can take the port in between. A retry gets
+# a new port; a real failure fails all three attempts. Nothing else is retried.
+[[profile.ci.overrides]]
+filter = """
+binary(auth_demand) | binary(codeintel_overlay) | binary(git_compat) | binary(git_ssh)
+| binary(submit_serve) | binary(objects) | binary(codeintel_push) | binary(mcp_serve) | binary(parity)
+"""
+retries = 2
