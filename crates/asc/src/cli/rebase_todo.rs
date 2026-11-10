@@ -641,14 +641,19 @@ pub fn help_block(header: &str, comment: u8) -> String {
 
 /// `# Rebase <a>..<b> onto <c> (<n> command(s))`.
 pub fn rebase_header(
-    upstream: &str,
+    upstream: Option<&str>,
     orig: &str,
     onto: &str,
     commands: usize,
     comment: u8,
 ) -> String {
+    // `--root` has no upstream: git names the tip alone.
+    let range = match upstream {
+        Some(u) => format!("{u}..{orig}"),
+        None => orig.to_owned(),
+    };
     format!(
-        "{} Rebase {upstream}..{orig} onto {onto} ({commands} command{})",
+        "{} Rebase {range} onto {onto} ({commands} command{})",
         comment as char,
         if commands == 1 { "" } else { "s" },
     )

@@ -26,7 +26,13 @@
 //! `--keep-base` starts from `<upstream>...<branch>`, the one merge base of the upstream and the
 //! branch rebased (the current one when no `<branch>` is given), as git does.
 //!
-//! Not served: `--root`, `--rebase-merges=rebase-cousins` (it acts as the default
+//! `--root` replays every commit reachable from the branch. Without `--onto` the new base is
+//! git's squash-onto commit (empty tree, no parent, empty message, recorded in
+//! `rebase-merge/squash-onto`): a pick on it fast-forwards a root commit or, forced, makes a new
+//! root, a merge into `[new root]` fast-forwards, and a fixup there is rescheduled with git's
+//! "cannot fixup root commit". With `--onto` the range is the commits the new base lacks.
+//!
+//! Not served: `--rebase-merges=rebase-cousins` (it acts as the default
 //! mode), conflicts while recreating a merge (the rebase stops and `--abort` returns), octopus
 //! merges, merge strategies other than `ort`, and git's patch-id detection of commits already
 //! upstream (such a commit becomes empty on replay and is dropped, kept or stops the rebase as
@@ -84,6 +90,10 @@ pub struct Args {
     pub keep_base: bool,
     #[arg(long = "no-keep-base")]
     pub no_keep_base: bool,
+    #[arg(long = "root")]
+    pub root: bool,
+    #[arg(long = "no-root")]
+    pub no_root: bool,
     #[arg(long = "continue")]
     pub cont: bool,
     #[arg(long = "skip")]
@@ -141,6 +151,8 @@ pub const NATIVE: &[NativeSpec] = &[NativeSpec {
         "--onto",
         "--keep-base",
         "--no-keep-base",
+        "--root",
+        "--no-root",
         "--continue",
         "--skip",
         "--abort",
@@ -177,9 +189,69 @@ pub const NATIVE: &[NativeSpec] = &[NativeSpec {
     placeholders: &[],
 }];
 
-const USAGE: &str = "usage: git rebase [-i] [options] [--exec <cmd>] [--onto <newbase> | --keep-base] [<upstream> [<branch>]]
+/// git's usage text, with its option list.
+const USAGE: &str = r#"usage: git rebase [-i] [options] [--exec <cmd>] [--onto <newbase> | --keep-base] [<upstream> [<branch>]]
    or: git rebase [-i] [options] [--exec <cmd>] [--onto <newbase>] --root [<branch>]
-   or: git rebase --continue | --abort | --skip | --edit-todo";
+   or: git rebase --continue | --abort | --skip | --edit-todo
+
+    --[no-]onto <revision>
+                          rebase onto given branch instead of upstream
+    --[no-]keep-base      use the merge-base of upstream and branch as the current base
+    --no-verify           allow pre-rebase hook to run
+    --verify              opposite of --no-verify
+    -q, --[no-]quiet      be quiet. implies --no-stat
+    -v, --[no-]verbose    display a diffstat of what changed upstream
+    -n, --no-stat         do not show diffstat of what changed upstream
+    --stat                opposite of --no-stat
+    --[no-]trailer <trailer>
+                          add custom trailer(s)
+    --[no-]signoff        add a Signed-off-by trailer to each commit
+    --[no-]committer-date-is-author-date
+                          make committer date match author date
+    --[no-]reset-author-date
+                          ignore author date and use current date
+    -C <n>                passed to 'git apply'
+    --[no-]ignore-whitespace
+                          ignore changes in whitespace
+    --[no-]whitespace <action>
+                          passed to 'git apply'
+    -f, --[no-]force-rebase
+                          cherry-pick all commits, even if unchanged
+    --no-ff               cherry-pick all commits, even if unchanged
+    --ff                  opposite of --no-ff
+    --continue            continue
+    --skip                skip current patch and continue
+    --abort               abort and check out the original branch
+    --quit                abort but keep HEAD where it is
+    --edit-todo           edit the todo list during an interactive rebase
+    --show-current-patch  show the patch file being applied or merged
+    --apply               use apply strategies to rebase
+    -m, --merge           use merging strategies to rebase
+    -i, --interactive     let the user edit the list of commits to rebase
+    --[no-]rerere-autoupdate
+                          update the index with reused conflict resolution if possible
+    --empty (drop|keep|stop)
+                          how to handle commits that become empty
+    --[no-]autosquash     move commits that begin with squash!/fixup! under -i
+    --[no-]update-refs    update branches that point to commits that are being rebased
+    -S, --[no-]gpg-sign[=<key-id>]
+                          GPG-sign commits
+    --[no-]autostash      automatically stash/stash pop before and after
+    -x, --[no-]exec <exec>
+                          add exec lines after each commit of the editable list
+    -r, --[no-]rebase-merges[=<mode>]
+                          try to rebase merges instead of skipping them
+    --[no-]fork-point     use 'merge-base --fork-point' to refine upstream
+    -s, --[no-]strategy <strategy>
+                          use the given merge strategy
+    -X, --[no-]strategy-option <option>
+                          pass the argument through to the merge strategy
+    --[no-]root           rebase all reachable commits up to the root(s)
+    --[no-]reschedule-failed-exec
+                          automatically re-schedule any `exec` that fails
+    --[no-]reapply-cherry-picks
+                          apply all changes, even those already present upstream
+"#;
 
 // ---------------------------------------------------------------- author-script
 
@@ -589,7 +661,9 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
             quit(ctx, ws, run).await
         };
     }
-    if a.words.len() > 2 {
+    // `--root` takes the branch as its only word.
+    let most = if a.root && !a.no_root { 1 } else { 2 };
+    if a.words.len() > most {
         return Err(CliError::Usage(USAGE.to_owned()));
     }
     start(ctx, ws, &gitdir, a).await
@@ -672,6 +746,12 @@ async fn start(ctx: &Ctx, ws: &WsCtx, gitdir: &Path, a: Args) -> Result<ExitCode
             "options '--keep-base' and '--onto' cannot be used together",
         ));
     }
+    let root = a.root && !a.no_root;
+    if keep_base && root {
+        return Err(fatal(
+            "options '--keep-base' and '--root' cannot be used together",
+        ));
+    }
     let explicit = a.interactive;
     let empty_arg = match a.empty.as_deref() {
         Some(w) => Some(empty_mode(w).ok_or_else(|| {
@@ -688,7 +768,10 @@ async fn start(ctx: &Ctx, ws: &WsCtx, gitdir: &Path, a: Args) -> Result<ExitCode
         Head::Detached(_) => None,
     };
     let head = ws.head_commit().await?;
+    // `--root` has no upstream: every commit reachable from the branch is replayed. The
+    // pre-rebase hook sees `--root` in the upstream's place, as git passes it.
     let upstream_text = match a.words.first() {
+        _ if root => "--root".to_owned(),
         Some(w) => word(w),
         None => {
             let tracked = cur_branch
@@ -703,15 +786,21 @@ async fn start(ctx: &Ctx, ws: &WsCtx, gitdir: &Path, a: Args) -> Result<ExitCode
             }
         }
     };
-    let upstream = commit_named(ctx, &upstream_text)
-        .await?
-        .ok_or_else(|| fatal(format!("invalid upstream '{upstream_text}'")))?;
+    let upstream = if root {
+        None
+    } else {
+        Some(
+            commit_named(ctx, &upstream_text)
+                .await?
+                .ok_or_else(|| fatal(format!("invalid upstream '{upstream_text}'")))?,
+        )
+    };
     // git resolves the upstream first, then finds nothing to rebase on an unborn branch.
     let Some(head) = head else {
         return Err(fatal("Could not resolve HEAD to a commit"));
     };
     // The branch to rebase: the argument, or the current one.
-    let branch_arg = a.words.get(1).map(word);
+    let branch_arg = a.words.get(usize::from(!root)).map(word);
     let (orig, head_name, switch_to) = match &branch_arg {
         Some(b) => {
             let rev = switch::resolve_rev(ctx, ws, b)
@@ -744,7 +833,8 @@ async fn start(ctx: &Ctx, ws: &WsCtx, gitdir: &Path, a: Args) -> Result<ExitCode
             None,
         ),
     };
-    let (onto_text, onto) = if keep_base {
+    let mut squash_onto = None;
+    let (onto_text, onto) = if let (true, Some(upstream)) = (keep_base, upstream) {
         // `<upstream>...<branch>`: the one merge base of the upstream and the branch rebased.
         let bases = HistoryApi::merge_base(&ws.engine, upstream, &[orig], true)
             .await
@@ -759,6 +849,12 @@ async fn start(ctx: &Ctx, ws: &WsCtx, gitdir: &Path, a: Args) -> Result<ExitCode
             .or(cur_branch.as_deref())
             .unwrap_or("HEAD");
         (format!("{upstream_text}...{side}"), *base)
+    } else if root && a.onto.is_none() {
+        // git's squash-onto commit: the empty tree, no parent, no message. The root commits
+        // are replayed on it as new root commits.
+        let (id, git) = squash_onto_commit(ctx, ws).await?;
+        squash_onto = Some(git);
+        (git.to_string(), id)
     } else {
         let onto_text = a.onto.clone().unwrap_or_else(|| upstream_text.clone());
         let onto = commit_named(ctx, &onto_text)
@@ -804,14 +900,20 @@ async fn start(ctx: &Ctx, ws: &WsCtx, gitdir: &Path, a: Args) -> Result<ExitCode
     });
 
     let hist = &ws.engine;
-    let base = HistoryApi::merge_base(hist, upstream, &[orig], false)
-        .await
-        .map_err(fatal)?;
-    let base = base.first().copied();
-    let onto_base = HistoryApi::merge_base(hist, onto, &[orig], false)
-        .await
-        .map_err(fatal)?;
-    let up_to_date = base == Some(onto) && onto_base.first() == Some(&onto);
+    // `--root` is never up to date: git replays (or fast-forwards over) every commit.
+    let (base, up_to_date) = match upstream {
+        Some(upstream) => {
+            let base = HistoryApi::merge_base(hist, upstream, &[orig], false)
+                .await
+                .map_err(fatal)?;
+            let base = base.first().copied();
+            let onto_base = HistoryApi::merge_base(hist, onto, &[orig], false)
+                .await
+                .map_err(fatal)?;
+            (base, base == Some(onto) && onto_base.first() == Some(&onto))
+        }
+        None => (None, false),
+    };
     // git starts every rebase without the previous merge's AUTO_MERGE.
     seqstate::remove(gitdir, "AUTO_MERGE");
     let branch_label = match head_name.strip_prefix("refs/heads/") {
@@ -856,17 +958,23 @@ async fn start(ctx: &Ctx, ws: &WsCtx, gitdir: &Path, a: Args) -> Result<ExitCode
     let short = |o: &GitOid| o.to_string()[..abbrev].to_owned();
     let onto_git = conflict::git_id(ws, onto).await?;
     let orig_git = conflict::git_id(ws, orig).await?;
-    let upstream_git = conflict::git_id(ws, upstream).await?;
+    let upstream_git = match upstream {
+        Some(u) => Some(conflict::git_id(ws, u).await?),
+        None => None,
+    };
 
-    // The generated list.
-    let range = collect_range(ws, orig, upstream).await?;
+    // The generated list: with `--root`, everything the new base does not already hold.
+    let range = collect_range(ws, orig, upstream.unwrap_or(onto)).await?;
     let mut list = if rebase_merges {
         merges_todo(
             ctx,
             ws,
             &range,
-            base.unwrap_or(upstream),
-            orig,
+            Span {
+                bottom: base.or(upstream).unwrap_or(onto),
+                orig,
+                root_onto: root && a.onto.is_some(),
+            },
             keep_empty,
             comment,
         )
@@ -934,8 +1042,11 @@ async fn start(ctx: &Ctx, ws: &WsCtx, gitdir: &Path, a: Args) -> Result<ExitCode
     if rebase_merges {
         run.write("refs-to-delete", "")?;
     }
+    if let Some(s) = squash_onto {
+        run.write("squash-onto", &format!("{s}\n"))?;
+    }
     let header = todo::rebase_header(
-        &short(&upstream_git),
+        upstream_git.as_ref().map(&short).as_deref(),
         &short(&run.orig_head),
         &short(&run.onto),
         todo::count(&list),
@@ -1018,6 +1129,52 @@ async fn start(ctx: &Ctx, ws: &WsCtx, gitdir: &Path, a: Args) -> Result<ExitCode
     }
     detach_to(ctx, ws, current, &onto_text).await?;
     drive(ctx, ws, &mut run).await
+}
+
+/// git's squash-onto commit for `--root` and `reset [new root]`: the empty tree, no parent and an
+/// empty message, by the current author and committer.
+async fn squash_onto_commit(ctx: &Ctx, ws: &WsCtx) -> Result<(ChangesetId, GitOid)> {
+    let idents = conflict::identities(ctx)?;
+    conflict::write_commit(
+        ws,
+        NewCommit {
+            parents: Vec::new(),
+            author: idents.author,
+            committer: idents.committer,
+            message: Vec::new(),
+            root: root_of(ws, None).await?,
+        },
+    )
+    .await
+}
+
+/// The squash-onto commit of this run, if it has one.
+fn squash_onto(run: &Run) -> Option<GitOid> {
+    let text = std::fs::read_to_string(run.dir.join("squash-onto")).ok()?;
+    text.trim().parse().ok()
+}
+
+/// Whether HEAD is the run's squash-onto commit: a pick there makes a new root commit.
+async fn at_squash_onto(ws: &WsCtx, run: &Run, head: ChangesetId) -> Result<bool> {
+    Ok(match squash_onto(run) {
+        Some(s) => conflict::git_id(ws, head).await? == s,
+        None => false,
+    })
+}
+
+/// git's answer to a command that fails before it changes anything: the command goes back to the
+/// front of the todo list and the rebase stops.
+fn reschedule(run: &mut Run, item: &Item, error: &str) -> Result<Step> {
+    run.todo.insert(0, item.clone());
+    run.save_progress()?;
+    let line = item.render(&|o: &GitOid| o.to_string());
+    eprintln!(
+        "error: {error}\nhint: Could not execute the todo command\nhint:\nhint:     {line}\nhint:\n\
+         hint: It has been rescheduled; To edit the command before continuing, please\n\
+         hint: edit the todo list first:\nhint:\nhint:     git rebase --edit-todo\n\
+         hint:     git rebase --continue"
+    );
+    Ok(Step::Stopped(1))
 }
 
 fn already(gitdir: &Path) -> CliError {
@@ -1179,6 +1336,15 @@ fn label_from_subject(subject: &str) -> String {
     subject.to_owned()
 }
 
+/// git's oneline of a message: the paragraph before the first blank line, joined by spaces.
+fn oneline_of(message: &[u8]) -> String {
+    String::from_utf8_lossy(message)
+        .lines()
+        .take_while(|l| !l.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Labels of a `--rebase-merges` list: unique, in the order they are handed out.
 struct Labels2 {
     by_commit: HashMap<ChangesetId, String>,
@@ -1203,17 +1369,31 @@ impl Labels2 {
     }
 }
 
+/// Where a `--rebase-merges` list starts and ends.
+struct Span {
+    /// The commit labelled `onto`.
+    bottom: ChangesetId,
+    /// The branch tip rebased.
+    orig: ChangesetId,
+    /// `--root --onto`: a root branch resets to `onto` rather than to `[new root]`.
+    root_onto: bool,
+}
+
 /// The list with `--rebase-merges` (git's `make_script_with_merges`): `label`, `reset` and
 /// `merge` commands that rebuild the topology, branch by branch.
 async fn merges_todo(
     ctx: &Ctx,
     ws: &WsCtx,
     range: &[Ranged],
-    bottom: ChangesetId,
-    orig: ChangesetId,
+    span: Span,
     keep_empty: bool,
     comment: u8,
 ) -> Result<Vec<Item>> {
+    let Span {
+        bottom,
+        orig,
+        root_onto,
+    } = span;
     let cc = comment as char;
     // Parents first: generation orders them, the log order breaks ties.
     let mut ordered: Vec<&Ranged> = range.iter().collect();
@@ -1241,11 +1421,7 @@ async fn merges_todo(
     let mut tips: Vec<ChangesetId> = Vec::new();
     for r in &ordered {
         let cs = ws.engine.get_changeset(r.id).await?;
-        let oneline = String::from_utf8_lossy(&cs.message)
-            .lines()
-            .take_while(|l| !l.trim().is_empty())
-            .collect::<Vec<_>>()
-            .join(" ");
+        let oneline = oneline_of(&cs.message);
         onelines.insert(r.id, oneline.clone());
         let oid = conflict::git_id(ws, r.id).await?;
         if cs.parents.len() <= 1 {
@@ -1302,7 +1478,8 @@ async fn merges_todo(
     }
     tips.push(orig);
     // Phase three: branch by branch, each walked back along first parents.
-    let mut out = vec![Item::new(Op::Label, None, "onto"), Item::blank()];
+    // Each branch below opens with its own blank line.
+    let mut out = vec![Item::new(Op::Label, None, "onto")];
     let mut shown: HashSet<ChangesetId> = HashSet::new();
     let by_id: HashMap<ChangesetId, &Ranged> = ordered.iter().map(|r| (r.id, *r)).collect();
     for (n, tip) in tips.iter().enumerate() {
@@ -1326,21 +1503,30 @@ async fn merges_todo(
         if !is_last && let Some(l) = labels.by_commit.get(tip) {
             out.push(Item::comment(format!("{cc} Branch {l}")));
         }
-        let base = first.parents.first().copied().unwrap_or(bottom);
-        let base_label = match labels.by_commit.get(&base) {
-            Some(l) => l.clone(),
-            None => {
-                let g = conflict::git_id(ws, base).await?;
-                labels.give(base, &g.to_string()[..abbrev])
+        // A root commit starts its branch from no parent at all, or from the new base when
+        // `--root` came with `--onto`.
+        let reset = match first.parents.first().copied() {
+            None if root_onto => "onto".to_owned(),
+            None => NEW_ROOT.to_owned(),
+            Some(base) => {
+                let base_label = match labels.by_commit.get(&base) {
+                    Some(l) => l.clone(),
+                    None => {
+                        let g = conflict::git_id(ws, base).await?;
+                        labels.give(base, &g.to_string()[..abbrev])
+                    }
+                };
+                // git names every base but `onto` with its oneline, in the range or not.
+                if base_label == "onto" {
+                    base_label
+                } else {
+                    let line = match onelines.get(&base) {
+                        Some(l) => l.clone(),
+                        None => oneline_of(&ws.engine.get_changeset(base).await?.message),
+                    };
+                    format!("{base_label} {cc} {line}")
+                }
             }
-        };
-        let reset = if interesting.contains(&base) {
-            format!(
-                "{base_label} {cc} {}",
-                onelines.get(&base).cloned().unwrap_or_default()
-            )
-        } else {
-            base_label
         };
         out.push(Item::new(Op::Reset, None, reset));
         for c in &chain {
@@ -1440,7 +1626,7 @@ async fn run_item(ctx: &Ctx, ws: &WsCtx, run: &mut Run, item: &Item) -> Result<S
         Op::Exec => exec(ctx, ws, run, &item.arg).await,
         Op::Break => stop_at_head(ctx, ws).await,
         Op::Label => label(ctx, ws, run, &item.arg).await,
-        Op::Reset => reset(ctx, ws, &item.arg).await,
+        Op::Reset => reset(ctx, ws, run, &item.arg).await,
         Op::Merge => merge(ctx, ws, run, item).await,
         Op::UpdateRef => update_ref(ws, run, &item.arg).await,
     }
@@ -1476,8 +1662,14 @@ async fn pick(ctx: &Ctx, ws: &WsCtx, run: &mut Run, item: &Item) -> Result<Step>
     let subject = first_line(&cs.message);
     let reflog = format!("rebase ({}): {subject}", reflog_word(item.op));
     let folds = item.op.is_fixup();
-    // Fast-forward: the commit already sits on HEAD.
-    if run.allow_ff && !folds && cs.parents.first() == Some(&head) {
+    let new_root = at_squash_onto(ws, run, head).await?;
+    if folds && new_root {
+        return reschedule(run, item, "cannot fixup root commit");
+    }
+    // Fast-forward: the commit already sits on HEAD, or a root commit on the squash-onto commit.
+    let sits = cs.parents.first() == Some(&head) || (new_root && cs.parents.is_empty());
+    if run.allow_ff && !folds && sits {
+        let reflog = "rebase: fast-forward";
         let paths = changed_paths(ws, head_root, cs.root).await?;
         sync_worktree(ctx, cs.root, &paths, true).await?;
         conflict::move_head(
@@ -1485,7 +1677,7 @@ async fn pick(ctx: &Ctx, ws: &WsCtx, run: &mut Run, item: &Item) -> Result<Step>
             ws,
             Some(head),
             id,
-            &reflog,
+            reflog,
             StagingAfterMove::Set(Vec::new()),
             None,
         )
@@ -1505,7 +1697,13 @@ async fn pick(ctx: &Ctx, ws: &WsCtx, run: &mut Run, item: &Item) -> Result<Step>
         ours: head_root,
         theirs: cs.root,
     };
-    let outcome = match ws.engine.rebase_metadata(&cs, head).await.map_err(fatal)? {
+    // On the squash-onto commit the merge is against its empty tree, never by metadata.
+    let by_metadata = if new_root {
+        None
+    } else {
+        ws.engine.rebase_metadata(&cs, head).await.map_err(fatal)?
+    };
+    let outcome = match by_metadata {
         Some(done) => MergeOutcome {
             root: done.root,
             conflicts: Vec::new(),
@@ -1629,7 +1827,8 @@ async fn pick(ctx: &Ctx, ws: &WsCtx, run: &mut Run, item: &Item) -> Result<Step>
     let (new, _new_git) = conflict::write_commit(
         ws,
         NewCommit {
-            parents: vec![head],
+            // A commit made on the squash-onto commit is a new root commit.
+            parents: if new_root { Vec::new() } else { vec![head] },
             author: cs.author.clone(),
             committer: idents.committer.clone(),
             message: picked_message,
@@ -2269,6 +2468,19 @@ async fn labelled(ctx: &Ctx, ws: &WsCtx, name: &str) -> Result<ChangesetId> {
         .ok_or_else(|| fatal(format!("could not resolve '{name}'")))
 }
 
+/// The `reset` target that starts a branch from no parent.
+const NEW_ROOT: &str = "[new root]";
+
+/// `reset [new root]` goes to the run's squash-onto commit, made (and recorded) on first use.
+async fn new_root_base(ctx: &Ctx, ws: &WsCtx, run: &Run) -> Result<ChangesetId> {
+    if let Some(s) = squash_onto(run) {
+        return conflict::changeset_of(ws, s).await;
+    }
+    let (id, git) = squash_onto_commit(ctx, ws).await?;
+    run.write("squash-onto", &format!("{git}\n"))?;
+    Ok(id)
+}
+
 /// The label before the ` # oneline` of a `reset` or `merge` argument.
 fn operand(arg: &str, comment: char) -> &str {
     let marker = format!(" {comment} ");
@@ -2276,8 +2488,13 @@ fn operand(arg: &str, comment: char) -> &str {
 }
 
 /// `reset <label>`: HEAD (detached) and the work tree go to the labelled commit.
-async fn reset(ctx: &Ctx, ws: &WsCtx, arg: &str) -> Result<Step> {
-    let target = labelled(ctx, ws, operand(arg, message::comment_char(ctx) as char)).await?;
+async fn reset(ctx: &Ctx, ws: &WsCtx, run: &Run, arg: &str) -> Result<Step> {
+    let name = operand(arg, message::comment_char(ctx) as char);
+    let target = if name == NEW_ROOT {
+        new_root_base(ctx, ws, run).await?
+    } else {
+        labelled(ctx, ws, name).await?
+    };
     let head = ws.head_commit().await?;
     if head != Some(target) {
         detach_to(ctx, ws, target, operand(arg, '#')).await?;
@@ -2300,6 +2517,24 @@ async fn merge(ctx: &Ctx, ws: &WsCtx, run: &mut Run, item: &Item) -> Result<Step
         .head_commit()
         .await?
         .ok_or_else(|| fatal("asc: HEAD is unborn"))?;
+    // A merge into `[new root]` fast-forwards to the merged commit, as git does.
+    if at_squash_onto(ws, run, head).await? {
+        let head_root = root_of(ws, Some(head)).await?;
+        let their_root = root_of(ws, Some(theirs)).await?;
+        let paths = changed_paths(ws, head_root, their_root).await?;
+        sync_worktree(ctx, their_root, &paths, true).await?;
+        conflict::move_head(
+            ctx,
+            ws,
+            Some(head),
+            theirs,
+            "rebase: fast-forward",
+            StagingAfterMove::Set(Vec::new()),
+            None,
+        )
+        .await?;
+        return Ok(Step::Done);
+    }
     let original = match item.oid {
         Some(o) => Some(
             ws.engine
@@ -2366,6 +2601,8 @@ async fn merge(ctx: &Ctx, ws: &WsCtx, run: &mut Run, item: &Item) -> Result<Step
         },
     )
     .await?;
+    // git commits a recreated merge with `git commit`, which removes the last pick's AUTO_MERGE.
+    seqstate::remove(&run.gitdir, "AUTO_MERGE");
     let reflog = format!("rebase (merge): {}", names[0]);
     let op = conflict::move_head(
         ctx,
