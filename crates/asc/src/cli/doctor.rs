@@ -812,7 +812,8 @@ fn read_capped(path: &Path, cap: u64) -> Option<Vec<u8>> {
     Some(body)
 }
 
-fn scan_tree(root: &Path) -> TreeScan {
+/// `virtual_ws`: the workspace is virtual, where a checkout does not convert line endings.
+fn scan_tree(root: &Path, virtual_ws: bool) -> TreeScan {
     let mut scan = TreeScan::default();
     let mut attr_files = 0usize;
     let skip = |n: &OsStr| n == ".git" || n == ".asc" || n == "node_modules";
@@ -865,7 +866,7 @@ fn scan_tree(root: &Path) -> TreeScan {
                     continue;
                 };
                 for attr in parts {
-                    if let Some(key) = unapplied_attribute(attr) {
+                    if let Some(key) = unapplied_attribute(attr, virtual_ws) {
                         let e = scan
                             .attrs
                             .entry(key)
@@ -881,16 +882,19 @@ fn scan_tree(root: &Path) -> TreeScan {
     scan
 }
 
-/// The attribute name when asc does not apply or support `attr` (SPEC §2.4.1).
-pub(crate) fn unapplied_attribute(attr: &str) -> Option<String> {
+/// The attribute name when asc does not apply or support `attr` (SPEC §2.4.1). A plain work tree
+/// converts line endings at checkout as git does; a virtual one (`virtual_ws`) holds the committed
+/// bytes, so there `text`, `crlf` and `eol` are reported too.
+pub(crate) fn unapplied_attribute(attr: &str, virtual_ws: bool) -> Option<String> {
     let key = attr
         .trim_start_matches(['-', '!'])
         .split('=')
         .next()
         .unwrap_or("");
     match key {
-        "eol" | "crlf" | "ident" | "working-tree-encoding" => Some(key.to_owned()),
-        "text" if attr.contains('=') || attr == "text" => Some("text".to_owned()),
+        "ident" | "working-tree-encoding" => Some(key.to_owned()),
+        "eol" | "crlf" if virtual_ws => Some(key.to_owned()),
+        "text" if virtual_ws && (attr.contains('=') || attr == "text") => Some("text".to_owned()),
         "filter" => {
             let value = attr.split_once('=').map_or("", |(_, v)| v);
             (value != "lfs").then(|| "filter".to_owned())
@@ -1384,7 +1388,8 @@ async fn workspace_checks(ctx: &Ctx) -> Vec<Check> {
     let root = ws.projection.toplevel().to_owned();
     let gitdir = ws.projection.git_dir().to_owned();
     let scan_root = root.clone();
-    let scan = tokio::task::spawn_blocking(move || scan_tree(&scan_root))
+    let virtual_ws = ws.workspace.ws.mode == asc_state::state::workspaces::Mode::Virtual;
+    let scan = tokio::task::spawn_blocking(move || scan_tree(&scan_root, virtual_ws))
         .await
         .unwrap_or_default();
     let mut out = Vec::new();
@@ -1413,7 +1418,7 @@ async fn workspace_checks(ctx: &Ctx) -> Vec<Check> {
         for (attr, (file, patterns)) in &scan.attrs {
             let what = match attr.as_str() {
                 "ident" | "working-tree-encoding" | "filter" => "is not supported",
-                _ => "is not applied at checkout",
+                _ => "is not applied at checkout in a virtual workspace",
             };
             out.push(Check::warn(
                 "gitattributes",
@@ -1428,7 +1433,7 @@ async fn workspace_checks(ctx: &Ctx) -> Vec<Check> {
         out.push(
             Check::warn(
                 "autocrlf",
-                "core.autocrlf=true is ignored in asc workspaces; files hold the committed bytes",
+                "core.autocrlf=true is ignored in asc workspaces; the workspace sets core.autocrlf=false",
             )
             .hint("git config --global core.autocrlf false"),
         );
@@ -1928,12 +1933,17 @@ mod tests {
 
     #[test]
     fn attributes_asc_does_not_apply() {
-        assert_eq!(unapplied_attribute("eol=crlf").as_deref(), Some("eol"));
-        assert_eq!(unapplied_attribute("-text").as_deref(), None);
-        assert_eq!(unapplied_attribute("text").as_deref(), Some("text"));
-        assert_eq!(unapplied_attribute("filter=lfs"), None);
-        assert_eq!(unapplied_attribute("filter=x").as_deref(), Some("filter"));
-        assert_eq!(unapplied_attribute("binary"), None);
+        // A plain work tree converts line endings at checkout; a virtual one does not.
+        assert_eq!(unapplied_attribute("eol=crlf", false), None);
+        assert_eq!(unapplied_attribute("text", false), None);
+        assert_eq!(unapplied_attribute("eol=crlf", true).as_deref(), Some("eol"));
+        assert_eq!(unapplied_attribute("crlf=input", true).as_deref(), Some("crlf"));
+        assert_eq!(unapplied_attribute("-text", true).as_deref(), None);
+        assert_eq!(unapplied_attribute("text", true).as_deref(), Some("text"));
+        assert_eq!(unapplied_attribute("filter=lfs", false), None);
+        assert_eq!(unapplied_attribute("filter=x", false).as_deref(), Some("filter"));
+        assert_eq!(unapplied_attribute("ident", false).as_deref(), Some("ident"));
+        assert_eq!(unapplied_attribute("binary", true), None);
     }
 
     #[test]

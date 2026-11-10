@@ -684,8 +684,8 @@ async fn mount_virtual(ws_id: WorkspaceId) -> Result<()> {
         .map_err(|e| fatal(format!("cannot host the virtual workspace: {e}")))
 }
 
-/// SPEC §2.4.1: one `warning: asc: …` per attribute that asc does not apply at checkout or does
-/// not support, and the `autocrlf` rule. Reads at most [`ATTR_FILES`] files of [`ATTR_BYTES`].
+/// SPEC §2.4.1: one `warning: asc: …` per attribute that asc does not support, and the `autocrlf`
+/// rule. Only a plain checkout writes files, and it converts line endings as git does. Reads at most [`ATTR_FILES`] files of [`ATTR_BYTES`].
 fn attribute_warning(ctx: &Ctx, ws: &WsCtx, paths: &[RepoPath]) {
     use std::collections::BTreeMap;
     use std::io::Read;
@@ -733,8 +733,7 @@ fn attribute_warning(ctx: &Ctx, ws: &WsCtx, paths: &[RepoPath]) {
                     .next()
                     .unwrap_or("");
                 let flagged = match key {
-                    "eol" | "crlf" | "ident" | "working-tree-encoding" => Some(key.to_owned()),
-                    "text" if attr.contains('=') || attr == "text" => Some("text".to_owned()),
+                    "ident" | "working-tree-encoding" => Some(key.to_owned()),
                     "filter" => {
                         let value = attr.split_once('=').map_or("", |(_, v)| v);
                         (value != "lfs").then(|| "filter".to_owned())
@@ -751,18 +750,14 @@ fn attribute_warning(ctx: &Ctx, ws: &WsCtx, paths: &[RepoPath]) {
         }
     }
     for (attr, (file, patterns)) in &found {
-        let what = match attr.as_str() {
-            "ident" | "working-tree-encoding" | "filter" => "is not supported",
-            _ => "is not applied at checkout",
-        };
         eprintln!(
-            "warning: asc: attribute '{attr}' in {file} {what} (affects {})",
+            "warning: asc: attribute '{attr}' in {file} is not supported (affects {})",
             patterns.join(", ")
         );
     }
     if !found.is_empty() && ctx.config.bool("core.autocrlf") == Some(true) {
         eprintln!(
-            "warning: asc: core.autocrlf=true is ignored in asc workspaces; files hold the committed bytes"
+            "warning: asc: core.autocrlf=true is ignored in asc workspaces; the workspace sets core.autocrlf=false"
         );
     }
 }
