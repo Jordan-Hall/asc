@@ -65,8 +65,8 @@ impl BucketObjects {
             let (store, root) = crate::s3::open_with(&url, credentials)?;
             return Ok(Self::new(store, root).with_bucket_packs(Default::default()));
         }
-        let (store, root) = object_store::parse_url(&url)?;
-        Ok(Self::new(Arc::from(store), root).with_bucket_packs(Default::default()))
+        let (store, root) = open_url(&url)?;
+        Ok(Self::new(store, root).with_bucket_packs(Default::default()))
     }
 
     pub(crate) fn loc(&self, rel: &str) -> Path {
@@ -80,6 +80,22 @@ impl BucketObjects {
     pub(crate) fn key_path(&self, key: &ObjKey) -> Path {
         self.loc(&key.path())
     }
+}
+
+/// The store and root of a non-S3 bucket URL. A `file:` URL is opened as its directory (created
+/// if missing): `object_store`'s own parsing percent-encodes characters such as `~` in the path,
+/// so a directory like a Windows short name (`RUNNER~1`) would be written somewhere else.
+pub(crate) fn open_url(url: &url::Url) -> Result<(Arc<dyn ObjectStore>, Path)> {
+    if url.scheme() == "file" {
+        let dir = url
+            .to_file_path()
+            .map_err(|()| Error::Url(format!("not a local path: {url}")))?;
+        std::fs::create_dir_all(&dir).map_err(|e| Error::Url(e.to_string()))?;
+        let fs = LocalFileSystem::new_with_prefix(&dir)?;
+        return Ok((Arc::new(fs), Path::default()));
+    }
+    let (store, root) = object_store::parse_url(url)?;
+    Ok((Arc::from(store), root))
 }
 
 /// Largest stored size for a value decoding to `max`: codec byte plus zstd framing slack.

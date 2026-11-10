@@ -199,8 +199,8 @@ impl BucketRefs {
             let (store, root) = crate::s3::open_strict(&url, credentials)?;
             return Ok(Self::new(store, root));
         }
-        let (store, root) = object_store::parse_url(&url)?;
-        Ok(Self::new(Arc::from(store), root))
+        let (store, root) = crate::bucket::open_url(&url)?;
+        Ok(Self::new(store, root))
     }
 
     /// One path segment per ref: `/` is percent-encoded so refs `a` and `a/b` never collide.
