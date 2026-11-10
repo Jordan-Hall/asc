@@ -337,12 +337,31 @@ impl<O: Objects, R: Refs> Engine<O, R> {
     }
 
     /// SPEC §2.8 native rule: each added or changed path is checkout-safe, Windows-valid in
-    /// every component, and has no case-fold sibling in the resulting tree.
+    /// every component, and has no case-fold sibling in the resulting tree. In a merge, a path
+    /// that comes unchanged from another parent is not new: that parent was checked when it was
+    /// made, and ort keeps both names of a case pair (SPEC §4.4).
     async fn check_windows_paths(&self, cs: &Changeset) -> Result<()> {
+        let mut merged_roots = Vec::new();
+        for &p in cs.parents.iter().skip(1) {
+            merged_roots.push(self.get_changeset(p).await?.root);
+        }
         let mut dirs: HashMap<Vec<u8>, DirInfo> = HashMap::new();
         for (path, change) in cs.changes.as_slice() {
             if matches!(change, Change::Delete) {
                 continue;
+            }
+            if !merged_roots.is_empty() {
+                let ours = self.lookup(cs.root, path).await?;
+                let mut from_a_parent = false;
+                for &root in &merged_roots {
+                    if ours.is_some() && self.lookup(root, path).await? == ours {
+                        from_a_parent = true;
+                        break;
+                    }
+                }
+                if from_a_parent {
+                    continue;
+                }
             }
             if !checkout_safe(path) {
                 return Err(Error::UnsafePath(path.clone()));

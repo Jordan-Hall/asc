@@ -870,16 +870,38 @@ impl<'a> Ingestor<'a> {
     }
 
     /// SPEC §2.8 native rule for a repository with `windows_safe`: each added or changed path is
-    /// checkout-safe, Windows-valid in every component, and has no case-fold sibling.
+    /// checkout-safe, Windows-valid in every component, and has no case-fold sibling. In a merge,
+    /// a path that comes unchanged from another parent is not new: that parent was checked when
+    /// it was made, and ort keeps both names of a case pair (SPEC §4.4).
     async fn check_windows_paths(&self, cs: &Changeset) -> Result<(), IngestError> {
         let policy = |path: &RepoPath, why| IngestError::PathPolicy {
             path: path.to_string(),
             why,
         };
+        let mut merged_roots = Vec::new();
+        for &p in cs.parents.iter().skip(1) {
+            let parent = self.engine.get_changeset(p).await.map_err(from_commit)?;
+            merged_roots.push(parent.root);
+        }
         let mut dirs: HashMap<Vec<u8>, DirInfo> = HashMap::new();
         for (path, change) in cs.changes.as_slice() {
             if matches!(change, Change::Delete) {
                 continue;
+            }
+            if !merged_roots.is_empty() {
+                let ours = self.engine.lookup(cs.root, path).await.map_err(from_tree)?;
+                let mut from_a_parent = false;
+                for &root in &merged_roots {
+                    if ours.is_some()
+                        && self.engine.lookup(root, path).await.map_err(from_tree)? == ours
+                    {
+                        from_a_parent = true;
+                        break;
+                    }
+                }
+                if from_a_parent {
+                    continue;
+                }
             }
             if !checkout_safe(path) {
                 return Err(policy(path, "not safe to check out (git-fidelity Q-7)"));
