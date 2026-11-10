@@ -53,7 +53,9 @@ pub fn host_claim(
 }
 
 /// The claim for the account of the person it names (`user:<login>`). The login is read from the
-/// claim itself to find the subject; the MAC then proves the hub signed exactly that pair.
+/// claim itself to find the subject, lower cased like every user subject (the user entry keeps the
+/// login as the person spells it, `7:Alice`, and the subject is `user:alice`); the MAC then proves
+/// the hub signed exactly that pair.
 pub fn account_claim(
     authorizer: &dyn Authorizer,
     principal_id: &str,
@@ -61,7 +63,12 @@ pub fn account_claim(
 ) -> Option<Claim> {
     let user = meta.get(asc_rpc::forwarded::USER)?.to_str().ok()?;
     let login = user.split_once(':')?.1;
-    host_claim(authorizer, principal_id, meta, &format!("user:{login}"))
+    host_claim(
+        authorizer,
+        principal_id,
+        meta,
+        &subject::user(&login.to_ascii_lowercase()),
+    )
 }
 
 /// What a call from the host service says about who it is for.
