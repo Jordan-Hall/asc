@@ -67,7 +67,9 @@ server.
 ## 6. Compatibility notes
 
 - Attributes come from `.ascattributes` if present, else `.gitattributes`; the files are never
-  merged. `text`, `text=auto` and `eol=*` normalise CRLF to LF on `add` as git does. `filter=`
+  merged. `text`, `text=auto`, `eol=*`, the legacy `crlf` and `core.autocrlf` normalise CRLF to
+  LF on `add`, and a plain work tree's checkout writes CRLF where git does (virtual work trees keep
+  the committed bytes). A global `core.autocrlf=true` is ignored in asc workspaces. `filter=`
   drivers (clean/smudge), `ident` and `working-tree-encoding` are not supported and are reported
   by `asc doctor` (`gitattributes`).
 - Ignore files: `.ascignore` first, else `.gitignore`.
@@ -105,6 +107,6 @@ the hub cannot take the report, the command prints why and exits 1.
 | `fuse` (Linux) | FUSE is missing or not usable. Install it, or use `--mode plain`. |
 | `long-paths` (Windows) | Long paths are off. Enable `LongPathsEnabled` or use short workspace paths. |
 | `defender`, `dev-drive` | Information about antivirus exclusions and Dev Drive. Excluding `$ASC_HOME` speeds up work. |
-| `autocrlf`, `gitattributes` | Line-ending or attribute settings git handles and asc does not. See section 6. |
+| `autocrlf`, `gitattributes` | A global `core.autocrlf=true`, or attributes asc does not support (line-ending ones too in a virtual workspace). See section 6. |
 | `remote`, `store` | The remote or bucket is offline or fails the create-only probe. Check the URL and credentials. |
 | credentials | Lists credential sources by name only (never values). asc uses the system credential helpers. |
