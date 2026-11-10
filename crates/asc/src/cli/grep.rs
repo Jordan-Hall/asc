@@ -834,4 +834,77 @@ mod tests {
         ));
     }
 
+    fn backref(patterns: &[&str], extended: bool, ic: bool, word: bool) -> Backref {
+        let sources: Vec<grep_backref::Source<'_>> = patterns
+            .iter()
+            .map(|text| grep_backref::Source { text, fixed: false })
+            .collect();
+        grep_backref::compile(&sources, extended, ic, word, &bracket).unwrap()
+    }
+
+    fn back_hits(pattern: &str, extended: bool, line: &str) -> bool {
+        backref(&[pattern], extended, false, false)
+            .is_match(line.as_bytes())
+            .unwrap()
+    }
+
+    #[test]
+    fn back_references_match_the_captured_text() {
+        assert!(back_hits("\\(ab\\)\\1", false, "xabab"));
+        assert!(!back_hits("\\(ab\\)\\1", false, "abba"));
+        assert!(back_hits("(a|b)\\1", true, "xbb"));
+        assert!(!back_hits("(a|b)\\1", true, "ab"));
+        assert!(back_hits("([a-z]+) \\1", true, "say hello hello"));
+        assert!(back_hits("^(.*)\\1$", true, "abcabc"));
+        assert!(!back_hits("^(.*)\\1$", true, "abcab"));
+        assert!(back_hits("(a*)*b\\1", true, "b"));
+        assert!(back_hits("x\\{2\\}\\(y\\)\\1", false, "xxyy"));
+        assert!(back_hits("(o){2,3}\\1", true, "ooo"));
+        assert!(!back_hits("(o){2,3}\\1", true, "oo"));
+        assert!(back_hits("*\\(a\\)\\1", false, "*aa"));
+        assert!(back_hits("[\\1](x)\\1", true, "1xx"));
+        assert!(back_hits("\\<(\\w+) \\1\\>", true, "the the"));
+        assert!(!back_hits("\\<(\\w+) \\1\\>", true, "the then"));
+    }
+
+    #[test]
+    fn back_references_fold_case_and_number_groups_per_pattern() {
+        assert!(
+            backref(&["(ab)\\1"], true, true, false)
+                .is_match(b"AbaB")
+                .unwrap()
+        );
+        let two = backref(&["(x)\\1", "(y)(z)\\2"], true, false, false);
+        assert!(two.is_match(b"zz yzz").unwrap());
+        assert!(two.is_match(b"xx").unwrap());
+        assert!(!two.is_match(b"yz").unwrap());
+        let word = backref(&["(ab)\\1"], true, false, true);
+        assert!(word.is_match(b"x abab y").unwrap());
+        assert!(!word.is_match(b"xabab").unwrap());
+    }
+
+    #[test]
+    fn back_reference_errors_and_budget() {
+        let err = |p: &str, extended: bool| {
+            let sources = [grep_backref::Source {
+                text: p,
+                fixed: false,
+            }];
+            grep_backref::compile(&sources, extended, false, false, &bracket)
+                .unwrap_err()
+                .why
+        };
+        assert_eq!(err("(a)\\2", true), "Invalid back reference");
+        assert_eq!(err("\\1(a)", true), "Invalid back reference");
+        assert_eq!(err("\\(a\\1", false), "Unmatched ( or \\(");
+        assert_eq!(err("(a))\\1", true), "Unmatched ) or \\)");
+        assert_eq!(err("(a){3,1}\\1", true), "Invalid content of \\{\\}");
+        assert_eq!(err("(a){256}\\1", true), "Invalid content of \\{\\}");
+        let slow = backref(&["(a|aa)+(a|aa)+\\1c"], true, false, false);
+        assert_eq!(slow.is_match(&[b'a'; 64]), None);
+        assert!(grep_backref::uses_backref("(a)\\1"));
+        assert!(!grep_backref::uses_backref("[\\1]x"));
+        assert!(!grep_backref::uses_backref("a\\\\1"));
+        assert!(!grep_backref::uses_backref("[[:digit:]\\1]"));
+    }
 }

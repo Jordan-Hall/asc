@@ -652,17 +652,35 @@ async fn grep_misuse_and_limits() {
         assert_eq!(c.code, g.code, "{args:?}: {}", c.stderr);
         assert!(c.stderr.starts_with("fatal: "), "{args:?}: {}", c.stderr);
     }
-    // Back-references are refused, not misread.
-    let out = r.asc(&["grep", "-E", "(fo)\\1"]);
-    assert_eq!(out.code, 128);
-    assert!(
-        out.stderr.contains("back-references are not supported"),
-        "{}",
-        out.stderr
-    );
+    // Back-references run as in git.
+    for args in [
+        &["grep", "-n", "-E", "(o)\\1"][..],
+        &["grep", "-c", "\\(o\\)\\1"],
+        &["grep", "-E", "(o)\\2"],
+    ] {
+        r.same("", args, b"", false);
+    }
     // A pattern that blows the expression size limit is an error, not a hang.
     let big = "a{1000}{1000}{1000}";
     assert_eq!(r.asc(&["grep", "-E", big]).code, 128);
+}
+
+#[tokio::test]
+async fn grep_backreference_budget_gives_the_file_up() {
+    let r = Rig::new().await;
+    r.seed(&[("slow.txt", &[b'a'; 64]), ("fine.txt", b"aaac\n")])
+        .await;
+    // A back-reference pattern that would backtrack for ever gives its file up with a warning;
+    // the other files are still searched.
+    let out = r.asc(&["grep", "-E", "(a|aa)+(a|aa)+\\1c"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(out.stdout, "fine.txt:aaac\n");
+    assert!(
+        out.stderr
+            .contains("slow.txt: the back-reference pattern took too many steps"),
+        "{}",
+        out.stderr
+    );
 }
 
 #[tokio::test]
