@@ -602,7 +602,10 @@ mod live_run {
         w.trunk_moves("trunk.txt", "trunk\n");
 
         let line = w.live();
-        assert!(line.contains(": notice: signing: commit.gpgSign"), "{line}");
+        assert!(
+            line.contains(": notice: signing: signing is on (commit.gpgSign"),
+            "{line}"
+        );
         assert_eq!(w.rev("feature"), old);
         assert_eq!(w.state()["paused"], false, "only a conflict pauses");
     }
