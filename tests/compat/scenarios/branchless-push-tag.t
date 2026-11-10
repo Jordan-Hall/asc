@@ -2,8 +2,8 @@
 # fidelity: D-5
 # Pushing tags in both modes (SPEC 21.4.2, 21.1 BD7; divergence D-5). The remote is a bare git
 # repository, which has no ref policy, so here both modes must match git byte for byte; the rejection
-# of a tag outside `shared_refs` is a server policy (B08a) and its client mapping (B12) adds the
-# `allowed.toml` entry for D-5 that covers the push lines. The local commands are identical in both
+# of a tag outside `shared_refs` is a server policy (B08a), and its client line is proven against an
+# asc server in crates/asc/tests/branchless_push.rs. The local commands are identical in both
 # modes, and `asc.branchless=false` is git's behaviour.
 rg() { "${ASC_REAL_GIT:-git}" "$@"; }
 rg init -q --bare ../up.git

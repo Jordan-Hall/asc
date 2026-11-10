@@ -70,16 +70,16 @@ Q-2, Q-4 and Q-5 are `replicate` and have no bullet.
 - **Class:** branchless
 - **Pinned git:** `git push origin <tag>` creates the tag on the remote.
 - **asc (`asc.branchless=true`, the default):** `! [remote rejected] <tag> -> <tag> (asc: ref not shared in this repository)`, exit 1. `asc.branchless=false` or `repos.branchless=false` restores git's behaviour.
-- **Proof:** `tests/compat/scenarios/branchless-push-tag.t` runs in both modes against a bare git remote (no ref policy) and must match git byte for byte, which proves the `asc.branchless=false` half and BD7 for the local commands. The rejection is server policy (`REF_NOT_SHARED`, `crates/asc-serve/tests/refpolicy.rs`) and its client mapping and printed line are B12; B12 adds the `allowed.toml` entry carrying `D-5` and a proof of the line.
-- **Status:** pending B12
+- **Proof:** `tests/compat/scenarios/branchless-push-tag.t` runs in both modes against a bare git remote (no ref policy) and must match git byte for byte, which proves the `asc.branchless=false` half and BD7 for the local commands. The rejection is server policy (`REF_NOT_SHARED`, `crates/asc-serve/tests/refpolicy.rs`); the client maps it to the printed line, and the other refs of the same atomic update show `(atomic push failed)`: `crates/asc/tests/branchless_push.rs` (`a_tag_outside_the_shared_refs_is_rejected_and_nothing_moves`). The compat runs use a bare git remote, so no `allowed.toml` entry is needed.
+- **Status:** proven
 - **SPEC:** §21.4.2, §20.1 D5, §21.1 BD7
 
 ### D-6 `push --all` does not submit stacks in branchless mode
 - **Class:** branchless
 - **Pinned git:** `git push --all` pushes every local branch as a server branch.
 - **asc (branchless):** each non-shared branch becomes a user ref; shared-pattern branches follow their compare-and-swap rules; no `refs/for` submit, no PR; the output ends with `remote: asc: --all does not submit stacks; use asc submit`.
-- **Proof:** `tests/compat/scenarios/branchless-push-all.t` runs in both modes against a bare git remote and must match git byte for byte, which proves the `asc.branchless=false` half and BD7 for the local commands. No code prints `remote: asc: --all does not submit stacks` yet; that and the user-ref mapping are B12, which adds the `allowed.toml` entry carrying `D-6` and a proof of the line.
-- **Status:** pending B12
+- **Proof:** `tests/compat/scenarios/branchless-push-all.t` runs in both modes against a bare git remote and must match git byte for byte, which proves the `asc.branchless=false` half and BD7 for the local commands. The user-ref mapping is server policy; the client prints the last line on stderr when it is branchless and the server says the repo is, and not with `-q`, `--dry-run` or nothing to send: `crates/asc/tests/branchless_push.rs` (`push_all_ends_with_the_no_submit_line_only_in_branchless_mode`). The compat runs use a bare git remote, so no `allowed.toml` entry is needed.
+- **Status:** proven
 - **SPEC:** §21.4.2
 
 ### D-7 A hook installed through `rev-parse --absolute-git-dir` is not found

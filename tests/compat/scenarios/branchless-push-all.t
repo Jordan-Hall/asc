@@ -3,7 +3,7 @@
 # `push --all` in both modes (SPEC 21.4.2, 21.1 BD7; divergence D-6). The remote is a bare git
 # repository, so here both modes must match git byte for byte; that branchless `--all` pushes user
 # refs and submits no stacks (the `remote: asc: --all does not submit stacks` line) is a server
-# policy (B08a) and its client mapping (B12) adds the `allowed.toml` entry for D-6. The local
+# policy (B08a), proven against an asc server in crates/asc/tests/branchless_push.rs. The local
 # commands are identical in both modes, and `asc.branchless=false` is git's behaviour.
 rg() { "${ASC_REAL_GIT:-git}" "$@"; }
 rg init -q --bare ../up.git
