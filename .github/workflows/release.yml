@@ -214,6 +214,10 @@ jobs:
       - name: Generate the TypeScript client
         run: bun run codegen
         working-directory: packages/asc-client-ts
+      # Both editor plugins serve the asc-ui webview bundle; without it their pages are empty.
+      - name: Build the webview bundle
+        run: bun run build
+        working-directory: packages/asc-ui
       - name: VS Code extension
         run: |
           set -euo pipefail
