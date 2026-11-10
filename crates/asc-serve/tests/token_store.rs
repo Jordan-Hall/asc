@@ -1082,6 +1082,38 @@ async fn the_server_refuses_to_start_without_its_key_and_the_cli_validates() {
     );
 }
 
+#[tokio::test]
+async fn the_cli_mints_nothing_on_a_forge_fronted_server() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir
+        .path()
+        .join("asc.db")
+        .to_string_lossy()
+        .replace('\\', "/");
+    let cfg = ServeConfig::parse(&format!(
+        "store = \"memory:///\"
+db = \"sqlite:{db}?mode=rwc\"
+"
+    ))
+    .unwrap();
+    let e = token_cli::create(
+        &cfg,
+        CreateArgs {
+            kind: TokenKind::Deploy,
+            user: None,
+            repos: vec!["acme/web".into()],
+            access: Access::Read,
+            expires: None,
+            label: String::new(),
+        },
+    )
+    .await
+    .err()
+    .expect("refused");
+    assert!(e.to_string().contains("token_store"), "{e}");
+    assert!(token_cli::list(&cfg).await.is_err());
+}
+
 #[test]
 fn config_validates_the_auth_keys() {
     let base = "store = \"memory:///\"\ndb = \"sqlite:x.db\"\n";
@@ -1099,6 +1131,27 @@ fn config_validates_the_auth_keys() {
     assert_eq!(
         cfg.auth_provider(),
         Some(asc_serve::config::AuthProvider::TokenStore)
+    );
+    // One token system per server: a token key beside the forge, or with no provider, is refused.
+    assert!(
+        ServeConfig::parse(&format!(
+            "{base}[auth]
+token_key_file = \"/etc/asc/k\"
+"
+        ))
+        .is_err()
+    );
+    #[cfg(feature = "forgejo")]
+    assert!(
+        ServeConfig::parse(&format!(
+            "{base}[auth]
+provider = \"forgejo\"
+token_key_file = \"/etc/asc/k\"
+[forgejo]
+url = \"https://f.example\"
+"
+        ))
+        .is_err()
     );
     // A `[forgejo]` section no longer selects the provider: it must be named.
     #[cfg(feature = "forgejo")]
