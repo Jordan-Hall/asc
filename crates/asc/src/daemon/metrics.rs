@@ -993,4 +993,12 @@ mod tests {
     fn rss_is_readable() {
         assert!(rss_bytes().is_some_and(|b| b > 0));
     }
+
+    #[cfg(any(target_os = "linux", windows))]
+    #[test]
+    fn the_private_figure_is_part_of_the_resident_set() {
+        let private = private_rss_bytes().expect("readable");
+        let total = rss_bytes().expect("readable");
+        assert!(private > 0 && private <= total, "{private} of {total}");
+    }
 }
