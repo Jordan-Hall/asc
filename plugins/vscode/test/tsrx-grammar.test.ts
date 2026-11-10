@@ -185,18 +185,21 @@ describe("tsrx grammar on large and hostile input", () => {
     expect(budget(src)).toBeLessThan(1000);
   });
 
-  test("pathological lines stay within budget", () => {
-    for (const src of [
-      "<".repeat(50_000),
-      "<a ".repeat(20_000),
-      "@if (".repeat(10_000),
-      "{".repeat(20_000),
-      `<style${" x".repeat(20_000)}`,
-      "@{ ".repeat(10_000) + "}".repeat(10_000),
-      `<div a="${"x".repeat(100_000)}`,
-      Array.from({ length: 5000 }, () => "<p>").join("\n"),
-    ]) {
+  // Each input has its own 5 s budget, so each is its own test: one shared timeout would add the
+  // deep-nesting cases together and fail on a slow runner while every input is within budget.
+  const pathological: [string, string][] = [
+    ["unclosed angle brackets", "<".repeat(50_000)],
+    ["unclosed tags", "<a ".repeat(20_000)],
+    ["unclosed @if heads", "@if (".repeat(10_000)],
+    ["deeply nested braces", "{".repeat(20_000)],
+    ["an unclosed <style> tag", `<style${" x".repeat(20_000)}`],
+    ["deeply nested component bodies", "@{ ".repeat(10_000) + "}".repeat(10_000)],
+    ["an unclosed attribute string", `<div a="${"x".repeat(100_000)}`],
+    ["many short lines", Array.from({ length: 5000 }, () => "<p>").join("\n")],
+  ];
+  for (const [name, src] of pathological) {
+    test(`pathological input stays within budget: ${name}`, () => {
       expect(budget(src)).toBeLessThan(5000);
-    }
-  });
+    }, 15_000);
+  }
 });
