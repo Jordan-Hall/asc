@@ -390,6 +390,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn from_url_keeps_a_tilde_in_the_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("RUNNER~1");
+        std::fs::create_dir(&root).unwrap();
+        let url = url::Url::from_directory_path(&root).unwrap();
+        let b = BucketObjects::from_url(url.as_str()).unwrap();
+        let key = ObjKey::File(FileId::of(b"via url"));
+        b.put(&key, encode_stored(b"via url")).await.unwrap();
+        let on_disk = root.join("f").join(&key.path()[2..]);
+        assert!(on_disk.exists(), "{on_disk:?}");
+    }
+
+    #[tokio::test]
     async fn list_filters_to_object_keys_under_root() {
         let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
         let b = BucketObjects::new(store.clone(), Path::from("ns/ab"));
