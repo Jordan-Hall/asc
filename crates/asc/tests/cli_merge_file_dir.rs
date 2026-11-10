@@ -1,6 +1,7 @@
-//! A file against a directory at the same path, against real git: the directory keeps the name
-//! and the file moves aside to `<path>~<label>`, with git's messages, index stages and work tree,
-//! in `merge`, `cherry-pick` and `merge-tree` (plain and `-z`).
+//! Paths the two sides of a merge both claim, against real git: a file against a directory (the
+//! directory keeps the name and the file moves aside to `<path>~<label>`, with git's messages,
+//! index stages and work tree, in `merge`, `cherry-pick` and `merge-tree` plain and `-z`), and two
+//! new names that differ only in case.
 
 mod support;
 
@@ -270,4 +271,62 @@ fn merge_tree_reports_both_paths_plain_and_with_nul() {
         "side",
         "master",
     ]);
+}
+
+/// Both sides add a name that differs from the other only in case.
+fn case_pair(ignorecase: &str) -> Pair {
+    let p = base();
+    p.both(&["config", "core.ignorecase", ignorecase]);
+    p.branch_with("side", "master", "A.txt", "theirs\n");
+    p.both(&["checkout", "-q", "master"]);
+    p.commit("a.txt", "ours\n");
+    p
+}
+
+#[test]
+fn a_case_pair_merges_like_git_when_ignorecase_is_off() {
+    let p = case_pair("false");
+    // On a case-sensitive volume the merge is clean with both names. On an insensitive one
+    // `a.txt` stands where `A.txt` would go, so git (and asc) refuse it as an untracked file
+    // in the way.
+    let insensitive = p.asc.join("A.TXT").exists();
+    let out = p.same(&["merge", "side"]);
+    assert_eq!(out.code, if insensitive { 2 } else { 0 }, "{}", out.stdout);
+    p.same(&["ls-tree", "-r", "HEAD"]);
+    p.same(&["ls-files", "-s"]);
+}
+
+#[test]
+fn merge_tree_keeps_both_names_of_a_case_pair() {
+    let p = case_pair("true");
+    let out = p.same(&["merge-tree", "--write-tree", "master", "side"]);
+    assert_eq!(out.code, 0, "{}", out.stdout);
+}
+
+// fidelity: U-4
+#[test]
+fn a_case_pair_on_a_case_insensitive_work_tree_is_refused_and_nothing_moves() {
+    let p = case_pair("true");
+    let before = p.run_asc(&["rev-parse", "HEAD"]).stdout;
+    let out = p.run_asc(&["merge", "side"]);
+    assert_eq!(out.code, 128, "{}{}", out.stdout, out.stderr);
+    assert!(
+        out.stderr
+            .contains("'a.txt' and 'A.txt' differ only in case")
+            && out.stderr.contains("(git-fidelity U-4)"),
+        "{}",
+        out.stderr
+    );
+    assert_eq!(p.run_asc(&["rev-parse", "HEAD"]).stdout, before);
+    assert_eq!(
+        std::fs::read_to_string(p.asc.join("a.txt")).unwrap(),
+        "ours\n"
+    );
+    let pick = p.run_asc(&["cherry-pick", "side"]);
+    assert!(
+        pick.stderr.contains("(git-fidelity U-4)"),
+        "{}",
+        pick.stderr
+    );
+    assert_eq!(p.run_asc(&["rev-parse", "HEAD"]).stdout, before);
 }
