@@ -88,7 +88,7 @@ Configuration keys are in [`CONFIG.md`](CONFIG.md). Getting started is in
 | Command | What it does | Example |
 |---|---|---|
 | `fetch` | Downloads refs and missing objects. | `asc fetch origin` |
-| `pull` | Fetches and integrates. | `asc pull --ff-only` |
+| `pull` | Fetches and integrates: merges, or rebases per `--rebase[=true\|merges\|interactive]` and `pull.rebase` (`interactive` or `i` opens the rebase todo on the pulled commits). | `asc pull --rebase=interactive` |
 | `push` | Pushes refs. In a branchless repository `asc push origin feat` also submits the stack as draft changes. `--land` or `-o land` asks the server to land onto the default branch. `--mirror` (or `remote.<name>.mirror=true`) makes the remote's refs equal to the local ones, as git does: it forces every ref under `refs/` except asc's own `refs/asc/` and deletes remote refs with no local counterpart. It is refused for a branchless server. | `asc push --mirror backup` |
 | `remote` | Lists, adds and removes remotes. | `asc remote add origin https://asc.example.org/acme/payments` |
 | `ls-remote` | Lists refs of a remote. | `asc ls-remote --heads origin` |
