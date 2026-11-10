@@ -206,6 +206,27 @@ mod tests {
     }
 
     #[test]
+    fn a_ci_job_with_a_terminal_is_never_asked_unless_switched_on() {
+        use crate::credential::{AUTH_INTERACTIVE, interactive_with};
+        let ci = |v: &'static str| move |k: &str| (k == "CI").then(|| v.to_owned());
+        assert!(!interactive_with(ci("true"), true, true));
+        assert!(!interactive_with(ci("1"), true, true));
+        assert!(!interactive_with(ci("woodpecker"), true, true));
+        assert!(interactive_with(ci("false"), true, true));
+        assert!(interactive_with(ci("0"), true, true));
+        assert!(interactive_with(ci(""), true, true));
+        let switched = |k: &str| match k {
+            "CI" => Some("true".to_owned()),
+            AUTH_INTERACTIVE => Some("1".to_owned()),
+            _ => None,
+        };
+        assert!(
+            interactive_with(switched, false, false),
+            "the explicit switch wins"
+        );
+    }
+
+    #[test]
     fn tokens_are_one_visible_word() {
         assert!(usable("tok_abc"));
         assert!(!usable(""));
