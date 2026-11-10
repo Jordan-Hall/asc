@@ -11,8 +11,8 @@ import "asc/v1/repo.proto";
 service Releases {
   rpc DraftNotes(DraftReleaseNotesRequest) returns (DraftReleaseNotesResponse);   // repo read; expensive; the changes since a release, grouped
   rpc Next(NextReleaseRequest) returns (NextReleaseResponse);                     // repo read; "6 changes since v2.18.0" and a proposed tag
-  rpc Create(CreateReleaseRequest) returns (CreateReleaseResponse);               // repo write; mutating, x-asc-op-id; a draft or a published release
-  rpc Publish(PublishReleaseRequest) returns (PublishReleaseResponse);            // repo write; mutating, x-asc-op-id
+  rpc Create(CreateReleaseRequest) returns (CreateReleaseResponse);               // repo write; mutating, x-asc-op-id (a retry gets the first answer); a draft or a published release
+  rpc Publish(PublishReleaseRequest) returns (PublishReleaseResponse);            // repo write; mutating, x-asc-op-id (a retry gets the first answer)
   rpc List(ListReleasesRequest) returns (ListReleasesResponse);                   // repo read; paged, newest first
   rpc Get(GetReleaseRequest) returns (GetReleaseResponse);                        // repo read
 }

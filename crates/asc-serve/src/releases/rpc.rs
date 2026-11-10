@@ -1,5 +1,5 @@
 //! The `asc.v1.Releases` tonic service. Reads need repo read (drafts need repo write), `Create` and
-//! `Publish` need repo write and an operation id.
+//! `Publish` need repo write and an operation id; a retry with the same id gets the first answer.
 
 use std::sync::Arc;
 
@@ -9,16 +9,26 @@ use asc_rpc::services::releases_server::{Releases, ReleasesServer};
 use tonic::service::interceptor::InterceptedService;
 use tonic::{Request, Response, Status};
 
+use crate::ai::caller::once;
+use crate::ai::ops::Ops;
 use crate::review::{Env, Reviews};
 
 pub struct ReleasesService {
     hub: Arc<Reviews>,
     env: Env,
+    ops: Ops,
+}
+
+/// What an operation id is bound to: the person, the repository and how ids are shown, so an
+/// answer made for one never replays to another.
+fn replay_key(ctx: &asc_rpc::server::CallCtx) -> String {
+    format!("{}|{}|{:?}", ctx.principal.id, ctx.repo, ctx.id_mode)
 }
 
 impl ReleasesService {
     pub fn new(hub: Arc<Reviews>, authorizer: Arc<dyn Authorizer>, info: ServerInfo) -> Self {
         Self {
+            ops: Ops::new(hub.registry.pool().clone()),
             hub,
             env: Env { authorizer, info },
         }
@@ -73,7 +83,20 @@ impl Releases for ReleasesService {
             .env
             .context(&meta, &ext, msg.repo.as_ref(), Access::Write, true)
             .await?;
-        self.hub.release_create(&ctx, msg).await.map(Response::new)
+        let op = ctx
+            .op_id
+            .ok_or_else(|| Status::invalid_argument("mutating calls need x-asc-op-id"))?;
+        let hub = &self.hub;
+        once(
+            &self.ops,
+            op,
+            &replay_key(&ctx),
+            "Releases/Create",
+            true,
+            || hub.release_create(&ctx, msg),
+        )
+        .await
+        .map(Response::new)
     }
 
     async fn publish(
@@ -85,7 +108,20 @@ impl Releases for ReleasesService {
             .env
             .context(&meta, &ext, msg.repo.as_ref(), Access::Write, true)
             .await?;
-        self.hub.release_publish(&ctx, msg).await.map(Response::new)
+        let op = ctx
+            .op_id
+            .ok_or_else(|| Status::invalid_argument("mutating calls need x-asc-op-id"))?;
+        let hub = &self.hub;
+        once(
+            &self.ops,
+            op,
+            &replay_key(&ctx),
+            "Releases/Publish",
+            true,
+            || hub.release_publish(&ctx, msg),
+        )
+        .await
+        .map(Response::new)
     }
 
     async fn list(
