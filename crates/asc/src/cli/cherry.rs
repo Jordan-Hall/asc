@@ -95,7 +95,7 @@ fn parse(args: &[OsString]) -> Result<Opt> {
 
 /// A digest of the change a commit makes: the files, and the hunk lines with whitespace and
 /// line numbers left out.
-async fn patch_id(ws: &WsCtx, id: ChangesetId) -> Result<[u8; 32]> {
+pub(super) async fn patch_id(ws: &WsCtx, id: ChangesetId) -> Result<[u8; 32]> {
     let cs = ws.engine.get_changeset(id).await?;
     let old: TreeId = match cs.parents.first() {
         Some(&p) => ws.engine.get_changeset(p).await?.root,

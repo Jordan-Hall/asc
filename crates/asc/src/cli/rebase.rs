@@ -37,10 +37,13 @@
 //! range to that base, `rebase-cousins` resets it to `onto`, and the option (a bare `-r` means
 //! `no-rebase-cousins`) wins over the configuration. Any other mode is fatal.
 //!
+//! A commit of the range whose patch id (`cherry.rs`) matches a commit of `<branch>..<upstream>`
+//! is left out of the list up front with git's "skipped previously applied commit" warning and
+//! `advice.skippedCherryPicks` hint, unless `--reapply-cherry-picks` (the default with
+//! `--keep-base`) is given; `--root` compares nothing.
+//!
 //! Not served: conflicts while recreating a merge (the rebase stops and `--abort` returns), octopus
-//! merges, merge strategies other than `ort`, and git's patch-id detection of commits already
-//! upstream (such a commit becomes empty on replay and is dropped, kept or stops the rebase as
-//! `--empty` says, instead of being left out of the list up front). `pre-rebase`, `post-rewrite`
+//! merges and merge strategies other than `ort`. `pre-rebase`, `post-rewrite`
 //! and, for the commits made through `git commit` in git (`reword`, `squash`, `fixup`),
 //! `prepare-commit-msg`, `commit-msg` (reword only) and `post-commit` run; `post-checkout` runs on
 //! the first and last head move. `--autostash` stores a conflicted stash under `refs/stash` when
@@ -122,6 +125,10 @@ pub struct Args {
     pub rebase_merges: Option<String>,
     #[arg(long = "no-rebase-merges")]
     pub no_rebase_merges: bool,
+    #[arg(long = "reapply-cherry-picks")]
+    pub reapply_cherry_picks: bool,
+    #[arg(long = "no-reapply-cherry-picks")]
+    pub no_reapply_cherry_picks: bool,
     #[arg(long = "keep-empty")]
     pub keep_empty: bool,
     #[arg(long = "no-keep-empty")]
@@ -171,6 +178,8 @@ pub const NATIVE: &[NativeSpec] = &[NativeSpec {
         "-r",
         "--rebase-merges",
         "--no-rebase-merges",
+        "--reapply-cherry-picks",
+        "--no-reapply-cherry-picks",
         "--keep-empty",
         "--no-keep-empty",
         "--empty",
@@ -1017,13 +1026,39 @@ async fn start(ctx: &Ctx, ws: &WsCtx, gitdir: &Path, a: Args, merges: Merges) ->
     let short = |o: &GitOid| o.to_string()[..abbrev].to_owned();
     let onto_git = conflict::git_id(ws, onto).await?;
     let orig_git = conflict::git_id(ws, orig).await?;
+    let reapply = !a.no_reapply_cherry_picks && (a.reapply_cherry_picks || keep_base);
+    // `--keep-base` reapplying takes the merge base as the upstream, as git does; the header
+    // names it.
     let upstream_git = match upstream {
+        Some(_) if keep_base && reapply => Some(onto_git),
         Some(u) => Some(conflict::git_id(ws, u).await?),
         None => None,
     };
 
     // The generated list: with `--root`, everything the new base does not already hold.
     let range = collect_range(ws, orig, upstream.unwrap_or(onto)).await?;
+    // git's `--cherry-pick --right-only`: a commit whose patch upstream already holds is left
+    // out, unless `--reapply-cherry-picks` (the default with `--keep-base`) asks for it.
+    let skipped = match upstream {
+        Some(u) if !reapply => skipped_cherry_picks(ws, &range, u, orig).await?,
+        _ => Vec::new(),
+    };
+    if !skipped.is_empty() {
+        if !a.quiet {
+            for id in &skipped {
+                let g = conflict::git_id(ws, *id).await?;
+                eprintln!("warning: skipped previously applied commit {}", short(&g));
+            }
+        }
+        if conflict::advice(ctx, "skippedCherryPicks") {
+            let t = tool(ctx);
+            eprintln!(
+                "hint: use --reapply-cherry-picks to include skipped commits\n\
+                 hint: Disable this message with \"{t} config set advice.skippedCherryPicks false\""
+            );
+        }
+    }
+    let skipped: HashSet<ChangesetId> = skipped.into_iter().collect();
     let mut list = if rebase_merges {
         merges_todo(
             ctx,
@@ -1036,11 +1071,12 @@ async fn start(ctx: &Ctx, ws: &WsCtx, gitdir: &Path, a: Args, merges: Merges) ->
                 cousins: merges == Merges::On { cousins: true },
             },
             keep_empty,
+            &skipped,
             comment,
         )
         .await?
     } else {
-        plain_todo(ws, &range, keep_empty, comment).await?
+        plain_todo(ws, &range, keep_empty, &skipped, comment).await?
     };
     if todo::is_empty(&list) {
         list = vec![Item::new(Op::Noop, None, "")];
@@ -1354,6 +1390,61 @@ fn graph_order_reversed(log: Vec<Ranged>) -> Vec<Ranged> {
         .collect()
 }
 
+/// The commits of the range whose patch a commit of `orig..upstream` already makes (git's
+/// `--cherry-pick --right-only` over `upstream...orig`), in range order. Merges and commits
+/// without changes never match; an upstream commit is diffed only when it touches a path some
+/// commit of the range touches.
+async fn skipped_cherry_picks(
+    ws: &WsCtx,
+    range: &[Ranged],
+    upstream: ChangesetId,
+    orig: ChangesetId,
+) -> Result<Vec<ChangesetId>> {
+    let mut mine: Vec<ChangesetId> = Vec::new();
+    let mut touched: HashSet<RepoPath> = HashSet::new();
+    for r in range.iter().filter(|r| r.parents.len() <= 1) {
+        let cs = ws.engine.get_changeset(r.id).await?;
+        if !cs.changes.is_empty() {
+            touched.extend(cs.changes.as_slice().iter().map(|(p, _)| p.clone()));
+            mine.push(r.id);
+        }
+    }
+    if mine.is_empty() {
+        return Ok(Vec::new());
+    }
+    let q = LogQuery {
+        include: vec![upstream],
+        exclude: vec![orig],
+        ..LogQuery::default()
+    };
+    let theirs = HistoryApi::log(&ws.engine, &q, None)
+        .await
+        .map_err(fatal)?
+        .entries;
+    let mut upstream_ids: HashSet<[u8; 32]> = HashSet::new();
+    for e in theirs.iter().filter(|e| e.parents.len() <= 1) {
+        let cs = ws.engine.get_changeset(e.id).await?;
+        if cs
+            .changes
+            .as_slice()
+            .iter()
+            .any(|(p, _)| touched.contains(p))
+        {
+            upstream_ids.insert(super::cherry::patch_id(ws, e.id).await?);
+        }
+    }
+    if upstream_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for id in mine {
+        if upstream_ids.contains(&super::cherry::patch_id(ws, id).await?) {
+            out.push(id);
+        }
+    }
+    Ok(out)
+}
+
 async fn is_empty_commit(ws: &WsCtx, cs: &Changeset) -> Result<bool> {
     Ok(root_of(ws, cs.parents.first().copied()).await? == cs.root)
 }
@@ -1363,11 +1454,12 @@ async fn plain_todo(
     ws: &WsCtx,
     range: &[Ranged],
     keep_empty: bool,
+    skipped: &HashSet<ChangesetId>,
     comment: u8,
 ) -> Result<Vec<Item>> {
     let mut list = Vec::new();
     for r in range {
-        if r.parents.len() > 1 {
+        if r.parents.len() > 1 || skipped.contains(&r.id) {
             continue;
         }
         // A root commit (unrelated history) replays its whole tree onto the new base.
@@ -1484,6 +1576,7 @@ async fn merges_todo(
     range: &[Ranged],
     span: Span,
     keep_empty: bool,
+    skipped: &HashSet<ChangesetId>,
     comment: u8,
 ) -> Result<Vec<Item>> {
     let Span {
@@ -1524,7 +1617,7 @@ async fn merges_todo(
         let oid = conflict::git_id(ws, r.id).await?;
         if cs.parents.len() <= 1 {
             let empty = is_empty_commit(ws, &cs).await?;
-            if empty && !keep_empty {
+            if (empty && !keep_empty) || skipped.contains(&r.id) {
                 lines.insert(r.id, None);
             } else {
                 lines.insert(
