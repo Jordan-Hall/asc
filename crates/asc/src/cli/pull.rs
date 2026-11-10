@@ -1,5 +1,6 @@
 //! `pull [<remote> [<branch>]]` (SPEC §11.2): fetch, then merge or rebase the remote-tracking
-//! branch per `--rebase`/`--no-rebase`/`--ff-only` and `pull.rebase`/`pull.ff`.
+//! branch per `--rebase[=true|merges|interactive]`/`--no-rebase`/`--ff-only` and
+//! `pull.rebase`/`pull.ff`; `interactive` (or `i`) runs `rebase --interactive`.
 //!
 //! The integration step is the `merge` or `rebase` command itself, so `post-merge`, the
 //! `RewriteSink` calls of a rebase (SPEC §20.3) and every ref update behave exactly as when the
@@ -62,6 +63,7 @@ enum Rebase {
     No,
     Yes,
     Merges,
+    Interactive,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -90,9 +92,7 @@ fn rebase_value(v: &str) -> Result<Rebase> {
         "true" | "yes" | "on" | "1" => Ok(Rebase::Yes),
         "false" | "no" | "off" | "0" | "" => Ok(Rebase::No),
         "merges" | "m" => Ok(Rebase::Merges),
-        "interactive" | "i" => Err(CliError::Fatal(
-            "asc: interactive pull --rebase is not supported".into(),
-        )),
+        "interactive" | "i" => Ok(Rebase::Interactive),
         other => Err(CliError::Fatal(format!(
             "invalid value for 'pull.rebase': '{other}'"
         ))),
@@ -250,10 +250,16 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     }
 
     let mut argv: Vec<OsString> = Vec::new();
-    if matches!(rebase, Some(Rebase::Yes | Rebase::Merges)) {
+    if matches!(
+        rebase,
+        Some(Rebase::Yes | Rebase::Merges | Rebase::Interactive)
+    ) {
         argv.push("rebase".into());
-        if rebase == Some(Rebase::Merges) {
-            argv.push("--rebase-merges".into());
+        match rebase {
+            Some(Rebase::Merges) => argv.push("--rebase-merges".into()),
+            // git's `--interactive`: the todo editor opens on the pulled commits.
+            Some(Rebase::Interactive) => argv.push("--interactive".into()),
+            _ => {}
         }
         if o.quiet {
             argv.push("-q".into());
@@ -288,7 +294,10 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         );
         argv.push(tracking.clone().into());
     }
-    let rebasing = matches!(rebase, Some(Rebase::Yes | Rebase::Merges));
+    let rebasing = matches!(
+        rebase,
+        Some(Rebase::Yes | Rebase::Merges | Rebase::Interactive)
+    );
     let autostash = o.autostash.unwrap_or_else(|| {
         let key = if rebasing {
             "rebase.autostash"
@@ -370,7 +379,8 @@ mod tests {
         assert_eq!(rebase_value("true").unwrap(), Rebase::Yes);
         assert_eq!(rebase_value("false").unwrap(), Rebase::No);
         assert_eq!(rebase_value("merges").unwrap(), Rebase::Merges);
-        assert!(rebase_value("interactive").is_err());
+        assert_eq!(rebase_value("interactive").unwrap(), Rebase::Interactive);
+        assert_eq!(rebase_value("i").unwrap(), Rebase::Interactive);
         assert!(rebase_value("sideways").is_err());
     }
 
