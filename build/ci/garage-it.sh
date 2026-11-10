@@ -93,6 +93,8 @@ second=$(put_code)
 echo "raw If-None-Match: * PUT twice -> $first then $second"
 
 export ASC_IT_GARAGE_ENDPOINT=${ASC_IT_GARAGE_ENDPOINT:-http://127.0.0.1:$S3_PORT}
+# Garage listens on loopback only, without TLS: the explicit opt-in for plain http to this machine.
+export ASC_ALLOW_LOOPBACK_HTTP=1
 export ASC_IT_GARAGE_BUCKET=$BUCKET ASC_IT_GARAGE_KEY=$KEY ASC_IT_GARAGE_SECRET=$SECRET
 export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$HOME/asct/garage}
 cd "$REPO"
