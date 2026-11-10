@@ -29,6 +29,8 @@ while read -r commit; do
   [ $((skip % 2)) -eq 0 ] && continue
   while read -r _ _ old new status path; do
     [ "$status" = "M" ] && [ "$old" != "$new" ] || continue
+    # Deployment files are private to each installation and stay out of the corpus.
+    case "$path" in deploy/*) continue ;; esac
     case "$path" in
       *.ts|*.tsx|*.js|*.mjs|*.rs|*.go|*.py|*.md|*.json|*.css|*.yml|*.yaml|*.sh|*.toml|*.html|*.sql) ;;
       *) continue ;;
