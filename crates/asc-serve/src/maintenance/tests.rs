@@ -394,7 +394,8 @@ mod health {
     #[tokio::test]
     async fn a_store_that_refuses_writes_fails_and_a_server_without_a_key_is_not_configured() {
         let dir = tempfile::tempdir().unwrap();
-        let bucket = dir.path().join("bucket");
+        // A name no error text has, so finding it in the detail means the path leaked.
+        let bucket = dir.path().join("probe-place-7f3a");
         std::fs::create_dir(&bucket).unwrap();
         let store = Arc::new(LocalFileSystem::new_with_prefix(&bucket).unwrap());
         // The place of the probe objects is a file, so no object can be written under it.
@@ -403,7 +404,8 @@ mod health {
         let h = probes.check(1).await;
         assert_eq!(h.object_store.state, wire::HealthState::Failed);
         assert!(h.object_store.detail.starts_with("write: "), "{h:?}");
-        assert!(!h.object_store.detail.contains("bucket"), "no path: {h:?}");
+        assert!(!h.object_store.detail.contains("probe-place-7f3a"), "no path: {h:?}");
+        assert!(!h.object_store.detail.contains("root/"), "no object key: {h:?}");
         assert_eq!(h.server_key.state, wire::HealthState::NotConfigured);
         assert!(h.fingerprint.is_empty());
         assert_eq!(h.checked_at_ms, 1);
