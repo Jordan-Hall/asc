@@ -29,7 +29,7 @@ pub enum RemoteSpec {
     Git { url: String },
     /// `asc+https://…`: `url` is the transport URL without the `asc+` prefix.
     Server { url: String },
-    /// `https://…`: discovery (`/.well-known/asc`) is stubbed to git until U50.
+    /// `https://…`: `/.well-known/asc` discovery picks an asc server, else git smart HTTP.
     Discover { url: String },
 }
 

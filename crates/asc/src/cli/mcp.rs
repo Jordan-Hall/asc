@@ -18,7 +18,6 @@ use asc_mcp::catalogue::WriteLevel;
 use asc_mcp::config::{Flags, parse_toolsets};
 
 use super::common::{CliError, Ctx, Result};
-use crate::msg::Msg;
 use crate::native::NativeSpec;
 
 const USAGE: &str = "usage: asc mcp [--read-only] [--write[=local|remote]] [--toolsets <list>] \
@@ -90,11 +89,6 @@ fn parse(argv: &[OsString]) -> Result<(Flags, Option<String>)> {
                 flags.max_tokens = Some(v.parse().map_err(|_| usage())?);
             }
             "--remote" if remote.is_none() => remote = Some(value(&mut it, inline)?),
-            "install" => {
-                return Err(CliError::Msg(Msg::AscNotYet {
-                    cmd: "mcp install".to_owned(),
-                }));
-            }
             _ => return Err(usage()),
         }
     }

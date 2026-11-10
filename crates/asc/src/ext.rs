@@ -154,12 +154,17 @@ pub trait WorkspaceFactory: Send + Sync {
         None
     }
 
-    /// `worktree convert --plain`: a no-op for plain workspaces, unsupported for virtual ones
-    /// until the daemon lands.
+    /// `worktree convert --plain`: a no-op for plain workspaces; a virtual one needs the
+    /// daemon's factory, so without it the answer says why virtual mode is unavailable.
     async fn convert_plain(&self, ws: &Workspace) -> SinkResult {
         match ws.ws.mode {
             Mode::Plain => Ok(()),
-            Mode::Virtual => Err("asc: 'worktree convert' is not supported yet".into()),
+            Mode::Virtual => Err(format!(
+                "asc: 'worktree convert': {}",
+                crate::daemon::workspace_factory::virtual_unavailable()
+                    .trim_end_matches("; use --mode plain")
+            )
+            .into()),
         }
     }
 }

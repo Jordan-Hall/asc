@@ -177,9 +177,11 @@ pub fn no_such_remote(arg: &str) -> CliError {
     )
 }
 
-fn not_yet(spec: &RemoteSpec) -> CliError {
+/// `open_url` reads buckets only; a git or server URL reaching it is a caller's misuse, named.
+fn not_a_bucket(stored: &str, spec: &RemoteSpec) -> CliError {
     CliError::Fatal(format!(
-        "asc: {} remotes are not supported yet (bucket remotes only)",
+        "asc: '{}' is not a bucket URL (it is a {} remote)",
+        anon(stored),
         spec.kind()
     ))
 }
@@ -253,7 +255,7 @@ pub async fn open_url(
         refs,
     } = &spec
     else {
-        return Err(not_yet(&spec));
+        return Err(not_a_bucket(&stored, &spec));
     };
     if intent == Intent::Write {
         bucket::ensure_local_dir(bucket_url)?;
@@ -564,4 +566,21 @@ pub async fn hydrate(ctx: &Ctx, ws: &WsCtx, remote: &dyn Remote, root: TreeId) -
         level = next;
     }
     Ok(fetched + hydrate_files(ctx, ws, remote, &files).await?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_non_bucket_url_is_named_with_its_kind_and_no_credentials() {
+        let spec = url::parse("asc+https://u:secret@example.com/o/r", RefsMode::Local).unwrap();
+        let e = not_a_bucket("asc+https://u:secret@example.com/o/r", &spec).to_string();
+        assert!(
+            e.contains("is not a bucket URL (it is a server remote)"),
+            "{e}"
+        );
+        assert!(!e.contains("secret"), "{e}");
+        assert!(!e.contains("not supported yet"), "{e}");
+    }
 }

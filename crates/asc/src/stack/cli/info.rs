@@ -3,9 +3,8 @@
 //! `stack` is one verb word shared by many units, so it registers once here and dispatches
 //! on its first argument through the [`SUBS`] slice; a later unit adds `stack rename`,
 //! `stack get`, ... with [`sub!`] in its own file and never touches this one. A word with no
-//! entry answers "not supported yet". The `NATIVE` flag list covers every `stack` sub-verb of
-//! SPEC §20.7, so a flag of a sub-verb that is not served yet reaches that answer, not a
-//! flag error.
+//! entry is a usage error (exit 129) that lists the words. The `NATIVE` flag list covers every
+//! `stack` sub-verb of SPEC §20.7, so a flag reaches the sub-verb's own parser.
 
 use std::ffi::OsString;
 use std::io::Write;
@@ -24,7 +23,6 @@ use crate::cli::common::{CliError, Ctx, Result};
 use crate::cli::config;
 use crate::cli::output::Output;
 use crate::cli::pager::PagerWant;
-use crate::msg::Msg;
 use crate::native::NativeSpec;
 use crate::stack::json::{ChangeOut, Trunk, VERSION, line};
 
@@ -102,15 +100,17 @@ pub const NATIVE: &[NativeSpec] = &[NativeSpec {
 super::verb!(STACK, "stack");
 
 pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
+    const USAGE: &str = "usage: asc stack <rename|delete|pop|get|freeze|unfreeze|trunk|info|parent|children|merge|exec|submit|sync|restack|share> [<args>]";
     let Some(word) = a.rest.first().and_then(|w| w.to_str()) else {
-        return Err(CliError::Usage(
-            "usage: asc stack <rename|delete|pop|get|freeze|unfreeze|trunk|info|parent|children|merge|exec|submit|sync|restack|share> [<args>]"
-                .into(),
-        ));
+        return Err(CliError::Usage(USAGE.into()));
     };
     match SUBS.iter().find(|s| s.name == word) {
         Some(s) => (s.run)(ctx, a.rest.clone()).await,
-        None => Err(CliError::Msg(Msg::AscNotYet { cmd: format!("stack {}", clean(word)) })),
+        None => Err(CliError::Usage(format!(
+            "asc stack: '{}' is not a stack command
+{USAGE}",
+            clean(word)
+        ))),
     }
 }
 
