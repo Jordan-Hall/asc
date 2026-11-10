@@ -927,6 +927,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_merge_keeps_a_case_pair_whose_names_come_from_its_parents() {
+        let e = engine();
+        let (id, root) = base(&e).await;
+        let f = put_file(&e, b"ours").await;
+        let g = put_file(&e, b"theirs").await;
+        let (ours, ours_root) = child(&e, id, root, &[(p("q.md"), f)]).await;
+        let (theirs, _) = child(&e, id, root, &[(p("Q.md"), g.clone())]).await;
+        // `Q.md` as the other parent has it: not new, so the pair stands (ort keeps both).
+        let merged_root = root_of(&e, ours_root, &[(p("Q.md"), g)]).await;
+        e.create_changeset(new_cs(vec![ours.id(), theirs.id()], merged_root), NATIVE)
+            .await
+            .unwrap();
+        // `Q.md` with content neither parent has is new in the merge and still refused.
+        let h = put_file(&e, b"new").await;
+        let new_root = root_of(&e, ours_root, &[(p("Q.md"), h)]).await;
+        assert!(matches!(
+            e.create_changeset(new_cs(vec![ours.id(), theirs.id()], new_root), NATIVE)
+                .await,
+            Err(Error::CaseCollision(_))
+        ));
+        // A single-parent changeset adding the same pair is refused as before.
+        assert!(matches!(
+            e.create_changeset(new_cs(vec![ours.id()], merged_root), NATIVE)
+                .await,
+            Err(Error::CaseCollision(_))
+        ));
+    }
+
+    #[tokio::test]
     async fn pre_existing_violations_elsewhere_are_not_rechecked() {
         let e = engine();
         let (id, root) = base(&e).await;

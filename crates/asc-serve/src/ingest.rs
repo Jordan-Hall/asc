@@ -1278,6 +1278,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_merge_keeps_a_case_pair_whose_names_come_from_its_parents() {
+        let r = registry().await;
+        let e = repo(&r).await;
+        let base = commit(&e, &[], &[("x", b"base")]).await;
+        let ours = commit(&e, &[base], &[("q.md", b"ours")]).await;
+        let theirs = commit(&e, &[base], &[("Q.md", b"theirs")]).await;
+        // `Q.md` exactly as the other parent has it: ort keeps both names (SPEC §4.4).
+        let merged = commit(&e, &[ours, theirs], &[("Q.md", b"theirs")]).await;
+        let mut ing = Ingestor::new(r.pool(), r.refs(), &e, true);
+        ing.ingest(&[RefTarget::Changeset(merged)], &NoObserver)
+            .await
+            .unwrap();
+
+        // `Q.md` with content neither parent has is new in the merge: refused.
+        let engine = e.backend.engine();
+        let ours_root = engine.get_changeset(ours).await.unwrap().root;
+        let root = tree(&e, ours_root, &[("Q.md", b"new")]).await;
+        let fresh = engine
+            .create_changeset(
+                asc_engine::commit::NewChangeset {
+                    parents: vec![ours, theirs],
+                    author: sig(),
+                    committer: sig(),
+                    message: b"m".to_vec(),
+                    extra: vec![],
+                    root,
+                    copies: vec![],
+                },
+                asc_engine::commit::PathPolicy::Import,
+            )
+            .await
+            .unwrap();
+        let mut ing = Ingestor::new(r.pool(), r.refs(), &e, true);
+        match ing
+            .ingest(&[RefTarget::Changeset(fresh)], &NoObserver)
+            .await
+        {
+            Err(IngestError::PathPolicy { path, why }) => {
+                assert_eq!(
+                    (path.as_str(), why),
+                    ("Q.md", "collides in case with a sibling")
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn a_diff_past_the_changes_cap_is_refused_not_accepted_unverified() {
         let r = registry().await;
         let e = repo(&r).await;
