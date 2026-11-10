@@ -477,8 +477,9 @@ pub fn failure_message(url: &Url, refused: bool, prompts_disabled: bool) -> Stri
 }
 
 /// Whether `asc` may ask the person now: `GIT_TERMINAL_PROMPT=0` says no; otherwise
-/// [`AUTH_INTERACTIVE`]`=1` says yes, else standard input and standard error must both be
-/// terminals (a pipe or CI never prompts).
+/// [`AUTH_INTERACTIVE`]`=1` says yes; otherwise a CI job (`CI` set to anything but empty,
+/// `0` or `false`) says no, even when it has a terminal; else standard input and standard
+/// error must both be terminals (a pipe never prompts).
 pub fn interactive_with(
     env: impl Fn(&str) -> Option<String>,
     stdin_tty: bool,
@@ -492,7 +493,11 @@ pub fn interactive_with(
     if env(AUTH_INTERACTIVE).is_some_and(|v| v.trim() == "1") {
         return true;
     }
-    stdin_tty && stderr_tty
+    let ci = env("CI").is_some_and(|v| {
+        let v = v.trim();
+        !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false")
+    });
+    !ci && stdin_tty && stderr_tty
 }
 
 /// [`interactive_with`] over the process; asked once.
