@@ -438,3 +438,66 @@ async fn a_download_counts_as_bandwidth_of_the_persons_export_pseudo_repository(
     }
     panic!("the download was not counted");
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_retried_request_or_delete_runs_once_and_a_reader_cannot_start_one() {
+    let f = fx().await;
+    let ask = |n| {
+        f.svc.request_export(me(
+            &f,
+            wire::RequestExportRequest {},
+            "alice",
+            Role::Write,
+            n,
+        ))
+    };
+    // The same operation id twice is the same job, not a "busy" refusal, and one audit record.
+    let first = ask(1).await.unwrap().into_inner().job.unwrap();
+    let again = ask(1).await.unwrap().into_inner().job.unwrap();
+    assert_eq!(first.id, again.id);
+    assert_eq!(f.audit.of("export.requested").len(), 1);
+    ready(&f, &first.id).await;
+    // A read claim may list but not start an export or delete one; no credential gets nothing.
+    let e = f
+        .svc
+        .request_export(me(&f, wire::RequestExportRequest {}, "alice", Role::Read, 2))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Code::PermissionDenied);
+    let e = f
+        .svc
+        .delete_export(me(
+            &f,
+            wire::DeleteExportRequest {
+                id: first.id.clone(),
+            },
+            "alice",
+            Role::Read,
+            3,
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Code::PermissionDenied);
+    let e = f
+        .svc
+        .list_exports(tonic::Request::new(wire::ListExportsRequest {}))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Code::Unauthenticated);
+    // A retried delete answers as the first did, though the job is gone.
+    let del = |n| {
+        f.svc.delete_export(me(
+            &f,
+            wire::DeleteExportRequest {
+                id: first.id.clone(),
+            },
+            "alice",
+            Role::Write,
+            n,
+        ))
+    };
+    del(4).await.unwrap();
+    del(4).await.unwrap();
+    assert_eq!(f.audit.of("export.deleted").len(), 1);
+    assert!(!f.hub.path(&first.id).exists());
+}
