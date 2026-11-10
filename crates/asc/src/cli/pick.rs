@@ -31,7 +31,7 @@ use super::common::{CliEngine, CliError, Ctx, Result, StagingAfterMove, WsCtx};
 use super::conflict::{self, NewCommit, Op, Sides, fatal};
 use super::restore::{index_tree, resolve_commit, root_of, sync_worktree, tool};
 use super::seqstate::{self, Opts, Replay, Sequence, Todo};
-use crate::hooks_runner::{Hook, HookEnv, Runner};
+use crate::hooks_runner::{Hook, HookEnv, Runner, null_oid};
 use crate::native::NativeSpec;
 
 #[derive(clap::Parser, Debug)]
@@ -318,12 +318,8 @@ async fn start(ctx: &Ctx, ws: &WsCtx, gitdir: &Path, replay: Replay, f: Flags) -
     if rows.iter().any(|r| r.stage > 0) {
         return Err(unmerged_files(replay));
     }
-    let Some(head) = ws.head_commit().await? else {
-        return Err(fatal(format!(
-            "asc: {} on an unborn branch is not supported yet",
-            replay.command()
-        )));
-    };
+    // On an unborn branch the first replayed commit becomes the root commit.
+    let head = ws.head_commit().await?;
     let ids = targets(ctx, ws, replay, &f.commits).await?;
     if ids.is_empty() {
         return Ok(ExitCode::SUCCESS);
@@ -340,7 +336,18 @@ async fn start(ctx: &Ctx, ws: &WsCtx, gitdir: &Path, replay: Replay, f: Flags) -
             128,
         ));
     }
-    let head_git = conflict::git_id(ws, head).await?;
+    // git refuses a revert sequence with nothing to revert onto; a single revert goes ahead.
+    if multi && head.is_none() && replay == Replay::Revert {
+        return Err(CliError::Raw(
+            format!("error: can't revert as initial commit\n{}", failed(replay)),
+            128,
+        ));
+    }
+    // The sequencer records an unborn start as the null id, which `--abort` returns to.
+    let head_git = match head {
+        Some(h) => conflict::git_id(ws, h).await?,
+        None => null_oid(),
+    };
     let mut todo = Vec::new();
     for &id in &ids {
         let cs = ws.engine.get_changeset(id).await?;
@@ -493,10 +500,8 @@ async fn step(
 ) -> Result<Step> {
     let cs = ws.engine.get_changeset(id).await?;
     let git = conflict::git_id(ws, id).await?;
-    let Some(head) = ws.head_commit().await? else {
-        return Err(fatal("asc: HEAD is unborn"));
-    };
-    let head_root = root_of(ws, Some(head)).await?;
+    let head = ws.head_commit().await?;
+    let head_root = root_of(ws, head).await?;
     let current = if staged_ok {
         index_tree(ws, head_root).await?.0
     } else {
@@ -663,7 +668,7 @@ async fn commit_result(
     ws: &WsCtx,
     gitdir: &Path,
     replay: Replay,
-    head: ChangesetId,
+    head: Option<ChangesetId>,
     head_root: TreeId,
     root: TreeId,
     author: Option<asc_core::sig::Signature>,
@@ -686,7 +691,7 @@ async fn commit_result(
     let (id, git) = conflict::write_commit(
         ws,
         NewCommit {
-            parents: vec![head],
+            parents: head.into_iter().collect(),
             author: author.clone(),
             committer: idents.committer.clone(),
             message: final_msg.clone(),
@@ -699,7 +704,7 @@ async fn commit_result(
     let op = conflict::move_head(
         ctx,
         ws,
-        Some(head),
+        head,
         id,
         &format!("{}: {subject}", replay.command()),
         StagingAfterMove::Set(Vec::new()),
@@ -848,30 +853,39 @@ async fn abort(ctx: &Ctx, ws: &WsCtx, gitdir: &Path, _replay: Replay) -> Result<
     let head = ws.head_commit().await?;
     if let Some(seq) = Sequence::load(gitdir)? {
         let current = match head {
-            Some(h) => Some(conflict::git_id(ws, h).await?),
-            None => None,
+            Some(h) => conflict::git_id(ws, h).await?,
+            None => null_oid(),
         };
-        if current != Some(seq.abort_safety) {
+        if current != seq.abort_safety {
             eprintln!("warning: You seem to have moved HEAD. Not rewinding, check your HEAD!");
             Sequence::remove(gitdir);
             seqstate::clear_replay(gitdir);
             return Ok(ExitCode::SUCCESS);
         }
-        let original = conflict::changeset_of(ws, seq.head).await?;
-        let target_root = root_of(ws, Some(original)).await?;
+        // A sequence started on an unborn branch returns the branch to unborn.
+        let original = if seq.head == null_oid() {
+            None
+        } else {
+            Some(conflict::changeset_of(ws, seq.head).await?)
+        };
+        let target_root = root_of(ws, original).await?;
         reset_touched(ctx, ws, target_root).await?;
         write_orig_head(ws, gitdir).await?;
-        if head != Some(original) {
-            conflict::move_head(
-                ctx,
-                ws,
-                head,
-                original,
-                "reset: moving to HEAD",
-                StagingAfterMove::Set(Vec::new()),
-                None,
-            )
-            .await?;
+        match (head, original) {
+            (_, Some(o)) if head != Some(o) => {
+                conflict::move_head(
+                    ctx,
+                    ws,
+                    head,
+                    o,
+                    "reset: moving to HEAD",
+                    StagingAfterMove::Set(Vec::new()),
+                    None,
+                )
+                .await?;
+            }
+            (Some(h), None) => conflict::unborn_head(ctx, ws, h).await?,
+            _ => {}
         }
         Sequence::remove(gitdir);
     } else {
@@ -892,10 +906,8 @@ async fn resume(ctx: &Ctx, ws: &WsCtx, gitdir: &Path, replay: Replay) -> Result<
     let active = seqstate::replay_in_progress(gitdir);
     let opts = seq.as_ref().map(|s| s.opts.clone()).unwrap_or_default();
     if let Some(kind) = active {
-        let Some(head) = ws.head_commit().await? else {
-            return Err(fatal("asc: HEAD is unborn"));
-        };
-        let head_root = root_of(ws, Some(head)).await?;
+        let head = ws.head_commit().await?;
+        let head_root = root_of(ws, head).await?;
         let changes = stagebuild::rows_to_changes(ws, head_root, &rows).await?;
         let root = ws.engine.apply(head_root, &changes).await?;
         let picked = seqstate::read_oid(gitdir, kind.head_file())?

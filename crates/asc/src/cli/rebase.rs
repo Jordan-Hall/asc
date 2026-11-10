@@ -668,11 +668,7 @@ async fn start(ctx: &Ctx, ws: &WsCtx, gitdir: &Path, a: Args) -> Result<ExitCode
         Head::Branch(b) => Some(b.clone()),
         Head::Detached(_) => None,
     };
-    let Some(head) = ws.head_commit().await? else {
-        return Err(fatal(
-            "asc: rebase on an unborn branch is not supported yet",
-        ));
-    };
+    let head = ws.head_commit().await?;
     let upstream_text = match a.words.first() {
         Some(w) => word(w),
         None => {
@@ -688,6 +684,10 @@ async fn start(ctx: &Ctx, ws: &WsCtx, gitdir: &Path, a: Args) -> Result<ExitCode
     let upstream = commit_named(ctx, &upstream_text)
         .await?
         .ok_or_else(|| fatal(format!("invalid upstream '{upstream_text}'")))?;
+    // git resolves the upstream first, then finds nothing to rebase on an unborn branch.
+    let Some(head) = head else {
+        return Err(fatal("Could not resolve HEAD to a commit"));
+    };
     let onto_text = a.onto.clone().unwrap_or_else(|| upstream_text.clone());
     let onto = commit_named(ctx, &onto_text)
         .await?
@@ -1079,10 +1079,8 @@ async fn plain_todo(
         if r.parents.len() > 1 {
             continue;
         }
+        // A root commit (unrelated history) replays its whole tree onto the new base.
         let cs = ws.engine.get_changeset(r.id).await?;
-        if cs.parents.is_empty() {
-            return Err(fatal("asc: rebasing a root commit is not supported yet"));
-        }
         let empty = is_empty_commit(ws, &cs).await?;
         if empty && !keep_empty {
             continue;
@@ -1211,9 +1209,6 @@ async fn merges_todo(
         onelines.insert(r.id, oneline.clone());
         let oid = conflict::git_id(ws, r.id).await?;
         if cs.parents.len() <= 1 {
-            if cs.parents.is_empty() {
-                return Err(fatal("asc: rebasing a root commit is not supported yet"));
-            }
             let empty = is_empty_commit(ws, &cs).await?;
             if empty && !keep_empty {
                 lines.insert(r.id, None);
@@ -1430,7 +1425,7 @@ async fn pick(ctx: &Ctx, ws: &WsCtx, run: &mut Run, item: &Item) -> Result<Step>
     let Some(head) = ws.head_commit().await? else {
         return Err(fatal("asc: HEAD is unborn"));
     };
-    if cs.parents.len() != 1 {
+    if cs.parents.len() > 1 {
         return Err(fatal(format!(
             "asc: cannot replay {oid}: it is not a single-parent commit"
         )));
@@ -1442,7 +1437,7 @@ async fn pick(ctx: &Ctx, ws: &WsCtx, run: &mut Run, item: &Item) -> Result<Step>
     let reflog = format!("rebase ({}): {subject}", reflog_word(item.op));
     let folds = item.op.is_fixup();
     // Fast-forward: the commit already sits on HEAD.
-    if run.allow_ff && !folds && cs.parents[0] == head {
+    if run.allow_ff && !folds && cs.parents.first() == Some(&head) {
         let paths = changed_paths(ws, head_root, cs.root).await?;
         sync_worktree(ctx, cs.root, &paths, true).await?;
         conflict::move_head(
@@ -1461,7 +1456,8 @@ async fn pick(ctx: &Ctx, ws: &WsCtx, run: &mut Run, item: &Item) -> Result<Step>
     if folds {
         fold_prepare(run, item, oid, &cs, &head_cs)?;
     }
-    let parent_root = root_of(ws, Some(cs.parents[0])).await?;
+    // A root commit is measured against the empty tree.
+    let parent_root = root_of(ws, cs.parents.first().copied()).await?;
     let abbrev = run.short(&oid);
     let named = format!("{abbrev} ({subject})");
     let sides = Sides {
