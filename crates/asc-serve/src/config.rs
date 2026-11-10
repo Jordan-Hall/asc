@@ -914,6 +914,10 @@ pub struct AuthConfig {
     /// service signs the administrator it forwards with a repair (`x-asc-forwarded-*`, see
     /// `asc_rpc::forwarded`). Absent, no forwarded claim is ever accepted.
     pub forwarded_key_file: Option<PathBuf>,
+    /// `token_store` only: repositories anyone may read without a token, as `*`, `owner/*` or
+    /// `owner/name`. Empty by default: every read needs a token. With `forgejo` the forge says
+    /// which repositories are public.
+    pub public_repos: Vec<String>,
 }
 
 /// `[web]` (docs/WEB-UI.md): the web UI, served read-only as static files under `/ui`, and the
@@ -1236,6 +1240,17 @@ impl ServeConfig {
         match self.auth_provider() {
             Some(AuthProvider::TokenStore) if self.auth.token_key_file.is_none() => {
                 return invalid("auth.provider = \"token_store\" needs auth.token_key_file");
+            }
+            Some(AuthProvider::TokenStore) => {
+                if let Err(e) = crate::authz::token_store::validate_public(&self.auth.public_repos)
+                {
+                    return invalid(format!("auth.public_repos: {e}"));
+                }
+            }
+            _ if !self.auth.public_repos.is_empty() => {
+                return invalid(
+                    "auth.public_repos needs auth.provider = \"token_store\"; the forge decides what is public",
+                );
             }
             #[cfg(feature = "forgejo")]
             Some(AuthProvider::Forgejo) if self.forgejo.is_none() => {

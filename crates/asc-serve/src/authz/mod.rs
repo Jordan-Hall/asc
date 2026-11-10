@@ -62,9 +62,10 @@ async fn provider(cfg: &ServeConfig) -> Result<Arc<dyn Authorizer>, ServeError> 
                 .await
                 .map_err(|e| invalid(e.to_string()))?;
             migrate::ensure_current(&pool).await?;
-            Ok(Arc::new(TokenStoreAuthz::new(Arc::new(TokenStore::new(
-                pool, key,
-            )))))
+            Ok(Arc::new(
+                TokenStoreAuthz::new(Arc::new(TokenStore::new(pool, key)))
+                    .with_public(cfg.auth.public_repos.clone()),
+            ))
         }
         #[cfg(feature = "forgejo")]
         Some(AuthProvider::Forgejo) => {

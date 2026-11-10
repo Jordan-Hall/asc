@@ -989,11 +989,33 @@ fn parse_token(token: &str) -> Option<&str> {
 #[derive(Clone)]
 pub struct TokenStoreAuthz {
     store: Arc<TokenStore>,
+    /// Repository patterns anyone may read without a token (`auth.public_repos`).
+    public: Vec<String>,
+}
+
+/// Checks `auth.public_repos`: each entry is `*`, `owner/*` or `owner/name`.
+pub fn validate_public(patterns: &[String]) -> Result<(), TokenError> {
+    patterns.iter().try_for_each(|p| validate_pattern(p, false))
 }
 
 impl TokenStoreAuthz {
     pub fn new(store: Arc<TokenStore>) -> Self {
-        Self { store }
+        Self {
+            store,
+            public: Vec::new(),
+        }
+    }
+
+    /// Lets anyone read the repositories `patterns` cover, as a forge does for a public
+    /// repository: no token, or a token without a grant there, reads; a malformed, expired or
+    /// revoked token is still refused, and writing still needs a grant.
+    pub fn with_public(mut self, patterns: Vec<String>) -> Self {
+        self.public = patterns;
+        self
+    }
+
+    fn is_public(&self, repo: &str) -> bool {
+        self.public.iter().any(|p| pattern_matches(p, repo))
     }
 
     pub fn store(&self) -> &Arc<TokenStore> {
@@ -1019,7 +1041,16 @@ impl Authorizer for TokenStoreAuthz {
         repo: &str,
         access: Access,
     ) -> Result<Principal, AuthError> {
-        let token = token.ok_or(AuthError::Unauthenticated)?;
+        let public_read = access == Access::Read && self.is_public(repo);
+        let Some(token) = token else {
+            return if public_read {
+                Ok(Principal {
+                    id: super::identity::UserIdentity::anonymous().principal_id(),
+                })
+            } else {
+                Err(AuthError::Unauthenticated)
+            };
+        };
         let verified = self.store.verify(token.expose()).await?;
         let best = verified
             .grants
@@ -1029,6 +1060,7 @@ impl Authorizer for TokenStoreAuthz {
             .max();
         match best {
             Some(have) if have >= access => Ok(verified.principal.clone()),
+            _ if public_read => Ok(verified.principal.clone()),
             _ => Err(AuthError::Forbidden),
         }
     }
