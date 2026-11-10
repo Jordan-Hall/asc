@@ -306,9 +306,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     }
     write_orig_head(ws).await?;
     // git's `remove_branch_state`: a reset ends any merge, pick or revert in progress.
-    let gitdir = ws.projection.git_dir();
-    super::seqstate::clear_merge(gitdir);
-    super::seqstate::clear_replay(gitdir);
+    super::seqstate::remove_branch_state(ws.projection.git_dir(), false);
     let staging = if kind == Kind::Soft {
         StagingAfterMove::Keep
     } else {

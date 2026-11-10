@@ -1398,8 +1398,12 @@ pub(crate) async fn perform(ctx: &Ctx, m: Move) -> Result<ExitCode> {
         show_local_changes(ctx, ws, target).await?;
     }
 
-    // The report.
-    if !quiet {
+    // The report. git ends any merge, pick or revert after "Switched to..." and before the
+    // tracking report.
+    let gitdir = ws.projection.git_dir();
+    if quiet {
+        super::seqstate::remove_branch_state(gitdir, false);
+    } else {
         if let (Head::Detached(_), Some(old)) = (&saved.head, old_commit)
             && target != Some(old)
         {
@@ -1414,6 +1418,7 @@ pub(crate) async fn perform(ctx: &Ctx, m: Move) -> Result<ExitCode> {
                     detach_advice(ctx, &m.typed);
                 }
                 eprintln!("HEAD is now at {}", commit_line(ctx, ws, *commit).await?);
+                super::seqstate::remove_branch_state(gitdir, true);
             }
             Dest::Existing { branch: name, .. }
             | Dest::Create { branch: name, .. }
@@ -1430,6 +1435,7 @@ pub(crate) async fn perform(ctx: &Ctx, m: Move) -> Result<ExitCode> {
                     _ if same => eprintln!("Already on '{name}'"),
                     _ => eprintln!("Switched to branch '{name}'"),
                 }
+                super::seqstate::remove_branch_state(gitdir, true);
                 // git reads the branch settings before it creates the tracking branch.
                 if fresh.is_none() {
                     report_tracking(ctx, ws, name).await?;

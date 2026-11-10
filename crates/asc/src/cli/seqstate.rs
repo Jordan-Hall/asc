@@ -200,6 +200,49 @@ pub fn clear_replay(dir: &Path) {
     }
 }
 
+/// git's `remove_branch_state`, run by every branch switch and every reset: it ends a merge,
+/// pick or revert in progress (warning about a replay when `verbose`), and drops the sequencer
+/// once its last step is the one stopped.
+pub fn remove_branch_state(dir: &Path, verbose: bool) {
+    let mut replaying = false;
+    for (file, what) in [
+        ("CHERRY_PICK_HEAD", "cherry picking"),
+        ("REVERT_HEAD", "revert"),
+    ] {
+        if exists(dir, file) {
+            replaying = true;
+            remove(dir, file);
+            if verbose {
+                eprintln!("warning: cancelling a {what} in progress");
+            }
+        }
+    }
+    remove(dir, "AUTO_MERGE");
+    if replaying && finished_last_pick(dir) {
+        Sequence::remove(dir);
+    }
+    for name in [
+        "SQUASH_MSG",
+        "MERGE_HEAD",
+        "MERGE_RR",
+        "MERGE_MSG",
+        "MERGE_MODE",
+    ] {
+        remove(dir, name);
+    }
+}
+
+/// git's `have_finished_the_last_pick`: the todo holds at most one line.
+fn finished_last_pick(dir: &Path) -> bool {
+    let Ok(Some(todo)) = read(&dir.join("sequencer"), "todo") else {
+        return false;
+    };
+    match todo.iter().position(|&b| b == b'\n') {
+        Some(eol) => todo.len() == eol + 1,
+        None => true,
+    }
+}
+
 /// The `[options]` of `sequencer/opts`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Opts {
