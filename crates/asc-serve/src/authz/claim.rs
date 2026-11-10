@@ -176,6 +176,30 @@ mod tests {
         assert!(host_claim(&a, host, &m, "acme/other").is_none());
     }
 
+    /// The hub signs the account of `Alice` for the subject `user:alice` and keeps the login as
+    /// spelled in the user entry: the claim verifies, the person keeps their spelling, and a claim
+    /// signed for the subject as spelled (`user:Alice`) is no claim.
+    #[test]
+    fn an_account_claim_of_a_login_with_capitals_is_for_the_lower_cased_subject() {
+        let (a, v) = authz();
+        let host = crate::authz::HOST_SERVICE_PRINCIPAL;
+        let m = meta(&v, "7:Alice", Role::Write, "user:alice");
+        let c = account_claim(&a, host, &m).expect("the claim verifies");
+        assert_eq!(c.user, "7:Alice");
+        assert_eq!(
+            acting_principal(&a, host, &m, Role::Write).unwrap(),
+            "7:Alice"
+        );
+        let as_spelled = meta(&v, "7:Alice", Role::Write, "user:Alice");
+        assert!(account_claim(&a, host, &as_spelled).is_none());
+        assert_eq!(
+            acting_principal(&a, host, &as_spelled, Role::Read)
+                .unwrap_err()
+                .code(),
+            tonic::Code::PermissionDenied
+        );
+    }
+
     #[test]
     fn an_account_claim_makes_the_host_act_as_the_person_within_its_role_and_nothing_else_passes() {
         let (a, v) = authz();
