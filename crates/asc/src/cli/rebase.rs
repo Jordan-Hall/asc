@@ -1486,12 +1486,12 @@ async fn pick(ctx: &Ctx, ws: &WsCtx, run: &mut Run, item: &Item) -> Result<Step>
             };
             let (merge_opts, differ) =
                 conflict::merge_options(ctx, ws, &sides, favor, labels).await?;
-            let outcome = ws
+            let mut outcome = ws
                 .engine
                 .merge_trees(sides.base, sides.ours, sides.theirs, &merge_opts)
                 .await
                 .map_err(fatal)?;
-            conflict::refuse_unsupported(&outcome)?;
+            conflict::settle_case_pairs(ctx, &mut outcome, true)?;
             conflict::precheck(ctx, ws, ReplayOp::Pick, head_root, &outcome, false).await?;
             conflict::print_messages(&conflict::messages(&outcome, &differ, "HEAD", &named));
             outcome
@@ -2296,12 +2296,12 @@ async fn merge(ctx: &Ctx, ws: &WsCtx, run: &mut Run, item: &Item) -> Result<Step
     };
     let (merge_opts, differ) =
         conflict::merge_options(ctx, ws, &sides, conflict::favor_of(&[])?, labels).await?;
-    let outcome = ws
+    let mut outcome = ws
         .engine
         .merge_trees(sides.base, sides.ours, sides.theirs, &merge_opts)
         .await
         .map_err(fatal)?;
-    conflict::refuse_unsupported(&outcome)?;
+    conflict::settle_case_pairs(ctx, &mut outcome, true)?;
     if !outcome.is_clean() {
         conflict::print_messages(&conflict::messages(&outcome, &differ, "HEAD", names[0]));
         let t = tool(ctx);
@@ -3094,12 +3094,12 @@ async fn apply_autostash(ctx: &Ctx, ws: &WsCtx, stash: GitOid) -> Result<()> {
     };
     let (merge_opts, differ) =
         conflict::merge_options(ctx, ws, &sides, conflict::favor_of(&[])?, labels).await?;
-    let outcome = ws
+    let mut outcome = ws
         .engine
         .merge_trees(sides.base, sides.ours, sides.theirs, &merge_opts)
         .await
         .map_err(fatal)?;
-    conflict::refuse_unsupported(&outcome)?;
+    conflict::settle_case_pairs(ctx, &mut outcome, true)?;
     conflict::precheck(ctx, ws, ReplayOp::Pick, head_root, &outcome, false).await?;
     conflict::print_messages(&conflict::messages(
         &outcome,

@@ -144,12 +144,12 @@ pub async fn apply(ctx: &Ctx, ws: &WsCtx, w: ChangesetId, o: Opts) -> Result<boo
         theirs: w_tree,
     };
     let (opts, differ) = conflict::merge_options(ctx, ws, &sides, Favor::None, labels()).await?;
-    let outcome = ws
+    let mut outcome = ws
         .engine
         .merge_trees(b_tree, c_tree, w_tree, &opts)
         .await
         .map_err(fatal)?;
-    conflict::refuse_unsupported(&outcome)?;
+    conflict::settle_case_pairs(ctx, &mut outcome, true)?;
 
     let mut ok = true;
     // A stash without tracked changes merges nothing.

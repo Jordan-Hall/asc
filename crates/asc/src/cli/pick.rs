@@ -541,12 +541,12 @@ async fn step(
         theirs: theirs_label.clone(),
     };
     let (merge_opts, differ) = conflict::merge_options(ctx, ws, &sides, favor, labels).await?;
-    let outcome = ws
+    let mut outcome = ws
         .engine
         .merge_trees(sides.base, sides.ours, sides.theirs, &merge_opts)
         .await
         .map_err(fatal)?;
-    conflict::refuse_unsupported(&outcome)?;
+    conflict::settle_case_pairs(ctx, &mut outcome, true)?;
     conflict::precheck(ctx, ws, op, current, &outcome, staged_ok).await?;
     conflict::print_messages(&conflict::messages(
         &outcome,

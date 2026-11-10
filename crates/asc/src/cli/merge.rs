@@ -600,12 +600,12 @@ async fn octopus(
             labels,
         )
         .await?;
-        let outcome = ws
+        let mut outcome = ws
             .engine
             .merge_trees(base_root, running_root, theirs_root, &opts)
             .await
             .map_err(fatal)?;
-        conflict::refuse_unsupported(&outcome)?;
+        conflict::settle_case_pairs(ctx, &mut outcome, true)?;
         if !simple_merge_suffices(ws, base_root, running_root, theirs_root).await? {
             lines.push("Simple merge did not work, trying automatic merge.".into());
             for p in &differ {
@@ -995,12 +995,12 @@ async fn real_merge(
         theirs: theirs_root,
     };
     let (opts, differ) = conflict::merge_options(ctx, ws, &sides, favor, labels).await?;
-    let outcome = ws
+    let mut outcome = ws
         .engine
         .merge_trees(base_root, head_root, theirs_root, &opts)
         .await
         .map_err(fatal)?;
-    conflict::refuse_unsupported(&outcome)?;
+    conflict::settle_case_pairs(ctx, &mut outcome, true)?;
     conflict::precheck(ctx, ws, Op::Merge, head_root, &outcome, false).await?;
 
     conflict::print_messages(&conflict::messages(&outcome, &differ, "HEAD", &target.name));

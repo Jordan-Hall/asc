@@ -508,16 +508,36 @@ pub fn conflicts_block(outcome: &MergeOutcome, comment: u8) -> Vec<u8> {
     out
 }
 
-/// Refuses a conflict kind asc cannot materialise the way git does.
-pub fn refuse_unsupported(outcome: &MergeOutcome) -> Result<()> {
-    if let Some(c) = outcome.conflicts.iter().find(|c| {
-        c.kind == ConflictKind::CaseFold || (c.kind == ConflictKind::FileDir && c.from.is_none())
-    }) {
+/// Settles the names both sides added that differ only in case. git's merge keeps both names
+/// and is clean, so the pair is no conflict: `merge-tree` (no work tree) and a case-sensitive
+/// work tree (`core.ignorecase=false`) take both. On a case-insensitive work tree git writes
+/// one file over the other without a word (U-4); asc refuses there, naming both paths, and
+/// changes nothing.
+pub fn settle_case_pairs(
+    ctx: &Ctx,
+    outcome: &mut MergeOutcome,
+    writes_work_tree: bool,
+) -> Result<()> {
+    if writes_work_tree
+        && ctx.ignore_case()
+        && let Some(c) = outcome
+            .conflicts
+            .iter()
+            .find(|c| c.kind == ConflictKind::CaseFold)
+    {
+        let theirs = c.path.to_string();
+        let ours = match (c.stages.ours.as_ref(), theirs.rsplit_once('/')) {
+            (Some(e), Some((dir, _))) => format!("{dir}/{}", e.name),
+            (Some(e), None) => e.name.to_string(),
+            (None, _) => theirs.clone(),
+        };
         return Err(fatal(format!(
-            "asc: a file/directory or case conflict at '{}' is not supported yet; nothing was changed",
-            c.path
+            "asc: '{ours}' and '{theirs}' differ only in case and this work tree cannot hold both (core.ignorecase); nothing was changed (git-fidelity U-4)\nhint: rename one of them on its branch, then merge again"
         )));
     }
+    outcome
+        .conflicts
+        .retain(|c| c.kind != ConflictKind::CaseFold);
     Ok(())
 }
 

@@ -286,12 +286,12 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         theirs: theirs_root,
     };
     let (opts, differ) = conflict::merge_options(ctx, ws, &sides, favor, labels).await?;
-    let outcome = ws
+    let mut outcome = ws
         .engine
         .merge_trees(base_root, ours_root, theirs_root, &opts)
         .await
         .map_err(conflict::fatal)?;
-    conflict::refuse_unsupported(&outcome)?;
+    conflict::settle_case_pairs(ctx, &mut outcome, false)?;
     let tree = res.tree(outcome.root).await?;
     res.flush().await?;
     let clean = outcome.is_clean();
