@@ -404,8 +404,14 @@ mod health {
         let h = probes.check(1).await;
         assert_eq!(h.object_store.state, wire::HealthState::Failed);
         assert!(h.object_store.detail.starts_with("write: "), "{h:?}");
-        assert!(!h.object_store.detail.contains("probe-place-7f3a"), "no path: {h:?}");
-        assert!(!h.object_store.detail.contains("root/"), "no object key: {h:?}");
+        assert!(
+            !h.object_store.detail.contains("probe-place-7f3a"),
+            "no path: {h:?}"
+        );
+        assert!(
+            !h.object_store.detail.contains("root/"),
+            "no object key: {h:?}"
+        );
         assert_eq!(h.server_key.state, wire::HealthState::NotConfigured);
         assert!(h.fingerprint.is_empty());
         assert_eq!(h.checked_at_ms, 1);
