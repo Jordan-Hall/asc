@@ -403,3 +403,71 @@ async fn only_a_user_has_an_inbox() {
         .unwrap_err();
     assert_eq!(code(&e), tonic::Code::PermissionDenied);
 }
+
+#[tokio::test]
+async fn a_repeated_set_state_lands_once_and_stays_with_its_owner() {
+    let f = fx().await;
+    open_thread(&f, BOB, 1).await;
+    let first = set_state(&f, ALICE, 1, Some(true), None).await.unwrap();
+    let again = set_state(&f, ALICE, 1, Some(true), None).await.unwrap();
+    assert_eq!(
+        (first.pinned, first.snoozed_until),
+        (again.pinned, again.snoozed_until)
+    );
+    let rows: i64 = sqlx::query_scalar("SELECT CAST(COUNT(*) AS BIGINT) FROM inbox_state")
+        .fetch_one(f.reg.pool())
+        .await
+        .unwrap();
+    assert_eq!(rows, 1);
+
+    // The pin is alice's alone.
+    assert!(list(&f, ALICE, &[], false).await.items[0].pinned);
+    assert!(
+        list(&f, BOB, &[], true)
+            .await
+            .items
+            .iter()
+            .all(|i| !i.pinned)
+    );
+
+    // No credential, another repository, an unknown change and a far snooze are refused.
+    let anon = f
+        .inbox
+        .set_state(tonic::Request::new(wire::InboxSetStateRequest {
+            repo: repo_ref(),
+            change: cbytes(1),
+            pinned: Some(false),
+            snoozed_until: None,
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(code(&anon), tonic::Code::Unauthenticated);
+    let elsewhere = f
+        .inbox
+        .set_state(req(
+            wire::InboxSetStateRequest {
+                repo: Some(wire::RepoRef {
+                    name: "other/r".into(),
+                    ..repo_ref().unwrap()
+                }),
+                change: cbytes(1),
+                pinned: Some(false),
+                snoozed_until: None,
+            },
+            ALICE,
+            false,
+        ))
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        code(&elsewhere),
+        tonic::Code::NotFound | tonic::Code::PermissionDenied
+    ));
+    let unknown = set_state(&f, ALICE, 9, Some(true), None).await.unwrap_err();
+    assert_eq!(code(&unknown), tonic::Code::NotFound);
+    let far = set_state(&f, ALICE, 1, None, Some(now() + 10 * 365 * 86_400))
+        .await
+        .unwrap_err();
+    assert_eq!(code(&far), tonic::Code::InvalidArgument);
+    assert!(list(&f, ALICE, &[], false).await.items[0].pinned);
+}
