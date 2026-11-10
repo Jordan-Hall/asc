@@ -2,7 +2,8 @@
 //! on disk, so dirty files are searched too. Every file is opened through `asc_wc::SafeRoot`: a
 //! path under a link, a link itself and anything but a regular file is not searched. Patterns are
 //! POSIX basic (default), extended (`-E`) or fixed (`-F`) expressions, run by the `regex` crate
-//! (linear time, size limited); back-references are refused.
+//! (linear time, size limited). Patterns with back-references run in [`grep_backref`], a
+//! backtracking matcher with a step budget per line.
 
 use std::ffi::OsString;
 use std::fs;
@@ -22,6 +23,7 @@ use super::add::spec::Spec;
 use super::add::target::{Staged, Target};
 use super::check_ignore::relative;
 use super::common::{CliError, Ctx, Result, WsCtx};
+use super::grep_backref::{self, Backref};
 use super::grep_index;
 use super::restore::resolve_commit;
 use crate::native::NativeSpec;
@@ -244,6 +246,27 @@ fn push_literal(out: &mut String, c: char) {
     out.push_str(&regex::escape(c.encode_utf8(&mut tmp)));
 }
 
+/// What [`translate`] answers for a back-reference, which the `regex` crate cannot run.
+const BACKREF: &str = "back-references need the backtracking matcher";
+
+/// The compiled patterns: the `regex` crate's, or the backtracking matcher's when a pattern
+/// uses a back-reference.
+enum Matcher {
+    Linear(Regex),
+    Backtrack(Backref),
+}
+
+impl Matcher {
+    /// Whether `line` is selected (before `-v`); `None` when the backtracking matcher ran out
+    /// of steps on it.
+    fn hits(&self, word: bool, line: &[u8]) -> Option<bool> {
+        match self {
+            Self::Linear(re) => Some(hits(re, word, line)),
+            Self::Backtrack(b) => b.is_match(line),
+        }
+    }
+}
+
 /// Translates a POSIX basic (`extended` false) or extended expression to the `regex` syntax.
 fn translate(pattern: &str, extended: bool) -> std::result::Result<String, String> {
     let chars: Vec<char> = pattern.chars().collect();
@@ -267,7 +290,7 @@ fn translate(pattern: &str, extended: bool) -> std::result::Result<String, Strin
                     }
                     '<' => out.push_str("\\b{start}"),
                     '>' => out.push_str("\\b{end}"),
-                    '1'..='9' => return Err("back-references are not supported".to_owned()),
+                    '1'..='9' => return Err(BACKREF.to_owned()),
                     'w' | 'W' | 's' | 'S' | 'b' | 'B' => {
                         out.push('\\');
                         out.push(e);
@@ -301,7 +324,32 @@ fn translate(pattern: &str, extended: bool) -> std::result::Result<String, Strin
     Ok(out)
 }
 
-fn compile(o: &Opts) -> Result<Regex> {
+fn compile(o: &Opts) -> Result<Matcher> {
+    let backref = !o.fixed
+        && o.patterns
+            .iter()
+            .any(|p| grep_backref::uses_backref(&p.to_string_lossy()));
+    if backref {
+        let texts: Vec<String> = o
+            .patterns
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        let sources: Vec<grep_backref::Source<'_>> = texts
+            .iter()
+            .map(|text| grep_backref::Source {
+                text,
+                fixed: o.fixed,
+            })
+            .collect();
+        return grep_backref::compile(&sources, o.extended, o.ignore_case, o.word, &bracket)
+            .map(Matcher::Backtrack)
+            .map_err(|e| CliError::Fatal(format!("command line, '{}': {}", e.pattern, e.why)));
+    }
+    compile_linear(o).map(Matcher::Linear)
+}
+
+fn compile_linear(o: &Opts) -> Result<Regex> {
     let mut parts = Vec::new();
     for p in &o.patterns {
         let text = p.to_string_lossy();
@@ -366,7 +414,7 @@ fn hits(re: &Regex, word: bool, line: &[u8]) -> bool {
 // ---------------------------------------------------------------- searching
 
 struct Search<'a> {
-    re: &'a Regex,
+    re: &'a Matcher,
     o: &'a Opts,
 }
 
@@ -399,7 +447,12 @@ impl Search<'_> {
             if line.last() == Some(&NEWLINE) {
                 line.pop();
             }
-            if hits(self.re, self.o.word, &line) != self.o.invert {
+            let Some(hit) = self.re.hits(self.o.word, &line) else {
+                return Ok(Err(
+                    "the back-reference pattern took too many steps on a line",
+                ));
+            };
+            if hit != self.o.invert {
                 count += 1;
                 if !emit(number, &line, binary) {
                     break;
@@ -780,4 +833,5 @@ mod tests {
             Err(CliError::Usage(_))
         ));
     }
+
 }
