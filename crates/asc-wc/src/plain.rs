@@ -251,7 +251,11 @@ pub async fn checkout<O: Objects, R: Refs>(
 
 /// Whether `path` is a `.gitattributes` or `.ascattributes` file.
 fn is_attribute_file(path: &RepoPath) -> bool {
-    let name = path.as_bytes().rsplit(|&b| b == b'/').next().unwrap_or_default();
+    let name = path
+        .as_bytes()
+        .rsplit(|&b| b == b'/')
+        .next()
+        .unwrap_or_default();
     name == b".gitattributes" || name == b".ascattributes"
 }
 

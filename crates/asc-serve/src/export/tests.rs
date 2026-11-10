@@ -460,7 +460,13 @@ async fn a_retried_request_or_delete_runs_once_and_a_reader_cannot_start_one() {
     // A read claim may list but not start an export or delete one; no credential gets nothing.
     let e = f
         .svc
-        .request_export(me(&f, wire::RequestExportRequest {}, "alice", Role::Read, 2))
+        .request_export(me(
+            &f,
+            wire::RequestExportRequest {},
+            "alice",
+            Role::Read,
+            2,
+        ))
         .await
         .unwrap_err();
     assert_eq!(e.code(), Code::PermissionDenied);

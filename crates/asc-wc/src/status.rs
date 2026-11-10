@@ -207,7 +207,9 @@ pub(crate) fn probe(
         match cached {
             // Under `text=auto` git keeps the CRLFs of content staged with them (its
             // `has_crlf_in_index`), so a file that still holds exactly that content is unchanged.
-            Some(e) if rule == Eol::Auto && e.oid != oid && hash_file(&abs, Eol::Keep)? == e.oid => {
+            Some(e)
+                if rule == Eol::Auto && e.oid != oid && hash_file(&abs, Eol::Keep)? == e.oid =>
+            {
                 e.oid
             }
             _ => oid,

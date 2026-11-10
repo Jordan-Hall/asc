@@ -203,7 +203,10 @@ mod tests {
         conv.convert(b"\nb\n", &mut out);
         conv.convert(b"\n", &mut out);
         assert_eq!(out, b"a\r\nb\r\n\r\n");
-        assert!(matches!(to_worktree(b"none", Smudge::Crlf), Cow::Borrowed(_)));
+        assert!(matches!(
+            to_worktree(b"none", Smudge::Crlf),
+            Cow::Borrowed(_)
+        ));
     }
 
     #[test]
