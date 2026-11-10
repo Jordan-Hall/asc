@@ -102,6 +102,7 @@ scenarios! {
     push_reject = "push-reject",
     push_mirror = "push-mirror",
     log_graph_paths = "log-graph-paths",
+    log_graph_follow = "log-graph-follow",
     grep_backref = "grep-backref",
     fetch_agent_refs = "fetch-agent-refs",
     git_remote_roundtrip = "git-remote-roundtrip",
