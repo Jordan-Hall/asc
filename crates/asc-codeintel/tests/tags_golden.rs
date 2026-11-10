@@ -58,7 +58,9 @@ fn render(tags: &[Tag]) -> String {
 
 fn golden(file: &str, lang: Lang) {
     let src = std::fs::read(dir().join(file)).unwrap();
-    let got = render(&extract(lang, &src).unwrap());
+    // The output is under test, not the time: a slow runner must not cancel it (the budget has its
+    // own test below).
+    let got = render(&extract_within(lang, &src, Duration::from_secs(60)).unwrap());
     let path = dir().join(format!("{file}.golden"));
     if std::env::var_os("ASC_BLESS").is_some() {
         std::fs::write(&path, &got).unwrap();
