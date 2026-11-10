@@ -319,11 +319,21 @@ fn a_gap_with_two_kinds_fails() {
 /// Pending and open entries pass the default run, are listed, and fail the strict run.
 #[test]
 fn strict_mode_fails_on_pending_and_open_entries() {
-    let t = real();
+    let mut t = real();
+    // D-1 as if it were still an open gap.
+    let d1 = t.divergences.find("### D-1 ").expect("D-1");
+    let at = d1
+        + t.divergences[d1..]
+            .find("- **Status:** proven")
+            .expect("D-1 status");
+    t.divergences.replace_range(
+        at..at + "- **Status:** proven".len(),
+        "- **Status:** open (closes with U54w)",
+    );
     let default = lint(&root(), &t, false);
     assert!(default.errors.is_empty(), "{}", default.problems());
     assert!(
-        default.listed.iter().any(|l| l.starts_with("D-7")),
+        default.listed.iter().any(|l| l.starts_with("D-1")),
         "{:?}",
         default.listed
     );
