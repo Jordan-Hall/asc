@@ -298,7 +298,7 @@ pub fn is_unavailable(cmd: &str) -> bool {
 
 /// Whether `name` is a git command for `prog`: a 2.55 builtin or an unavailable one. `daemon` is
 /// git's command under `git` (so `git daemon` is unsupported) and asc's own under `asc`.
-fn is_git_command(prog: Program, name: &str) -> bool {
+pub(crate) fn is_git_command(prog: Program, name: &str) -> bool {
     GIT_BUILTINS.contains(&name)
         || SCRIPT_COMMANDS.contains(&name)
         || is_unavailable(name)
@@ -597,7 +597,11 @@ fn io_reason(e: &std::io::Error) -> String {
 }
 
 fn print_usage(prog: Program, to_stderr: bool) {
-    let text = format!("{}\n", Msg::Usage.text(prog));
+    let mut text = format!("{}\n", Msg::Usage.text(prog));
+    // `asc --help` also names asc's own commands, from the command reference.
+    if prog == Program::Asc && !to_stderr {
+        text.push_str(&crate::cli::reference::groups());
+    }
     if to_stderr {
         eprint!("{text}");
     } else {

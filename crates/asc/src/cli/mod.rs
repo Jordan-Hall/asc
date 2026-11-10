@@ -103,6 +103,7 @@ pub mod range_diff;
 pub mod rebase;
 pub mod rebase_todo;
 pub mod ref_filter;
+pub mod reference;
 pub mod reflog;
 pub mod refs_plumbing;
 pub mod release;
@@ -322,6 +323,15 @@ pub async fn run_command(ctx: &Ctx, argv: Vec<OsString>) -> Result<ExitCode> {
         .and_then(|a| a.to_str())
         .unwrap_or_default()
         .to_owned();
+    // `asc <command> --help` (or `-h`) is help, before anything else reads the arguments.
+    if let Some(words) = help_request(&argv) {
+        let rest = if crate::dispatch::is_git_command(ctx.prog, &name) {
+            vec![OsString::from(&name)]
+        } else {
+            words.into_iter().map(OsString::from).collect()
+        };
+        return help_git::run(ctx, help_git::Args { rest }).await;
+    }
     // P45: the `--json` forms of the plugin verbs run the verb and print its `OpResult`.
     if json_verbs::wants(&argv) {
         return json_verbs::run(ctx, argv).await;
@@ -348,6 +358,35 @@ pub async fn run_command(ctx: &Ctx, argv: Vec<OsString>) -> Result<ExitCode> {
         eprintln!("warning: path rules: {e}");
     }
     out
+}
+
+/// The words of a help request, `[command, words typed before the first option…]`: `--help` or
+/// `-h` anywhere before `--`, unless the command serves that flag itself (git's `<cmd> --help`
+/// is `help <cmd>`). None when no help is asked for.
+fn help_request(argv: &[OsString]) -> Option<Vec<String>> {
+    let cmd = argv.first()?.to_str()?;
+    let mut words = vec![cmd.to_owned()];
+    let mut flag = None;
+    let mut in_words = true;
+    for a in &argv[1..] {
+        let Some(t) = a.to_str() else {
+            in_words = false;
+            continue;
+        };
+        match t {
+            "--" => break,
+            "--help" | "-h" => {
+                flag.get_or_insert(t);
+                in_words = false;
+            }
+            _ if t.starts_with('-') => in_words = false,
+            _ if in_words => words.push(t.to_owned()),
+            _ => {}
+        }
+    }
+    let flag = flag?;
+    let served = native_specs().any(|s| s.cmd == cmd && s.flags.contains(&flag));
+    (!served).then_some(words)
 }
 
 /// The commands that may write tracked files of the work tree; the path rules' read-only files

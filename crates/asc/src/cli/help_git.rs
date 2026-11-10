@@ -1,7 +1,7 @@
 //! `help [git | <cmd>]` (SPEC §11.1, §11.3): `asc help git` prints the git to asc cheat sheet,
 //! which is `docs/CHEATSHEET.md` embedded at build time. `asc help <cmd>` prints asc's notes for
-//! the command, if any, and then git's manual through real git. An asc-only verb has no git manual,
-//! so only its note is printed.
+//! the command, if any, and then git's manual through real git. A command git does not have has no
+//! git manual: its rows of the command reference (`docs/CLI.md`) are printed instead.
 
 use std::ffi::OsString;
 use std::io::Write;
@@ -123,6 +123,18 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
             return Ok(ExitCode::SUCCESS);
         }
         Some(cmd) => {
+            // A command git does not have: its rows of the command reference.
+            if !crate::dispatch::is_git_command(ctx.prog, cmd) {
+                let words: Vec<&str> = rest
+                    .iter()
+                    .filter_map(|a| a.to_str())
+                    .filter(|a| !a.starts_with('-'))
+                    .collect();
+                if let Some(text) = super::reference::help_for(&words) {
+                    out.write_all(text.as_bytes())?;
+                    return Ok(ExitCode::SUCCESS);
+                }
+            }
             if let Some(about) = asc_only(cmd) {
                 writeln!(
                     out,
