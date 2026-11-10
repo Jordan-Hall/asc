@@ -11,7 +11,7 @@ Each divergence has exactly one **class**:
 | `auth` | asc authenticates differently from git on purpose (SPEC §15.6). |
 | `branchless` | a remote effect of branchless mode (SPEC §20.1 D5, §21.1 BD7, §21.4.2). |
 
-Seeded 2026-10-23. Counts: upstream 8 (refuse 7, idealize 1), own 7 (`workspace-gitdir` 4, `auth` 1, `branchless` 2).
+Seeded 2026-10-23. Counts: upstream 8 (refuse 7, idealize 1), own 6 (`workspace-gitdir` 3, `auth` 1, `branchless` 2; D-7 retired).
 
 ## Upstream
 
@@ -85,7 +85,7 @@ Q-2, Q-4 and Q-5 are `replicate` and have no bullet.
 ### D-7 A hook installed through `rev-parse --absolute-git-dir` is not found
 - **Class:** workspace-gitdir
 - **Pinned git:** `rev-parse --absolute-git-dir` is the directory git reads hooks from; a script writing `<it>/hooks/post-checkout` is run.
-- **asc:** the path is the synthetic `wc/<id>/git`, not the common dir asc reads hooks from, so `post-checkout` does not fire in the worktree (an open gap, not a decision).
-- **Proof:** `tests/traces/pending.toml` entry `claude-code/worktree-git-hooks` (`differs = true`)
-- **Status:** open (closes with U54w)
+- **asc:** the path is the synthetic `wc/<id>/git`. asc now looks for hooks under the main workspace's synthetic gitdir before `<common>/hooks` (unless `core.hooksPath` is set), and `rev-parse --show-toplevel` and the hook's working directory name a nested worktree's requested path, so the hook fires as in git. No difference remains.
+- **Proof:** `tests/traces/claude-code/worktree-git-hooks.trace`, `crates/asc/tests/cli_worktree_hooks.rs`
+- **Status:** retired
 - **SPEC:** §9.4, §9.4.1
