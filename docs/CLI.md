@@ -102,7 +102,7 @@ Configuration keys are in [`CONFIG.md`](CONFIG.md). Getting started is in
 | `show` | Shows an object. | `asc show HEAD` |
 | `diff` | Compares revisions, the index and the tree. | `asc diff --stat master...HEAD` |
 | `blame` | Last change per line. | `asc blame -L 10,20 src/lib.rs` |
-| `grep` | Searches tracked files. | `asc grep -n "TODO" -- src` |
+| `grep` | Searches tracked files with basic (default), extended (`-E`) or fixed (`-F`) patterns. Back-references such as `(ab)\1` work as in git; a line that would make one backtrack too long gives its file up with a warning. | `asc grep -n -E '(\w+) \1' -- src` |
 | `rev-parse` | Resolves names, full and abbreviated git ids included. | `asc rev-parse HEAD` |
 | `rev-list` | Lists commits. | `asc rev-list --count master..HEAD` |
 | `merge-base` | Finds a common ancestor. | `asc merge-base master HEAD` |

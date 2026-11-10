@@ -1485,7 +1485,7 @@ Where: **L** local; **L+f** local, fetching missing objects; **S** server RPC wh
 | `show` | `<rev>`, `<rev>:<path>`, `--stat`, `--name-only`, `--format` | L+f / S |
 | `diff` | worktree/index/HEAD (L); `<a> <b>`, `<a>...<b>` (L, or S with `--remote <repo>` and no checkout); all formats; `--cached`, `-M`, `--no-index` (native), `--classify` (asc-only, §8.10) | L+f / S |
 | `blame` | `-L`, `--porcelain`, `--incremental`, `-w`, `-M`, `--reverse` (S when a server remote exists, else local). Dirty files are blamed against the working copy locally | S / L |
-| `grep` | clean files: server `Grep` at base (no hydration); dirty files: local. Local-only repos: local over the tree | S+L |
+| `grep` | clean files: server `Grep` at base (no hydration); dirty files: local. Local-only repos: local over the tree. Basic, extended and fixed patterns; a back-reference runs in a backtracking matcher with a step budget per line (past it the file is given up with a warning) | S+L |
 | `remote` | `add`, `remove`, `rename`, `set-url`, `get-url`, `-v`, `show`, `prune` | L |
 | `config` | git config files; `--global`, `--local`, `--worktree`, `--get`, `--list`, `--unset` | L |
 | `rev-parse`, `rev-list`, `merge-base`, `show-ref`, `for-each-ref`, `symbolic-ref`, `update-ref`, `describe` | native. `rev-parse --git <rev>` / `--asc <rev>` print either id | L / S |
