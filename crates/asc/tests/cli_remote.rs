@@ -372,6 +372,57 @@ fn a_pull_of_divergent_branches_asks_how_to_reconcile() {
 }
 
 #[test]
+fn pull_rebase_interactive_opens_the_todo_on_the_pulled_commits() {
+    let sb = Sandbox::new();
+    let url = bucket_url(&sb.dir("bucket"));
+    let a = sb.dir("a");
+    ok(&sb, &a, &["init", "-q", "--store", &url]);
+    commit_file(&sb, &a, "f.txt", "base\n");
+    ok(&sb, &a, &["push", "-q", "-u", "origin", "master"]);
+    let cwd = sb.dir("cwd");
+    ok(&sb, &cwd, &["clone", "-q", &url, "b"]);
+    let b = cwd.join("b");
+    commit_file(&sb, &b, "b.txt", "b\n");
+    ok(&sb, &b, &["push", "-q"]);
+    commit_file(&sb, &a, "a.txt", "a\n");
+    let todo = sb.dir("seen").join("todo");
+    let seq = format!(
+        "cp \"$1\" '{}' && sed -i -e 's/^pick/reword/' \"$1\"",
+        todo.display().to_string().replace('\\', "/")
+    );
+    let run = |args: &[&str]| {
+        sb.asc(&a)
+            .envs(IDENT)
+            .env("GIT_SEQUENCE_EDITOR", &seq)
+            .env("GIT_EDITOR", "sed -i -e '1s/.*/a reworded/'")
+            .args(args)
+            .output()
+            .expect("spawn asc")
+    };
+    let out = run(&["pull", "-q", "--rebase=interactive"]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    // The editor saw a's commit only, as a pick.
+    let seen = std::fs::read_to_string(&todo).unwrap();
+    let picks: Vec<&str> = seen.lines().filter(|l| l.starts_with("pick ")).collect();
+    assert_eq!(picks.len(), 1, "{seen}");
+    assert!(picks[0].ends_with("# a.txt"), "{seen}");
+    assert_eq!(std::fs::read_to_string(a.join("b.txt")).unwrap(), "b\n");
+    let log = ok(&sb, &a, &["log", "--format=%s", "-2"]);
+    let subjects = text(&log.stdout);
+    assert!(subjects.starts_with("a reworded\n"), "{subjects}");
+    // pull.rebase=interactive (and its short form) asks for the same.
+    commit_file(&sb, &b, "b2.txt", "b2\n");
+    ok(&sb, &b, &["push", "-q"]);
+    commit_file(&sb, &a, "a2.txt", "a2\n");
+    ok(&sb, &a, &["config", "pull.rebase", "i"]);
+    let out = run(&["pull", "-q"]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let log = ok(&sb, &a, &["log", "--format=%s", "-1"]);
+    assert_eq!(text(&log.stdout), "a reworded\n");
+    assert!(a.join("b2.txt").exists());
+}
+
+#[test]
 fn pull_autostash_puts_local_changes_away_for_the_pull_and_brings_them_back() {
     let sb = Sandbox::new();
     let url = bucket_url(&sb.dir("bucket"));
