@@ -139,6 +139,7 @@
       "asc.v1.Repo/CopyClosure",
       "asc.v1.Repo/RepoAdmin",
       "asc.v1.Repo/ImportGitPush",
+      "asc.v1.Repo/ImportProgress",
       "asc.v1.Repo/Ingest",
       "asc.v1.Repo/FindLanding",
       "asc.v1.Repo/Classify",
