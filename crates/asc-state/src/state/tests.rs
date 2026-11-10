@@ -569,6 +569,59 @@ async fn rebase_keeps_the_effective_index_across_a_two_commit_move() {
 }
 
 #[tokio::test]
+async fn git_map_prefix_finds_commits_by_abbreviated_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = open(&dir).await;
+    let r = repo(&db, "r").await;
+    let oid = |head: [u8; 3]| {
+        let mut b = [0x55; 20];
+        b[..3].copy_from_slice(&head);
+        GitOid::from_bytes(b)
+    };
+    let (a, b, c) = (
+        oid([0xab, 0xc1, 0x00]),
+        oid([0xab, 0xc2, 0x00]),
+        oid([0xab, 0xd0, 0xff]),
+    );
+    let row = |git, asc| GitMapRow {
+        git,
+        kind: ObjectKind::Commit,
+        asc,
+    };
+    let blob = GitMapRow {
+        git: oid([0xab, 0xc1, 0x01]),
+        kind: ObjectKind::Blob,
+        asc: [9; 32],
+    };
+    git_map::insert_many(
+        &db,
+        r,
+        &[row(a, [1; 32]), row(b, [2; 32]), row(c, [3; 32]), blob],
+    )
+    .await
+    .unwrap();
+    let find = |p: &'static str| {
+        let db = db.clone();
+        async move {
+            git_map::git_prefix(&db, r, p, ObjectKind::Commit, 5)
+                .await
+                .unwrap()
+        }
+    };
+    // Even and odd lengths; the blob of the same prefix is another kind.
+    assert_eq!(find("abc1").await, [(a, [1; 32])]);
+    assert_eq!(find("abc").await, [(a, [1; 32]), (b, [2; 32])]);
+    assert_eq!(find("abd0ff").await, [(c, [3; 32])]);
+    assert_eq!(find("ab").await.len(), 3);
+    assert!(find("abe").await.is_empty());
+    assert!(find("xyz").await.is_empty());
+    let one = git_map::git_prefix(&db, r, "ab", ObjectKind::Commit, 1)
+        .await
+        .unwrap();
+    assert_eq!(one, [(a, [1; 32])]);
+}
+
+#[tokio::test]
 async fn git_map_cs_gen_and_boundary() {
     let dir = tempfile::tempdir().unwrap();
     let db = open(&dir).await;
