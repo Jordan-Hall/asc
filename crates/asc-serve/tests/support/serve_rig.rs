@@ -18,7 +18,7 @@ use asc_engine::commit::{NewChangeset, PathPolicy};
 use asc_engine::derive::{GitMapRow, GitMapSink};
 use asc_engine::history::MemBoundaries;
 use asc_engine::sync::{PushMode, PushUpdate, SyncOptions};
-use asc_rpc::auth::{Access, BearerToken, StaticTokens};
+use asc_rpc::auth::{Access, Authorizer, BearerToken, StaticTokens};
 use asc_rpc::client::{RpcClient, channel_with};
 use asc_rpc::server::RepoName;
 use asc_serve::config::ServeConfig;
@@ -83,8 +83,19 @@ fn sig() -> Signature {
     Signature::new(b"A".to_vec(), b"a@x".to_vec(), 1_700_000_000, 0).unwrap()
 }
 
-/// Starts a primary server holding the empty repository [`REPO`].
+/// Starts a primary server holding the empty repository [`REPO`], with [`WRITE_TOKEN`] and
+/// [`READ_TOKEN`] as its only credentials.
 pub async fn start(o: Options) -> Rig {
+    let auth = Arc::new(
+        StaticTokens::new()
+            .with_token(WRITE_TOKEN, "alice", Access::Write)
+            .with_token(READ_TOKEN, "bob", Access::Read),
+    );
+    start_with(o, auth).await
+}
+
+/// [`start`] behind `auth`, which must know [`WRITE_TOKEN`] as a writer for [`Rig::push`].
+pub async fn start_with(o: Options, auth: Arc<dyn Authorizer>) -> Rig {
     let dir = tempfile::tempdir().unwrap();
     let db = format!("sqlite:{}?mode=rwc", fwd(&dir.path().join("asc.db")));
     let store = format!(
@@ -117,11 +128,6 @@ pub async fn start(o: Options) -> Rig {
         toml.push_str("[codeintel]\nenabled = true\nworkers = 2\n");
     }
     let cfg = ServeConfig::parse(&toml).unwrap();
-    let auth = Arc::new(
-        StaticTokens::new()
-            .with_token(WRITE_TOKEN, "alice", Access::Write)
-            .with_token(READ_TOKEN, "bob", Access::Read),
-    );
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
     tokio::spawn(async move {
         if let Err(e) = asc_serve::serve(cfg, auth, async {
