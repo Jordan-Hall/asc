@@ -14,7 +14,7 @@ COPY proto ./proto
 # Read at build time: tests/turbo is a workspace member, and the asc binary embeds the cheatsheet
 # and the Windows packaging files.
 COPY tests/turbo ./tests/turbo
-COPY docs/CHEATSHEET.md ./docs/CHEATSHEET.md
+COPY docs/CHEATSHEET.md docs/CLI.md ./docs/
 COPY packaging/windows ./packaging/windows
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \

@@ -45,7 +45,7 @@ COPY tests/turbo ./tests/turbo
 # bench/asc-bench and bench/codeintel (with its eval crate) are workspace members: cargo reads their manifests even for `-p asc`.
 COPY bench/asc-bench ./bench/asc-bench
 COPY bench/codeintel ./bench/codeintel
-COPY docs/CHEATSHEET.md ./docs/CHEATSHEET.md
+COPY docs/CHEATSHEET.md docs/CLI.md ./docs/
 # The built web UI, embedded by crates/asc-serve/build.rs (ASC_WEB_DIST overrides the path).
 COPY --from=web /src/web/dist ./web/dist
 COPY packaging/windows ./packaging/windows
