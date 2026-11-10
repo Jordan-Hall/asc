@@ -1085,8 +1085,13 @@ mod tests {
         assert_eq!(sddl.matches("(D;").count(), 0, "{sddl}");
         assert!(sddl.contains(&sid) || sddl.contains(";;;SY)"), "{sddl}");
         assert!(sddl.contains(";;;SY)"), "SYSTEM ace: {sddl}");
+        // SDDL writes well-known accounts by alias: the built-in Administrator (RID 500, the
+        // user of CI runners) is `LA`.
+        let alias = sid.ends_with("-500").then_some(";;;LA)");
         assert!(
-            sddl.contains(&format!(";;;{sid})")) || sddl.contains(";;;OW)"),
+            sddl.contains(&format!(";;;{sid})"))
+                || sddl.contains(";;;OW)")
+                || alias.is_some_and(|a| sddl.contains(a)),
             "user ace: {sddl}"
         );
     }
