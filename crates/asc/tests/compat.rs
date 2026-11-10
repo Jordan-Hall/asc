@@ -59,6 +59,7 @@ scenarios! {
     rebase_hooks = "rebase-hooks",
     rebase_exec = "rebase-exec",
     rebase_autostash = "rebase-autostash",
+    rebase_keep_base = "rebase-keep-base",
     rebase_i_basic = "rebase-i-basic",
     rebase_i_edit = "rebase-i-edit",
     rebase_i_squash = "rebase-i-squash",
