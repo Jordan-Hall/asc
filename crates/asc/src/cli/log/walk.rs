@@ -294,10 +294,12 @@ impl<'a> Walker<'a> {
     pub async fn new(ws: &'a WsCtx, hist: &'a Hist, sel: &Selection, opts: &Opts) -> Result<Self> {
         let filter = Filter::new(opts)?;
         let since = opts.since.as_deref().map(date_seconds).transpose()?;
-        let paged = !sel.paths.is_empty() || opts.follow || hist.is_remote();
+        // The graph of a pathspec simplifies history in the local walk, as git's does.
+        let simplify = opts.graph && !sel.paths.is_empty() && !opts.follow && !hist.is_remote();
+        let paged = (!sel.paths.is_empty() || opts.follow || hist.is_remote()) && !simplify;
         if paged && opts.graph {
             return Err(CliError::Fatal(
-                "asc: --graph is not supported with a pathspec or a server history yet".into(),
+                "asc: --graph is not supported with --follow or a server history yet".into(),
             ));
         }
         if opts.follow && sel.paths.len() != 1 {
@@ -337,7 +339,7 @@ impl<'a> Walker<'a> {
                 (None, false) => Sort::Date,
             };
             Source::Ordered(Box::new(
-                Ordered::new(ws, sel, opts.first_parent, sort, since).await?,
+                Ordered::new(ws, sel, opts.first_parent, sort, since, &sel.paths).await?,
             ))
         };
         Ok(Self {

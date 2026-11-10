@@ -5,11 +5,18 @@
 //! The default order streams: only the frontier of the walk is held. A range with excluded
 //! commits is limited first, as git does, and the topological orders need the whole limited
 //! list before the first commit can be shown.
+//!
+//! With pathspecs (`log --graph -- <path>`) the walk simplifies history as git's default
+//! does (`try_to_simplify_commit`): a commit with no change under the paths compared with a
+//! parent follows only that parent, commits with no change are not shown, and the graph draws
+//! each shown commit's nearest shown ancestors (`rewrite_parents`).
 
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, VecDeque};
 
-use asc_core::id::ChangesetId;
+use asc_core::id::{ChangesetId, TreeId};
+use asc_core::object::Kind;
+use asc_core::path::RepoPath;
 
 use super::revs::Selection;
 use crate::cli::common::{Result, WsCtx};
@@ -21,6 +28,10 @@ const SEEN: u8 = 1;
 const UNINTERESTING: u8 = 2;
 const ADDED: u8 = 4;
 const LEFT: u8 = 8;
+/// No change under the pathspecs compared with the parent the walk kept.
+const TREESAME: u8 = 16;
+/// Named as an excluded end of the range: still relevant to simplification.
+const BOTTOM: u8 = 32;
 
 /// The order commits come out in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -69,17 +80,23 @@ pub struct Ordered<'a> {
     /// The limited or sorted list, when the walk cannot stream.
     ready: Option<VecDeque<Item>>,
     streaming: bool,
+    /// Pathspecs history is simplified by; empty for none.
+    paths: Vec<RepoPath>,
+    /// Parents left after simplification, for the commits it changed.
+    simplified: HashMap<ChangesetId, Vec<ChangesetId>>,
 }
 
 impl<'a> Ordered<'a> {
     /// Starts a walk over `sel`. `max_age` is `--since`: a commit older than it ends its line of
-    /// history.
+    /// history. With `paths` the history is simplified by them (only for a topological sort,
+    /// which is what `--graph` uses).
     pub async fn new(
         ws: &'a WsCtx,
         sel: &Selection,
         first_parent: bool,
         sort: Sort,
         max_age: Option<i64>,
+        paths: &[RepoPath],
     ) -> Result<Self> {
         let mut w = Self {
             ws,
@@ -91,13 +108,12 @@ impl<'a> Ordered<'a> {
             seq: 0,
             ready: None,
             streaming: false,
+            paths: paths.to_vec(),
+            simplified: HashMap::new(),
         };
         let left = sel.symmetric.map(|(a, _)| a);
         for &id in sel.exclude.iter() {
-            w.flags
-                .entry(id)
-                .and_modify(|f| *f |= UNINTERESTING)
-                .or_insert(UNINTERESTING);
+            *w.flags.entry(id).or_insert(0) |= UNINTERESTING | BOTTOM;
         }
         let mut tips: Vec<ChangesetId> = Vec::new();
         for &id in sel.include.iter().chain(sel.exclude.iter()) {
@@ -117,12 +133,14 @@ impl<'a> Ordered<'a> {
             w.push(id, info.time);
         }
         let limited = !sel.exclude.is_empty();
-        let topo = sort != Sort::Date;
+        let topo = sort != Sort::Date || !w.paths.is_empty();
         if limited || topo {
             let mut list = w.limit_list(limited).await?;
             if topo {
                 list = sort_topologically(list, sort);
             }
+            // git sorts every commit of the walk and then leaves out those it simplified away.
+            list.retain(|i| !w.ignored(&i.id, i.parents.len()));
             w.ready = Some(list.into());
         } else {
             w.streaming = true;
@@ -190,6 +208,13 @@ impl<'a> Ordered<'a> {
             }
             return Ok(());
         }
+        let simplified;
+        let parents = if self.paths.is_empty() {
+            parents
+        } else {
+            simplified = self.simplify(id, parents).await?;
+            simplified.as_slice()
+        };
         let take = if self.first_parent { 1 } else { parents.len() };
         for &p in &parents[..take.min(parents.len())] {
             if own & LEFT != 0 {
@@ -203,6 +228,78 @@ impl<'a> Ordered<'a> {
             self.push(p, info.time);
         }
         Ok(())
+    }
+
+    /// Whether git's `relevant_commit` holds: interesting, or an excluded end of the range.
+    fn relevant(&self, id: &ChangesetId) -> bool {
+        self.flag(id) & (UNINTERESTING | BOTTOM) != UNINTERESTING
+    }
+
+    /// Whether the commit is left out of the output: simplified away and not a merge, which a
+    /// graph still draws.
+    fn ignored(&self, id: &ChangesetId, parents: usize) -> bool {
+        self.flag(id) & TREESAME != 0 && parents < 2
+    }
+
+    /// The entries under the pathspecs in `root`.
+    async fn entries(&self, root: TreeId) -> Result<Vec<Option<(Kind, [u8; 32])>>> {
+        let mut out = Vec::with_capacity(self.paths.len());
+        for p in &self.paths {
+            let e = self.ws.engine.lookup(root, p).await?;
+            out.push(e.map(|e| (e.kind, e.id)));
+        }
+        Ok(out)
+    }
+
+    /// git's `try_to_simplify_commit`: the parents the walk keeps for `id`, flagging it
+    /// `TREESAME` when nothing under the paths changed.
+    async fn simplify(
+        &mut self,
+        id: ChangesetId,
+        parents: &[ChangesetId],
+    ) -> Result<Vec<ChangesetId>> {
+        let cs = self.ws.engine.get_changeset(id).await?;
+        let own = self.entries(cs.root).await?;
+        if parents.is_empty() {
+            if own.iter().all(Option::is_none) {
+                *self.flags.entry(id).or_insert(0) |= TREESAME;
+            }
+            return Ok(Vec::new());
+        }
+        let (mut relevant_parents, mut relevant_change, mut irrelevant_change) = (0, false, false);
+        for (nth, &p) in parents.iter().enumerate() {
+            // Only the first parent counts when only its chain is followed.
+            if self.first_parent && nth > 0 {
+                break;
+            }
+            let relevant = self.relevant(&p);
+            if relevant {
+                relevant_parents += 1;
+            }
+            let pcs = self.ws.engine.get_changeset(p).await?;
+            if self.entries(pcs.root).await? == own {
+                if relevant {
+                    *self.flags.entry(id).or_insert(0) |= TREESAME;
+                    self.simplified.insert(id, vec![p]);
+                    return Ok(vec![p]);
+                }
+                continue;
+            }
+            if relevant {
+                relevant_change = true;
+            } else {
+                irrelevant_change = true;
+            }
+        }
+        let changed = if relevant_parents > 0 {
+            relevant_change
+        } else {
+            irrelevant_change
+        };
+        if !changed {
+            *self.flags.entry(id).or_insert(0) |= TREESAME;
+        }
+        Ok(parents.to_vec())
     }
 
     /// git's `still_interesting`: how much slop is left once an uninteresting commit was popped.
@@ -256,24 +353,66 @@ impl<'a> Ordered<'a> {
                 break;
             }
             date = info.time;
-            out.push(self.item(id, info));
+            let mut item = self.item(id, info);
+            if let Some(ps) = self.simplified.get(&id) {
+                item.parents.clone_from(ps);
+            }
+            out.push(item);
         }
         out.retain(|i| self.flag(&i.id) & UNINTERESTING == 0);
         Ok(out)
     }
 
-    /// The parents of `item` that git's graph draws: those not hidden by the range.
+    /// The parents of `item` that git's graph draws: those not hidden by the range, each
+    /// rewritten to its nearest shown ancestor when history is simplified.
     pub fn shown_parents(&self, item: &Item) -> Vec<ChangesetId> {
         let take = if self.first_parent {
             1
         } else {
             item.parents.len()
         };
-        item.parents[..take.min(item.parents.len())]
-            .iter()
-            .copied()
-            .filter(|p| self.flag(p) & UNINTERESTING == 0)
-            .collect()
+        let mut out: Vec<ChangesetId> = Vec::new();
+        for &p in &item.parents[..take.min(item.parents.len())] {
+            let Some(p) = self.rewrite(p) else { continue };
+            if self.flag(&p) & UNINTERESTING == 0
+                && !self.ignored(&p, self.parents_of(&p).len())
+                && !out.contains(&p)
+            {
+                out.push(p);
+            }
+        }
+        out
+    }
+
+    /// The parents the walk kept for `id`.
+    fn parents_of(&self, id: &ChangesetId) -> &[ChangesetId] {
+        self.simplified
+            .get(id)
+            .or_else(|| self.loaded.get(id))
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// git's `rewrite_one`: follows `p` through simplified-away commits; `None` when that
+    /// line of history ends without a shown commit.
+    fn rewrite(&self, mut p: ChangesetId) -> Option<ChangesetId> {
+        loop {
+            if self.flag(&p) & (UNINTERESTING | TREESAME) != TREESAME {
+                return Some(p);
+            }
+            let ps = self.parents_of(&p);
+            if ps.is_empty() {
+                return None;
+            }
+            let next = if self.first_parent {
+                ps.first()
+            } else {
+                ps.iter().find(|q| self.relevant(q))
+            };
+            match next {
+                Some(&q) => p = q,
+                None => return Some(p),
+            }
+        }
     }
 
     /// The next commit in order.
