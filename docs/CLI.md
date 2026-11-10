@@ -125,7 +125,7 @@ Configuration keys are in [`CONFIG.md`](CONFIG.md). Getting started is in
 | Command | What it does | Example |
 |---|---|---|
 | `merge` | Joins histories. | `asc merge topic` |
-| `rebase` | Replays commits. `-i` opens the todo list; `--root` replays the branch from its first commit. | `asc rebase --onto master topic~3 topic` |
+| `rebase` | Replays commits. `-i` opens the todo list; `--root` replays the branch from its first commit. `-r`/`--rebase-merges[=rebase-cousins]` (or `rebase.rebaseMerges`) keeps merges; `rebase-cousins` moves branches forked before the base onto it. | `asc rebase --onto master topic~3 topic` |
 | `cherry-pick` | Applies commits. | `asc cherry-pick abc1234` |
 | `revert` | Reverts commits. | `asc revert HEAD` |
 | `apply` | Applies a patch to the tree. | `asc apply fix.patch` |

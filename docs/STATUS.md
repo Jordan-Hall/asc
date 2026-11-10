@@ -62,7 +62,7 @@ Words: **done** = code and a test on `origin/master`; **partial** = works but a 
 | Requirement | Source | Status | Evidence | Gap |
 |---|---|---|---|---|
 | Local client verbs, git shim | SPEC, CLI.md | done | all 130 command names in CLI.md occur in `crates/asc/src`; `tests/` has about 100 files; compat suite against pinned git 2.55.0 (`docs/git-fidelity.md`) | |
-| Git "not supported" list | grep `not supported` | partial | `rebase --rebase-merges=rebase-cousins`, patch-id detection of commits already upstream (`rebase.rs` module doc); interactive `pull --rebase` `pull.rs:94`; `log --graph` with `--follow` or a server history `log/walk.rs:302` | By design: LFS, `submodule update`, IDE git panels, tags of non-commits (SPEC §14 step 6, `tag.rs:624`) |
+| Git "not supported" list | grep `not supported` | partial | patch-id detection of commits already upstream (`rebase.rs` module doc); interactive `pull --rebase` `pull.rs:94`; `log --graph` with `--follow` or a server history `log/walk.rs:302` | By design: LFS, `submodule update`, IDE git panels, tags of non-commits (SPEC §14 step 6, `tag.rs:624`) |
 | Divergences | `docs/divergences.md` | partial | 14 listed | D-5, D-6 "pending B12" (server policy for tags and `push --all`); D-7 hook via `--absolute-git-dir` open |
 | Audit log, undo | `docs/AUDIT.md` | done | `audit/` 97 tests | |
 | Protocol hardening, MCP, plugin API | `docs/mcp.md`, `plugin-api*.md` | done | `asc-mcp`, `serve/mcp/` 28 tests, `tests/mcp_*.rs` | Inspector run only on Forgejo (`mcp-inspector.yml`) |
