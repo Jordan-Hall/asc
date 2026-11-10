@@ -343,7 +343,7 @@ async fn start(ctx: &Ctx, ws: &WsCtx, gitdir: &Path, replay: Replay, f: Flags) -
             128,
         ));
     }
-    // The sequencer records an unborn start as the null id, which `--abort` returns to.
+    // The sequencer records an unborn start as the null id, which `--abort` refuses (U-3).
     let head_git = match head {
         Some(h) => conflict::git_id(ws, h).await?,
         None => null_oid(),
@@ -862,32 +862,36 @@ async fn abort(ctx: &Ctx, ws: &WsCtx, gitdir: &Path, replay: Replay) -> Result<E
             seqstate::clear_replay(gitdir);
             return Ok(ExitCode::SUCCESS);
         }
-        // A sequence started on an unborn branch returns the branch to unborn. git cannot: it
-        // fails to read the empty record it wrote, or moves the branch to the commit it was
-        // picking.
-        let original = if seq.head == null_oid() {
-            None
-        } else {
-            Some(conflict::changeset_of(ws, seq.head).await?)
-        };
-        let target_root = root_of(ws, original).await?;
+        // git cannot abort a sequence started on an unborn branch: it fails to read the empty
+        // record it wrote, or moves the branch to the commit it was picking (U-3).
+        if seq.head == null_oid() {
+            return Err(CliError::Raw(
+                format!(
+                    "error: cannot abort a {} started on an unborn branch (git-fidelity U-3)
+hint: \"asc {} --quit\" ends it and keeps any commits it made
+{}",
+                    replay.command(),
+                    replay.command(),
+                    failed(replay)
+                ),
+                128,
+            ));
+        }
+        let original = conflict::changeset_of(ws, seq.head).await?;
+        let target_root = root_of(ws, Some(original)).await?;
         reset_touched(ctx, ws, target_root).await?;
         write_orig_head(ws, gitdir).await?;
-        match (head, original) {
-            (_, Some(o)) if head != Some(o) => {
-                conflict::move_head(
-                    ctx,
-                    ws,
-                    head,
-                    o,
-                    "reset: moving to HEAD",
-                    StagingAfterMove::Set(Vec::new()),
-                    None,
-                )
-                .await?;
-            }
-            (Some(h), None) => conflict::unborn_head(ctx, ws, h).await?,
-            _ => {}
+        if head != Some(original) {
+            conflict::move_head(
+                ctx,
+                ws,
+                head,
+                original,
+                "reset: moving to HEAD",
+                StagingAfterMove::Set(Vec::new()),
+                None,
+            )
+            .await?;
         }
         Sequence::remove(gitdir);
     } else {

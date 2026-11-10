@@ -806,33 +806,6 @@ pub async fn move_head(
     Ok(op)
 }
 
-/// Returns the current branch to unborn: deletes its ref, which held `old`, and keeps HEAD on
-/// the branch name. A detached HEAD is never unborn, so it is left alone.
-pub async fn unborn_head(ctx: &Ctx, ws: &WsCtx, old: ChangesetId) -> Result<()> {
-    let Head::Branch(b) = ws.projection.read_head()? else {
-        return Ok(());
-    };
-    let name = RefName::new(format!("refs/heads/{b}").into_bytes()).map_err(fatal)?;
-    let txn = RefTxn {
-        updates: vec![RefUpdate {
-            name,
-            expect: Expect::Value(RefTarget::Changeset(old)),
-            new: None,
-            expires_at: None,
-        }],
-        actor: actor(),
-        reason: String::new(),
-        op_id: uuid::Uuid::now_v7(),
-    };
-    ctx.update_local_refs(
-        txn,
-        "reset: moving to HEAD",
-        StagingAfterMove::Set(Vec::new()),
-    )
-    .await?;
-    Ok(())
-}
-
 /// Tells the sinks about a changeset a command wrote (SPEC §20.3): the rewrite record
 /// (`New`, no predecessors) and the synthetic index.
 pub async fn announce(ws: &WsCtx, id: ChangesetId, op: OpId) -> Result<()> {
