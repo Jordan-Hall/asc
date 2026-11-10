@@ -31,8 +31,11 @@ token in a credential helper. Without a credential helper asc keeps the token it
 system keychain (a private file when there is none), so the next run does not sign in again; `asc auth
 logout <url>` removes it. The commands below set a credential up ahead of time.
 
-`asc auth login --host <url> --token-stdin` stores a token with the system credential helpers (the token
-is read from standard input, never from an argument), `asc auth logout --host <url>` forgets it, and
+`asc auth login --host <url>` signs in through the browser (`--device`, the default: a code and a link,
+you approve it, and asc stores the token the hub hands back), `--token-stdin` stores a token read from
+standard input (never from an argument), and `--prompt` lets git's credential prompt ask for it on the
+terminal (only when standard input is a terminal). Each stores the token with the system credential
+helpers. `asc auth logout --host <url>` forgets it, and
 `asc auth status [--json] [<url>]` reports which source would supply a credential for a URL and never
 prints the secret. Credentials come, in this order, from the URL, the credential helpers, and the
 `ASC_TOKEN` environment variable (sent only to the remote's own origin; see
@@ -47,7 +50,7 @@ prints the secret. Credentials come, in this order, from the URL, the credential
 3. Check: `asc auth status https://asc-staging.example.org`.
 
 Never put a token in a URL. asc does not store a credential that came from URL userinfo
-(divergence Q-6 in [`divergences.md`](divergences.md)). Nothing prompts.
+(divergence Q-6 in [`divergences.md`](divergences.md)). Nothing prompts outside a terminal.
 
 ## 3. Clone
 

@@ -38,7 +38,7 @@ example for every command. Output, `--porcelain`, `-z` and `--format` are stable
 
 - The default branch is `master`, never `main`.
 - A flag asc does not serve fails with usage exit code 129; it is never ignored.
-- Nothing prompts: credentials come from your credential helpers or `ASC_TOKEN`.
+- Scripts are never asked: credentials come from your credential helpers or `ASC_TOKEN`; at a terminal, `asc auth login --host <url>` signs in through the browser.
 
 ## Git compatibility
 
