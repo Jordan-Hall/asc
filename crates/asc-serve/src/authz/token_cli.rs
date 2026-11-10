@@ -63,6 +63,12 @@ pub fn parse_lifetime(s: &str) -> Result<i64, TokenError> {
 }
 
 async fn open(cfg: &ServeConfig, create_key: bool) -> Result<TokenStore, TokenError> {
+    // One token system per server: a forge-fronted server accepts the forge's tokens only.
+    if cfg.auth_provider() != Some(crate::config::AuthProvider::TokenStore) {
+        return Err(TokenError::Invalid(
+            "asc serve token and ssh-key need auth.provider = \"token_store\"; with a forge, the forge issues tokens and keys".into(),
+        ));
+    }
     let Some(db) = &cfg.db else {
         return Err(TokenError::Invalid("`db` is required".into()));
     };

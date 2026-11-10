@@ -1247,6 +1247,12 @@ impl ServeConfig {
                     return invalid(format!("auth.public_repos: {e}"));
                 }
             }
+            // One token system per server: with a forge in front, the forge issues every token.
+            _ if self.auth.token_key_file.is_some() => {
+                return invalid(
+                    "auth.token_key_file is for auth.provider = \"token_store\"; with a forge, the forge issues every token",
+                );
+            }
             _ if !self.auth.public_repos.is_empty() => {
                 return invalid(
                     "auth.public_repos needs auth.provider = \"token_store\"; the forge decides what is public",
