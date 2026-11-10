@@ -2046,6 +2046,60 @@ mod tests {
         assert_eq!(status_rpc_error(&back).unwrap().code(), "SECRET_DETECTED");
     }
 
+    /// A status given another code or message keeps its trailer in step: what a Go client checks
+    /// (the trailer's code and message equal `grpc-status` and `grpc-message`) holds after the header
+    /// round trip, and the typed error is still read.
+    #[test]
+    fn restate_keeps_the_trailer_in_step_with_the_new_code_and_message() {
+        let e = RpcError::NotFastForward(ErrorInfo {
+            paths: vec!["refs/heads/topic".into()],
+            ..Default::default()
+        });
+        let mut typed = rpc_status(&e);
+        typed
+            .metadata_mut()
+            .insert("x-asc-hint", "kept".parse().unwrap());
+        let s = restate(
+            &typed,
+            tonic::Code::InvalidArgument,
+            "! [rejected] refs/heads/topic (fetch first)",
+        );
+        assert_eq!(s.code(), tonic::Code::InvalidArgument);
+        assert_eq!(s.message(), "! [rejected] refs/heads/topic (fetch first)");
+        assert_eq!(s.metadata().get("x-asc-hint").unwrap(), "kept");
+        let response: tonic::codegen::http::Response<()> = s.clone().into_http();
+        let back = Status::from_header_map(response.headers()).unwrap();
+        let wire = WireStatus::decode(back.details()).unwrap();
+        assert_eq!(wire.code, back.code() as i32);
+        assert_eq!(wire.message, back.message());
+        assert!(details_agree(&back));
+        assert!(!details_agree(&Status::with_details(
+            tonic::Code::InvalidArgument,
+            "another message",
+            typed.details().to_vec().into(),
+        )));
+        assert_eq!(status_rpc_error(&back).unwrap().code(), "NOT_FAST_FORWARD");
+        // A bare ErrorDetail of an older server is passed on untouched.
+        let detail = pb::ErrorDetail {
+            code: "POLICY_DENIED".into(),
+            ..Default::default()
+        };
+        let old = Status::with_details(
+            tonic::Code::PermissionDenied,
+            "denied",
+            Bytes::from(detail.encode_to_vec()),
+        );
+        let s = restate(&old, old.code(), "denied: src/x");
+        assert_eq!(s.details(), old.details());
+        assert_eq!(status_rpc_error(&s).unwrap().code(), "POLICY_DENIED");
+        // No details stay no details.
+        assert!(
+            restate(&Status::internal("x"), tonic::Code::Internal, "y")
+                .details()
+                .is_empty()
+        );
+    }
+
     #[test]
     fn a_bare_error_detail_from_an_older_server_is_still_read() {
         let detail = pb::ErrorDetail {
