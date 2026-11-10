@@ -319,7 +319,7 @@ These match git's plumbing; scripts that use git's can use these.
 | `hash-object` | `printf 'x' \| asc hash-object --stdin` |
 | `update-index` | `asc update-index --refresh` |
 | `write-tree` | `asc write-tree` |
-| `read-tree` | `asc read-tree HEAD` |
+| `read-tree` | `asc read-tree HEAD`; `asc read-tree -m base ours theirs` (three-way merge into the index, conflicts at stages 1 to 3) |
 | `diff-tree` | `asc diff-tree -r HEAD~1 HEAD` |
 | `diff-index` | `asc diff-index --cached HEAD` |
 | `diff-files` | `asc diff-files` |
