@@ -824,8 +824,12 @@ pub async fn unborn_head(ctx: &Ctx, ws: &WsCtx, old: ChangesetId) -> Result<()> 
         reason: String::new(),
         op_id: uuid::Uuid::now_v7(),
     };
-    ctx.update_local_refs(txn, "reset: moving to HEAD", StagingAfterMove::Set(Vec::new()))
-        .await?;
+    ctx.update_local_refs(
+        txn,
+        "reset: moving to HEAD",
+        StagingAfterMove::Set(Vec::new()),
+    )
+    .await?;
     Ok(())
 }
 

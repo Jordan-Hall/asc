@@ -590,8 +590,9 @@ fn word(os: &OsString) -> String {
     os.to_string_lossy().into_owned()
 }
 
-/// git's refusal when no upstream is named and the branch tracks nothing.
-fn no_upstream(branch: Option<&str>) -> CliError {
+/// git's refusal when no upstream is named and the branch tracks nothing; git prints it on
+/// stdout and exits 1.
+fn no_upstream(branch: Option<&str>) -> String {
     let t = "    git rebase '<branch>'\n";
     let text = match branch {
         Some(b) => format!(
@@ -601,7 +602,10 @@ fn no_upstream(branch: Option<&str>) -> CliError {
             "You are not currently on a branch.\nPlease specify which branch you want to rebase against.\nSee git-rebase(1) for details.\n\n{t}"
         ),
     };
-    CliError::Raw(text, 1)
+    format!(
+        "{text}
+"
+    )
 }
 
 async fn commit_named(ctx: &Ctx, spec: &str) -> Result<Option<ChangesetId>> {
@@ -677,7 +681,10 @@ async fn start(ctx: &Ctx, ws: &WsCtx, gitdir: &Path, a: Args) -> Result<ExitCode
                 .and_then(|b| switch::upstream_ref(ctx, b));
             match tracked {
                 Some((_, tracking)) => tracking,
-                None => return Err(no_upstream(cur_branch.as_deref())),
+                None => {
+                    print!("{}", no_upstream(cur_branch.as_deref()));
+                    return Ok(ExitCode::from(1));
+                }
             }
         }
     };

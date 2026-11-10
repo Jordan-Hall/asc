@@ -848,7 +848,7 @@ async fn skip(ctx: &Ctx, ws: &WsCtx, gitdir: &Path, replay: Replay) -> Result<Ex
     drive(ctx, ws, gitdir, replay, seq, true).await
 }
 
-async fn abort(ctx: &Ctx, ws: &WsCtx, gitdir: &Path, _replay: Replay) -> Result<ExitCode> {
+async fn abort(ctx: &Ctx, ws: &WsCtx, gitdir: &Path, replay: Replay) -> Result<ExitCode> {
     crate::ext::op_sink().snapshot_wc();
     let head = ws.head_commit().await?;
     if let Some(seq) = Sequence::load(gitdir)? {
@@ -862,7 +862,9 @@ async fn abort(ctx: &Ctx, ws: &WsCtx, gitdir: &Path, _replay: Replay) -> Result<
             seqstate::clear_replay(gitdir);
             return Ok(ExitCode::SUCCESS);
         }
-        // A sequence started on an unborn branch returns the branch to unborn.
+        // A sequence started on an unborn branch returns the branch to unborn. git cannot: it
+        // fails to read the empty record it wrote, or moves the branch to the commit it was
+        // picking.
         let original = if seq.head == null_oid() {
             None
         } else {
@@ -889,6 +891,15 @@ async fn abort(ctx: &Ctx, ws: &WsCtx, gitdir: &Path, _replay: Replay) -> Result<
         }
         Sequence::remove(gitdir);
     } else {
+        if head.is_none() {
+            return Err(CliError::Raw(
+                format!(
+                    "error: cannot abort from a branch yet to be born\n{}",
+                    failed(replay)
+                ),
+                128,
+            ));
+        }
         let head_root = root_of(ws, head).await?;
         reset_touched(ctx, ws, head_root).await?;
         write_orig_head(ws, gitdir).await?;
