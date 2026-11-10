@@ -4,7 +4,7 @@
 
 pub mod attrs;
 pub mod convert;
-mod scan;
+pub mod scan;
 pub mod spec;
 pub mod target;
 

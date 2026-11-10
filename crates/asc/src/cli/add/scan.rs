@@ -194,6 +194,70 @@ fn changed(
     git != leaf.git || exec.is_some_and(|x| !want_link && x != (leaf.kind == Kind::Exec))
 }
 
+/// Whether work-tree files still hold what is staged (git's `verify_uptodate`): a missing file
+/// is up to date, an intent-to-add entry over an existing file is not, and the synthetic index
+/// stands in as stat cache so only stat-dirty files are hashed.
+pub struct UpToDate {
+    gate: SafeRoot,
+    index: IndexFile,
+    /// Stage 0 entries of `index`, by path.
+    at: HashMap<Vec<u8>, usize>,
+    attrs: Attrs,
+    filemode: bool,
+    core_symlinks: bool,
+}
+
+impl UpToDate {
+    pub fn new(ctx: &Ctx, ws: &WsCtx) -> Result<Self> {
+        let index_path = ws.projection.git_dir().join("index");
+        let index = IndexFile::read_or_empty(&index_path).unwrap_or_default();
+        let at = index
+            .entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (e.path.as_bytes().to_vec(), i))
+            .collect();
+        Ok(Self {
+            gate: SafeRoot::new(ws.projection.toplevel()),
+            index,
+            at,
+            attrs: super::workspace_attrs(ctx, ws)?,
+            filemode: ctx.config.bool("core.filemode").unwrap_or(cfg!(unix)),
+            core_symlinks: ctx.config.bool("core.symlinks").unwrap_or(cfg!(unix)),
+        })
+    }
+
+    /// Whether the file at `path` is up to date with the staged `leaf` (`ita` when it is an
+    /// intent-to-add entry).
+    pub fn check(&mut self, path: &RepoPath, leaf: &Leaf, ita: bool) -> Result<bool> {
+        if leaf.kind == Kind::Gitlink {
+            return Ok(true);
+        }
+        let cached = (!ita)
+            .then(|| self.at.get(path.as_bytes()))
+            .flatten()
+            .map(|&i| &self.index.entries[i]);
+        let attrs = &mut self.attrs;
+        let eol = || attrs.lookup(path).map_or(Eol::Keep, |a| a.eol);
+        let found = probe(
+            &self.gate,
+            path,
+            cached,
+            self.index.mtime,
+            eol,
+            self.filemode,
+        )
+        .map_err(|e| CliError::Fatal(format!("cannot read '{path}': {e}")))?;
+        Ok(match found {
+            Probe::Missing => true,
+            Probe::Dir | Probe::Other => false,
+            Probe::File { git, symlink, exec } => {
+                !ita && !changed(leaf, git, symlink, exec, self.core_symlinks)
+            }
+        })
+    }
+}
+
 // ---------------------------------------------------------------- planning
 
 /// Plans the staging of the paths `spec` selects.

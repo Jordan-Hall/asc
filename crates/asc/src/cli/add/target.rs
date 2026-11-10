@@ -362,6 +362,19 @@ impl Target {
         self.mirror(ctx, id, &paths).await
     }
 
+    /// Replaces every row of the set (stages 1 to 3 included), for a command that computes
+    /// the whole index (`read-tree -m`). The rows overlay HEAD as usual.
+    pub async fn replace(&mut self, ctx: &Ctx, rows: Vec<StageRow>) -> Result<()> {
+        let ws = ctx.ws()?;
+        let id = ws.workspace.ws.id;
+        stage::replace(&ws.db, id, self.set, &rows).await?;
+        self.rows.clear();
+        for row in rows {
+            self.rows.entry(row.path.clone()).or_default().push(row);
+        }
+        self.mirror(ctx, id, &[]).await
+    }
+
     async fn mirror(&self, ctx: &Ctx, ws: WorkspaceId, paths: &[RepoPath]) -> Result<()> {
         match &self.file {
             None => ext::index_sink()

@@ -98,6 +98,11 @@ impl Index {
         Ok(index)
     }
 
+    /// Whether this is a temporary set whose index file does not exist yet.
+    pub fn is_fresh(&self) -> bool {
+        self.fresh
+    }
+
     /// The tree the rows overlay when reading: nothing for an index that does not exist yet.
     pub fn base(&self) -> TreeId {
         if self.fresh {

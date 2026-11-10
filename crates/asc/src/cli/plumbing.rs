@@ -10,6 +10,7 @@ mod ls_files;
 mod ls_tree;
 pub(crate) mod objects;
 mod quote;
+mod tree_merge;
 mod update_index;
 mod usage;
 mod write_tree;
@@ -175,7 +176,14 @@ pub const NATIVE: &[NativeSpec] = &[
     },
     NativeSpec {
         cmd: "read-tree",
-        flags: &["-m", "-i", "--empty", "--prefix"],
+        flags: &[
+            "-m",
+            "-i",
+            "--empty",
+            "--prefix",
+            "--aggressive",
+            "--trivial",
+        ],
         placeholders: &[],
     },
 ];
