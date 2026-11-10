@@ -323,9 +323,17 @@ mod projfs {
             assert_eq!(ok(&sb, &ws, &["status", "--porcelain"]), "");
             best = best.min(t.elapsed());
         }
+        // SPEC §1: a clean virtual status under 50 ms, a release-build target. A debug build (the CI
+        // job) is slower by a steady factor, so it gets four times the budget: still far below a
+        // status that hydrated or walked the tree, which takes seconds.
+        let budget = if cfg!(debug_assertions) {
+            Duration::from_millis(200)
+        } else {
+            Duration::from_millis(50)
+        };
         assert!(
-            best < Duration::from_millis(50),
-            "status took {best:?} at best (first {first:?})"
+            best < budget,
+            "status took {best:?} at best (first {first:?}), budget {budget:?}"
         );
 
         std::fs::write(ws.join("a.txt"), "a2\n").unwrap();
