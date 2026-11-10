@@ -617,3 +617,71 @@ async fn org_agents_are_created_listed_paused_and_deleted_within_their_organisat
         .unwrap_err();
     assert!(matches!(e, super::OrgError::TooMany));
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_retried_create_runs_once_and_its_id_is_no_one_elses() {
+    let f = fx().await;
+    let msg = || wire::CreateOrgAgentRequest {
+        org: "acme".into(),
+        agent: Some(agent("fixer")),
+    };
+    let first = f
+        .svc
+        .create_agent(on(&f, msg(), "acme", Role::Admin, 7))
+        .await
+        .unwrap()
+        .into_inner();
+    let again = f
+        .svc
+        .create_agent(on(&f, msg(), "acme", Role::Admin, 7))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(first, again);
+    assert_eq!(f.audit.of("org.agent.created").len(), 1);
+
+    // Another owner of the same organisation cannot replay the id.
+    let other = claim(
+        req(msg(), "host-token", Some(&op(7))),
+        &f.k,
+        "8:other",
+        Role::Admin,
+        "org:acme",
+    );
+    assert_eq!(
+        f.svc.create_agent(other).await.unwrap_err().code(),
+        Code::InvalidArgument
+    );
+    // No credential, and no operation id, are refused.
+    let mut anon = tonic::Request::new(msg());
+    anon.metadata_mut()
+        .insert("x-asc-op-id", op(8).parse().unwrap());
+    assert_eq!(
+        f.svc.create_agent(anon).await.unwrap_err().code(),
+        Code::Unauthenticated
+    );
+    let no_op = claim(
+        req(msg(), "host-token", None),
+        &f.k,
+        "9:owner",
+        Role::Admin,
+        "org:acme",
+    );
+    assert_eq!(
+        f.svc.create_agent(no_op).await.unwrap_err().code(),
+        Code::InvalidArgument
+    );
+    let listed = f
+        .svc
+        .list_agents(on(
+            &f,
+            wire::ListOrgAgentsRequest { org: "acme".into() },
+            "acme",
+            Role::Read,
+            9,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(listed.agents.len(), 1);
+}
