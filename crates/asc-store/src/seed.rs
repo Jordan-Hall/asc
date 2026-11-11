@@ -493,6 +493,19 @@ pub async fn unpack(
     expect_repo: Option<&str>,
     origin: Origin,
 ) -> Result<Unpacked> {
+    unpack_authed(url, cache, expect_repo, origin, None).await
+}
+
+/// [`unpack`] with an `Authorization` header value for the first request: the seeds route of
+/// an asc server authorises its caller before it redirects to the presigned object. The header
+/// never follows a redirect to another host, scheme or port, so the object store never sees it.
+pub async fn unpack_authed(
+    url: &url::Url,
+    cache: &Path,
+    expect_repo: Option<&str>,
+    origin: Origin,
+    auth: Option<&str>,
+) -> Result<Unpacked> {
     check_url(url, origin)?;
     let cache = cache.to_path_buf();
     let expect = expect_repo.map(str::to_owned);
@@ -505,7 +518,7 @@ pub async fn unpack(
     let n = STAGE_SEQ.fetch_add(1, Ordering::Relaxed);
     let tmp = cache.join(format!(".seed-dl-{}-{n}", std::process::id()));
     let _guard = RemoveOnDrop(tmp.clone());
-    download(url, &tmp, "https").await?;
+    download(url, &tmp, "https", auth).await?;
     blocking(move || unpack_file(&tmp, &cache, expect.as_deref())).await
 }
 
@@ -518,9 +531,22 @@ pub async fn unpack_str(
     expect_repo: Option<&str>,
     origin: Origin,
 ) -> Result<Unpacked> {
+    unpack_str_authed(text, cache, expect_repo, origin, None).await
+}
+
+/// [`unpack_str`] with an `Authorization` header for an `https` URL (see [`unpack_authed`]).
+pub async fn unpack_str_authed(
+    text: &str,
+    cache: &Path,
+    expect_repo: Option<&str>,
+    origin: Origin,
+    auth: Option<&str>,
+) -> Result<Unpacked> {
     match url::Url::parse(text) {
         // A one-letter scheme is a Windows drive letter.
-        Ok(url) if url.scheme().len() > 1 => unpack(&url, cache, expect_repo, origin).await,
+        Ok(url) if url.scheme().len() > 1 => {
+            unpack_authed(&url, cache, expect_repo, origin, auth).await
+        }
         Ok(_) | Err(url::ParseError::RelativeUrlWithoutBase) if origin == Origin::Explicit => {
             let path = PathBuf::from(text);
             check_local_path(&path)?;
@@ -549,6 +575,7 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T> + Send + 'sta
 }
 
 /// Follows at most three redirects, and only to `scheme` (so `https` cannot be downgraded).
+/// reqwest drops `Authorization` when a redirect changes the host, scheme or port.
 fn redirect_policy(scheme: &'static str) -> reqwest::redirect::Policy {
     reqwest::redirect::Policy::custom(move |attempt| {
         if attempt.url().scheme() != scheme {
@@ -561,7 +588,12 @@ fn redirect_policy(scheme: &'static str) -> reqwest::redirect::Policy {
     })
 }
 
-async fn download(url: &url::Url, to: &Path, redirect_scheme: &'static str) -> Result<()> {
+async fn download(
+    url: &url::Url,
+    to: &Path,
+    redirect_scheme: &'static str,
+    auth: Option<&str>,
+) -> Result<()> {
     use tokio::io::AsyncWriteExt;
     let dl = |e: reqwest::Error| SeedError::Download(e.to_string());
     let client = reqwest::Client::builder()
@@ -569,8 +601,14 @@ async fn download(url: &url::Url, to: &Path, redirect_scheme: &'static str) -> R
         .connect_timeout(std::time::Duration::from_secs(15))
         .build()
         .map_err(dl)?;
-    let mut resp = client
-        .get(url.clone())
+    let mut req = client.get(url.clone());
+    if let Some(a) = auth {
+        let mut v = reqwest::header::HeaderValue::from_str(a)
+            .map_err(|_| SeedError::Refused("bad credential".into()))?;
+        v.set_sensitive(true);
+        req = req.header(reqwest::header::AUTHORIZATION, v);
+    }
+    let mut resp = req
         .send()
         .await
         .map_err(dl)?
@@ -1075,10 +1113,61 @@ mod tests {
         let url = url::Url::parse(&format!("http://{addr}/start")).unwrap();
         let to = tmp.path().join("dl");
         // The start URL is not checked here; the redirect to `http` leaves the required scheme.
-        let r = download(&url, &to, "https").await;
+        let r = download(&url, &to, "https", None).await;
         assert!(matches!(r, Err(SeedError::Download(_))), "{r:?}");
         // Control: the same chain downloads when its scheme is the required one.
-        download(&url, &to, "http").await.unwrap();
+        download(&url, &to, "http", None).await.unwrap();
         assert_eq!(fs::read(&to).unwrap(), b"ok");
+    }
+
+    /// The seeds route gets the credential; the object store a redirect leads to (another host)
+    /// never does.
+    #[tokio::test]
+    async fn the_credential_goes_to_the_seeds_route_and_not_past_a_redirect() {
+        use std::sync::{Arc, Mutex};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = l.local_addr().unwrap().port();
+        let seen: Arc<Mutex<Vec<(String, bool)>>> = Arc::default();
+        let log = seen.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut c, _)) = l.accept().await else {
+                    return;
+                };
+                let log = log.clone();
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let n = c.read(&mut buf).await.unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]).to_ascii_lowercase();
+                    let path = req.split_whitespace().nth(1).unwrap_or("").to_owned();
+                    let authed = req.contains("\r\nauthorization: bearer s3cret");
+                    log.lock().unwrap().push((path.clone(), authed));
+                    let resp = if path == "/object" {
+                        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+                            .to_owned()
+                    } else {
+                        format!(
+                            "HTTP/1.1 302 Found\r\nLocation: http://localhost:{port}/object\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        )
+                    };
+                    let _ = c.write_all(resp.as_bytes()).await;
+                });
+            }
+        });
+        let tmp = tempfile::tempdir().unwrap();
+        let url = url::Url::parse(&format!("http://127.0.0.1:{port}/seeds/a/b/latest")).unwrap();
+        let to = tmp.path().join("dl");
+        download(&url, &to, "http", Some("Bearer s3cret"))
+            .await
+            .unwrap();
+        assert_eq!(fs::read(&to).unwrap(), b"ok");
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [
+                ("/seeds/a/b/latest".to_owned(), true),
+                ("/object".to_owned(), false)
+            ]
+        );
     }
 }
