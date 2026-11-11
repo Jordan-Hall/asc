@@ -25,7 +25,7 @@ Matches `D:/dev/monorepo` (checked against its `package.json` files) and this re
 | Language | TypeScript 7 (the root pin), `tsconfig.base.json` | repo convention |
 | Package manager and tasks | bun 1.4, turbo (`build`, `typecheck`, `test`, `lint`) | repo convention; `web` is a workspace member |
 | Lint and format | oxlint (root `.oxlintrc.json`), biome format | repo convention |
-| Tests | `bun test`; components are rendered to strings with `react-dom/server`; Playwright for e2e later | `asc-ui` and `asc-client` already use `bun test` and Playwright |
+| Tests | `bun test`; components are rendered to strings with `react-dom/server`; Playwright e2e (`web/e2e`, CI job `web-e2e`) | `asc-ui` and `asc-client` already use `bun test` and Playwright |
 | RPC | `@asc/asc-client` (`callUnary`, `callStream`, `grpcWeb`) | the one TS client |
 
 Routing, the query cache and virtualisation are small in-repo modules (`web/src/lib/*`, each under 200 lines, unit-tested) rather than dependencies: the budget in section 6 is tight, the needs are narrow, and each module can be swapped for a library later behind the same hook signatures.
@@ -267,5 +267,5 @@ Later: OAuth/PKCE sign-in, mount at `/`, i18n, offline shell (service worker), T
 - Build gate: `size` (budgets above), `no inline script` check on `dist/index.html`.
 - Server: `cargo test -p asc-serve web::` covers ETag/304, immutable cache headers, SPA fallback rules, 404 for missing assets, CSP header presence, encoding negotiation, method handling, and that the router is absent when `[web] enabled = false`.
 - gRPC-Web: `cargo test -p asc-serve --lib web::grpc_web` (translation, CORS, caps, Connect) and `cargo test -p asc-serve --test grpc_web` (a real server on loopback: a unary and a server-streaming call, no token, bad token, cookie ignored, CORS denied and allowed, preflight, request cap, Connect, switch off).
-- Browser: `bun run e2e` builds the mock-transport bundle, serves it with the production headers and drives every route in light and dark at 1440 and 390 px (no console error, no horizontal scroll, axe WCAG 2.2 AA, layout shift, CSP, keyboard). `e2e/visual.spec.ts` compares full-page captures with baselines accepted against the design boards; create them with `--update-snapshots` before the first run.
+- Browser: `bun run e2e` builds the mock-transport bundle, serves it with the production headers and drives every route in light and dark at 1440 and 390 px (no console error, no horizontal scroll, axe WCAG 2.2 AA, layout shift, CSP, keyboard). `e2e/visual.spec.ts` compares full-page captures with the Linux baselines in `e2e/visual.spec.ts-snapshots/`. The `web-e2e` job in `ci.yml` runs the whole suite on every push. Visual baselines: after an intended visual change, run the `web-baselines` workflow (`gh workflow run web-baselines.yml`), review the `visual-baselines` artifact against the boards and commit it over the old captures; captures from another OS do not match the CI image.
 - Later: Lighthouse CI for LCP, CLS and INP against the budgets.
