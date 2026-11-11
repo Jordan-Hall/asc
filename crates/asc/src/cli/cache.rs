@@ -7,7 +7,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use asc_buildcache::{EntryInfo, GcReport, Store, ToolStats, human_size, parse_size};
+use asc_buildcache::{Compress, EntryInfo, GcReport, Store, ToolStats, human_size, parse_size};
 use asc_state::AscHome;
 use serde_json::{Value, json};
 
@@ -230,8 +230,9 @@ pub(crate) fn store_dir(ctx: &Ctx) -> Result<PathBuf> {
 
 pub(crate) fn open_store(ctx: &Ctx) -> Result<Store> {
     let dir = store_dir(ctx)?;
+    let compress = compress_mode(ctx)?;
     Store::open(&dir)
-        .map(|s| s.with_lower(lower_dirs(ctx)))
+        .map(|s| s.with_lower(lower_dirs(ctx)).with_compress(compress))
         .map_err(|e| {
             CliError::Fatal(format!(
                 "cannot open the build cache {}: {e}",
@@ -254,6 +255,19 @@ pub(crate) fn lower_dirs(ctx: &Ctx) -> Vec<PathBuf> {
         }
     }
     dirs
+}
+
+/// `asc.buildcache.compress`: `auto` (the default: compress blobs only where the volume cannot
+/// reflink), `true` or `false`.
+pub(crate) fn compress_mode(ctx: &Ctx) -> Result<Compress> {
+    match ctx.config.get("asc.buildcache.compress") {
+        None => Ok(Compress::Auto),
+        Some(t) => Compress::parse(&t).ok_or_else(|| {
+            CliError::Fatal(format!(
+                "bad value '{t}' for 'asc.buildcache.compress' (use auto, true or false)"
+            ))
+        }),
+    }
 }
 
 /// `asc.buildcache.maxSize`, else 20 GiB.
@@ -439,6 +453,8 @@ fn status(ctx: &Ctx, a: &Json, out: &mut impl Write) -> Result<ExitCode> {
                 "max_size": max,
                 "entries": usage.entries,
                 "blobs": usage.blobs,
+                "compressed_blobs": usage.compressed,
+                "compress": store.compresses(),
                 "tools": tools,
                 "remote": {
                     "mode": remote_mode,
@@ -461,6 +477,19 @@ fn status(ctx: &Ctx, a: &Json, out: &mut impl Write) -> Result<ExitCode> {
         usage.entries,
         usage.blobs
     )?;
+    if store.compresses() {
+        writeln!(
+            out,
+            "blobs    compressed where it saves space ({} so far)",
+            usage.compressed
+        )?;
+    } else {
+        writeln!(
+            out,
+            "blobs    plain, restored by reflink where the volume can ({} compressed)",
+            usage.compressed
+        )?;
+    }
     let reached = match &last {
         None => String::new(),
         Some(remote::State { at, error: None }) => format!(", reached {}", ago(*at, t)),

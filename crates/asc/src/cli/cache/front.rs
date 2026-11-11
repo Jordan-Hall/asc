@@ -242,10 +242,8 @@ fn valid(name: &str) -> bool {
 fn body_of(store: &Store, action: &Action) -> Option<(PathBuf, u64, Option<Vec<u8>>)> {
     let body = action.outputs.iter().find(|o| o.path == "body")?;
     let id = unhex(&body.blob)?;
-    let path = store.blob_path(&id);
-    if !path.is_file() {
-        return None;
-    }
+    // Streamed from a plain file: a blob kept compressed is stored plain from its first hit.
+    let path = store.plain_blob_path(&id).ok()??;
     let tag = action
         .outputs
         .iter()
@@ -615,6 +613,28 @@ mod tests {
         let v = format!("Basic {}", STANDARD.encode(format!("{user}:{pass}")));
         h.insert(header::AUTHORIZATION, v.parse().unwrap());
         h
+    }
+
+    #[test]
+    fn a_compressed_body_is_streamed_from_a_plain_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("s"))
+            .unwrap()
+            .with_compress(asc_buildcache::Compress::Always);
+        let bytes = b"artifact ".repeat(2000);
+        let (id, size) = store.put_blob(&bytes).unwrap();
+        assert!(store.blob_file(&id).unwrap().1);
+        let mut action = Action::new("turbo", "x", asc_buildcache::Origin::default());
+        action.outputs.push(asc_buildcache::Output {
+            path: "body".into(),
+            kind: asc_buildcache::OutputKind::File,
+            size,
+            blob: asc_buildcache::hex(&id),
+        });
+        let (path, len, tag) = body_of(&store, &action).unwrap();
+        assert_eq!((len, tag), (bytes.len() as u64, None));
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+        assert!(!store.blob_file(&id).unwrap().1);
     }
 
     #[test]

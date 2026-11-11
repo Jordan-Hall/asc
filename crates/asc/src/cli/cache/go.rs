@@ -65,8 +65,13 @@ fn key(action: &[u8; ID]) -> ActionKey {
     ActionKey::builder(TOOL).part("action", action).finish()
 }
 
+/// Go reads the output at `DiskPath` itself, so it must be a plain file.
 fn disk_path(store: &Store, blob: &[u8; 32]) -> String {
-    let p = store.blob_path(blob);
+    let p = store
+        .plain_blob_path(blob)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| store.blob_path(blob));
     std::path::absolute(&p)
         .unwrap_or(p)
         .to_string_lossy()
@@ -320,6 +325,22 @@ mod tests {
         assert!(id(Some(&STANDARD.encode([1u8; 8])), "ActionID").is_err());
         assert!(id(Some("not base64!"), "ActionID").is_err());
         assert!(id(None, "ActionID").is_err());
+    }
+
+    #[test]
+    fn go_is_given_a_plain_file_for_a_compressed_blob() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("s"))
+            .unwrap()
+            .with_compress(asc_buildcache::Compress::Always);
+        let body = b"package main
+"
+        .repeat(1000);
+        let (blob, _) = store.put_blob(&body).unwrap();
+        assert!(store.blob_file(&blob).unwrap().1);
+        let path = disk_path(&store, &blob);
+        assert_eq!(std::path::Path::new(&path), store.blob_path(&blob));
+        assert_eq!(std::fs::read(&path).unwrap(), body);
     }
 
     #[test]
