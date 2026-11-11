@@ -2,7 +2,8 @@ name: ci
 # Linux gate: Rust format, clippy and the workspace tests; the @asc/build-cache plugins and runner against the asc
 # they call; the TypeScript workspaces (oxlint, typecheck, tests); the web UI in Chromium; the PostgreSQL-backed server tests and the S3
 # suite against three Garage versions, both on loopback without Docker. Windows: the workspace tests other than the
-# git-oracle and server suites, and the virtual (ProjFS) workspace tests, which need the ProjFS driver.
+# git-oracle and server suites, and the virtual (ProjFS) workspace tests, which need the ProjFS driver. The JetBrains
+# plugin: its unit tests, build and structure check.
 on:
   push:
     branches: [master]
@@ -233,6 +234,29 @@ jobs:
         run: cargo nextest run --locked --profile ci --workspace --exclude asc --exclude asc-serve
       - name: asc unit tests
         run: cargo nextest run --locked --profile ci -p asc --bins
+
+  jetbrains:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      GRADLE_OPTS: -Dorg.gradle.daemon=false
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+        with:
+          gradle-version: 8.14.3
+      # The unit tests (plugin.xml against the code among them), then the plugin built and checked by the
+      # IntelliJ Plugin Verifier against the IDE it targets.
+      - name: Test, build and verify
+        working-directory: plugins/jetbrains
+        run: |
+          set -euo pipefail
+          if [ -x ./gradlew ]; then g=./gradlew; else g=gradle; fi
+          "$g" test buildPlugin verifyPluginStructure
 
   projfs:
     runs-on: windows-2022
