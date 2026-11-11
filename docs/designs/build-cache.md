@@ -73,6 +73,11 @@ tmp/                            files being written
 - **Restore** clones each blob into place where the file system can (reflink on Btrfs, XFS, APFS, ReFS) and copies it
   otherwise, then renames it over the target. Restored files are the caller's own and never links into the store. A
   blob that was evicted between the lookup and the restore makes the restore report a miss, and the tool runs.
+- **Incremental restore**: `asc cache restore` and a `run` hit leave an output alone when the file already there has
+  the entry's kind, size and `FileId`, write only the others, and remove what lies below the declared outputs that the
+  entry does not name. Unchanged files keep their modification time, so a watcher or the next incremental step sees
+  only the changed file. `restore --json` reports `written`, `kept` and `removed`. Nothing is removed when a blob is
+  gone.
 - Output paths in an entry are relative with normal components only; anything else is refused on write and restore.
 
 ## 3. The server tier
