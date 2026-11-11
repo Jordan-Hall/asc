@@ -145,3 +145,6 @@ mod tests {
         guard(|| panic!("boom"));
     }
 }
+
+#[cfg(test)]
+mod lab;
