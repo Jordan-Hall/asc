@@ -2068,4 +2068,295 @@ mod tests {
         assert!(s3_signer(&url).is_ok());
     }
 
+    // ------------------------------------------------------------ file-level routes (cas.rs)
+
+    fn file_id(bytes: &[u8]) -> String {
+        asc_core::id::FileId::of(bytes).to_string()
+    }
+
+    fn zst(bytes: &[u8]) -> Vec<u8> {
+        zstd::encode_all(bytes, 3).unwrap()
+    }
+
+    fn entry_json(ids: &[&str]) -> String {
+        let outputs: Vec<_> = ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| serde_json::json!({ "path": format!("dist/{i}.js"), "kind": "file", "size": 1, "blob": id }))
+            .collect();
+        serde_json::json!({ "tool": "vite", "outputs": outputs }).to_string()
+    }
+
+    async fn missing(
+        s: &Arc<TurboState>,
+        token: &'static str,
+        ids: &[&str],
+    ) -> (StatusCode, Vec<String>) {
+        let (st, _, b) = call(
+            "POST",
+            &format!("/v8/asc/cas/missing?slug={SLUG}"),
+            Some(token),
+        )
+        .header("content-type", "application/json")
+        .body(serde_json::json!({ "ids": ids }).to_string())
+        .send(s)
+        .await;
+        let v: serde_json::Value = serde_json::from_slice(&b).unwrap_or_default();
+        let ids = v["missing"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|x| x.as_str().map(str::to_owned))
+            .collect();
+        (st, ids)
+    }
+
+    async fn put_file(
+        s: &Arc<TurboState>,
+        token: &'static str,
+        id: &str,
+        body: Vec<u8>,
+    ) -> StatusCode {
+        call("PUT", &format!("/v8/asc/cas/{id}?slug={SLUG}"), Some(token))
+            .body(body)
+            .send(s)
+            .await
+            .0
+    }
+
+    async fn put_entry(
+        s: &Arc<TurboState>,
+        token: &'static str,
+        key: &str,
+        body: String,
+    ) -> StatusCode {
+        call("PUT", &format!("/v8/asc/ac/{key}?slug={SLUG}"), Some(token))
+            .header("content-type", "application/json")
+            .body(body)
+            .send(s)
+            .await
+            .0
+    }
+
+    async fn get_status(s: &Arc<TurboState>, token: &'static str, uri: String) -> StatusCode {
+        call("GET", &uri, Some(token)).send(s).await.0
+    }
+
+    #[tokio::test]
+    async fn a_file_is_stored_only_under_the_id_of_its_content() {
+        let (s, _) = state();
+        let (a, b) = (b"export const a = 1;\n".as_slice(), b"other".as_slice());
+        let ida = file_id(a);
+        assert_eq!(
+            missing(&s, "dev-secret", &[&ida]).await,
+            (StatusCode::OK, vec![ida.clone()])
+        );
+        assert_eq!(
+            put_file(&s, "dev-secret", &ida, zst(b)).await,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            put_file(&s, "dev-secret", &ida, a.to_vec()).await,
+            StatusCode::BAD_REQUEST,
+            "not zstd"
+        );
+        assert_eq!(
+            put_file(&s, "ro-secret", &ida, zst(a)).await,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            put_file(&s, "dev-secret", &ida, zst(a)).await,
+            StatusCode::CREATED
+        );
+        assert_eq!(
+            put_file(&s, "dev-secret", &ida, zst(a)).await,
+            StatusCode::OK,
+            "already there"
+        );
+        assert_eq!(
+            missing(&s, "dev-secret", &[&ida]).await,
+            (StatusCode::OK, vec![])
+        );
+        assert_eq!(
+            missing(&s, "ro-secret", &[&ida]).await.0,
+            StatusCode::FORBIDDEN
+        );
+        let (st, h, body) = call(
+            "GET",
+            &format!("/v8/asc/cas/{ida}?slug={SLUG}"),
+            Some("dev-secret"),
+        )
+        .send(&s)
+        .await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(h[header::CONTENT_TYPE], "application/zstd");
+        assert_eq!(zstd::decode_all(&body[..]).unwrap(), a);
+        let upper = format!("/v8/asc/cas/{}?slug={SLUG}", "A".repeat(64));
+        assert_eq!(
+            get_status(&s, "dev-secret", upper).await,
+            StatusCode::BAD_REQUEST,
+            "ids are lowercase hex"
+        );
+        let (st, _, _) = call("GET", &format!("/v8/asc/cas/{ida}?slug={SLUG}"), None)
+            .send(&s)
+            .await;
+        assert_eq!(st, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn one_changed_file_is_the_only_upload_of_the_next_entry() {
+        let (s, _) = state();
+        let files: Vec<Vec<u8>> = (0..5).map(|i| format!("chunk {i}").into_bytes()).collect();
+        let ids: Vec<String> = files.iter().map(|f| file_id(f)).collect();
+        let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        let key1 = "1".repeat(64);
+        assert_eq!(
+            put_entry(&s, "ci-secret", &key1, entry_json(&refs)).await,
+            StatusCode::BAD_REQUEST,
+            "an entry waits for its files"
+        );
+        for (f, id) in files.iter().zip(&ids) {
+            assert_eq!(
+                put_file(&s, "ci-secret", id, zst(f)).await,
+                StatusCode::CREATED
+            );
+        }
+        assert_eq!(
+            put_entry(&s, "ci-secret", &key1, entry_json(&refs)).await,
+            StatusCode::CREATED
+        );
+        // The next build changed one file: only that one is missing.
+        let changed = b"chunk 2, edited".to_vec();
+        let idc = file_id(&changed);
+        let mut next = refs.clone();
+        next[2] = &idc;
+        assert_eq!(missing(&s, "ci-secret", &next).await.1, vec![idc.clone()]);
+        // A developer reads trusted files, so it uploads nothing CI already has.
+        assert_eq!(missing(&s, "dev-secret", &next).await.1, vec![idc.clone()]);
+        assert_eq!(
+            put_file(&s, "dev-secret", &idc, zst(&changed)).await,
+            StatusCode::CREATED
+        );
+        let key2 = "2".repeat(64);
+        assert_eq!(
+            put_entry(&s, "dev-secret", &key2, entry_json(&next)).await,
+            StatusCode::CREATED
+        );
+        // Reads: the caller's scope, then trusted. Another developer sees neither dev entry nor file.
+        for (token, key, want) in [
+            ("dev-secret", &key2, StatusCode::OK),
+            ("dev-secret", &key1, StatusCode::OK),
+            ("dev2-secret", &key1, StatusCode::OK),
+            ("dev2-secret", &key2, StatusCode::NOT_FOUND),
+            ("ci-secret", &key2, StatusCode::NOT_FOUND),
+        ] {
+            let uri = format!("/v8/asc/ac/{key}?slug={SLUG}");
+            assert_eq!(get_status(&s, token, uri).await, want, "{token} {key}");
+        }
+        assert_eq!(
+            missing(&s, "dev2-secret", &[&idc]).await.1,
+            vec![idc.clone()]
+        );
+        let (_, _, body) = call(
+            "GET",
+            &format!("/v8/asc/ac/{key1}?slug={SLUG}"),
+            Some("dev2-secret"),
+        )
+        .send(&s)
+        .await;
+        assert_eq!(String::from_utf8(body).unwrap(), entry_json(&refs));
+        assert_eq!(
+            put_entry(&s, "dev-secret", &key2, "{".into()).await,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            put_entry(&s, "dev-secret", &key2, entry_json(&["zz"])).await,
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    #[tokio::test]
+    async fn path_rules_keep_shared_files_and_unregistered_entries_back() {
+        let (s, _) = state();
+        let f = b"bundle".to_vec();
+        let id = file_id(&f);
+        let key = "3".repeat(64);
+        assert_eq!(
+            put_file(&s, "ci-secret", &id, zst(&f)).await,
+            StatusCode::CREATED
+        );
+        assert_eq!(
+            put_entry(&s, "ci-secret", &key, entry_json(&[&id])).await,
+            StatusCode::CREATED
+        );
+        with_rules(&s, "none").await;
+        let file = format!("/v8/asc/cas/{id}?slug={SLUG}");
+        let entry = format!("/v8/asc/ac/{key}?slug={SLUG}");
+        assert_eq!(
+            get_status(&s, "dev-secret", file).await,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            get_status(&s, "dev-secret", entry.clone()).await,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            register(&s, "ci-secret", &format!("asc-{key}"), "secret/app").await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            get_status(&s, "dev-secret", entry).await,
+            StatusCode::NOT_FOUND
+        );
+        let key2 = "4".repeat(64);
+        assert_eq!(
+            put_entry(&s, "ci-secret", &key2, entry_json(&[&id])).await,
+            StatusCode::CREATED
+        );
+        assert_eq!(
+            register(&s, "ci-secret", &format!("asc-{key2}"), "src").await,
+            StatusCode::OK
+        );
+        let entry2 = format!("/v8/asc/ac/{key2}?slug={SLUG}");
+        assert_eq!(get_status(&s, "dev-secret", entry2).await, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn sweep_drops_old_entries_then_the_files_no_entry_names() {
+        let (s, mem) = state();
+        let (kept, orphan) = (b"kept".to_vec(), b"orphan".to_vec());
+        let (idk, ido) = (file_id(&kept), file_id(&orphan));
+        let (k5, k6) = ("5".repeat(64), "6".repeat(64));
+        assert_eq!(
+            put_file(&s, "ci-secret", &idk, zst(&kept)).await,
+            StatusCode::CREATED
+        );
+        assert_eq!(
+            put_file(&s, "dev-secret", &ido, zst(&orphan)).await,
+            StatusCode::CREATED
+        );
+        assert_eq!(
+            put_entry(&s, "ci-secret", &k5, entry_json(&[&idk])).await,
+            StatusCode::CREATED
+        );
+        assert_eq!(
+            put_entry(&s, "dev-secret", &k6, entry_json(&[&ido])).await,
+            StatusCode::CREATED
+        );
+        let now = SystemTime::now();
+        let has = |p: String| {
+            let mem = mem.clone();
+            async move { mem.head(&StorePath::from(p)).await.is_ok() }
+        };
+        s.sweep(now).await.unwrap();
+        assert!(has(format!("root/turbo/acme.web/dev-alice/cas/{ido}")).await);
+        // 20 days: the dev entry is past retention, so its file is an orphan; trusted stays.
+        s.sweep(now + Duration::from_secs(DAY_SECS) * 20)
+            .await
+            .unwrap();
+        assert!(!has(format!("root/turbo/acme.web/dev-alice/ac/{k6}")).await);
+        assert!(!has(format!("root/turbo/acme.web/dev-alice/cas/{ido}")).await);
+        assert!(has(format!("root/turbo/acme.web/trusted/cas/{idk}")).await);
+        assert!(has(format!("root/turbo/acme.web/trusted/ac/{k5}")).await);
+    }
 }
