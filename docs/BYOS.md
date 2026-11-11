@@ -268,5 +268,20 @@ The probe outcome matches `docs/garage-compat.md`: Garage accepts `If-None-Match
 objects and packs but not `BucketRefs`. The S3 suites (`it_s3`, `it_bucketrefs`, including the pack round trip) run against the
 same three versions in the `garage` job of `.github/workflows/ci.yml`.
 
-Still to run: the same check against the staging bucket (it needs a bucket and a key scoped to it on the staging Garage) and
-`TestKey` against a real AI provider key.
+The same binary against the staging Garage (v2.5.0, single node, behind a TLS reverse proxy), 2026-11-11. URL
+`s3://asc-staging/probe?endpoint=https://<staging host>&region=garage&path_style=true`, a key scoped to read, write and owner on
+`asc-staging` only, no loopback opt-in:
+
+| Case | Result |
+|---|---|
+| `store-transport` | ok: s3 over https is allowed |
+| `store-connect`, right key | ok: the store answers a listing |
+| `store` (create-only probe) | fail: ignores create-only puts, `BucketRefs` is refused (as on loopback) |
+| `store-integrity`, empty bucket | info: no objects to sample |
+| wrong secret | fail at `store-connect`: 403 `AccessDenied`, invalid signature |
+| missing bucket | fail at `store-connect`: 404 `NoSuchBucket` |
+
+Two of six runs failed `store-connect` after 5 seconds with "error sending request" and the next run passed; the first name
+lookup from the test machine was slow. A slow network shows as that failure; running the check again tells it apart from a real refusal.
+
+Still to run: `TestKey` against a real AI provider key.
