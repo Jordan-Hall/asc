@@ -112,6 +112,8 @@ pub const OUTPUT_FLAGS: &[&str] = &[
     "--unified",
     "-z",
     "-M",
+    "-C",
+    "--find-copies",
     "--no-renames",
     "--patience",
     "--histogram",

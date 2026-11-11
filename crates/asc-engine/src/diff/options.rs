@@ -119,13 +119,14 @@ impl DiffOptions {
                 self.renames.get_or_insert_with(Default::default).limit = number()?;
             }
             "diff.renames" => {
-                // `copies` and `copy` still detect renames; copy detection is not implemented.
-                let on =
-                    matches!(value.to_ascii_lowercase().as_str(), "copies" | "copy") || boolean()?;
-                match (on, self.renames.is_some()) {
-                    (true, false) => self.renames = Some(RenameOptions::default()),
-                    (false, _) => self.renames = None,
-                    _ => {}
+                // `copies` and `copy` detect renames and copies, as git.
+                let copies = matches!(value.to_ascii_lowercase().as_str(), "copies" | "copy");
+                let on = copies || boolean()?;
+                if on {
+                    let r = self.renames.get_or_insert_with(Default::default);
+                    r.copies = copies;
+                } else {
+                    self.renames = None;
                 }
             }
             "core.bigfilethreshold" => {

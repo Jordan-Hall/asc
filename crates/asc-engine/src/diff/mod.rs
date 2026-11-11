@@ -69,7 +69,7 @@ pub enum Status {
     Deleted,
     /// Renamed, with the similarity in percent.
     Renamed(u8),
-    /// Copied, with the similarity in percent. Copy detection is not performed yet.
+    /// Copied, with the similarity in percent (copy detection, `RenameOptions::copies`).
     Copied(u8),
     /// File became symlink or gitlink, or the reverse.
     TypeChanged,

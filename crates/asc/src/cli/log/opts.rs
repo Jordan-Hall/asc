@@ -49,6 +49,8 @@ pub struct DiffReq {
     pub summary: bool,
     pub unified: Option<usize>,
     pub no_renames: bool,
+    /// `-C` / `--find-copies`: detect copies as well as renames.
+    pub copies: bool,
     pub algorithm: Option<String>,
 }
 
@@ -191,6 +193,10 @@ impl Opts {
                     self.diff.no_renames = false;
                     return Ok(());
                 }
+                'C' => {
+                    (self.diff.no_renames, self.diff.copies) = (false, true);
+                    return Ok(());
+                }
                 'p' | 'u' => self.diff.patch = Some(true),
                 's' => self.diff.patch = Some(false),
                 'i' => self.icase = true,
@@ -295,6 +301,7 @@ impl Opts {
             "summary" => self.diff.summary = true,
             "unified" => self.diff.unified = Some(number("--unified", &value(inline)?)?),
             "no-renames" => self.diff.no_renames = true,
+            "find-copies" => (self.diff.no_renames, self.diff.copies) = (false, true),
             "patience" => self.diff.algorithm = Some("patience".into()),
             "histogram" => self.diff.algorithm = Some("histogram".into()),
             "minimal" => self.diff.algorithm = Some("minimal".into()),

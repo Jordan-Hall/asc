@@ -75,6 +75,8 @@ impl DiffSetup {
         }
         if req.no_renames {
             opts.renames = None;
+        } else if req.copies {
+            opts.renames.get_or_insert_with(Default::default).copies = true;
         }
         opts.nul = o.nul;
         if let Some(args) = &req.stat_args {

@@ -179,6 +179,15 @@ fn number(flag: &str, value: &str) -> Result<usize> {
 }
 
 /// git's rename score: `50%` is 50 percent, bare digits are a decimal fraction (`5` is 50%).
+/// `-C<n>` / `--find-copies=<n>`: rename and copy detection at threshold `t`.
+fn copy_options(t: u8, current: Option<RenameOptions>) -> RenameOptions {
+    RenameOptions {
+        threshold: t,
+        copies: true,
+        ..current.unwrap_or_default()
+    }
+}
+
 fn rename_threshold(text: &str) -> Option<u8> {
     if text.is_empty() {
         return Some(50);
@@ -354,6 +363,12 @@ pub fn parse(mut opts: DiffOptions, argv: &[OsString]) -> Result<Common> {
                 });
                 c.renames_flag = Some(true);
             }
+            "--find-copies" => {
+                let t = rename_threshold(value.unwrap_or_default())
+                    .ok_or_else(|| usage(format!("error: invalid argument to {name}")))?;
+                opts.renames = Some(copy_options(t, opts.renames));
+                c.renames_flag = Some(true);
+            }
             "--src-prefix" => opts.src_prefix = Some(value.unwrap_or_default().to_owned()),
             "--dst-prefix" => opts.dst_prefix = Some(value.unwrap_or_default().to_owned()),
             "--no-prefix" => opts.no_prefix = true,
@@ -416,6 +431,11 @@ pub fn parse(mut opts: DiffOptions, argv: &[OsString]) -> Result<Common> {
                         threshold: t,
                         ..opts.renames.unwrap_or_default()
                     });
+                    c.renames_flag = Some(true);
+                } else if let Some(t) = name.strip_prefix("-C") {
+                    let t = rename_threshold(t)
+                        .ok_or_else(|| usage("error: invalid argument to -C".into()))?;
+                    opts.renames = Some(copy_options(t, opts.renames));
                     c.renames_flag = Some(true);
                 } else if text.starts_with("--") || text.len() == 2 {
                     c.extra.push(text.to_owned());

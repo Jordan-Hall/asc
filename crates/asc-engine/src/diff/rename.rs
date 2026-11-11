@@ -1,6 +1,11 @@
-//! Rename detection (SPEC §4.3): exact matches by `FileId` first, then similarity among added and
-//! deleted regular files, capped by `diff.renameLimit`. Similarity follows git's `diffcore-delta`
-//! span hashing, so scores agree with git's `similarity index`.
+//! Rename and copy detection (SPEC §4.3): exact matches by `FileId` first, then similarity among
+//! added and deleted regular files, capped by `diff.renameLimit`. Similarity follows git's
+//! `diffcore-delta` span hashing, so scores agree with git's `similarity index`.
+//!
+//! With `copies` (git's `-C`, `diff.renames=copies`) modified files are sources too and a source
+//! may feed several destinations. A destination fed by a modified file is a copy. Of the
+//! destinations fed by one deleted file, the last in path order is the rename and the others are
+//! copies, as git's `diff_resolve_rename_copy`.
 
 use std::collections::HashMap;
 
@@ -25,6 +30,8 @@ pub struct RenameOptions {
     pub limit: usize,
     /// Files above this size are matched only exactly.
     pub max_file_size: u64,
+    /// Also detect copies (`-C`): modified files are sources and sources can be reused.
+    pub copies: bool,
 }
 
 impl Default for RenameOptions {
@@ -33,6 +40,7 @@ impl Default for RenameOptions {
             threshold: 50,
             limit: 1000,
             max_file_size: 512 * 1024 * 1024,
+            copies: false,
         }
     }
 }
@@ -45,17 +53,21 @@ pub async fn detect(
     opts: &RenameOptions,
 ) -> Result<Vec<TreeChange>> {
     let mut deleted: Vec<usize> = Vec::new();
+    let mut modified: Vec<usize> = Vec::new();
     let mut added: Vec<usize> = Vec::new();
     for (i, c) in changes.iter().enumerate() {
         match c.status {
             Status::Deleted => deleted.push(i),
+            Status::Modified if opts.copies && c.old.is_some() => modified.push(i),
             Status::Added => added.push(i),
             _ => {}
         }
     }
-    if deleted.is_empty() || added.is_empty() {
+    if (deleted.is_empty() && modified.is_empty()) || added.is_empty() {
         return Ok(changes);
     }
+    // Sources in git's order: deleted files, then (with copies) modified files.
+    let sources: Vec<usize> = deleted.iter().chain(&modified).copied().collect();
 
     let mut pairs: Vec<(usize, usize, u64)> = Vec::new(); // (deleted idx, added idx, score)
     let mut used_src = vec![false; changes.len()];
@@ -63,11 +75,8 @@ pub async fn detect(
 
     // Exact: equal file id and the same kind of object.
     let mut by_id: HashMap<([u8; 32], bool), Vec<usize>> = HashMap::new();
-    for &d in &deleted {
-        let e = changes[d]
-            .old
-            .as_ref()
-            .expect("a deletion has an old entry");
+    for &d in &sources {
+        let e = changes[d].old.as_ref().expect("a source has an old entry");
         by_id
             .entry((e.id, is_gitlink_or_link(e.kind)))
             .or_default()
@@ -87,7 +96,12 @@ pub async fn detect(
             .position(|&d| changes[d].path.file_name() == want)
             .or_else(|| (!cands.is_empty()).then_some(0));
         if let Some(p) = pick {
-            let d = cands.remove(p);
+            // With copies a source stays available; without them it pairs once.
+            let d = if opts.copies {
+                cands[p]
+            } else {
+                cands.remove(p)
+            };
             used_src[d] = true;
             used_dst[a] = true;
             pairs.push((d, a, MAX_SCORE));
@@ -95,10 +109,10 @@ pub async fn detect(
     }
 
     // Inexact: regular files only.
-    let srcs: Vec<usize> = deleted
+    let srcs: Vec<usize> = sources
         .iter()
         .copied()
-        .filter(|&d| !used_src[d] && inexact_candidate(&changes[d], opts))
+        .filter(|&d| (opts.copies || !used_src[d]) && inexact_candidate(&changes[d], opts))
         .collect();
     let dsts: Vec<usize> = added
         .iter()
@@ -129,7 +143,7 @@ pub async fn detect(
                 .then(x.3.cmp(&y.3))
         });
         for (score, _, a, d) in cands {
-            if !used_src[d] && !used_dst[a] {
+            if (opts.copies || !used_src[d]) && !used_dst[a] {
                 used_src[d] = true;
                 used_dst[a] = true;
                 pairs.push((d, a, score));
@@ -155,22 +169,44 @@ fn within_limit(srcs: usize, dsts: usize, limit: usize) -> bool {
     (dsts <= limit || srcs <= limit) && srcs.saturating_mul(dsts) <= limit * limit
 }
 
-/// Replaces matched deletion/addition pairs by renames and restores path order.
+/// Replaces matched source/addition pairs by renames and copies and restores path order. A
+/// modified source stays and its destinations are copies. A deleted source goes; the last of its
+/// destinations in path order is the rename, the others are copies.
 fn assemble(changes: Vec<TreeChange>, pairs: &[(usize, usize, u64)]) -> Vec<TreeChange> {
+    let mut last_dst: HashMap<usize, usize> = HashMap::new();
+    for &(d, a, _) in pairs {
+        let e = last_dst.entry(d).or_insert(a);
+        if changes[a].path > changes[*e].path {
+            *e = a;
+        }
+    }
+    let sources: HashMap<usize, TreeChange> =
+        last_dst.keys().map(|&d| (d, changes[d].clone())).collect();
     let mut slots: Vec<Option<TreeChange>> = changes.into_iter().map(Some).collect();
-    let mut renames: Vec<TreeChange> = Vec::with_capacity(pairs.len());
+    let mut paired: Vec<TreeChange> = Vec::with_capacity(pairs.len());
     for &(d, a, score) in pairs {
-        let old = slots[d].take().expect("each deletion pairs once");
+        let src = &sources[&d];
         let new = slots[a].take().expect("each addition pairs once");
-        renames.push(TreeChange {
+        let score = (score * 100 / MAX_SCORE) as u8;
+        let status = if src.status == Status::Deleted && last_dst[&d] == a {
+            Status::Renamed(score)
+        } else {
+            Status::Copied(score)
+        };
+        paired.push(TreeChange {
             path: new.path,
-            old_path: old.path,
-            old: old.old,
+            old_path: src.path.clone(),
+            old: src.old.clone(),
             new: new.new,
-            status: Status::Renamed((score * 100 / MAX_SCORE) as u8),
+            status,
         });
     }
-    let mut out: Vec<TreeChange> = slots.into_iter().flatten().chain(renames).collect();
+    for (&d, src) in &sources {
+        if src.status == Status::Deleted {
+            slots[d] = None;
+        }
+    }
+    let mut out: Vec<TreeChange> = slots.into_iter().flatten().chain(paired).collect();
     out.sort_by(|x, y| x.path.cmp(&y.path));
     out
 }

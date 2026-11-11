@@ -47,7 +47,7 @@ macro_rules! flags {
             "--stat", "--stat-width", "--stat-name-width", "--stat-graph-width", "--stat-count",
             "--numstat", "--shortstat", "--summary", "--name-only", "--name-status", "-z", "-U",
             "--unified", "--inter-hunk-context", "--minimal", "--patience", "--histogram",
-            "--diff-algorithm", "--indent-heuristic", "--no-indent-heuristic", "-M", "--find-renames",
+            "--diff-algorithm", "--indent-heuristic", "--no-indent-heuristic", "-M", "--find-renames", "-C", "--find-copies",
             "--no-renames", "--renames", "--src-prefix", "--dst-prefix", "--no-prefix", "--relative",
             "--no-relative", "--abbrev", "--full-index", "--binary", "-a", "--text", "--no-color",
             "--color", "--no-ext-diff", "--no-textconv", "--submodule", "--word-diff", "--exit-code",

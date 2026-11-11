@@ -495,6 +495,7 @@ impl<O: Objects, R: Refs> Engine<O, R> {
                 threshold: 100,
                 limit: 0,
                 max_file_size: 0,
+                copies: false,
             }),
             ..DiffOptions::default()
         };
