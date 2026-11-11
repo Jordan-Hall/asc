@@ -6,15 +6,17 @@
 
 use std::io::Write;
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use asc_buildcache::{
-    Action, ActionKey, MAX_ENTRY_DOC, Store, artifact_name, hex, human_size, key_of_artifact,
-    parse_entry,
+    Action, ActionKey, MAX_ENTRY_DOC, Store, artifact_name, blob_limits, hex, human_size,
+    key_of_artifact, parse_entry,
 };
 use bytes::Bytes;
 use futures::StreamExt;
 use reqwest::{Method, StatusCode};
 use serde_json::json;
+use tokio::sync::Semaphore;
 
 use super::{io_err, open_store};
 use crate::cli::ci::cache::{HttpApi, failure, fatal, http_api, whole};
@@ -27,7 +29,9 @@ const SMALL: usize = 64 << 10;
 /// Artefacts or files moved at once.
 const PARALLEL: usize = 8;
 /// Largest compressed file fetched on its own.
-const MAX_FILE_BODY: usize = 512 << 20;
+const MAX_FILE_BODY: usize = 520 << 20;
+/// Compressed bodies held in memory at once during one fetch, in MiB.
+const IN_FLIGHT_MIB: u64 = 1024;
 
 /// `asc.buildcache.remote`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -190,14 +194,30 @@ async fn fetch_files(api: &HttpApi, store: &Store, key: &ActionKey) -> Result<Fe
         return Ok(Fetched::TooLarge);
     }
     let doc = whole(res).map_err(fatal)?;
-    let blobs = match parse_entry(&doc) {
-        Ok((_, blobs)) => blobs,
+    let action = match parse_entry(&doc) {
+        Ok((action, _)) => action,
         Err(e) => return Ok(Fetched::Refused(e.to_string())),
     };
-    let wanted: Vec<[u8; 32]> = blobs.into_iter().filter(|b| !store.has_blob(b)).collect();
+    let Some(limits) = blob_limits(&action) else {
+        return Ok(Fetched::TooLarge);
+    };
+    // Bodies are held in memory until stored: at most IN_FLIGHT_MIB of them at once.
+    let budget = Arc::new(Semaphore::new(IN_FLIGHT_MIB as usize));
+    let wanted: Vec<([u8; 32], u64)> = limits
+        .into_iter()
+        .filter(|(b, _)| !store.has_blob(b))
+        .collect();
     let mut bytes = doc.len() as u64;
     let mut got = futures::stream::iter(wanted)
-        .map(|id| async move { (id, fetch_file(api, store, &id).await) })
+        .map(|(id, max)| {
+            let budget = budget.clone();
+            async move {
+                let body = body_limit(max);
+                let mib = (body as u64).div_ceil(1 << 20).clamp(1, IN_FLIGHT_MIB) as u32;
+                let _permit = budget.acquire_many(mib).await.expect("never closed");
+                (id, fetch_file(api, store, &id, max, body).await)
+            }
+        })
         .buffer_unordered(PARALLEL);
     while let Some((id, r)) = got.next().await {
         match r? {
@@ -224,13 +244,27 @@ enum FileGot {
     Refused(String),
 }
 
-async fn fetch_file(api: &HttpApi, store: &Store, id: &[u8; 32]) -> Result<FileGot> {
+/// The largest compressed body of a file of at most `max` bytes (zstd adds a little to bytes
+/// it cannot shrink).
+fn body_limit(max: u64) -> usize {
+    usize::try_from(max + max / 64 + 4096)
+        .unwrap_or(usize::MAX)
+        .min(MAX_FILE_BODY)
+}
+
+async fn fetch_file(
+    api: &HttpApi,
+    store: &Store,
+    id: &[u8; 32],
+    max: u64,
+    body_max: usize,
+) -> Result<FileGot> {
     let res = api
         .turbo(
             Method::GET,
             &format!("/v8/asc/cas/{}", hex(id)),
             Bytes::new(),
-            MAX_FILE_BODY,
+            body_max,
         )
         .await
         .map_err(fatal)?;
@@ -244,7 +278,7 @@ async fn fetch_file(api: &HttpApi, store: &Store, id: &[u8; 32]) -> Result<FileG
         return Ok(FileGot::Refused("too large".into()));
     }
     let body = whole(res).map_err(fatal)?;
-    Ok(match store.put_blob_zstd(id, &body) {
+    Ok(match store.put_blob_zstd(id, &body, max) {
         Ok(_) => FileGot::Stored(body.len() as u64),
         Err(e) => FileGot::Refused(e.to_string()),
     })

@@ -4,13 +4,14 @@
 //! build that changed one output file sends that one file; a machine that holds the others
 //! fetches only the changed one.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{self, Read};
 
-use crate::hex;
 use crate::key::ActionKey;
+use crate::pack::MAX_UNPACKED;
 use crate::store::{Action, Store};
+use crate::{hex, unhex};
 
 /// Largest entry document accepted from the server.
 pub const MAX_ENTRY_DOC: usize = 4 << 20;
@@ -48,6 +49,27 @@ pub fn parse_entry(body: &[u8]) -> io::Result<(Action, BTreeSet<[u8; 32]>)> {
     Ok((action, blobs))
 }
 
+/// The most bytes each blob of `action` may hold once fetched: an output's declared size, or
+/// [`MAX_FILE`] for captured output. `None` when one output is over [`MAX_FILE`] or all of them
+/// together are over [`MAX_UNPACKED`], so a server cannot make a fetch store more than the entry
+/// claims.
+pub fn blob_limits(action: &Action) -> Option<BTreeMap<[u8; 32], u64>> {
+    let mut limits = BTreeMap::new();
+    for b in action.stdout.iter().chain(action.stderr.iter()) {
+        limits.insert(unhex(b)?, MAX_FILE);
+    }
+    for o in &action.outputs {
+        if o.size > MAX_FILE {
+            return None;
+        }
+        let id = unhex(&o.blob)?;
+        let l = limits.entry(id).or_insert(o.size);
+        *l = (*l).min(o.size);
+    }
+    let total = limits.values().try_fold(0u64, |t, l| t.checked_add(*l))?;
+    (total <= MAX_UNPACKED).then_some(limits)
+}
+
 impl Store {
     /// The entry document of `key` as stored, with its blobs. `None` when the entry or one of
     /// its blobs is gone.
@@ -80,11 +102,12 @@ impl Store {
     }
 
     /// Stores a zstd-compressed blob fetched for `id`. Refused when its content is not `id`'s or
-    /// is over [`MAX_FILE`]; returns the uncompressed size.
-    pub fn put_blob_zstd(&self, id: &[u8; 32], compressed: &[u8]) -> io::Result<u64> {
-        let mut z = zstd::Decoder::new(compressed)?.take(MAX_FILE + 1);
+    /// is over `max` (at most [`MAX_FILE`]); returns the uncompressed size.
+    pub fn put_blob_zstd(&self, id: &[u8; 32], compressed: &[u8], max: u64) -> io::Result<u64> {
+        let max = max.min(MAX_FILE);
+        let mut z = zstd::Decoder::new(compressed)?.take(max + 1);
         let (got, size) = self.put_blob_reader(&mut z)?;
-        if size > MAX_FILE {
+        if size > max {
             return Err(bad("the file is too large"));
         }
         if &got != id {
@@ -140,12 +163,17 @@ mod tests {
         let (id, _) = s.put_blob(b"export default 1;\n").unwrap();
         let z = s.blob_zstd(&id).unwrap().unwrap();
         let (_d2, t) = store();
-        assert_eq!(t.put_blob_zstd(&id, &z).unwrap(), 18);
+        assert_eq!(t.put_blob_zstd(&id, &z, MAX_FILE).unwrap(), 18);
+        let (_d3, u) = store();
+        assert!(
+            u.put_blob_zstd(&id, &z, 17).is_err(),
+            "over the declared size"
+        );
         assert!(t.has_blob(&id));
         let other = zstd::encode_all(&b"tampered"[..], 3).unwrap();
-        let err = t.put_blob_zstd(&id, &other).unwrap_err();
+        let err = t.put_blob_zstd(&id, &other, MAX_FILE).unwrap_err();
         assert!(err.to_string().contains("other content"), "{err}");
-        assert!(t.put_blob_zstd(&id, b"not zstd").is_err());
+        assert!(t.put_blob_zstd(&id, b"not zstd", MAX_FILE).is_err());
         assert!(s.blob_zstd(&[9; 32]).unwrap().is_none());
     }
 
@@ -159,7 +187,7 @@ mod tests {
         let err = t.accept_entry(&key, &doc).unwrap_err();
         assert!(err.to_string().contains("missing"), "{err}");
         for b in &blobs {
-            t.put_blob_zstd(b, &s.blob_zstd(b).unwrap().unwrap())
+            t.put_blob_zstd(b, &s.blob_zstd(b).unwrap().unwrap(), MAX_FILE)
                 .unwrap();
         }
         let a = t.accept_entry(&key, &doc).unwrap();
@@ -168,6 +196,26 @@ mod tests {
         // A missing blob makes the local entry unusable for sending.
         fs::remove_file(s.blob_path(&blobs[0])).unwrap();
         assert!(s.entry_doc(&key).unwrap().is_none());
+    }
+
+    #[test]
+    fn blob_limits_follow_declared_sizes_and_cap_the_total() {
+        let id = |n: u8| hex(&[n; 32]);
+        let out = |n: u8, size: u64| crate::store::Output {
+            path: format!("o{n}"),
+            kind: crate::store::OutputKind::File,
+            size,
+            blob: id(n),
+        };
+        let mut a = Action::new("t", "l", Origin::default());
+        a.outputs = vec![out(1, 10), out(2, 20)];
+        a.stdout = Some(id(3));
+        let l = blob_limits(&a).unwrap();
+        assert_eq!((l[&[1; 32]], l[&[2; 32]], l[&[3; 32]]), (10, 20, MAX_FILE));
+        a.outputs.push(out(4, MAX_FILE + 1));
+        assert!(blob_limits(&a).is_none(), "one output too large");
+        a.outputs = (10..19).map(|n| out(n, MAX_FILE)).collect();
+        assert!(blob_limits(&a).is_none(), "over the total");
     }
 
     #[test]
