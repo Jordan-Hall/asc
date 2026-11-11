@@ -148,6 +148,7 @@ asc-aware adapters also skip hydration.
 | --- | --- | --- |
 | Rust (Cargo, rustc, `build.rs`) | `asc cache rustc` as `RUSTC_WRAPPER` | yes |
 | JS: Rsbuild, Rslib | `@asc/build-cache/rsbuild` plugin | yes |
+| JS: Rspack, webpack | `@asc/build-cache/rspack` plugin | yes |
 | JS: Vite | `@asc/build-cache/vite` plugin | yes |
 | JS: Rstest | `asc-rstest` runner (`@asc/build-cache/rstest`) | yes |
 | JS: Turborepo | daemon `/v8` front, then `asc serve` | turbo hashes |
@@ -196,11 +197,19 @@ asc-aware adapters also skip hydration.
   script produces for rustc (its `OUT_DIR` files) is read by the crate's compile, so they are inputs of that compile
   (hashed from local bytes) and the crate's compile still hits.
 - A compile is not an operation of the repository: `asc cache rustc` writes no op-log entry.
-### 4.2 Rsbuild, Rslib and Vite
+### 4.2 Rsbuild, Rslib, Rspack, webpack and Vite
 
-`@asc/build-cache` (workspace package `packages/asc-build-cache`) caches a whole `build` as one action. It has two
-entry points, `@asc/build-cache/rsbuild` (`pluginAscBuildCache`, for Rsbuild and Rslib) and `@asc/build-cache/vite`
-(`ascBuildCache`). The plugins call two commands, and any other tool's plugin can call them too:
+`@asc/build-cache` (workspace package `packages/asc-build-cache`) caches a whole `build` as one action. It has three
+entry points, `@asc/build-cache/rsbuild` (`pluginAscBuildCache`, for Rsbuild and Rslib), `@asc/build-cache/rspack`
+(`AscBuildCachePlugin`, for a plain Rspack or webpack configuration) and `@asc/build-cache/vite` (`ascBuildCache`):
+
+```js
+// rspack.config.mjs or webpack.config.mjs; every plugin takes the same options
+import { AscBuildCachePlugin } from "@asc/build-cache/rspack";
+export default { entry: "./src/index.js", plugins: [new AscBuildCachePlugin({ name: "web" })] };
+```
+
+The plugins call two commands, and any other tool's plugin can call them too:
 
 - `asc cache restore --tool T --name N --inputs P... --outputs P... [--part NAME=VALUE]... [--env V]... [--no-remote]
   [--json]` computes the key: the tool, the project's path in the work tree, the platform, the parts and the named
@@ -217,10 +226,11 @@ What the plugins send:
   the project depends on (directly or through each other: a dependency whose `node_modules` entry links to a directory
   of the work tree outside any `node_modules`), and the paths in the `inputs` option. Outputs must be ignored by
   `.gitignore` or `.ascignore`, as `dist/` usually is: an output that is an input changes the key on every build.
-- **Parts**: the tool version (`api.context.version`, Vite's `this.meta.viteVersion`, and `@rslib/core` under Rslib),
-  the mode, the plugin names, the plugin's own version, and a digest of the rest of the configuration (keys sorted,
+- **Parts**: the tool version (`api.context.version`, Vite's `this.meta.viteVersion`, `@rslib/core` under Rslib,
+  `rspackVersion` or webpack's `version`), the mode, the plugin names, the plugin's own version, and a digest of the rest of the configuration (keys sorted,
   functions by their source, the work-tree root replaced by a placeholder, so the same configuration in another work
-  tree has the same digest).
+  tree has the same digest). For Rspack and webpack the options that do not change the output (`stats`, `watch`,
+  `watchOptions`, `devServer`, `cache`, `snapshot`, `infrastructureLogging`, `profile`, `parallelism`) are left out.
 - **Environment**: `NODE_ENV`, every variable with a public prefix (`PUBLIC_` for Rsbuild, `envPrefix` or `VITE_` for
   Vite) and the names in the `env` option.
 
@@ -228,13 +238,17 @@ On a hit, the outputs are restored before the tool reads a module. The tool stil
 
 - Vite builds one empty virtual module with `write: false`.
 - Rsbuild and Rslib build one empty entry into `node_modules/.cache/asc-build-cache/<environment>/out`.
+- Rspack and webpack apply a configured plugin before they read their options, so the plugin restores in `apply` and
+  sets the entry to one empty module and `output.path` to `node_modules/.cache/asc-build-cache/<rspack|webpack>/out`.
 
 On a miss, the tool builds as usual. The plugin saves the outputs after a successful build: in Vite's last
-`closeBundle`, and in Rsbuild's `onAfterBuild`.
+`closeBundle`, in Rsbuild's `onAfterBuild`, and in the compiler's `done` hook for Rspack and webpack (a compiler that
+has entered watch mode stores nothing).
 
 When the plugin does not run:
 
-- A watched build (`--watch` or `build.watch`) and the dev server are not cached.
+- A watched build (`--watch`, `build.watch` or `watch: true`) and the dev server (`serve`, `dev`, `preview`,
+  `WEBPACK_SERVE`) are not cached. A compiler that restored a build fails if it is then asked to watch.
 - `ASC_BUILD_CACHE=0` or `enabled: false` turns the plugin off.
 
 When the plugin cannot use asc (no binary, or the project is not in a work tree), the build runs as if the plugin were
@@ -394,8 +408,8 @@ run`: `--name`, `--inputs` and `--outputs` (added to the ones below), `--env`, `
   (§4.2).
 - `asc cache serve`: the fronts in the foreground (§4.3). `asc cache env [--shell sh|pwsh|cmd|json]`: the front's variables for turbo, Nx and Maven.
 - `asc cache setup <cargo|go|ccache|gradle|maven|bazel|nx|turbo> [--user|--repo] [--no-incremental] [--trimpath] [--undo]`: writes the tool's configuration (user or
-  repository level, as asked) and prints what changed. `--undo` takes it out again. The Rsbuild, Rslib and Vite
-  plugins go in the build's own configuration (§4.2).
+  repository level, as asked) and prints what changed. `--undo` takes it out again. The Rsbuild, Rslib, Rspack,
+  webpack and Vite plugins go in the build's own configuration (§4.2).
 
 ## 6. VS Code
 
@@ -413,7 +427,8 @@ cache is optional.
   `cache clear --tool`.
 - **Tasks** (type `asc-build`, trusted workspaces only): `cargo build` with asc as `RUSTC_WRAPPER` (and
   `CARGO_INCREMENTAL=0`), `go build ./...` with asc as `GOCACHEPROG`, and each package.json script that runs
-  `rsbuild build`, `rslib build` or `vite build`, with the package manager of the lockfile (`@asc/build-cache` in the
+  `rsbuild build`, `rslib build`, `rspack build`, `webpack` (without `serve`, `watch` or `--watch`) or `vite build`,
+  with the package manager of the lockfile (`@asc/build-cache` in the
   config caches it). There is no `asc.toml`: an `asc cache run` task is declared in tasks.json with `name`, `inputs`
   (default the root), `outputs`, `command` and `env`; paths must stay inside the root. Every task gets the variables
   of `cache env`, and the problem matchers `$asc-rustc`, `$asc-go` and `$asc-build`.
@@ -432,6 +447,6 @@ cache is optional.
 5. Rust: `asc cache rustc`, `asc cache setup cargo`.
 6. Go: `asc cache go`, setup. .NET and Python: `asc cache dotnet`, `asc cache pytest`.
 7. Daemon loopback fronts: turbo, Nx, Bazel, Gradle, Maven, ccache; setup for each.
-8. `@asc/build-cache`: Rsbuild, Rslib, Vite, Rstest.
+8. `@asc/build-cache`: Rsbuild, Rslib, Rspack, webpack, Vite, Rstest.
 9. VS Code: status item, view, tasks, admin commands.
 10. VS Code open items: TSRX grammar, publishing.
