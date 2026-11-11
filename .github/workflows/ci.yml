@@ -1,6 +1,6 @@
 name: ci
 # Linux gate: Rust format, clippy and the workspace tests; the @asc/build-cache plugins and runner against the asc
-# they call; the TypeScript workspaces (oxlint, typecheck, tests); the PostgreSQL-backed server tests and the S3
+# they call; the TypeScript workspaces (oxlint, typecheck, tests); the web UI in Chromium; the PostgreSQL-backed server tests and the S3
 # suite against three Garage versions, both on loopback without Docker. Windows: the workspace tests other than the
 # git-oracle and server suites, and the virtual (ProjFS) workspace tests, which need the ProjFS driver.
 on:
@@ -131,6 +131,34 @@ jobs:
           done
       - name: Benchmark harness
         run: node --test bench/git-baseline/bench.test.mjs
+
+  # The web UI in Chromium against a production-like static server (web/e2e/serve.ts): every route in light and dark at
+  # 1440 and 390, axe WCAG 2.2 AA, console errors, CLS, the CSP read from asc-serve, keyboard, and the visual baselines in
+  # web/e2e/visual.spec.ts-snapshots/ (captured by web-baselines.yml on this same image).
+  web-e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+      - run: bun install --frozen-lockfile
+      - name: Generate the protobuf client
+        working-directory: packages/asc-client-ts
+        run: bun run codegen
+      - name: Install Chromium
+        working-directory: web
+        run: bun x playwright install --with-deps chromium
+      - name: Playwright
+        working-directory: web
+        run: bun x playwright test
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: web-e2e-results
+          path: web/test-results/
+          if-no-files-found: ignore
 
   # The asc-serve lib tests that take ASC_TEST_POSTGRES_URL, against a throwaway PostgreSQL on loopback (no Docker).
   postgres:
