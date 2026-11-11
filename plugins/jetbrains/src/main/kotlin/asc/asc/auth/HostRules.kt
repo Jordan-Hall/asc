@@ -8,7 +8,7 @@ object HostRules {
     const val MAX_TOKEN = 16 * 1024
     private const val MAX_HOST = 253 + 6
     private val LABEL = Regex("^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
-    private val PORT = Regex("^[1-9]\d{0,4}$")
+    private val PORT = Regex("^[1-9][0-9]{0,4}$")
 
     /**
      * A bare `host` or `host:port` from typed text: lowercase, https only, no user information, path, query,
@@ -17,7 +17,7 @@ object HostRules {
     fun normalize(input: String): String? {
         var text = input.trim().lowercase()
         if (text.isEmpty() || text.length > MAX_HOST) return null
-        if (text.any { it.code <= 0x20 || it.code == 0x7f || it in "\@?#" }) return null
+        if (text.any { it.code <= 0x20 || it.code == 0x7f || it == '\\' || it in "@?#" }) return null
         if (text.contains("://")) {
             if (!text.startsWith("https://")) return null
             text = text.removePrefix("https://").removeSuffix("/")
@@ -38,7 +38,7 @@ object HostRules {
 
     /** The token host of a root's remote URL; null for ssh, scp-like, local and http remotes and user information. */
     fun ofRemote(remoteUrl: String): String? {
-        if (remoteUrl.any { it.code <= 0x20 || it.code == 0x7f || it == '\' }) return null
+        if (remoteUrl.any { it.code <= 0x20 || it.code == 0x7f || it == '\\' }) return null
         if (!remoteUrl.lowercase().startsWith("https://")) return null
         val rest = remoteUrl.substring("https://".length)
         val end = rest.indexOfFirst { it in "/?#" }.let { if (it < 0) rest.length else it }

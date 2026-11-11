@@ -199,7 +199,9 @@ class AscSignInStatusAction : AscAuthAction("Show Sign-in Status") {
             val text = if (hosts.isEmpty()) {
                 "No root has an https remote, so there is no host to sign in to."
             } else {
-                hosts.joinToString("\n") { "$it: ${svc.state(it).text}" }
+                val lines = ArrayList<String>()
+                for (h in hosts) lines += "$h: ${svc.state(h).text}"
+                lines.joinToString("\n")
             }
             AscActions.notify(p, "Sign-in Status", text, true)
         }
