@@ -90,15 +90,20 @@ impl Store {
 
     /// Blob `id`, zstd-compressed. `None` when it is gone or over [`MAX_FILE`].
     pub fn blob_zstd(&self, id: &[u8; 32]) -> io::Result<Option<Vec<u8>>> {
-        let f = match fs::File::open(self.blob_path(id)) {
-            Ok(f) => f,
+        let (r, len) = match self.open_blob(id) {
+            Ok(x) => x,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(e),
         };
-        if f.metadata()?.len() > MAX_FILE {
+        if len > MAX_FILE {
             return Ok(None);
         }
-        zstd::encode_all(f, 3).map(Some)
+        // A blob kept compressed is sent as it is stored: it is already one zstd frame.
+        if let Some((path, true)) = self.blob_file(id) {
+            drop(r);
+            return fs::read(path).map(Some);
+        }
+        zstd::encode_all(r, 3).map(Some)
     }
 
     /// Stores a zstd-compressed blob fetched for `id`. Refused when its content is not `id`'s or

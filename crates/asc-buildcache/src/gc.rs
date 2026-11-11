@@ -11,7 +11,7 @@ use std::time::UNIX_EPOCH;
 use serde::Serialize;
 
 use crate::key::ActionKey;
-use crate::store::{Action, EntryInfo, Store};
+use crate::store::{Action, EntryInfo, Store, remove_readonly};
 use crate::{now, unhex};
 
 /// Seconds an unreferenced blob or temporary file is kept.
@@ -22,7 +22,9 @@ pub const GRACE: u64 = 3600;
 pub struct Usage {
     pub entries: u64,
     pub blobs: u64,
-    /// Bytes of blobs and entries.
+    /// Blobs kept compressed (`<hex>.zst`).
+    pub compressed: u64,
+    /// Bytes of blobs and entries, as stored.
     pub bytes: u64,
 }
 
@@ -65,18 +67,9 @@ fn sharded_files(dir: &Path) -> io::Result<Vec<(String, PathBuf, fs::Metadata)>>
     Ok(out)
 }
 
-/// Blobs are read-only; Windows refuses to remove those.
-fn remove_readonly(path: &Path) -> io::Result<()> {
-    match fs::remove_file(path) {
-        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
-            let mut p = fs::metadata(path)?.permissions();
-            #[allow(clippy::permissions_set_readonly_false)]
-            p.set_readonly(false);
-            fs::set_permissions(path, p)?;
-            fs::remove_file(path)
-        }
-        other => other,
-    }
+/// The blob id a `cas` file name stands for: `<hex>` or `<hex>.zst`.
+fn blob_id(name: &str) -> Option<[u8; 32]> {
+    unhex(name.strip_suffix(".zst").unwrap_or(name))
 }
 
 impl Action {
@@ -141,6 +134,7 @@ impl Store {
         Ok(Usage {
             entries: entries.len() as u64,
             blobs: blobs.len() as u64,
+            compressed: blobs.iter().filter(|(n, _, _)| n.ends_with(".zst")).count() as u64,
             bytes: entries
                 .iter()
                 .chain(blobs.iter())
@@ -183,10 +177,13 @@ impl Store {
             before,
             ..GcReport::default()
         };
-        let blob_size: HashMap<[u8; 32], u64> = sharded_files(&self.cas())?
-            .into_iter()
-            .filter_map(|(n, _, m)| Some((unhex(&n)?, m.len())))
-            .collect();
+        // A blob is one file, or briefly two while it is being stored plain.
+        let mut blob_files: HashMap<[u8; 32], Vec<(PathBuf, u64)>> = HashMap::new();
+        for (n, path, m) in sharded_files(&self.cas())? {
+            if let Some(id) = blob_id(&n) {
+                blob_files.entry(id).or_default().push((path, m.len()));
+            }
+        }
         let mut entries = self.list()?;
         entries.reverse(); // least recently used first
         let mut refs: HashMap<[u8; 32], u32> = HashMap::new();
@@ -210,12 +207,19 @@ impl Store {
                 let n = refs.entry(b).or_default();
                 *n = n.saturating_sub(1);
                 if *n == 0
-                    && let Some(&size) = blob_size.get(&b)
-                    && remove_readonly(&self.blob_path(&b)).is_ok()
+                    && let Some(files) = blob_files.remove(&b)
                 {
-                    report.blobs += 1;
-                    report.freed += size;
-                    total = total.saturating_sub(size);
+                    let mut removed = false;
+                    for (path, size) in files {
+                        if remove_readonly(&path).is_ok() {
+                            removed = true;
+                            report.freed += size;
+                            total = total.saturating_sub(size);
+                        }
+                    }
+                    if removed {
+                        report.blobs += 1;
+                    }
                 }
             }
         }
@@ -251,7 +255,7 @@ impl Store {
         let live: HashSet<[u8; 32]> = self.list()?.iter().flat_map(|e| e.action.blobs()).collect();
         let cutoff = now().saturating_sub(grace);
         for (name, path, meta) in sharded_files(&self.cas())? {
-            let Some(id) = unhex(&name) else { continue };
+            let Some(id) = blob_id(&name) else { continue };
             if live.contains(&id) || (grace > 0 && mtime(&meta) >= cutoff) {
                 continue;
             }

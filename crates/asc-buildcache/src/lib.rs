@@ -27,7 +27,7 @@ pub use files::{EntryDoc, MAX_ENTRY_DOC, MAX_FILE, blob_limits, parse_entry};
 pub use gc::{GcReport, Usage};
 pub use key::{ActionKey, KeyBuilder};
 pub use pack::{MAX_UNPACKED, artifact_name, key_of_artifact};
-pub use store::{Action, EntryInfo, Origin, Output, OutputKind, Store};
+pub use store::{Action, COMPRESS_MIN, Compress, EntryInfo, Origin, Output, OutputKind, Store};
 pub use sync::Synced;
 
 /// The default size the store is kept under (`cache.build.max_size`).

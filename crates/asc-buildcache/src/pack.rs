@@ -61,12 +61,11 @@ impl Store {
         z.write_all(&body)?;
         z.write_all(&(blobs.len() as u32).to_le_bytes())?;
         for id in &blobs {
-            let mut f = match fs::File::open(self.blob_path(id)) {
-                Ok(f) => f,
+            let (mut f, len) = match self.open_blob(id) {
+                Ok(x) => x,
                 Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
                 Err(e) => return Err(e),
             };
-            let len = f.metadata()?.len();
             z.write_all(id)?;
             z.write_all(&len.to_le_bytes())?;
             let copied = io::copy(&mut (&mut f).take(len), &mut z)?;

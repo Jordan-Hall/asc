@@ -1,4 +1,10 @@
 //! Blobs, action entries, storing outputs and restoring them.
+//!
+//! A blob is `cas/<ab>/<hex>`, or `cas/<ab>/<hex>.zst` when it is kept compressed. A store on a
+//! volume that cannot reflink keeps a blob of 4 KiB or more compressed (zstd level 3, the content
+//! size in the frame header) when that saves at least a tenth of it: there a restore is a copy
+//! either way, so decompressing while copying costs little and the store shrinks. On a volume
+//! that reflinks, blobs stay plain so a restore shares their blocks (`asc.buildcache.compress`).
 
 use std::fs;
 use std::io::{self, Read, Write};
@@ -99,6 +105,97 @@ pub struct Store {
     /// Stores read on a miss and never written (`asc.buildcache.lower`): a host cache mounted
     /// read-only into a job, filled by a trusted build.
     lower: Vec<PathBuf>,
+    /// New blobs are written compressed when that saves space.
+    compress: bool,
+}
+
+/// When blobs are kept compressed (`asc.buildcache.compress`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Compress {
+    /// Only on a volume that cannot reflink (the default).
+    #[default]
+    Auto,
+    Always,
+    Never,
+}
+
+impl Compress {
+    /// `auto`, `true` or `false` (git's boolean spellings too).
+    pub fn parse(text: &str) -> Option<Self> {
+        match text.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "true" | "yes" | "on" | "1" => Some(Self::Always),
+            "false" | "no" | "off" | "0" => Some(Self::Never),
+            _ => None,
+        }
+    }
+}
+
+/// Blobs smaller than this stay plain: the saving is a few hundred bytes at most.
+pub const COMPRESS_MIN: u64 = 4096;
+const ZSTD_LEVEL: i32 = 3;
+
+/// The compressed form of the blob at `raw`.
+fn zst_of(raw: &Path) -> PathBuf {
+    let mut p = raw.as_os_str().to_owned();
+    p.push(".zst");
+    PathBuf::from(p)
+}
+
+/// The uncompressed size a `.zst` blob records in its frame header.
+fn zst_content_size(path: &Path) -> io::Result<u64> {
+    let mut head = [0u8; 18];
+    let mut f = fs::File::open(path)?;
+    let mut n = 0;
+    while n < head.len() {
+        let got = f.read(&mut head[n..])?;
+        if got == 0 {
+            break;
+        }
+        n += got;
+    }
+    match zstd::zstd_safe::get_frame_content_size(&head[..n]) {
+        Ok(Some(size)) => Ok(size),
+        _ => Err(bad("a compressed blob has no content size")),
+    }
+}
+
+/// Opens the blob `id` of the `cas` directory `cas`, plain or compressed, and its size.
+fn open_in(cas: &Path, id: &[u8; 32]) -> io::Result<(Box<dyn Read>, u64)> {
+    let raw = sharded(cas, &hex(id));
+    match fs::File::open(&raw) {
+        Ok(f) => {
+            let len = f.metadata()?.len();
+            Ok((Box::new(f), len))
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            let zst = zst_of(&raw);
+            let len = zst_content_size(&zst)?;
+            let d = zstd::Decoder::new(fs::File::open(&zst)?)?;
+            Ok((Box::new(d.take(len)), len))
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Whether `dir` can reflink: answered once per store and kept in `<root>/volume`.
+fn reflinks(root: &Path) -> bool {
+    let mark = root.join("volume");
+    match fs::read_to_string(&mark).as_deref().map(str::trim) {
+        Ok("reflink") => return true,
+        Ok("copy") => return false,
+        _ => {}
+    }
+    let probe = root
+        .join("tmp")
+        .join(format!("probe-{}", uuid::Uuid::new_v4().simple()));
+    let copy = zst_of(&probe);
+    let ok = fs::write(&probe, b"asc reflink probe").is_ok()
+        && reflink_copy::reflink(&probe, &copy).is_ok();
+    let _ = fs::remove_file(&probe);
+    let _ = fs::remove_file(&copy);
+    let _ = fs::write(&mark, if ok { "reflink\n" } else { "copy\n" });
+    ok
 }
 
 fn bad(text: impl Into<String>) -> io::Error {
@@ -181,10 +278,28 @@ impl Store {
         for d in ["cas", "ac", "events", "tmp"] {
             fs::create_dir_all(root.join(d))?;
         }
+        let compress = !reflinks(&root);
         Ok(Store {
             root,
             lower: Vec::new(),
+            compress,
         })
+    }
+
+    /// The same store with the compression rule `mode` for new blobs. Blobs already stored
+    /// keep their form; reads take either.
+    pub fn with_compress(mut self, mode: Compress) -> Self {
+        self.compress = match mode {
+            Compress::Auto => !reflinks(&self.root),
+            Compress::Always => true,
+            Compress::Never => false,
+        };
+        self
+    }
+
+    /// Whether new blobs are written compressed (when that saves space).
+    pub fn compresses(&self) -> bool {
+        self.compress
     }
 
     /// The same store, reading `dirs` in order on a miss. A lower store is only read: an entry
@@ -222,8 +337,62 @@ impl Store {
             .join(uuid::Uuid::new_v4().simple().to_string())
     }
 
+    /// Where the plain form of blob `id` is (or would be).
     pub fn blob_path(&self, id: &[u8; 32]) -> PathBuf {
         sharded(&self.cas(), &hex(id))
+    }
+
+    /// The file holding blob `id`, and whether it is compressed.
+    pub fn blob_file(&self, id: &[u8; 32]) -> Option<(PathBuf, bool)> {
+        let raw = self.blob_path(id);
+        if raw.is_file() {
+            return Some((raw, false));
+        }
+        let zst = zst_of(&raw);
+        zst.is_file().then_some((zst, true))
+    }
+
+    /// Opens blob `id` for reading its plain bytes, and its plain size.
+    pub fn open_blob(&self, id: &[u8; 32]) -> io::Result<(Box<dyn Read>, u64)> {
+        open_in(&self.cas(), id)
+    }
+
+    /// A plain file holding blob `id`, for a reader that wants a path (Go's `DiskPath`, a
+    /// streamed HTTP body): a compressed blob is stored plain from then on. `None` when it is
+    /// gone.
+    pub fn plain_blob_path(&self, id: &[u8; 32]) -> io::Result<Option<PathBuf>> {
+        let raw = self.blob_path(id);
+        if raw.is_file() {
+            return Ok(Some(raw));
+        }
+        let zst = zst_of(&raw);
+        let (mut r, len) = match open_in(&self.cas(), id) {
+            Ok(x) => x,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        let tmp = self.tmp_file();
+        let written = (|| -> io::Result<u64> {
+            let mut out = fs::File::create(&tmp)?;
+            let n = io::copy(&mut r, &mut out)?;
+            out.sync_data()?;
+            Ok(n)
+        })();
+        match written {
+            Ok(n) if n == len => {}
+            Ok(_) => {
+                let _ = fs::remove_file(&tmp);
+                return Err(bad("a compressed blob is shorter than its header says"));
+            }
+            Err(e) => {
+                let _ = fs::remove_file(&tmp);
+                return Err(e);
+            }
+        }
+        set_readonly(&tmp);
+        Self::place(&tmp, &raw, false)?;
+        let _ = remove_readonly(&zst);
+        Ok(Some(raw))
     }
 
     pub fn entry_path(&self, key: &ActionKey) -> PathBuf {
@@ -277,13 +446,55 @@ impl Store {
             let _ = fs::remove_file(&tmp);
             return Err(e);
         }
-        let mut perms = out.metadata()?.permissions();
-        perms.set_readonly(true);
         drop(out);
-        let _ = fs::set_permissions(&tmp, perms);
         let id = *h.finalize().as_bytes();
+        if self.has_blob(&id) {
+            let _ = fs::remove_file(&tmp);
+            return Ok((id, size));
+        }
+        if self.compress && size >= COMPRESS_MIN {
+            match self.compressed(&tmp, size) {
+                Ok(Some(z)) => {
+                    let _ = fs::remove_file(&tmp);
+                    set_readonly(&z);
+                    Self::place(&z, &zst_of(&self.blob_path(&id)), false)?;
+                    return Ok((id, size));
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    let _ = fs::remove_file(&tmp);
+                    return Err(e);
+                }
+            }
+        }
+        set_readonly(&tmp);
         Self::place(&tmp, &self.blob_path(&id), false)?;
         Ok((id, size))
+    }
+
+    /// A compressed copy of `tmp` (`size` bytes) when it is at most nine tenths of the size.
+    fn compressed(&self, tmp: &Path, size: u64) -> io::Result<Option<PathBuf>> {
+        let z = zst_of(tmp);
+        let made = (|| -> io::Result<u64> {
+            let mut enc = zstd::Encoder::new(fs::File::create(&z)?, ZSTD_LEVEL)?;
+            enc.include_contentsize(true)?;
+            enc.set_pledged_src_size(Some(size))?;
+            io::copy(&mut fs::File::open(tmp)?, &mut enc)?;
+            let f = enc.finish()?;
+            f.sync_data()?;
+            Ok(f.metadata()?.len())
+        })();
+        match made {
+            Ok(n) if n.saturating_mul(10) <= size.saturating_mul(9) => Ok(Some(z)),
+            Ok(_) => {
+                let _ = fs::remove_file(&z);
+                Ok(None)
+            }
+            Err(e) => {
+                let _ = fs::remove_file(&z);
+                Err(e)
+            }
+        }
     }
 
     pub fn put_blob(&self, bytes: &[u8]) -> io::Result<([u8; 32], u64)> {
@@ -291,11 +502,14 @@ impl Store {
     }
 
     pub fn read_blob(&self, id: &[u8; 32]) -> io::Result<Vec<u8>> {
-        fs::read(self.blob_path(id))
+        let (mut r, len) = self.open_blob(id)?;
+        let mut out = Vec::with_capacity(usize::try_from(len).unwrap_or(0));
+        r.read_to_end(&mut out)?;
+        Ok(out)
     }
 
     pub fn has_blob(&self, id: &[u8; 32]) -> bool {
-        self.blob_path(id).is_file()
+        self.blob_file(id).is_some()
     }
 
     /// Stores the files at `rels` below `base` (a directory is every file below it, links not
@@ -429,12 +643,15 @@ impl Store {
             if self.has_blob(&id) {
                 continue;
             }
-            let Ok(mut f) = fs::File::open(sharded(&cas, &hex(&id))) else {
+            let Ok((mut f, _)) = open_in(&cas, &id) else {
                 return Ok(false);
             };
             // Placed under the id of the bytes read: a damaged blob lands under another name and
-            // is taken by the next gc, never under the id the entry names.
-            let (got, _) = self.put_blob_reader(&mut f)?;
+            // is taken by the next gc, never under the id the entry names. A damaged compressed
+            // blob fails to decode: a miss.
+            let Ok((got, _)) = self.put_blob_reader(&mut f) else {
+                return Ok(false);
+            };
             if got != id {
                 return Ok(false);
             }
@@ -526,7 +743,19 @@ impl Store {
                 let target = self.link_target(&o.blob)?;
                 make_link(&target, &tmp)?;
             } else {
-                reflink_copy::reflink_or_copy(self.blob_path(&id), &tmp)?;
+                match self.blob_file(&id) {
+                    Some((path, false)) => {
+                        reflink_copy::reflink_or_copy(path, &tmp)?;
+                    }
+                    Some((_, true)) => {
+                        let (mut r, len) = self.open_blob(&id)?;
+                        let mut out = fs::File::create(&tmp)?;
+                        if io::copy(&mut r, &mut out)? != len {
+                            return Err(bad("a compressed blob is shorter than its header says"));
+                        }
+                    }
+                    None => return Err(io::ErrorKind::NotFound.into()),
+                }
                 set_mode(&tmp, o.kind == OutputKind::Exec)?;
             }
             if fs::symlink_metadata(&dest).is_ok_and(|m| m.is_dir()) {
@@ -548,7 +777,8 @@ impl Store {
     pub(crate) fn link_target(&self, blob: &str) -> io::Result<String> {
         let id = unhex(blob).ok_or_else(|| bad("a blob id is not 64 hex digits"))?;
         let mut text = String::new();
-        fs::File::open(self.blob_path(&id))?
+        self.open_blob(&id)?
+            .0
             .take(4097)
             .read_to_string(&mut text)
             .map_err(|_| bad("a link target is not UTF-8"))?;
@@ -561,7 +791,7 @@ impl Store {
     /// Writes a blob to `w` (replayed stdout or stderr).
     pub fn copy_blob_to(&self, blob: &str, w: &mut dyn Write) -> io::Result<()> {
         let id = unhex(blob).ok_or_else(|| bad("a blob id is not 64 hex digits"))?;
-        let mut f = fs::File::open(self.blob_path(&id))?;
+        let (mut f, _) = self.open_blob(&id)?;
         io::copy(&mut f, w)?;
         Ok(())
     }
@@ -573,6 +803,28 @@ impl Store {
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
             Err(e) => Err(e),
         }
+    }
+}
+
+fn set_readonly(path: &Path) {
+    if let Ok(m) = fs::metadata(path) {
+        let mut perms = m.permissions();
+        perms.set_readonly(true);
+        let _ = fs::set_permissions(path, perms);
+    }
+}
+
+/// Blobs are read-only; Windows refuses to remove those.
+pub(crate) fn remove_readonly(path: &Path) -> io::Result<()> {
+    match fs::remove_file(path) {
+        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+            let mut p = fs::metadata(path)?.permissions();
+            #[allow(clippy::permissions_set_readonly_false)]
+            p.set_readonly(false);
+            fs::set_permissions(path, p)?;
+            fs::remove_file(path)
+        }
+        other => other,
     }
 }
 
@@ -963,5 +1215,197 @@ mod tests {
         let a = with_outputs(&s, &[("dist/app.js", OutputKind::File, b"x")]);
         assert!(s.restore(&a, &w).is_err());
         assert!(!outside.join("app.js").exists());
+    }
+
+    /// `n` bytes that compress well (repeated source text).
+    fn text(n: usize) -> Vec<u8> {
+        b"fn main() { println!(\"hello\"); }\n"
+            .iter()
+            .copied()
+            .cycle()
+            .take(n)
+            .collect()
+    }
+
+    /// `n` bytes that do not compress (xorshift).
+    fn noise(n: usize) -> Vec<u8> {
+        let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
+        (0..n)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                x as u8
+            })
+            .collect()
+    }
+
+    #[test]
+    fn compress_settings_parse() {
+        assert_eq!(Compress::parse("auto"), Some(Compress::Auto));
+        assert_eq!(Compress::parse(" TRUE "), Some(Compress::Always));
+        assert_eq!(Compress::parse("off"), Some(Compress::Never));
+        assert_eq!(Compress::parse("sometimes"), None);
+    }
+
+    #[test]
+    fn the_volume_probe_is_kept_and_auto_follows_it() {
+        let (d, s) = store();
+        let mark = fs::read_to_string(d.path().join("build").join("volume")).unwrap();
+        assert_eq!(s.compresses(), mark.trim() == "copy", "{mark}");
+        // The answer is read back, not probed again.
+        fs::write(d.path().join("build").join("volume"), "reflink\n").unwrap();
+        assert!(!Store::open(d.path().join("build")).unwrap().compresses());
+        fs::write(d.path().join("build").join("volume"), "copy\n").unwrap();
+        assert!(Store::open(d.path().join("build")).unwrap().compresses());
+        assert!(!s.clone().with_compress(Compress::Never).compresses());
+        assert!(s.with_compress(Compress::Always).compresses());
+        assert!(
+            fs::read_dir(d.path().join("build").join("tmp"))
+                .unwrap()
+                .next()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_compressible_blob_is_kept_compressed_and_reads_back_plain() {
+        let (d, s) = store();
+        let s = s.with_compress(Compress::Always);
+        let body = text(64 * 1024);
+        let (id, size) = s.put_blob(&body).unwrap();
+        assert_eq!(size, body.len() as u64);
+        let (path, compressed) = s.blob_file(&id).unwrap();
+        assert!(compressed && path.to_string_lossy().ends_with(".zst"));
+        assert!(!s.blob_path(&id).exists());
+        assert!(fs::metadata(&path).unwrap().len() * 10 < size);
+        assert!(s.has_blob(&id));
+        assert_eq!(s.read_blob(&id).unwrap(), body);
+        let mut out = Vec::new();
+        s.copy_blob_to(&hex(&id), &mut out).unwrap();
+        assert_eq!(out, body);
+        // Storing it again keeps the one compressed file.
+        assert_eq!(s.put_blob(&body).unwrap().0, id);
+        let u = s.usage().unwrap();
+        assert_eq!((u.blobs, u.compressed), (1, 1));
+        assert!(u.bytes < size / 10);
+        // A restore writes the plain bytes, with the output's mode.
+        let a = with_outputs(&s, &[("bin/tool", OutputKind::Exec, &body)]);
+        let w = d.path().join("w");
+        assert!(s.restore(&a, &w).unwrap());
+        assert_eq!(fs::read(w.join("bin/tool")).unwrap(), body);
+        assert!(executable(&fs::metadata(w.join("bin/tool")).unwrap()) || cfg!(windows));
+    }
+
+    #[test]
+    fn small_incompressible_or_uncompressed_blobs_stay_plain() {
+        let (_d, s) = store();
+        let on = s.clone().with_compress(Compress::Always);
+        let small = text(COMPRESS_MIN as usize - 1);
+        let (id, _) = on.put_blob(&small).unwrap();
+        assert!(!on.blob_file(&id).unwrap().1, "under the minimum");
+        let random = noise(64 * 1024);
+        let (id, _) = on.put_blob(&random).unwrap();
+        assert!(!on.blob_file(&id).unwrap().1, "saves under a tenth");
+        assert_eq!(on.read_blob(&id).unwrap(), random);
+        let off = s.with_compress(Compress::Never);
+        let (id, _) = off.put_blob(&text(64 * 1024)).unwrap();
+        assert!(!off.blob_file(&id).unwrap().1);
+        let tmp: Vec<_> = fs::read_dir(off.root().join("tmp")).unwrap().collect();
+        assert!(tmp.is_empty(), "{tmp:?}");
+    }
+
+    #[test]
+    fn a_plain_path_stores_a_compressed_blob_plain() {
+        let (_d, s) = store();
+        let s = s.with_compress(Compress::Always);
+        let body = text(32 * 1024);
+        let (id, _) = s.put_blob(&body).unwrap();
+        let path = s.plain_blob_path(&id).unwrap().unwrap();
+        assert_eq!(path, s.blob_path(&id));
+        assert_eq!(fs::read(&path).unwrap(), body);
+        assert_eq!(s.blob_file(&id), Some((path.clone(), false)));
+        assert!(fs::metadata(&path).unwrap().permissions().readonly());
+        // Asked again: the same file, nothing rewritten.
+        assert_eq!(s.plain_blob_path(&id).unwrap().unwrap(), path);
+        assert_eq!(s.plain_blob_path(&[9; 32]).unwrap(), None);
+    }
+
+    #[test]
+    fn a_compressed_lower_store_copies_up_into_a_plain_one_and_damage_is_a_miss() {
+        let d = tempfile::tempdir().unwrap();
+        let lower = Store::open(d.path().join("host"))
+            .unwrap()
+            .with_compress(Compress::Always);
+        let key = ActionKey::builder("rustc").inputs(&[3; 32]).finish();
+        let body = text(48 * 1024);
+        let a = with_outputs(&lower, &[("lib.rlib", OutputKind::File, &body)]);
+        lower.put_action(&key, &a).unwrap();
+        let id = unhex(&a.outputs[0].blob).unwrap();
+        assert!(lower.blob_file(&id).unwrap().1);
+        let upper = Store::open(d.path().join("build"))
+            .unwrap()
+            .with_compress(Compress::Never)
+            .with_lower(vec![d.path().join("host")]);
+        assert_eq!(upper.get_action(&key).unwrap(), Some(a.clone()));
+        assert!(!upper.blob_file(&id).unwrap().1);
+        assert_eq!(upper.read_blob(&id).unwrap(), body);
+
+        // A flipped byte in a compressed lower blob: the frame fails to decode, a miss.
+        let other = ActionKey::builder("rustc").inputs(&[4; 32]).finish();
+        let body2 = text(40 * 1024 + 1);
+        let a2 = with_outputs(&lower, &[("x.rlib", OutputKind::File, &body2)]);
+        lower.put_action(&other, &a2).unwrap();
+        let (zst, _) = lower
+            .blob_file(&unhex(&a2.outputs[0].blob).unwrap())
+            .unwrap();
+        let mut bytes = fs::read(&zst).unwrap();
+        let mid = bytes.len() / 2;
+        bytes[mid] ^= 0xff;
+        remove_readonly(&zst).unwrap();
+        fs::write(&zst, bytes).unwrap();
+        assert_eq!(upper.get_action(&other).unwrap(), None);
+    }
+
+    #[test]
+    fn gc_and_clear_remove_compressed_blobs() {
+        let (_d, s) = store();
+        let s = s.with_compress(Compress::Always);
+        let key = ActionKey::builder("t").inputs(&[5; 32]).finish();
+        let a = with_outputs(&s, &[("out", OutputKind::File, &text(20_000))]);
+        s.put_action(&key, &a).unwrap();
+        assert_eq!(s.usage().unwrap().compressed, 1);
+        let r = s.clear(None).unwrap();
+        assert_eq!((r.entries, r.blobs), (1, 1));
+        let u = s.usage().unwrap();
+        assert_eq!((u.blobs, u.compressed), (0, 0));
+    }
+
+    #[test]
+    fn pack_and_remote_bodies_carry_compressed_blobs() {
+        let d = tempfile::tempdir().unwrap();
+        let s = Store::open(d.path().join("a"))
+            .unwrap()
+            .with_compress(Compress::Always);
+        let key = ActionKey::builder("t").inputs(&[6; 32]).finish();
+        let body = text(30_000);
+        let a = with_outputs(&s, &[("out", OutputKind::File, &body)]);
+        s.put_action(&key, &a).unwrap();
+        let id = unhex(&a.outputs[0].blob).unwrap();
+        // The remote body of a compressed blob is the stored frame itself.
+        let z = s.blob_zstd(&id).unwrap().unwrap();
+        assert_eq!(z, fs::read(s.blob_file(&id).unwrap().0).unwrap());
+        assert_eq!(zstd::decode_all(&z[..]).unwrap(), body);
+        let mut packed = Vec::new();
+        assert!(s.pack(&key, &mut packed).unwrap());
+        let t = Store::open(d.path().join("b"))
+            .unwrap()
+            .with_compress(Compress::Never);
+        assert_eq!(t.unpack(&key, &mut &packed[..]).unwrap(), a);
+        assert_eq!(t.read_blob(&id).unwrap(), body);
+        assert_eq!(
+            t.put_blob_zstd(&id, &z, u64::MAX).unwrap(),
+            body.len() as u64
+        );
     }
 }
