@@ -36,6 +36,26 @@ remembers each file and folder you delete or move away while it serves the workt
 looks for deleted files on disk. Then it writes the other tracked files from the object store. If it stops part way
 (a crash, a full disk), run it again: it goes on from where it stopped.
 
+## Installed dependencies
+
+A new plain worktree has no `node_modules`, so the package manager would install again and the
+build caches inside it (Rspack's and webpack's `node_modules/.cache`, Vite's `node_modules/.vite`)
+would start cold. `asc worktree add` clones them from the worktree you ran it in instead, when
+both pin the same dependencies: every lockfile at the root (`bun.lock`, `bun.lockb`,
+`package-lock.json`, `npm-shrinkwrap.json`, `pnpm-lock.yaml`, `yarn.lock`) and the `package.json`
+beside each `node_modules` (up to 6 levels down) are byte for byte the same. turbo's
+`.turbo/cache` is cloned too, because its entries are named by content hash.
+
+The clone is a reflink: both worktrees share the blocks until one side writes, so it costs no
+space. On a volume that cannot reflink (NTFS, ext4) nothing is cloned and asc says so; a Dev
+Drive or ReFS volume on Windows, Btrfs or XFS on Linux and APFS on macOS can. asc never falls
+back to a byte copy or to hard links. When a lockfile differs, asc says which one and leaves the
+install to you.
+
+```sh
+asc config asc.worktree.cloneDeps false   # never clone dependencies into new worktrees
+```
+
 ## How link mode works
 
 * Each unchanged file in the worktree is a symbolic link to

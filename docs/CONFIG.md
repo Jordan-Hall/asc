@@ -102,6 +102,7 @@ How extra checkouts keep unchanged files without a copy each; see [`WORKTREES.md
 |---|---|---|---|
 | `asc.worktree.mode` | `auto` | The mode of `asc worktree add` without `--mode`: `auto` (virtual where this machine can serve a virtual workspace, else plain), `virtual` or `plain`. | `asc config --global asc.worktree.mode plain` |
 | `asc.worktree.link` | `copy` | How plain checkouts write unchanged files: `copy` (a reflink where the file system can, else a copy) or `symlink` (a link to one read-only shared copy per machine). | `asc config asc.worktree.link symlink` |
+| `asc.worktree.cloneDeps` | `true` | `asc worktree add` clones the source worktree's `node_modules` and `.turbo/cache` into the new plain worktree by reflink when the lockfiles and `package.json` files match. Nothing is cloned on a volume that cannot reflink. | `asc config asc.worktree.cloneDeps false` |
 | `asc.gc.sharedGrace` | `1h` | `asc gc` keeps a shared copy younger than this even when no link names it. `0s` removes at once. | `asc config asc.gc.sharedGrace 10m` |
 
 ## Virtual file system (Windows)
