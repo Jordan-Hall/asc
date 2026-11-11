@@ -48,11 +48,22 @@ class ActionsTest {
     }
 
     @Test fun everyVerbStopsOptionParsing() {
-        for (v in StackVerb.values()) assertEquals(listOf("--end-of-options"), ActionPlan.args(v))
-        assertEquals(
-            listOf("up", "down", "restack", "sync", "submit", "absorb", "undo", "redo"),
-            StackVerb.values().map { it.verb },
-        )
+        for (v in StackVerb.values()) assertEquals("--end-of-options", ActionPlan.args(v).last())
+        assertEquals(listOf("-u", "--end-of-options"), ActionPlan.args(StackVerb.STASH_PUSH_UNTRACKED))
+        assertEquals(listOf("--end-of-options"), ActionPlan.args(StackVerb.STASH_PUSH))
+    }
+
+    @Test fun everyVerbIsAllowlistedWithItsFlags() {
+        val verbs = GeneratedAllowlist.parse().verbs
+        for (v in StackVerb.values()) {
+            val entry = verbs[v.verb] ?: throw AssertionError("not allowlisted: " + v.verb)
+            for (f in v.flags) assertTrue("${v.verb} $f", f in entry.flags)
+        }
+    }
+
+    @Test fun everyMenuVerbHasAnAction() {
+        val xml = javaClass.classLoader.getResource("META-INF/plugin.xml")!!.readText()
+        for (v in StackVerb.values()) assertTrue(v.title, xml.contains("text=\"${v.title}\""))
     }
 
     @Test fun absorbPreviewsBeforeApplying() {
@@ -62,8 +73,9 @@ class ActionsTest {
         assertFalse(ActionPlan.nothingToAbsorb(listOf("move a.txt into abc")))
     }
 
-    @Test fun onlySubmitAsksFirst() {
-        assertTrue(ActionPlan.needsConfirm(StackVerb.SUBMIT))
-        assertFalse(ActionPlan.needsConfirm(StackVerb.RESTACK))
+    @Test fun theAllowlistDecidesWhatAsksFirst() {
+        val asks = StackVerb.values().filter { ActionPlan.needsConfirm(it) }
+        assertEquals(listOf(StackVerb.SUBMIT, StackVerb.PUSH, StackVerb.STASH_DROP), asks)
+        for (v in asks) assertTrue(v.name, v.question.endsWith("?") || v.question.endsWith("."))
     }
 }
