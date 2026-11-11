@@ -3,7 +3,7 @@
 
 mod support;
 
-use asc_buildcache::{Action, ActionKey, Event, EventKind, Origin, Store};
+use asc_buildcache::{Action, ActionKey, Compress, Event, EventKind, Origin, Store};
 use serde_json::Value;
 use support::{Sandbox, asc_binary, text};
 
@@ -34,7 +34,10 @@ fn status_ls_show_gc_clear() {
         return;
     }
     let sb = Sandbox::new();
-    let store = Store::open(sb.asc_home.join("buildcache")).unwrap();
+    // Plain blobs, so the sizes gc weighs are the sizes written.
+    let store = Store::open(sb.asc_home.join("buildcache"))
+        .unwrap()
+        .with_compress(Compress::Never);
     let rustc = seed(&store, "rustc", 1, 3000, "/w/one");
     let vite = seed(&store, "vite", 2, 5000, "/w/one");
     for (k, secs) in [(&rustc, 200), (&vite, 100)] {
@@ -172,6 +175,57 @@ fn the_store_follows_config() {
     let root = st["root"].as_str().unwrap().replace('\\', "/");
     assert_eq!(root, dir.to_string_lossy().replace('\\', "/"));
     assert!(dir.join("cas").is_dir());
+}
+
+#[test]
+fn compression_follows_config_and_is_shown() {
+    if asc_binary().is_none() {
+        return;
+    }
+    let sb = Sandbox::new();
+    let store = Store::open(sb.asc_home.join("buildcache"))
+        .unwrap()
+        .with_compress(Compress::Always);
+    let key = seed(&store, "vite", 1, 64 * 1024, "/w/one");
+    let config = |value: &str| {
+        std::fs::write(
+            sb.user.join(".gitconfig"),
+            format!(
+                "[asc \"buildcache\"]
+	compress = {value}
+"
+            ),
+        )
+        .unwrap()
+    };
+    config("true");
+    let st = json(&sb, &["cache", "status", "--json"]);
+    assert_eq!(st["compress"], true, "{st}");
+    assert_eq!(st["compressed_blobs"], 1, "{st}");
+    assert!(st["bytes"].as_u64().unwrap() < 64 * 1024 / 10, "{st}");
+    let out = sb.run(&sb.dir("elsewhere"), &["cache", "status"]);
+    assert!(
+        text(&out.stdout).contains("compressed where it saves space (1 so far)"),
+        "{}",
+        text(&out.stdout)
+    );
+    config("false");
+    let st = json(&sb, &["cache", "status", "--json"]);
+    assert_eq!(st["compress"], false, "{st}");
+    let show = json(&sb, &["cache", "show", &key.to_string(), "--json"]);
+    assert_eq!(
+        show["outputs"][0]["size"],
+        64 * 1024,
+        "the size is the plain size"
+    );
+    config("sometimes");
+    let bad = sb.run(&sb.dir("elsewhere"), &["cache", "status"]);
+    assert!(!bad.status.success());
+    assert!(
+        text(&bad.stderr).contains("asc.buildcache.compress"),
+        "{}",
+        text(&bad.stderr)
+    );
 }
 
 #[test]
