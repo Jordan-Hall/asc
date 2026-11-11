@@ -67,7 +67,7 @@ Words: **done** = code and a test on `origin/master`; **partial** = works but a 
 | Audit log, undo | `docs/AUDIT.md` | done | `audit/` 97 tests | |
 | Protocol hardening, MCP, plugin API | `docs/mcp.md`, `plugin-api*.md` | done | `asc-mcp`, `serve/mcp/` 28 tests, `tests/mcp_*.rs` | Inspector run only on Forgejo (`mcp-inspector.yml`) |
 | Web UI | `docs/WEB-UI.md` | done | `web/` with the Playwright suite (smoke, front door, overflow, visual) run by the `web-e2e` job in `ci.yml`; Linux baselines in `web/e2e/visual.spec.ts-snapshots/` (refreshed by `web-baselines.yml`); TSRX highlighting (`web/src/lib/highlight/`); embedded in the image and every release build (`ASC_REQUIRE_WEB=1`, `asc-serve/build.rs`) | |
-| IDE plugins | CLI.md s.10 | partial | `plugins/vscode`, `plugins/jetbrains`; `asc-vscode-0.1.4.vsix` and `asc-jetbrains-0.1.4.zip` are built, signed and attached to the `v0.1.4` release | Not on the VS Code Marketplace, Open VSX or JetBrains Marketplace: that needs the owner's publisher accounts and tokens |
+| IDE plugins | CLI.md s.10 | partial | `plugins/vscode`, `plugins/jetbrains` (README); `asc-vscode-0.1.4.vsix` and `asc-jetbrains-0.1.4.zip` are built, signed and attached to the `v0.1.4` release. JetBrains (2026-11-11): the asc tool window is registered, an asc Views menu opens it on any tab, the stack, remote and stash verbs match the bridge allowlist (confirmation from the allowlist), sign in, sign out and status; `DescriptorTest` checks plugin.xml against the code; the `jetbrains` CI job runs the tests, build and structure check | Not on the VS Code Marketplace, Open VSX or JetBrains Marketplace: that needs the owner's publisher accounts and tokens |
 
 ### Release, install, deploy, CI
 
@@ -77,7 +77,7 @@ Words: **done** = code and a test on `origin/master`; **partial** = works but a 
 | `install.sh` | `scripts/install.sh`, `packaging/linux/install.sh` | done | `scripts/install.sh` installed the published `v0.1.4` Linux archive from a mirror in the installer layout with `ASC_RELEASE_PUBKEY` set (signature checked), and refused it under another key (2026-11-11); `release-scripts.yml` tests both installers | Signature checking needs `minisign` installed; the GitHub release is not in the installer layout, so `publish-to-hub.sh` or a mirror serves it |
 | Self-update | `cli/upgrade.rs:129` `verify`, `tests/self_update.rs` | done | minisign-verify with a compiled-in key, no key means refusal; the `0.1.3` rehearsal binary updated itself to the published `0.1.4` from the same mirror (2026-11-11) | |
 | `deploy/Dockerfile.serve` | SPEC s.8.1 | done | pinned digests, non-root, healthcheck `/healthz`, the web bundle built in a first stage; `image.yml` builds it on every push | Deployments are operator-side and are not recorded in this repository |
-| CI | `ci.yml`, `image.yml` | done | jobs `rust`, `build-cache`, `ts`, `web-e2e`, `postgres`, `garage` (v1.3.1, v2.3.0, v2.4.1), `windows`, `projfs`; green on master | No macOS test leg (macOS is built and signed by `release.yml`); fuzz and bench run in `.forgejo/workflows` on the Forgejo runner |
+| CI | `ci.yml`, `image.yml` | done | jobs `rust`, `build-cache`, `ts`, `web-e2e`, `postgres`, `garage` (v1.3.1, v2.3.0, v2.4.1), `windows`, `projfs`, `jetbrains`; green on master | No macOS test leg (macOS is built and signed by `release.yml`); fuzz and bench run in `.forgejo/workflows` on the Forgejo runner |
 
 ## Prioritized work units
 
