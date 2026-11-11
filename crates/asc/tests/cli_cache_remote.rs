@@ -1,6 +1,6 @@
 //! `asc cache push` and `asc cache warm` against the in-process server's turbo store: an entry
-//! goes up as one artefact, its key is listed under the revision, and a store that lost it gets it
-//! back from the revision index.
+//! goes up file by file (only the files the server lacks), its key is listed under the revision,
+//! and a store that lost it gets back only the files it lacks from the revision index.
 #![cfg(feature = "serve")]
 
 mod server_fixture;
@@ -183,4 +183,90 @@ fn the_server_tier_can_be_switched_off() {
         "{}",
         text(&out.stderr)
     );
+}
+
+/// Random-looking bytes that zstd cannot shrink, so a byte count tells which files moved.
+fn noise(seed: u8, len: usize) -> Vec<u8> {
+    let mut x = 0x9e37_79b9_u32 ^ u32::from(seed);
+    (0..len)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            x as u8
+        })
+        .collect()
+}
+
+/// Stores an entry for `crate` whose outputs are `files` under `target/`, queued for push.
+fn seed_files(store: &Store, krate: &str, files: &[(&str, Vec<u8>)]) -> ActionKey {
+    let dir = tempfile::tempdir().unwrap();
+    let mut rels = Vec::new();
+    for (name, body) in files {
+        let p = dir.path().join("target").join(name);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, body).unwrap();
+        rels.push(format!("target/{name}"));
+    }
+    let key = ActionKey::builder("rustc")
+        .part("crate", krate.as_bytes())
+        .finish();
+    let mut a = Action::new("rustc", krate, Origin::default());
+    a.outputs = store.put_outputs(dir.path(), &rels).unwrap();
+    store.put_action(&key, &a).unwrap();
+    store.queue_push(&key).unwrap();
+    key
+}
+
+#[test]
+fn one_changed_file_is_the_only_file_sent_or_fetched() {
+    if asc_binary().is_none() {
+        return;
+    }
+    let server = Server::start(&["acme/app"]);
+    let sb = Sandbox::new();
+    let repo = repo(&sb, &server);
+    let store = Store::open(sb.asc_home.join("buildcache")).unwrap();
+    const N: usize = 64 << 10;
+    let mut files: Vec<(&str, Vec<u8>)> = ["a.rlib", "b.rlib", "c.rlib", "d.rlib"]
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (*n, noise(i as u8, N)))
+        .collect();
+    seed_files(&store, "v1", &files);
+    let first = json(&sb, &repo, &["cache", "push", "--json"]);
+    assert_eq!(first["uploaded"], 1, "{first}");
+    assert!(first["bytes"].as_u64().unwrap() > 4 * N as u64, "{first}");
+
+    // The next build changed one file: only it (and the small entry) goes up.
+    files[2].1 = noise(99, N);
+    let key2 = seed_files(&store, "v2", &files);
+    let second = json(&sb, &repo, &["cache", "push", "--json"]);
+    assert_eq!(second["uploaded"], 1, "{second}");
+    let sent = second["bytes"].as_u64().unwrap();
+    assert!(
+        sent > N as u64 && sent < 2 * N as u64,
+        "one file of {N} bytes, sent {sent}"
+    );
+
+    // A machine that holds the old files fetches only the changed one.
+    let before = store.get_action(&key2).unwrap().unwrap();
+    let changed = before
+        .outputs
+        .iter()
+        .find(|o| o.path.ends_with("c.rlib"))
+        .unwrap()
+        .blob
+        .clone();
+    store.remove(&key2).unwrap();
+    std::fs::remove_file(store.blob_path(&asc_buildcache::unhex(&changed).unwrap())).unwrap();
+    let rev = second["rev"].as_str().unwrap().to_owned();
+    let warmed = json(&sb, &repo, &["cache", "warm", &rev, "--json"]);
+    assert_eq!(warmed["fetched"], 1, "{warmed}");
+    let got = warmed["bytes"].as_u64().unwrap();
+    assert!(
+        got > N as u64 && got < 2 * N as u64,
+        "one file of {N} bytes, fetched {got}"
+    );
+    assert_eq!(store.get_action(&key2).unwrap().unwrap(), before);
 }
