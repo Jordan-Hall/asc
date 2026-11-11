@@ -420,8 +420,26 @@ impl CoreFs {
                 }
             }
         };
+        Ok(Some(self.listing(&d, base.as_ref(), ro)))
+    }
+
+    /// Lists the tree `id` as the directory at `at`, whatever the base tree has there: a backend
+    /// whose placeholder names its tree (a directory moved before it was listed) is listed from
+    /// that tree, never from what now stands at the path. `read_only` is the directory's own
+    /// structural state; the path rules' lock is added per path.
+    pub async fn read_tree_at(
+        &self,
+        id: TreeId,
+        at: Option<&RepoPath>,
+        read_only: bool,
+    ) -> Result<DirListing> {
+        let d = self.load_dir(id).await?;
+        Ok(self.listing(&d, at, read_only || d.restricted))
+    }
+
+    fn listing(&self, d: &Dir, base: Option<&RepoPath>, ro: bool) -> DirListing {
         let entries_of = d.tree.entries();
-        let join = |name: &Name| match &base {
+        let join = |name: &Name| match base {
             Some(b) => b.join(name),
             None => RepoPath::new(name.as_bytes().to_vec()).expect("a tree name is a path"),
         };
@@ -439,7 +457,7 @@ impl CoreFs {
             .iter()
             .map(|&i| entries_of[i as usize].name.clone())
             .collect();
-        Ok(Some(out))
+        out
     }
 
     /// Opens the verified content of `c`. No policy and no counters: the caller is the daemon.
@@ -927,6 +945,34 @@ mod tests {
 
     fn names(l: &DirListing) -> Vec<String> {
         l.entries.iter().map(|n| n.path.to_string()).collect()
+    }
+
+    #[tokio::test]
+    async fn a_tree_is_listed_by_id_under_any_path() {
+        let fx = Fx::new();
+        let a = fx.file("a.txt", b"a").await;
+        let old = fx.dir_entry("old", vec![a]).await;
+        let tree = TreeId::from_bytes(old.id);
+        let root = fx.tree(vec![old]).await;
+        let opts = Options {
+            locked: Some(Arc::new(|p: &RepoPath| p.as_bytes().starts_with(b"moved"))),
+            ..Options::default()
+        };
+        let fs = fx.fs(root, opts);
+        // The directory moved: the base tree has nothing at `moved`, the placeholder names its tree.
+        assert!(fs.read_dir(Some(&rp("moved"))).await.unwrap().is_none());
+        let l = fs
+            .read_tree_at(tree, Some(&rp("moved")), false)
+            .await
+            .unwrap();
+        assert_eq!(names(&l), ["moved/a.txt"]);
+        assert!(
+            l.entries[0].read_only,
+            "the path rules apply at the new path"
+        );
+        let top = fs.read_tree_at(tree, None, true).await.unwrap();
+        assert_eq!(names(&top), ["a.txt"]);
+        assert!(top.entries[0].read_only);
     }
 
     #[tokio::test]
