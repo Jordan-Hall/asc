@@ -464,6 +464,19 @@ impl Store {
     /// meanwhile): the caller runs the tool as on a miss. Each file is a copy (a clone where the
     /// file system has them), never a link into the store.
     pub fn restore(&self, action: &Action, base: &Path) -> io::Result<bool> {
+        if !self.restorable(action)? {
+            return Ok(false);
+        }
+        for o in &action.outputs {
+            if !self.restore_one(o, base)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Checks the paths and links of `action`; `Ok(false)` when one of its blobs is gone.
+    pub(crate) fn restorable(&self, action: &Action) -> io::Result<bool> {
         check_paths(action)?;
         for o in &action.outputs {
             let id = unhex(&o.blob).ok_or_else(|| bad("a blob id is not 64 hex digits"))?;
@@ -474,65 +487,65 @@ impl Store {
                 check_link(&o.path, &self.link_target(&o.blob)?)?;
             }
         }
-        for o in &action.outputs {
-            let id = unhex(&o.blob).expect("checked above");
-            let dest = base.join(&o.path);
-            // A directory on the way that is a link (left in the tree, or made by an earlier
-            // output) would carry the write outside `base`.
-            let mut dir = base.to_path_buf();
-            for c in o
-                .path
-                .split('/')
-                .collect::<Vec<_>>()
-                .split_last()
-                .map_or(&[][..], |x| x.1)
-            {
-                dir.push(c);
-                match fs::symlink_metadata(&dir) {
-                    Ok(m) if m.file_type().is_symlink() => {
-                        return Err(bad(format!("'{}' is below a link", o.path)));
-                    }
-                    _ => {}
+        Ok(true)
+    }
+
+    /// Writes one output of an entry that passed [`Store::restorable`]. `Ok(false)` when its
+    /// blob was evicted meanwhile.
+    pub(crate) fn restore_one(&self, o: &Output, base: &Path) -> io::Result<bool> {
+        let id = unhex(&o.blob).ok_or_else(|| bad("a blob id is not 64 hex digits"))?;
+        let dest = base.join(&o.path);
+        // A directory on the way that is a link (left in the tree, or made by an earlier
+        // output) would carry the write outside `base`.
+        let mut dir = base.to_path_buf();
+        for c in o
+            .path
+            .split('/')
+            .collect::<Vec<_>>()
+            .split_last()
+            .map_or(&[][..], |x| x.1)
+        {
+            dir.push(c);
+            match fs::symlink_metadata(&dir) {
+                Ok(m) if m.file_type().is_symlink() => {
+                    return Err(bad(format!("'{}' is below a link", o.path)));
                 }
+                _ => {}
             }
-            if let Some(parent) = dest.parent() {
-                fs::create_dir_all(parent)?;
+        }
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let name = dest
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let tmp = dest.with_file_name(format!(".{name}.asc-{}", uuid::Uuid::new_v4().simple()));
+        let result = (|| -> io::Result<()> {
+            if o.kind == OutputKind::Link {
+                let target = self.link_target(&o.blob)?;
+                make_link(&target, &tmp)?;
+            } else {
+                reflink_copy::reflink_or_copy(self.blob_path(&id), &tmp)?;
+                set_mode(&tmp, o.kind == OutputKind::Exec)?;
             }
-            let name = dest
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            let tmp = dest.with_file_name(format!(".{name}.asc-{}", uuid::Uuid::new_v4().simple()));
-            let result = (|| -> io::Result<()> {
-                if o.kind == OutputKind::Link {
-                    let target = self.link_target(&o.blob)?;
-                    make_link(&target, &tmp)?;
-                } else {
-                    match reflink_copy::reflink_or_copy(self.blob_path(&id), &tmp) {
-                        Ok(_) => {}
-                        Err(e) if e.kind() == io::ErrorKind::NotFound => return Err(e),
-                        Err(e) => return Err(e),
-                    }
-                    set_mode(&tmp, o.kind == OutputKind::Exec)?;
-                }
-                if fs::symlink_metadata(&dest).is_ok_and(|m| m.is_dir()) {
-                    return Err(bad(format!("'{}' is a directory", o.path)));
-                }
-                fs::rename(&tmp, &dest)
-            })();
-            if let Err(e) = result {
-                let _ = fs::remove_file(&tmp);
-                if e.kind() == io::ErrorKind::NotFound && !self.has_blob(&id) {
-                    return Ok(false);
-                }
-                return Err(e);
+            if fs::symlink_metadata(&dest).is_ok_and(|m| m.is_dir()) {
+                return Err(bad(format!("'{}' is a directory", o.path)));
             }
+            fs::rename(&tmp, &dest)
+        })();
+        if let Err(e) = result {
+            let _ = fs::remove_file(&tmp);
+            if e.kind() == io::ErrorKind::NotFound && !self.has_blob(&id) {
+                return Ok(false);
+            }
+            return Err(e);
         }
         Ok(true)
     }
 
     /// The target text of a link output; a link blob is at most 4 KiB of UTF-8.
-    fn link_target(&self, blob: &str) -> io::Result<String> {
+    pub(crate) fn link_target(&self, blob: &str) -> io::Result<String> {
         let id = unhex(blob).ok_or_else(|| bad("a blob id is not 64 hex digits"))?;
         let mut text = String::new();
         fs::File::open(self.blob_path(&id))?
@@ -587,13 +600,13 @@ fn collect(base: &Path, rel: &str, out: &mut Vec<String>) -> io::Result<()> {
 }
 
 #[cfg(unix)]
-fn executable(meta: &fs::Metadata) -> bool {
+pub(crate) fn executable(meta: &fs::Metadata) -> bool {
     use std::os::unix::fs::PermissionsExt;
     meta.permissions().mode() & 0o111 != 0
 }
 
 #[cfg(not(unix))]
-fn executable(_meta: &fs::Metadata) -> bool {
+pub(crate) fn executable(_meta: &fs::Metadata) -> bool {
     false
 }
 
