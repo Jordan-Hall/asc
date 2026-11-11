@@ -20,6 +20,8 @@
     <postStartupActivity implementation="asc.asc.vcs.AscHydrationWatch"/>
     <notificationGroup id="asc" displayType="BALLOON"/>
     <statusBarWidgetFactory id="asc.asc.status" implementation="asc.asc.ui.AscStatusBarWidgetFactory"/>
+    <toolWindow id="asc" anchor="bottom" icon="/icons/asc.svg" canCloseContents="false"
+                factoryClass="asc.asc.ui.AscToolWindowFactory"/>
   </extensions>
   <actions>
     <group id="asc.asc.StackActions" text="asc" popup="true">
@@ -33,6 +35,19 @@
       <action id="asc.asc.Undo" class="asc.asc.ui.AscUndoAction" text="Undo"/>
       <action id="asc.asc.Redo" class="asc.asc.ui.AscRedoAction" text="Redo"/>
       <action id="asc.asc.ConfigureAgents" class="asc.asc.ui.AscConfigureAgentsAction" text="Configure Agents"/>
+    </group>
+    <group id="asc.asc.OpenView" text="asc Views" popup="true">
+      <add-to-group group-id="VcsGroups" anchor="last"/>
+      <add-to-group group-id="ViewMenu" anchor="last"/>
+      <action id="asc.asc.OpenStack" class="asc.asc.ui.AscOpenStackAction" text="Stack"/>
+      <action id="asc.asc.OpenGraph" class="asc.asc.ui.AscOpenGraphAction" text="Graph"/>
+      <action id="asc.asc.OpenReview" class="asc.asc.ui.AscOpenReviewAction" text="Review"/>
+      <action id="asc.asc.OpenInbox" class="asc.asc.ui.AscOpenInboxAction" text="Inbox"/>
+      <action id="asc.asc.OpenActions" class="asc.asc.ui.AscOpenActionsAction" text="Actions"/>
+      <action id="asc.asc.OpenAffected" class="asc.asc.ui.AscOpenAffectedAction" text="Affected"/>
+      <action id="asc.asc.OpenWorktrees" class="asc.asc.ui.AscOpenWorktreesAction" text="Worktrees"/>
+      <action id="asc.asc.OpenSearch" class="asc.asc.ui.AscOpenSearchAction" text="Search"/>
+      <action id="asc.asc.OpenHistory" class="asc.asc.ui.AscOpenHistoryAction" text="History"/>
     </group>
   </actions>
 </idea-plugin>

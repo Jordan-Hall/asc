@@ -165,3 +165,27 @@ class AscSubmitAction : AscStackAction(StackVerb.SUBMIT)
 class AscAbsorbAction : AscStackAction(StackVerb.ABSORB)
 class AscUndoAction : AscStackAction(StackVerb.UNDO)
 class AscRedoAction : AscStackAction(StackVerb.REDO)
+
+/** "asc Views" menu: opens the tool window on one tab (SPEC 24.5.1); visible only in a project with an asc root. */
+open class AscOpenViewAction(private val title: String) : AnAction(title), DumbAware {
+    override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
+
+    override fun update(e: AnActionEvent) {
+        val p = e.project
+        e.presentation.isEnabledAndVisible = p != null && AscActions.firstRoot(p) != null
+    }
+
+    override fun actionPerformed(e: AnActionEvent) {
+        AscToolWindowFactory.show(e.project ?: return, title)
+    }
+}
+
+class AscOpenStackAction : AscOpenViewAction("Stack")
+class AscOpenGraphAction : AscOpenViewAction("Graph")
+class AscOpenReviewAction : AscOpenViewAction("Review")
+class AscOpenInboxAction : AscOpenViewAction("Inbox")
+class AscOpenActionsAction : AscOpenViewAction("Actions")
+class AscOpenAffectedAction : AscOpenViewAction("Affected")
+class AscOpenWorktreesAction : AscOpenViewAction("Worktrees")
+class AscOpenSearchAction : AscOpenViewAction("Search")
+class AscOpenHistoryAction : AscOpenViewAction("History")

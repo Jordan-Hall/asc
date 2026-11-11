@@ -7,8 +7,10 @@ import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectRootManager
 import com.intellij.openapi.util.Disposer
+import com.intellij.openapi.util.Key
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
+import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.openapi.wm.ex.ToolWindowManagerListener
 import com.intellij.ui.HyperlinkLabel
 import com.intellij.ui.components.JBLabel
@@ -37,6 +39,19 @@ class AscToolWindowFactory : ToolWindowFactory, DumbAware {
     companion object {
         const val IDLE_MS = 10L * 60 * 1000
 
+        /** Selects a tab by its title in the window's one content; set once the browser host exists. */
+        private val SELECT = Key.create<(String) -> Unit>("asc.selectView")
+
+        /**
+         * Opens the tool window on the tab [title] (a key of [AscPage.VIEWS]). The window builds its content on
+         * first activation, so the tab is chosen in the activation callback, after the content exists.
+         */
+        fun show(project: Project, title: String) {
+            require(title in AscPage.VIEWS) { "unknown asc view: " + title }
+            val tw = ToolWindowManager.getInstance(project).getToolWindow(ID) ?: return
+            tw.activate { tw.contentManager.getContent(0)?.getUserData(SELECT)?.invoke(title) }
+        }
+
         /** The asc roots of the project, as the VCS layer finds them. */
         fun ascRoots(project: Project): List<String> {
             val roots = linkedSetOf<String>()
@@ -60,6 +75,7 @@ class AscToolWindowFactory : ToolWindowFactory, DumbAware {
         }
         val host = BrowserHost(project, panel, roots)
         Disposer.register(toolWindow.disposable, host)
+        content.putUserData(SELECT) { host.select(it) }
         project.messageBus.connect(host).subscribe(
             ToolWindowManagerListener.TOPIC,
             object : ToolWindowManagerListener {
@@ -131,6 +147,12 @@ private class BrowserHost(private val project: Project, private val panel: JPane
             panel.add(b.component, BorderLayout.CENTER)
             panel.revalidate()
         }
+    }
+
+    /** Shows the tab [title]; the change listener points the browser at it. */
+    fun select(title: String) {
+        val i = AscPage.VIEWS.keys.indexOf(title)
+        if (i >= 0 && tabs.selectedIndex != i) tabs.selectedIndex = i
     }
 
     fun hidden() {
