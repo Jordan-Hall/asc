@@ -21,6 +21,7 @@ use asc_wc::worktree as wt;
 use super::common::{CliError, Ctx, Result, StagingAfterMove, WsCtx};
 use super::fetch::{Opts as FetchOpts, fatal, fetch_one, sync_error};
 use super::restore::{actor, root_of, sync_worktree};
+use super::seed_opts;
 use super::switch::{ensure_mapped, ref_name, set_config};
 use crate::daemon::workspace_factory;
 use crate::ext;
@@ -82,7 +83,57 @@ struct Opts {
     refs: Option<RefsMode>,
     /// `--reference <git-dir>`: git-remote mode fetches from it first (SPEC §6.3).
     reference: Vec<String>,
+    /// `--depth <n>`: the history window of this clone and of its later fetches.
+    depth: Option<u32>,
+    /// `--seed <url|none>`: the snapshot unpacked into the cache before the first fetch.
+    seed: Option<String>,
     words: Vec<String>,
+}
+
+/// `--depth`: a positive number of changesets, as git counts commits.
+fn depth(v: &str) -> Result<u32> {
+    v.parse::<u32>()
+        .ok()
+        .filter(|n| *n > 0)
+        .ok_or_else(|| CliError::Fatal(format!("depth {v} is not a positive number")))
+}
+
+/// `--filter`: git's filter specs. An asc clone is always partial (it fetches the tip's root
+/// tree and then only what the checkout reads), so every valid spec is what it already does.
+fn filter(v: &str) -> Result<()> {
+    let size = |n: &str| {
+        let digits = n.trim_end_matches(['k', 'm', 'g', 'K', 'M', 'G']);
+        !digits.is_empty()
+            && n.len() - digits.len() <= 1
+            && digits.bytes().all(|b| b.is_ascii_digit())
+    };
+    let ok = v == "blob:none"
+        || v.strip_prefix("blob:limit=").is_some_and(size)
+        || v.strip_prefix("tree:")
+            .is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
+        || v.strip_prefix("sparse:oid=").is_some_and(|o| !o.is_empty())
+        || v.strip_prefix("object:type=")
+            .is_some_and(|t| ["blob", "tree", "commit", "tag"].contains(&t))
+        || v.strip_prefix("combine:").is_some_and(|c| {
+            !c.is_empty()
+                && c.split('+')
+                    .all(|part| part != "combine:" && !part.is_empty())
+        });
+    if ok {
+        Ok(())
+    } else {
+        Err(CliError::Fatal(format!("invalid filter-spec '{v}'")))
+    }
+}
+
+/// The seed to unpack before the first fetch, and what it may send.
+#[derive(Debug, Default)]
+struct SeedPlan {
+    choice: Option<seed_opts::Choice>,
+    /// `owner/name` the seed must be for, when the remote names it.
+    repo: Option<String>,
+    /// The remote's `Authorization` value, only for a seed URL of the server's own origin.
+    auth: Option<String>,
 }
 
 fn parse(argv: &[OsString]) -> Result<Opts> {
@@ -105,9 +156,9 @@ fn parse(argv: &[OsString]) -> Result<Opts> {
             "-n" | "--no-checkout" => o.no_checkout = true,
             "--mode" => o.virtual_mode = clone_mode(&need(it.next())?)?,
             "--reference" => o.reference.push(need(it.next())?),
-            "--depth" | "--filter" | "--seed" => {
-                need(it.next())?;
-            }
+            "--depth" => o.depth = Some(depth(&need(it.next())?)?),
+            "--filter" => filter(&need(it.next())?)?,
+            "--seed" => o.seed = Some(need(it.next())?),
             "--refs" => {
                 o.refs = Some(match need(it.next())?.as_str() {
                     "local" => RefsMode::Local,
@@ -121,9 +172,9 @@ fn parse(argv: &[OsString]) -> Result<Opts> {
             w if w.starts_with("--reference=") => {
                 o.reference.push(w["--reference=".len()..].to_owned());
             }
-            w if w.starts_with("--depth=")
-                || w.starts_with("--filter=")
-                || w.starts_with("--seed=") => {}
+            w if w.starts_with("--depth=") => o.depth = Some(depth(&w["--depth=".len()..])?),
+            w if w.starts_with("--filter=") => filter(&w["--filter=".len()..])?,
+            w if w.starts_with("--seed=") => o.seed = Some(w["--seed=".len()..].to_owned()),
             _ => return Err(CliError::Usage(USAGE.to_owned())),
         }
     }
@@ -305,6 +356,11 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     // Reach the bucket before anything is registered or created.
     let home = AscHome::locate()?;
     let db = StateDb::open(&home).await?;
+    // Without a server there is no discovery document: only an explicit seed, with no credential.
+    let mut seed = SeedPlan {
+        choice: seed_opts::choose(o.seed.as_deref(), None),
+        ..SeedPlan::default()
+    };
     let (branches, remote_head) = if server_mode {
         let connected = remote::server::connect(
             ctx.config.file(),
@@ -321,6 +377,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
                 super::url_display::anonymize(typed_url)
             ))
         })?;
+        seed = server_seed(o.seed.as_deref(), &connected)?;
         let probe = remote::server::opened(
             origin.clone(),
             stored.clone(),
@@ -436,6 +493,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         typed_url,
         git_mode,
         server_mode,
+        &seed,
     )
     .await;
     match built {
@@ -458,6 +516,30 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
             Err(e)
         }
     }
+}
+
+/// The seed of a server clone: `--seed`, else the discovery document's `seeds` for this
+/// repository. The credential goes only to a seed URL of the server's own origin.
+fn server_seed(explicit: Option<&str>, connected: &remote::server::Connected) -> Result<SeedPlan> {
+    let t = &connected.target;
+    let discovered = t
+        .seeds
+        .as_deref()
+        .map(|base| seed_opts::repo_seed_url(base, &t.repo));
+    let choice = seed_opts::choose(explicit, discovered.as_deref());
+    let same_origin = |u: &str| match (::url::Url::parse(u), ::url::Url::parse(&t.rpc_url)) {
+        (Ok(a), Ok(b)) => a.scheme() == "https" && a.origin() == b.origin(),
+        _ => false,
+    };
+    let auth = match &choice {
+        Some(c) if same_origin(&c.url) => connected.auth_header()?,
+        _ => None,
+    };
+    Ok(SeedPlan {
+        choice,
+        repo: Some(t.repo.clone()),
+        auth,
+    })
 }
 
 fn branch_ok(branch: &str) -> bool {
@@ -483,6 +565,7 @@ async fn build(
     typed_url: &str,
     git_mode: bool,
     server_mode: bool,
+    seed: &SeedPlan,
 ) -> Result<ExitCode> {
     let projection = Projection::create(home, repo_id, ws_id, root)?;
     projection.write_head(&Head::Branch(branch.to_owned()))?;
@@ -543,6 +626,10 @@ async fn build(
         // The stack's trunk is the branch the server calls its default, not a guess of the client.
         set_config(&setup, "asc.stack.trunk", branch).await?;
     }
+    if let Some(d) = o.depth {
+        // As git's shallow file does, the depth stays with the clone: later fetches keep the window.
+        set_config(&setup, "asc.fetch.historyWindow", &d.to_string()).await?;
+    }
     if !empty {
         set_config(&setup, &format!("branch.{branch}.remote"), origin).await?;
         set_config(
@@ -572,6 +659,18 @@ async fn build(
     // `--reference`: objects of an existing checkout first, so the fetch moves only the rest.
     if git_mode && !o.reference.is_empty() {
         remote::git::seed_from_references(&fresh, ws, &o.reference).await?;
+    }
+
+    // A seed saves the download of most of what follows; the fetch then moves only the delta.
+    let seeded = seed_opts::apply(
+        seed.choice.as_ref(),
+        &super::common::cache_root(home, &fresh.config),
+        seed.repo.as_deref(),
+        seed.auth.as_deref(),
+    )
+    .await?;
+    if seeded > 0 && !o.quiet {
+        eprintln!("Unpacked {seeded} objects from the seed.");
     }
 
     // The branch tip, its root tree and the history within the window.
@@ -793,6 +892,50 @@ mod tests {
         );
         assert!(parse(&[OsString::from("--mode=sparse")]).is_err());
         assert!(parse(&[OsString::from("--bogus")]).is_err());
+    }
+
+    #[test]
+    fn depth_filter_and_seed_parse() {
+        let p = |a: &[&str]| parse(&a.iter().map(OsString::from).collect::<Vec<_>>());
+        assert_eq!(p(&["--depth", "3"]).unwrap().depth, Some(3));
+        assert_eq!(p(&["--depth=1"]).unwrap().depth, Some(1));
+        for bad in ["0", "-1", "x", ""] {
+            let e = p(&["--depth", bad]).unwrap_err().to_string();
+            assert!(e.contains("is not a positive number"), "{e}");
+        }
+        assert_eq!(
+            p(&["--seed", "none"]).unwrap().seed.as_deref(),
+            Some("none")
+        );
+        assert_eq!(
+            p(&["--seed=https://s.example/x"]).unwrap().seed.as_deref(),
+            Some("https://s.example/x")
+        );
+        for good in [
+            "blob:none",
+            "blob:limit=10k",
+            "blob:limit=4096",
+            "tree:0",
+            "sparse:oid=main:.sparse",
+            "object:type=blob",
+            "combine:blob:none+tree:1",
+        ] {
+            assert!(p(&["--filter", good]).is_ok(), "{good}");
+            assert!(p(&[&format!("--filter={good}")]).is_ok(), "{good}");
+        }
+        for bad in [
+            "bogus",
+            "blob:limit=",
+            "blob:limit=10kb",
+            "tree:",
+            "tree:x",
+            "object:type=note",
+            "combine:",
+            "sparse:oid=",
+        ] {
+            let e = p(&["--filter", bad]).unwrap_err().to_string();
+            assert!(e.contains("invalid filter-spec"), "{bad}: {e}");
+        }
     }
 
     #[test]

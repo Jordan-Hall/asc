@@ -527,6 +527,14 @@ pub struct Connected {
     reask: ReAsk,
 }
 
+impl Connected {
+    /// The `Authorization` value the session sends, for the server's plain HTTP routes
+    /// (`/seeds`), or `None` when it has no credential.
+    pub fn auth_header(&self) -> CliResult<Option<String>> {
+        Ok(to_rpc(&self.session.resolved)?.map(|c| c.header_value()))
+    }
+}
+
 fn build_session(
     target: &Target,
     reask: &ReAsk,

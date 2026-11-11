@@ -48,10 +48,23 @@ pub fn choose(explicit: Option<&str>, discovered: Option<&str>) -> Option<Choice
     }
 }
 
+/// The seed of `repo` (`owner/name`) under the discovery document's `seeds` base:
+/// `<seeds>/<owner>/<name>/latest`, which an asc server redirects to the newest snapshot.
+pub fn repo_seed_url(base: &str, repo: &str) -> String {
+    format!("{}/{repo}/latest", base.trim_end_matches('/'))
+}
+
 /// Unpacks the chosen seed into `cache` (a missing choice does nothing). A seed only saves
 /// network, so a failure of a discovered seed warns and the fetch carries on with a full
-/// download; an explicit seed fails the command. Returns the files installed.
-pub async fn apply(choice: Option<&Choice>, cache: &Path, repo: &str) -> Result<u64> {
+/// download; an explicit seed fails the command. `repo`, when known, must be the seed's;
+/// `auth` is the remote's `Authorization` value, sent only to an `https` seed URL and never
+/// past a redirect to another origin. Returns the files installed.
+pub async fn apply(
+    choice: Option<&Choice>,
+    cache: &Path,
+    repo: Option<&str>,
+    auth: Option<&str>,
+) -> Result<u64> {
     let Some(c) = choice else {
         return Ok(0);
     };
@@ -61,7 +74,7 @@ pub async fn apply(choice: Option<&Choice>, cache: &Path, repo: &str) -> Result<
     } else {
         Origin::Discovered
     };
-    match asc_store::seed::unpack_str(&c.url, cache, Some(repo), origin).await {
+    match asc_store::seed::unpack_str_authed(&c.url, cache, repo, origin, auth).await {
         Ok(u) => Ok(u.installed),
         Err(e) if c.explicit => Err(CliError::Fatal(format!("seed {}: {e}", c.url))),
         Err(e) => {
@@ -90,6 +103,10 @@ mod tests {
             seed: Some("none".into()),
         };
         assert!(o.choose(d).is_none());
+        assert_eq!(
+            repo_seed_url("https://hub.example/seeds/", "acme/web"),
+            "https://hub.example/seeds/acme/web/latest"
+        );
     }
 
     #[tokio::test]
@@ -99,12 +116,18 @@ mod tests {
             url: "ftp://nowhere/x".into(),
             explicit,
         };
-        assert!(apply(Some(&bad(true)), tmp.path(), "a/b").await.is_err());
+        assert!(
+            apply(Some(&bad(true)), tmp.path(), Some("a/b"), None)
+                .await
+                .is_err()
+        );
         assert_eq!(
-            apply(Some(&bad(false)), tmp.path(), "a/b").await.unwrap(),
+            apply(Some(&bad(false)), tmp.path(), Some("a/b"), None)
+                .await
+                .unwrap(),
             0
         );
-        assert_eq!(apply(None, tmp.path(), "a/b").await.unwrap(), 0);
+        assert_eq!(apply(None, tmp.path(), Some("a/b"), None).await.unwrap(), 0);
     }
 
     use asc_store::seed::{SeedManifest, pack};
@@ -144,7 +167,11 @@ mod tests {
             let c = choose(None, Some(&url)).unwrap();
             assert!(!c.explicit);
             // Not fatal (a seed only saves network), but nothing is read or installed.
-            assert_eq!(apply(Some(&c), &cache, "a/b").await.unwrap(), 0, "{url}");
+            assert_eq!(
+                apply(Some(&c), &cache, Some("a/b"), None).await.unwrap(),
+                0,
+                "{url}"
+            );
             assert!(cache_is_empty(&cache), "{url}");
         }
     }
@@ -156,7 +183,7 @@ mod tests {
         let furl = file_url(&file);
         let cache = tmp.path().join("cache");
         let c = choose(Some(&furl), None).unwrap();
-        assert_eq!(apply(Some(&c), &cache, "a/b").await.unwrap(), 1);
+        assert_eq!(apply(Some(&c), &cache, Some("a/b"), None).await.unwrap(), 1);
 
         let cache = tmp.path().join("cache2");
         for url in [
@@ -165,7 +192,9 @@ mod tests {
             "file://127.0.0.1/seed-test/s.tar.zst",
         ] {
             let c = choose(Some(url), None).unwrap();
-            let e = apply(Some(&c), &cache, "a/b").await.unwrap_err();
+            let e = apply(Some(&c), &cache, Some("a/b"), None)
+                .await
+                .unwrap_err();
             assert!(e.to_string().contains("seed refused"), "{url}: {e}");
         }
         assert!(cache_is_empty(&cache));

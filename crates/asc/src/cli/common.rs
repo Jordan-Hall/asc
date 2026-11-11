@@ -126,14 +126,8 @@ impl ObjectStack {
         config: &ConfigSnapshot,
         remote: Option<Arc<dyn Objects>>,
     ) -> ObjResult<Self> {
-        let expand = |p: &str| match (p.strip_prefix("~/"), std::env::home_dir()) {
-            (Some(rest), Some(h)) => h.join(rest),
-            _ => PathBuf::from(p),
-        };
-        let cache_root = config
-            .get("asc.cache.dir")
-            .map(|p| expand(&p))
-            .unwrap_or_else(|| home.cache());
+        let expand = expand_home;
+        let cache_root = cache_root(home, config);
         let set = StoreSet {
             store: CacheDir::open(home.store(), home.tmp())?,
             cache: CacheDir::open(cache_root, home.tmp())?,
@@ -929,6 +923,22 @@ pub fn end_of_options_to_dashes(argv: &mut [std::ffi::OsString]) {
 #[cfg(test)]
 #[path = "../../tests/support/mod.rs"]
 pub(crate) mod support;
+
+/// `~/` at the start of a configured path is the user's home directory.
+pub(crate) fn expand_home(p: &str) -> PathBuf {
+    match (p.strip_prefix("~/"), std::env::home_dir()) {
+        (Some(rest), Some(h)) => h.join(rest),
+        _ => PathBuf::from(p),
+    }
+}
+
+/// The shared object cache: `asc.cache.dir`, else the home's `cache/`.
+pub(crate) fn cache_root(home: &AscHome, config: &ConfigSnapshot) -> PathBuf {
+    config
+        .get("asc.cache.dir")
+        .map(|p| expand_home(&p))
+        .unwrap_or_else(|| home.cache())
+}
 
 #[cfg(test)]
 mod tests {
