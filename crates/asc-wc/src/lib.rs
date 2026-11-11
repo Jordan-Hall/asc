@@ -1,6 +1,7 @@
 //! asc-wc.
 
 pub mod compose_plain;
+pub mod depclone;
 pub mod eol;
 pub mod ignore;
 pub mod intent;
