@@ -1,15 +1,11 @@
 //! U61v acceptance: turbo 2.10.11 against a virtual asc workspace (SPEC section 17, "Turbo
 //! contract"). Run with `cargo test -p asc-turbo-contract virtual -- --ignored` (needs bun, network
-//! for `bunx turbo@2.10.11`, and ProjFS on Windows; FUSE hosts opt in with `ASC_TURBO_VIRTUAL=1`
-//! once U59 lands).
+//! for `bunx turbo@2.10.11`, and ProjFS on Windows; Linux FUSE hosts opt in with
+//! `ASC_TURBO_VIRTUAL=1`).
 //!
 //! These are the U61p cases (`contract.rs`) run in a virtual workspace, plus the hydration
 //! counters: after turbo has run, every hydrated path is a manifest. The fixture has a
 //! `turbo.json`, so the synthetic index exists; a second fixture without it has no `index`.
-//!
-//! TODO(U58-wiring): `asc clone --mode virtual` and `asc worktree add --mode virtual` do not reach
-//! the ProjFS provider yet (see `crates/asc/tests/windows_virtual.rs`), so these cases fail until
-//! that wiring lands.
 
 use std::collections::BTreeMap;
 use std::fs;

@@ -549,7 +549,7 @@ log/daemon.log
   - Output with `--raw`, `--name-only`, `--name-status`, `-z`, `--summary` and the `--stat`/`--shortstat` file lists MUST be byte-equal to git on 100% of the golden corpus (pairs taken from ASC history).
   - Unified patch and `--numstat` MUST be byte-equal on 100% of the corpus for each configured algorithm. Any unequal case is a bug and is recorded in the corpus's exceptions file, which MUST be empty at the phase-1 exit.
   - Every patch passes `git apply --check`. Forgejo depends only on this property **[graft: integration]**.
-- Renames: exact (equal `FileId`) first, then similarity among added/deleted files only, capped by `diff.renameLimit` (default 1000). Off unless `-M`, or `diff.renames=true` (git's default for porcelain).
+- Renames: exact (equal `FileId`) first, then similarity among added/deleted files only, capped by `diff.renameLimit` (default 1000). Off unless `-M`, or `diff.renames=true` (git's default for porcelain). Copies with `-C` / `--find-copies` or `diff.renames=copies`: modified files are sources too and a source can feed several destinations; of a deleted source's destinations the last in path order is the rename and the rest are copies, as git. `--find-copies-harder` (unmodified files as sources) is refused.
 
 ### 4.4 Merge, rebase, land (`merge/`, `rebase.rs`, `land.rs`)
 

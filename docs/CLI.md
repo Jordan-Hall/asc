@@ -100,7 +100,7 @@ Configuration keys are in [`CONFIG.md`](CONFIG.md). Getting started is in
 |---|---|---|
 | `log` | History. `--follow` walks as git does (renames found by content when none was recorded, merges only with `--first-parent`, `--skip` over every walked commit) and draws with `--graph`, git's `...` marking hidden commits. | `asc log --oneline --graph --follow -- src/main.rs` |
 | `show` | Shows an object. | `asc show HEAD` |
-| `diff` | Compares revisions, the index and the tree. | `asc diff --stat master...HEAD` |
+| `diff` | Compares revisions, the index and the tree. Renames with `-M`, copies with `-C` (also `log`, `show`, `diff.renames=copies`). | `asc diff --stat master...HEAD` |
 | `blame` | Last change per line. | `asc blame -L 10,20 src/lib.rs` |
 | `grep` | Searches tracked files with basic (default), extended (`-E`) or fixed (`-F`) patterns. Back-references such as `(ab)\1` work as in git; a line that would make one backtrack too long gives its file up with a warning. | `asc grep -n -E '(\w+) \1' -- src` |
 | `rev-parse` | Resolves names, full and abbreviated git ids included. | `asc rev-parse HEAD` |
