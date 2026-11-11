@@ -1,8 +1,8 @@
 // Cached builds as tasks (docs/designs/build-cache.md §6): a `TaskProvider` of type `asc-build`.
 // Detected tasks build the work tree with the cache in front of the tool: cargo with asc as
 // `RUSTC_WRAPPER`, go with asc as `GOCACHEPROG`, and each package.json script that runs
-// `rsbuild build`, `rslib build` or `vite build` (the `@asc/build-cache` plugin in its config does
-// the caching). A task the user declares in tasks.json with `inputs`, `outputs` and `command` runs
+// `rsbuild build`, `rslib build`, `rspack build`, `webpack` or `vite build` (the `@asc/build-cache`
+// plugin in its config does the caching). A task the user declares in tasks.json with `inputs`, `outputs` and `command` runs
 // through `asc cache run`. Each task carries the variables of `asc cache env`, so turbo, Nx and
 // Maven reach the local fronts. Editor-free; `register.ts` turns a spec into a `vscode.Task`.
 import { posix } from "node:path";
@@ -44,7 +44,11 @@ export interface RootFiles {
   read(rel: string): Promise<string | null>;
 }
 
-const TOOL_RUN = /(^|[\s;&|(])(rsbuild|rslib|vite)\s+build(\s|$)/;
+const TOOL_RUN = /(^|[\s;&|(])(rsbuild|rslib|rspack|webpack|vite)\s+build(\s|$)/;
+/** webpack-cli builds without a command too (`webpack`, `webpack --mode production`). */
+const WEBPACK_BARE = /(^|[\s;&|(])webpack(?=\s*$|\s*[;&|)]|\s+-)/;
+/** A watch flag: that run stays up and is not cached. */
+const WATCH_FLAG = /\s(?:--watch(?!=false)|-w)(?=\s|=|$)/;
 const SCRIPT_NAME = /^[A-Za-z0-9:_.@/-]{1,64}$/;
 const ACTION_NAME = /^[A-Za-z0-9:_.-]{1,64}$/;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
@@ -74,6 +78,7 @@ export function bundlerScripts(pkgJson: string | null): { name: string; tool: st
     if (!SCRIPT_NAME.test(name) || typeof body !== "string" || body.length > 2000) continue;
     const m = TOOL_RUN.exec(body);
     if (m?.[2] !== undefined) out.push({ name, tool: m[2] });
+    else if (WEBPACK_BARE.test(body) && !WATCH_FLAG.test(body)) out.push({ name, tool: "webpack" });
   }
   return out.toSorted((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 }
