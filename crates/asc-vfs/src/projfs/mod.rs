@@ -4,16 +4,7 @@
 //! Every path ProjFS hands a callback is untrusted: it is converted once, validated as a
 //! `RepoPath`, and resolved against the base tree. No lock is held across a ProjFS call.
 
-use std::future::Future;
-use std::io;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-
-use asc_core::path::RepoPath;
-use asc_state::StateDb;
-use asc_state::state::workspaces::Workspace;
-use asc_wc::journal::{Journal, Op};
-use asc_wc::times::entry_times_of;
-use tokio::runtime::Handle;
 
 pub mod data;
 pub mod dehydrate;
@@ -31,92 +22,17 @@ pub use ffi::ProviderUnavailable;
 pub use provider::{Config, ProjfsProvider};
 pub use unvirtualize::{Unvirtualized, unvirtualize};
 
-/// The placeholder times of paths (SPEC §10.1).
-pub trait TimeSource: Send + Sync {
-    /// The time, in Unix seconds, of each path, in order.
-    fn times(&self, paths: &[RepoPath]) -> io::Result<Vec<i64>>;
-}
-
-/// Where notifications append their change hints.
-pub trait JournalSink: Send + Sync {
-    /// Never blocks and never fails.
-    fn record(&self, op: Op, path: &[u8]);
-}
-
-impl JournalSink for Journal {
-    fn record(&self, op: Op, path: &[u8]) {
-        Journal::record(self, op, path);
-    }
-}
-
-/// [`TimeSource`] over `state.db`'s `entry_times` (U54v `times`).
-pub struct DbTimes {
-    pub db: StateDb,
-    pub ws: Workspace,
-    pub rt: Handle,
-}
-
-impl TimeSource for DbTimes {
-    fn times(&self, paths: &[RepoPath]) -> io::Result<Vec<i64>> {
-        block(&self.rt, entry_times_of(&self.db, &self.ws, paths))
-            .map_err(|e| io::Error::other(e.to_string()))
-    }
-}
-
-/// Runs `f` to completion from a thread that may or may not be inside the runtime. ProjFS
-/// callback threads are not; `DiskState` callers may be.
-pub(crate) fn block<F>(rt: &Handle, f: F) -> F::Output
-where
-    F: Future + Send,
-    F::Output: Send,
-{
-    if Handle::try_current().is_ok() {
-        std::thread::scope(|s| {
-            s.spawn(|| rt.block_on(f))
-                .join()
-                .unwrap_or_else(|e| std::panic::resume_unwind(e))
-        })
-    } else {
-        rt.block_on(f)
-    }
-}
+pub use crate::win::{DbTimes, JournalSink, TimeSource};
+pub(crate) use crate::win::{block, rel_path};
 
 /// Runs a callback body; a panic must not unwind into ProjFS.
 pub(crate) fn guard(f: impl FnOnce() -> ffi::Hresult) -> ffi::Hresult {
     catch_unwind(AssertUnwindSafe(f)).unwrap_or(ffi::E_FAIL)
 }
 
-/// Converts a path ProjFS reports (backslash separated, relative to the root, `""` for the root)
-/// to a [`RepoPath`]. `Ok(None)` is the root; `Err` is a path that must be refused.
-pub(crate) fn rel_path(w: &str) -> Result<Option<RepoPath>, ()> {
-    if w.is_empty() {
-        return Ok(None);
-    }
-    if w.contains('/') {
-        return Err(());
-    }
-    RepoPath::new(w.replace('\\', "/").into_bytes())
-        .map(Some)
-        .map_err(|_| ())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn rel_path_converts_and_refuses() {
-        assert_eq!(rel_path(""), Ok(None));
-        assert_eq!(
-            rel_path("src\\lib.rs").unwrap().unwrap().as_bytes(),
-            b"src/lib.rs"
-        );
-        for bad in [
-            "a/b", "\\a", "a\\\\b", "a\\", "..\\x", "a\\..\\b", "a\\.\\b",
-        ] {
-            assert!(rel_path(bad).is_err(), "{bad}");
-        }
-    }
 
     #[test]
     fn guard_turns_a_panic_into_failure() {
@@ -141,6 +57,10 @@ mod fixture {
     use asc_store::key::ObjKey;
     use asc_store::objects::Objects;
     use asc_wc::redirect::Redirections;
+
+    pub(super) use asc_core::path::RepoPath;
+    pub(super) use asc_wc::journal::Op;
+    pub(super) use std::io;
 
     use super::*;
     use crate::core::{CoreFs, Options, Provider};
@@ -323,7 +243,6 @@ mod fixture {
 #[cfg(test)]
 mod basic {
     use super::fixture::*;
-    use super::*;
     use crate::core::Provider;
 
     #[test]
@@ -409,7 +328,6 @@ mod basic {
 #[cfg(test)]
 mod redirect {
     use super::fixture::*;
-    use super::*;
 
     #[test]
     #[ignore = "needs Windows with Client-ProjFS enabled"]
@@ -431,6 +349,8 @@ mod redirect {
 mod lifecycle {
     use std::collections::BTreeSet;
 
+    use asc_core::path::RepoPath;
+
     use asc_wc::intent;
 
     use asc_wc::switch::Mode;
@@ -441,7 +361,6 @@ mod lifecycle {
         Request,
         tests::{T, V1, V2},
     };
-    use super::*;
 
     fn work(lab: &Lab) -> BTreeSet<RepoPath> {
         let plan = lab.plan(V1, V2);

@@ -27,37 +27,35 @@
 //! Recovery applies the SAFE rules: it never destroys a file with local data, so a crashed FORCE
 //! switch leaves such files alone and the command is simply run again.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap};
 use std::io;
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
+use std::sync::atomic::Ordering;
 
+#[cfg(test)]
 use asc_core::id::TreeId;
-use asc_core::object::{Change, Kind};
+#[cfg(test)]
+use asc_core::object::Change;
+use asc_core::object::Kind;
 use asc_core::path::RepoPath;
+#[cfg(test)]
 use asc_state::{StateDb, WorkspaceId};
-use asc_wc::intent::{self, Replayed};
+#[cfg(test)]
+use asc_wc::intent;
+use asc_wc::intent::Replayed;
 use asc_wc::switch::{Mode, Plan};
 use asc_wc::times::Switched;
 
-use super::block;
 use super::data::{CONTENT_FILE, CONTENT_TREE, content_id};
 use super::enumerate::basic_info;
 use super::ffi::{self, ID_LEN, PlaceholderInfo, VersionInfo, update};
 use super::provider::{Inner, ProjfsProvider, lock};
 use super::reconcile::{is_dirty, is_tombstone, rel_wide, state_bits};
 use crate::core::{Node, Result, SwitchOutcome, VfsError};
-
-/// Delays before the three retries of a path that is held open.
-pub const RETRY_DELAYS: [Duration; 3] = [
-    Duration::from_millis(100),
-    Duration::from_millis(300),
-    Duration::from_millis(900),
-];
-/// Most threads that apply paths at once.
-pub const MAX_THREADS: usize = 8;
+use crate::win::block;
+use crate::win::engine::{self, Apply, Out, Work, vfs};
+pub use crate::win::engine::{MAX_THREADS, RETRY_DELAYS, Report, Request, Store};
 
 const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
 const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
@@ -65,65 +63,6 @@ const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
 const SAFE_FLAGS: u32 = update::ALLOW_DIRTY_METADATA | update::ALLOW_READ_ONLY;
 /// `SAFE_FLAGS | ALLOW_DIRTY_DATA`.
 const FORCE_FLAGS: u32 = SAFE_FLAGS | update::ALLOW_DIRTY_DATA;
-
-/// Where the switch intent is kept (`state.db`).
-#[derive(Clone)]
-pub struct Store {
-    pub db: StateDb,
-    pub ws: WorkspaceId,
-}
-
-/// One switch, reset or restore.
-pub struct Request<'a> {
-    pub mode: Mode,
-    /// Updates and deletes, with no conflicts (the caller refused them in step 3).
-    pub plan: &'a Plan,
-    /// FORCE and restore: the dirty paths in the command's pathspec. Those the target tree has are
-    /// restored, whatever their state (modified, full, read-only, tombstoned); those it lacks are
-    /// untracked and left alone.
-    pub extra: &'a BTreeSet<RepoPath>,
-    pub from_root: TreeId,
-    pub to_root: TreeId,
-    pub to_head: &'a str,
-}
-
-/// What a switch did.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Report {
-    /// Paths left in the intent: held open, or failed for another reason (see `errors`).
-    pub pending: Vec<RepoPath>,
-    /// Paths with local data that SAFE or MERGE mode left alone, as step 3 requires.
-    pub dirty_skipped: Vec<RepoPath>,
-    /// Paths written (updated, deleted or made virtual).
-    pub applied: usize,
-    /// The first few reasons paths stayed pending.
-    pub errors: Vec<String>,
-}
-
-impl Report {
-    pub fn outcome(&self) -> SwitchOutcome {
-        SwitchOutcome {
-            pending: self.pending.clone(),
-        }
-    }
-}
-
-/// How a path of `W` is treated.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Work {
-    Update,
-    /// The target tree deletes the path.
-    Delete,
-    /// A dirty path restored from the target tree, if it has it.
-    Extra,
-}
-
-#[derive(Debug)]
-enum Out {
-    Done,
-    DirtySkipped,
-    InUse(String),
-}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Anc {
@@ -148,10 +87,6 @@ fn is_sharing(hr: ffi::Hresult) -> bool {
 
 fn describe(hr: ffi::Hresult, cause: u32) -> String {
     format!("HRESULT {:#010x} (cause {cause})", hr as u32)
-}
-
-fn vfs(e: impl ToString) -> io::Error {
-    io::Error::other(e.to_string())
 }
 
 /// The placeholder a node projects as, at time `t`.
@@ -260,7 +195,7 @@ impl<'a> Run<'a> {
     }
 
     /// Brings one path to the target version.
-    fn apply(&self, path: &RepoPath, work: Work) -> io::Result<Out> {
+    fn apply_path(&self, path: &RepoPath, work: Work) -> io::Result<Out> {
         let inner = self.inner;
         let target = self.target(path)?;
         let Some(rel) = rel_wide(path) else {
@@ -373,7 +308,7 @@ impl<'a> Run<'a> {
     }
 
     /// After deletions: directories the target no longer has are removed bottom-up when empty.
-    fn remove_empty_dirs(&self, deleted: &[RepoPath]) {
+    fn drop_empty_dirs(&self, deleted: &[RepoPath]) {
         let mut dirs = BTreeSet::new();
         for p in deleted {
             let mut cur = p.parent();
@@ -431,108 +366,21 @@ impl<'a> Run<'a> {
     }
 }
 
-/// Runs `f` over `items` on up to [`MAX_THREADS`] threads.
-fn par_each<T: Sync>(items: &[T], f: impl Fn(&T) + Sync) {
-    if items.is_empty() {
-        return;
+impl Apply for Run<'_> {
+    fn apply(&self, path: &RepoPath, work: Work) -> io::Result<Out> {
+        self.apply_path(path, work)
     }
-    let threads = std::thread::available_parallelism()
-        .map_or(2, std::num::NonZero::get)
-        .clamp(1, MAX_THREADS)
-        .min(items.len());
-    let next = AtomicUsize::new(0);
-    std::thread::scope(|s| {
-        for _ in 0..threads {
-            s.spawn(|| {
-                loop {
-                    let i = next.fetch_add(1, Ordering::SeqCst);
-                    let Some(item) = items.get(i) else { return };
-                    f(item);
-                }
-            });
-        }
-    });
-}
 
-/// Outcomes of one pass over a batch.
-#[derive(Default)]
-struct Pass {
-    done: Vec<RepoPath>,
-    dirty: Vec<RepoPath>,
-    busy: Vec<(RepoPath, Work, String)>,
-}
-
-fn pass(run: &Run<'_>, items: &[(RepoPath, Work)]) -> Pass {
-    let out = Mutex::new(Pass::default());
-    par_each(items, |(path, work)| {
-        let r = run.apply(path, *work);
-        let mut o = lock(&out);
-        match r {
-            Ok(Out::Done) => o.done.push(path.clone()),
-            Ok(Out::DirtySkipped) => o.dirty.push(path.clone()),
-            Ok(Out::InUse(why)) => o.busy.push((path.clone(), *work, why)),
-            Err(e) => o.busy.push((path.clone(), *work, e.to_string())),
-        }
-    });
-    out.into_inner().unwrap_or_else(|e| e.into_inner())
-}
-
-/// How many `errors` a report keeps.
-const MAX_ERRORS: usize = 16;
-
-/// Applies `work`: deletions first, so a directory can become a file; held-open paths are retried
-/// after 100, 300 and 900 ms.
-fn execute(run: &Run<'_>, work: &BTreeMap<RepoPath, Work>) -> Report {
-    let (deletes, rest): (Vec<_>, Vec<_>) = work
-        .iter()
-        .map(|(p, w)| (p.clone(), *w))
-        .partition(|(_, w)| *w == Work::Delete);
-    let mut report = Report::default();
-    let mut deleted: Vec<RepoPath> = Vec::new();
-    let mut busy: Vec<(RepoPath, Work, String)> = Vec::new();
-    for batch in [deletes, rest] {
-        let p = pass(run, &batch);
-        report.applied += p.done.len();
-        deleted.extend(
-            p.done
-                .iter()
-                .filter(|d| work.get(*d) == Some(&Work::Delete))
-                .cloned(),
-        );
-        report.dirty_skipped.extend(p.dirty);
-        busy.extend(p.busy);
-        // Directories emptied by the first batch are removed before the second runs.
-        run.remove_empty_dirs(&deleted);
+    fn remove_empty_dirs(&self, deleted: &[RepoPath]) {
+        self.drop_empty_dirs(deleted);
     }
-    for delay in RETRY_DELAYS {
-        if busy.is_empty() {
-            break;
-        }
-        std::thread::sleep(delay);
-        let items: Vec<(RepoPath, Work)> = busy.iter().map(|(p, w, _)| (p.clone(), *w)).collect();
-        let p = pass(run, &items);
-        report.applied += p.done.len();
-        deleted.extend(
-            p.done
-                .iter()
-                .filter(|d| work.get(*d) == Some(&Work::Delete))
-                .cloned(),
-        );
-        report.dirty_skipped.extend(p.dirty);
-        busy = p.busy;
+
+    /// Placeholders created by the lookups must not be hidden by stale negative entries; then
+    /// step 4a.
+    fn finish(&self) {
+        let _ = self.inner.api.clear_negative(self.ctx);
+        self.make_visible();
     }
-    run.remove_empty_dirs(&deleted);
-    busy.sort_by(|a, b| a.0.cmp(&b.0));
-    for (p, _, why) in busy {
-        if report.errors.len() < MAX_ERRORS {
-            report
-                .errors
-                .push(format!("{}: {why}", String::from_utf8_lossy(p.as_bytes())));
-        }
-        report.pending.push(p);
-    }
-    report.dirty_skipped.sort();
-    report
 }
 
 impl ProjfsProvider {
@@ -549,64 +397,12 @@ impl ProjfsProvider {
     /// Runs the switch of `req` (SPEC §10.2 item 8). `times.time` is the time of every placeholder
     /// the switch rewrites.
     pub fn switch(&self, req: &Request<'_>, times: Switched) -> Result<Report> {
-        if !req.plan.conflicts.is_empty() {
-            return Err(VfsError::Conflicts);
-        }
         let inner = self.inner().ok_or(VfsError::NotMounted)?;
         let _live = inner.begin().ok_or(VfsError::NotMounted)?;
-        let mut work: BTreeMap<RepoPath, Work> = BTreeMap::new();
-        for (p, _) in &req.plan.updates {
-            work.insert(p.clone(), Work::Update);
-        }
-        for p in &req.plan.deletes {
-            work.insert(p.clone(), Work::Delete);
-        }
-        for p in req.extra {
-            work.entry(p.clone()).or_insert(Work::Extra);
-        }
-        if work.len() > intent::MAX_PENDING {
-            return Err(VfsError::Io(vfs(format!(
-                "the switch touches {} paths, more than the limit of {}",
-                work.len(),
-                intent::MAX_PENDING
-            ))));
-        }
         let store = self.intent_store();
-        let all: BTreeSet<RepoPath> = work.keys().cloned().collect();
-        if let Some(st) = &store {
-            block(
-                &inner.cfg.rt,
-                intent::begin(&st.db, st.ws, req.from_root, req.to_root, req.to_head, &all),
-            )
-            .map_err(vfs)?;
-        }
-        // The new base tree serves every path that becomes virtual from here on.
-        inner.cfg.core.set_root(req.to_root);
-        let run = Run::new(&inner, req.mode, times.time);
-        let report = execute(&run, &work);
-        // Placeholders created by the lookups above must not be hidden by stale negative entries.
-        let _ = inner.api.clear_negative(run.ctx);
-        run.make_visible();
-        if let Some(st) = &store {
-            let rest: BTreeSet<RepoPath> = report.pending.iter().cloned().collect();
-            if rest.is_empty() {
-                block(&inner.cfg.rt, intent::clear(&st.db, st.ws)).map_err(vfs)?;
-            } else {
-                block(
-                    &inner.cfg.rt,
-                    intent::begin(
-                        &st.db,
-                        st.ws,
-                        req.from_root,
-                        req.to_root,
-                        req.to_head,
-                        &rest,
-                    ),
-                )
-                .map_err(vfs)?;
-            }
-        }
-        Ok(report)
+        engine::switch(store.as_ref(), &inner.cfg.core, &inner.cfg.rt, req, || {
+            Run::new(&inner, req.mode, times.time)
+        })
     }
 
     /// Re-runs the stored intent: after a restart (the interrupted switch completes) and every
@@ -615,82 +411,17 @@ impl ProjfsProvider {
     pub fn resume(&self, time: i64) -> Result<Option<Replayed>> {
         let inner = self.inner().ok_or(VfsError::NotMounted)?;
         let _live = inner.begin().ok_or(VfsError::NotMounted)?;
-        let Some(st) = self.intent_store() else {
-            return Ok(None);
-        };
-        let Some(current) = block(&inner.cfg.rt, intent::load(&st.db, st.ws)).map_err(vfs)? else {
-            return Ok(None);
-        };
-        inner.cfg.core.set_root(current.to_root);
-        let run = Run::new(&inner, Mode::Safe, time);
-        // The same as `intent::replay` (applied paths leave the list, busy ones stay, an error
-        // saves the progress), but synchronous: the apply step blocks on the runtime.
-        let (mut keep, mut applied, mut failure) = (Vec::new(), 0usize, None);
-        for (i, raw) in current.pending.iter().enumerate() {
-            let done = RepoPath::new(raw.as_slice())
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))
-                .and_then(|p| run.apply(&p, Work::Extra));
-            match done {
-                Ok(Out::Done | Out::DirtySkipped) => applied += 1,
-                Ok(Out::InUse(_)) => keep.push(raw.clone()),
-                Err(e) => {
-                    keep.extend(current.pending[i..].iter().cloned());
-                    failure = Some(e);
-                    break;
-                }
-            }
-        }
-        let rest: BTreeSet<RepoPath> = keep
-            .iter()
-            .filter_map(|r| RepoPath::new(r.as_slice()).ok())
-            .collect();
-        if rest.is_empty() {
-            block(&inner.cfg.rt, intent::clear(&st.db, st.ws)).map_err(vfs)?;
-        } else if applied > 0 {
-            block(
-                &inner.cfg.rt,
-                intent::begin(
-                    &st.db,
-                    st.ws,
-                    current.from_root,
-                    current.to_root,
-                    &current.to_head,
-                    &rest,
-                ),
-            )
-            .map_err(vfs)?;
-        }
-        let _ = inner.api.clear_negative(run.ctx);
-        run.make_visible();
-        match failure {
-            Some(e) => Err(e.into()),
-            None => Ok(Some(Replayed {
-                applied,
-                pending: rest.len(),
-            })),
-        }
+        let store = self.intent_store();
+        engine::resume(store.as_ref(), &inner.cfg.core, &inner.cfg.rt, || {
+            Run::new(&inner, Mode::Safe, time)
+        })
     }
 
     /// The `Provider::apply_switch` entry: SAFE rules, no extras, the base tree unchanged.
     pub(crate) fn apply_plan(&self, plan: &Plan, times: Switched) -> Result<SwitchOutcome> {
-        if !plan.conflicts.is_empty() {
-            return Err(VfsError::Conflicts);
-        }
         let inner = self.inner().ok_or(VfsError::NotMounted)?;
         let _live = inner.begin().ok_or(VfsError::NotMounted)?;
-        let mut work: BTreeMap<RepoPath, Work> = BTreeMap::new();
-        for (p, c) in &plan.updates {
-            debug_assert!(!matches!(c, Change::Delete));
-            work.insert(p.clone(), Work::Update);
-        }
-        for p in &plan.deletes {
-            work.insert(p.clone(), Work::Delete);
-        }
-        let run = Run::new(&inner, Mode::Safe, times.time);
-        let report = execute(&run, &work);
-        let _ = inner.api.clear_negative(run.ctx);
-        run.make_visible();
-        Ok(report.outcome())
+        engine::apply_plan(&Run::new(&inner, Mode::Safe, times.time), plan)
     }
 }
 

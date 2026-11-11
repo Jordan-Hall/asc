@@ -13,8 +13,6 @@ use std::time::{Duration, SystemTime};
 
 use asc_core::id::FileId;
 use asc_core::path::{Name, RepoPath};
-use asc_store::cachedir::CacheDir;
-use asc_store::objects::Objects;
 use asc_wc::SafeRoot;
 use asc_wc::redirect::Redirections;
 use asc_wc::switch::Plan;
@@ -25,7 +23,7 @@ use tokio::runtime::Handle;
 use super::enumerate::Session;
 use super::ffi::{self, Api, Callbacks, Ctx, Guid, NotificationMapping, StartOptions};
 use super::switch::Store;
-use super::{JournalSink, TimeSource, block, data, enumerate, notify, rename};
+use super::{block, data, enumerate, notify, rename};
 use crate::core::{CoreFs, DehydrateOutcome, Provider, Result, SwitchOutcome, VfsError};
 
 /// Most existing redirected directories that get a `PRJ_NOTIFY_NONE` mapping.
@@ -35,20 +33,7 @@ pub const MAX_SCAN_DIRS: usize = 200_000;
 /// Longest wait for in-flight asynchronous hydrations at unmount.
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// What a ProjFS provider needs from the daemon.
-pub struct Config {
-    /// The workspace uuid: the virtualization instance GUID and every placeholder's `ProviderID`.
-    pub workspace: [u8; 16],
-    pub core: Arc<CoreFs>,
-    pub objects: Arc<dyn Objects>,
-    /// The local content cache; content found there is served without leaving the callback.
-    pub local: Option<CacheDir>,
-    pub times: Arc<dyn TimeSource>,
-    pub journal: Arc<dyn JournalSink>,
-    pub redirections: Redirections,
-    /// The runtime the callbacks run async work on.
-    pub rt: Handle,
-}
+pub use crate::win::Config;
 
 /// The state every callback reaches through `instanceContext`.
 pub(crate) struct Inner {

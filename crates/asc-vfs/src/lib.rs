@@ -8,6 +8,10 @@ pub mod core;
 pub mod policy;
 pub mod stats;
 
+/// What the Windows backends share: config, journal sink, path rules, the switch engine.
+#[cfg(all(windows, feature = "projfs"))]
+pub mod win;
+
 /// Windows ProjFS backend (SPEC §10.2).
 #[cfg(all(feature = "projfs", windows))]
 #[allow(unsafe_code)] // the ProjFS FFI; every call is confined to this module tree.
