@@ -332,6 +332,27 @@ describe("tasks", () => {
     expect(
       bundlerScripts(JSON.stringify({ scripts: { b: "rsbuild build", "bad name": "vite build" } })),
     ).toEqual([{ name: "b", tool: "rsbuild" }]);
+    expect(
+      bundlerScripts(
+        JSON.stringify({
+          scripts: {
+            a: "rspack build",
+            b: "webpack --mode production",
+            c: "tsc && webpack",
+            d: "webpack build --config w.js",
+            e: "webpack serve",
+            f: "webpack --watch",
+            g: "rspack dev",
+            h: "webpack-cli",
+          },
+        }),
+      ),
+    ).toEqual([
+      { name: "a", tool: "rspack" },
+      { name: "b", tool: "webpack" },
+      { name: "c", tool: "webpack" },
+      { name: "d", tool: "webpack" },
+    ]);
   });
 
   test("a declared task runs through asc cache run", () => {
