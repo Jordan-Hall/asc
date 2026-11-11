@@ -289,8 +289,13 @@ pub(crate) async fn cached(ctx: &Ctx, a: &Spec) -> Result<ExitCode> {
     if hit.is_none() && mode != Mode::Off {
         hit = remote::fetch_entry(ctx, &store, &key).await;
     }
+    // A hit writes only the outputs whose bytes differ and removes what the entry lacks below
+    // the declared outputs.
     if let Some(action) = hit
-        && store.restore(&action, &root).map_err(io_err)?
+        && store
+            .sync(&action, &root, &outputs)
+            .map_err(io_err)?
+            .is_some()
     {
         if !a.quiet {
             eprintln!("asc cache: hit {} ({})", a.name, &key.to_string()[..12]);

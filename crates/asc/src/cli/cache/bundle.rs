@@ -155,31 +155,31 @@ pub async fn restore(ctx: &Ctx, a: RestoreArgs, out: &mut impl Write) -> Result<
     if found.is_none() && mode != Mode::Off {
         found = remote::fetch_entry(ctx, &store, &key).await;
     }
-    // Only an entry whose blobs are all here replaces the outputs: what the last build left
-    // there goes first, so no stale file stays beside the restored ones.
-    let complete = found.filter(|act| {
-        act.outputs
-            .iter()
-            .all(|o| asc_buildcache::unhex(&o.blob).is_some_and(|id| store.has_blob(&id)))
-    });
-    let mut hit = false;
-    if let Some(action) = complete {
-        for o in &outs {
-            let p = root.join(o);
-            match std::fs::symlink_metadata(&p) {
-                Ok(m) if m.is_dir() => std::fs::remove_dir_all(&p)?,
-                Ok(_) => std::fs::remove_file(&p)?,
-                Err(_) => {}
-            }
-        }
-        hit = store.restore(&action, &root).map_err(io_err)?;
-        if hit && mode == Mode::ReadWrite {
+    // Only an entry whose blobs are all here touches the outputs. Files already holding the
+    // entry's bytes stay as they are (same modification time); the others are written, and what
+    // the last build left below the outputs that the entry lacks is removed.
+    let mut synced = None;
+    if let Some(action) = found {
+        synced = store.sync(&action, &root, &outs).map_err(io_err)?;
+        if synced.is_some() && mode == Mode::ReadWrite {
             store.queue_push(&key).map_err(io_err)?;
             spawn_push(&store, &ctx.cwd);
         }
     }
+    let hit = synced.is_some();
     if a.json {
-        writeln!(out, "{}", json!({ "hit": hit, "key": key.to_string() }))?;
+        let s = synced.unwrap_or_default();
+        writeln!(
+            out,
+            "{}",
+            json!({
+                "hit": hit,
+                "key": key.to_string(),
+                "written": s.written,
+                "kept": s.kept,
+                "removed": s.removed,
+            })
+        )?;
     } else {
         writeln!(out, "{key}")?;
     }
