@@ -527,6 +527,27 @@ mod tests {
     }
 
     #[test]
+    fn copy_flags_turn_on_copy_detection() {
+        for (flags, threshold) in [
+            (&["-C"][..], 50),
+            (&["-C70%"][..], 70),
+            (&["--find-copies"][..], 50),
+            (&["--find-copies=80%"][..], 80),
+            (&["-M60%", "-C"][..], 50),
+        ] {
+            let c = parse(DiffOptions::default(), &args(flags)).unwrap();
+            let r = c.opts.renames.expect("renames on");
+            assert!(r.copies, "{flags:?}");
+            assert_eq!(r.threshold, threshold, "{flags:?}");
+            assert_eq!(c.renames_flag, Some(true));
+            assert!(c.extra.is_empty(), "{flags:?}");
+        }
+        let c = parse(DiffOptions::default(), &args(&["-M"])).unwrap();
+        assert!(c.opts.renames.is_some_and(|r| !r.copies));
+        assert!(parse(DiffOptions::default(), &args(&["-Cx"])).is_err());
+    }
+
+    #[test]
     fn binary_implies_patch() {
         let c = parse(DiffOptions::default(), &args(&["--binary"])).unwrap();
         assert!(c.fmt.patch && c.binary && c.opts.abbrev == 7);

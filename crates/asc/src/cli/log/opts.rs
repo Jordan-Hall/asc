@@ -325,6 +325,15 @@ mod tests {
     }
 
     #[test]
+    fn copy_flags_ask_for_copy_detection() {
+        assert!(!parse(&["-M"]).diff.copies);
+        for flags in [&["-C"][..], &["--find-copies"], &["--no-renames", "-C"]] {
+            let o = parse(flags);
+            assert!(o.diff.copies && !o.diff.no_renames, "{flags:?}");
+        }
+    }
+
+    #[test]
     fn counts_in_every_spelling() {
         assert_eq!(parse(&["-3"]).max_count, Some(3));
         assert_eq!(parse(&["-n", "4"]).max_count, Some(4));

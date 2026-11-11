@@ -519,6 +519,131 @@ async fn rename_limit_disables_inexact_matching_only() {
     assert_eq!(e.diff_trees(a, b, None, &renames()).await.unwrap().len(), 3);
 }
 
+fn copies() -> DiffOptions {
+    DiffOptions {
+        renames: Some(RenameOptions {
+            copies: true,
+            ..RenameOptions::default()
+        }),
+        ..DiffOptions::default()
+    }
+}
+
+fn summary(changes: &[TreeChange]) -> Vec<(String, String, Status)> {
+    changes
+        .iter()
+        .map(|c| {
+            (
+                String::from_utf8_lossy(c.old_path.as_bytes()).into_owned(),
+                String::from_utf8_lossy(c.path.as_bytes()).into_owned(),
+                c.status,
+            )
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn copies_from_a_modified_file_keep_the_source() {
+    let e = engine();
+    let body: String = (0..20).map(|i| format!("line {i}\n")).collect();
+    let edited = format!("{body}one more\n");
+    let a = tree_of(&e, &[("src.txt", Kind::File, body.as_bytes())]).await;
+    let b = tree_of(
+        &e,
+        &[
+            ("copy.txt", Kind::File, body.as_bytes()),
+            ("src.txt", Kind::File, edited.as_bytes()),
+        ],
+    )
+    .await;
+    // Renames alone: the new file is an addition.
+    let plain = e.diff_trees(a, b, None, &renames()).await.unwrap();
+    assert_eq!(
+        plain.iter().map(|c| c.status).collect::<Vec<_>>(),
+        vec![Status::Added, Status::Modified]
+    );
+    let changes = e.diff_trees(a, b, None, &copies()).await.unwrap();
+    assert_eq!(
+        summary(&changes),
+        vec![
+            ("src.txt".into(), "copy.txt".into(), Status::Copied(100)),
+            ("src.txt".into(), "src.txt".into(), Status::Modified),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn inexact_copy_scores_like_a_rename() {
+    let e = engine();
+    let body: String = (0..20).map(|i| format!("line {i}\n")).collect();
+    let near: String = (0..20)
+        .map(|i| {
+            if i == 0 {
+                "changed\n".to_owned()
+            } else {
+                format!("line {i}\n")
+            }
+        })
+        .collect();
+    let a = tree_of(&e, &[("src.txt", Kind::File, body.as_bytes())]).await;
+    let b = tree_of(
+        &e,
+        &[
+            ("near.txt", Kind::File, near.as_bytes()),
+            ("src.txt", Kind::File, format!("{body}x\n").as_bytes()),
+        ],
+    )
+    .await;
+    let changes = e.diff_trees(a, b, None, &copies()).await.unwrap();
+    assert_eq!(changes.len(), 2);
+    assert_eq!(changes[0].old_path.as_bytes(), b"src.txt");
+    assert!(matches!(changes[0].status, Status::Copied(s) if (50..100).contains(&s)));
+}
+
+#[tokio::test]
+async fn a_deleted_source_renames_to_its_last_destination_and_copies_to_the_rest() {
+    let e = engine();
+    let body: String = (0..20).map(|i| format!("line {i}\n")).collect();
+    let a = tree_of(&e, &[("old.txt", Kind::File, body.as_bytes())]).await;
+    let b = tree_of(
+        &e,
+        &[
+            ("a.txt", Kind::File, body.as_bytes()),
+            ("b.txt", Kind::File, body.as_bytes()),
+        ],
+    )
+    .await;
+    let changes = e.diff_trees(a, b, None, &copies()).await.unwrap();
+    assert_eq!(
+        summary(&changes),
+        vec![
+            ("old.txt".into(), "a.txt".into(), Status::Copied(100)),
+            ("old.txt".into(), "b.txt".into(), Status::Renamed(100)),
+        ]
+    );
+    // Without copies one destination is the rename and the other an addition.
+    let plain = e.diff_trees(a, b, None, &renames()).await.unwrap();
+    assert_eq!(plain.len(), 2);
+    assert_eq!(
+        plain
+            .iter()
+            .filter(|c| matches!(c.status, Status::Renamed(_)))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn diff_renames_copies_config_turns_copy_detection_on() {
+    let mut o = DiffOptions::default();
+    assert!(o.apply_config("diff.renames", "copies").unwrap());
+    assert!(o.renames.is_some_and(|r| r.copies));
+    assert!(o.apply_config("diff.renames", "true").unwrap());
+    assert!(o.renames.is_some_and(|r| !r.copies));
+    assert!(o.apply_config("diff.renames", "false").unwrap());
+    assert!(o.renames.is_none());
+}
+
 // ---- attributes ----
 
 struct Attrs;

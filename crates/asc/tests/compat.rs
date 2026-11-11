@@ -36,6 +36,7 @@ scenarios! {
     reset_restore = "reset-restore",
     tag = "tag",
     rename = "rename",
+    diff_copies = "diff-copies",
     ignore = "ignore",
     ascignore = "ascignore",
     config_alias_includeif = "config-alias-includeif",
