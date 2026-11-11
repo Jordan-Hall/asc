@@ -736,16 +736,23 @@ pub async fn serve(
     // so only a presigning store gets them; the discovery document names them only then.
     let seed_task = turbo.seed_store().map(|store| {
         let store = Arc::new(store);
+        // The source is also the gate: a seed is served only while its repo exists under the
+        // namespace it was cut from and has no path rules.
+        let source = Arc::new(seed_source::RegistrySeeds::new(
+            registry.clone(),
+            ext.pathrules.clone(),
+            workdir::default_dir(&cfg, "seeds").join("stage"),
+        ));
         seeds::register(
             &ext,
-            Arc::new(seeds::SeedsState::new(authorizer.clone(), store.clone())),
-        );
-        let source = seed_source::RegistrySeeds::new(
-            registry.clone(),
-            workdir::default_dir(&cfg, "seeds").join("stage"),
+            Arc::new(seeds::SeedsState::new(
+                authorizer.clone(),
+                store.clone(),
+                source.clone(),
+            )),
         );
         Arc::new(seeds::SeedTask::new(
-            Arc::new(source),
+            source,
             store,
             workdir::default_dir(&cfg, "seeds").join("out"),
         ))

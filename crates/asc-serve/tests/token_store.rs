@@ -538,7 +538,11 @@ fn routes(authz: Arc<TokenStoreAuthz>) -> Router {
     let store = SeedStore::new(mem.clone(), StorePath::from("root"));
     seeds::register(
         &ext,
-        Arc::new(SeedsState::new(authz.clone(), Arc::new(store))),
+        Arc::new(SeedsState::new(
+            authz.clone(),
+            Arc::new(store),
+            Arc::new(NoSeeds),
+        )),
     );
     let state = TurboState::new(
         authz.clone(),
@@ -1296,4 +1300,18 @@ fn config_validates_public_repos() {
         ))
         .is_err()
     );
+}
+
+/// No seed is ever served: these tests stop at the edge's authentication.
+struct NoSeeds;
+
+#[async_trait::async_trait]
+impl asc_serve::seeds::SeedGate for NoSeeds {
+    async fn serve(
+        &self,
+        _: &asc_serve::turbo::Slug,
+        _: &str,
+    ) -> Result<bool, asc_serve::seeds::SeedsError> {
+        Ok(false)
+    }
 }

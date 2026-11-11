@@ -90,7 +90,11 @@ fn public(spy: &Arc<Spy>) -> Router {
     let store = SeedStore::new(mem.clone(), StorePath::from("root"));
     seeds::register(
         &ext,
-        Arc::new(SeedsState::new(spy.clone(), Arc::new(store))),
+        Arc::new(SeedsState::new(
+            spy.clone(),
+            Arc::new(store),
+            Arc::new(NoSeeds),
+        )),
     );
     let state = TurboState::new(
         spy.clone(),
@@ -563,4 +567,18 @@ async fn real_git_asks_its_credential_helper_after_the_challenge() {
             .unwrap()
             .contains(&(Scheme::Basic, Some("x-access-token".into())))
     );
+}
+
+/// No seed is ever served: these tests stop at the edge's authentication.
+struct NoSeeds;
+
+#[async_trait::async_trait]
+impl asc_serve::seeds::SeedGate for NoSeeds {
+    async fn serve(
+        &self,
+        _: &asc_serve::turbo::Slug,
+        _: &str,
+    ) -> Result<bool, asc_serve::seeds::SeedsError> {
+        Ok(false)
+    }
 }

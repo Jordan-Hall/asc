@@ -8,6 +8,11 @@
 //! their chunk lists cannot be verified from the key (§12.3), so a seed leaves them out and the
 //! client reads them on demand. The objects are staged in a private cache directory, which the
 //! task removes once it has packed it.
+//!
+//! A seed is handed to every reader of the repo, so a repo with any path rule (§13.4) gets none:
+//! the trees and hot files would reveal what the rules hide. Without the path rules store the
+//! source seeds nothing (fail closed). [`RegistrySeeds`] is also the [`SeedGate`]: at each request
+//! the repo must still exist with the namespace the seed was cut from and have no path rules.
 
 use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
@@ -29,8 +34,9 @@ use async_trait::async_trait;
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use sqlx::Row;
 
+use crate::pathrules::PathRulesSlot;
 use crate::registry::Registry;
-use crate::seeds::{SeedPlan, SeedSource, SeedsError};
+use crate::seeds::{SeedGate, SeedPlan, SeedSource, SeedsError};
 use crate::turbo::Slug;
 
 /// The prefetch globs of a repository without `.asc/prefetch`.
@@ -49,6 +55,7 @@ static STAGE_SEQ: AtomicU64 = AtomicU64::new(0);
 /// Every repository of the registry, seeded from its default branch.
 pub struct RegistrySeeds {
     registry: Arc<Registry>,
+    rules: Arc<PathRulesSlot>,
     /// Staging directories are made here.
     tmp: PathBuf,
     window: u32,
@@ -56,9 +63,11 @@ pub struct RegistrySeeds {
 }
 
 impl RegistrySeeds {
-    pub fn new(registry: Arc<Registry>, tmp: PathBuf) -> Self {
+    /// `rules` is the server's path rules slot; a repo with rules is never seeded.
+    pub fn new(registry: Arc<Registry>, rules: Arc<PathRulesSlot>, tmp: PathBuf) -> Self {
         Self {
             registry,
+            rules,
             tmp,
             window: WINDOW,
             max_file_bytes: MAX_FILE_BYTES,
@@ -73,9 +82,25 @@ impl RegistrySeeds {
         self
     }
 
+    /// Whether `repo` has path rules; an unset store counts as rules (fail closed).
+    async fn has_rules(&self, repo: &str) -> Result<bool, SeedsError> {
+        let Some(hub) = self.rules.get() else {
+            return Ok(true);
+        };
+        hub.get(repo)
+            .await
+            .map(|set| !set.rules.is_empty())
+            .map_err(|e| SeedsError::Source(format!("path rules: {e:?}")))
+    }
+
     async fn tip_of(&self, repo: &Slug) -> Result<(RepoName, ChangesetId, u64), SeedsError> {
         let src = |e: &dyn std::fmt::Display| SeedsError::Source(e.to_string());
         let name = RepoName::parse(&repo.repo_name()).map_err(|e| src(&e))?;
+        if self.has_rules(name.as_str()).await? {
+            return Err(SeedsError::Source(
+                "the repository has path rules (or none are loaded): no seed".into(),
+            ));
+        }
         let entry = self.registry.open(&name).await.map_err(|e| src(&e))?;
         let branch = format!("refs/heads/{}", entry.default_branch);
         let ref_name = RefName::new(branch.as_bytes()).map_err(|e| src(&e))?;
@@ -154,6 +179,7 @@ impl SeedSource for RegistrySeeds {
         match built {
             Ok(files) => Ok(SeedPlan {
                 changeset: tip.to_string(),
+                repo_id: entry.ns.hex(),
                 landed,
                 cache: root.join("cache"),
                 files,
@@ -164,6 +190,30 @@ impl SeedSource for RegistrySeeds {
                 Err(e)
             }
         }
+    }
+}
+
+#[async_trait]
+impl SeedGate for RegistrySeeds {
+    async fn serve(&self, repo: &Slug, repo_id: &str) -> Result<bool, SeedsError> {
+        let name = repo.repo_name();
+        // Read the row, not the registry's cache: a repo deleted a moment ago is gone now.
+        let row = sqlx::query("SELECT ns FROM repos WHERE name = $1 AND ready")
+            .bind(&name)
+            .fetch_optional(self.registry.pool())
+            .await
+            .map_err(|e| SeedsError::Source(e.to_string()))?;
+        let Some(row) = row else {
+            return Ok(false);
+        };
+        let ns: Vec<u8> = row
+            .try_get("ns")
+            .map_err(|e| SeedsError::Source(e.to_string()))?;
+        let hex: String = ns.iter().map(|b| format!("{b:02x}")).collect();
+        if hex != repo_id {
+            return Ok(false);
+        }
+        Ok(!self.has_rules(&name).await?)
     }
 }
 
@@ -364,6 +414,19 @@ mod tests {
         reg.refs().update(e.key, &txn).await.unwrap();
     }
 
+    /// A path rules slot with an empty store: every repo may be seeded.
+    async fn no_rules() -> (Arc<PathRulesSlot>, Arc<crate::pathrules::PathRulesHub>) {
+        let p = crate::migrate::connect("sqlite::memory:", 1).await.unwrap();
+        crate::migrate::migrate(&p).await.unwrap();
+        let hub = crate::pathrules::PathRulesHub::new(
+            p,
+            Arc::new(crate::settings::testkit::Recorder::default()),
+        );
+        let slot = Arc::new(PathRulesSlot::default());
+        assert!(slot.set(hub.clone()));
+        (slot, hub)
+    }
+
     fn class(files: &[String], c: &str) -> usize {
         files
             .iter()
@@ -376,7 +439,9 @@ mod tests {
         let reg = registry().await;
         let e = repo(&reg).await;
         let tmp = tempfile::tempdir().unwrap();
-        let src = RegistrySeeds::new(reg.clone(), tmp.path().join("stage")).with_limits(2, 1 << 20);
+        let (rules, _) = no_rules().await;
+        let src = RegistrySeeds::new(reg.clone(), rules, tmp.path().join("stage"))
+            .with_limits(2, 1 << 20);
         let slug = Slug::parse("o.r").unwrap();
         assert_eq!(src.repos().await, std::slice::from_ref(&slug));
         // No default branch yet: nothing to seed, and the task skips the repo quietly.
@@ -458,7 +523,10 @@ mod tests {
         let store = Arc::new(SeedStore::new(mem.clone(), StorePath::from("root")));
         let task = SeedTask::new(Arc::new(src), store.clone(), tmp.path().join("out"));
         assert_eq!(task.tick(1_000).await, ["o/r"]);
-        assert_eq!(store.latest(&slug).await.unwrap(), Some(three.to_string()));
+        assert_eq!(
+            store.latest(&slug).await.unwrap(),
+            Some((three.to_string(), e.ns.hex()))
+        );
         // What a client downloads passes its verifying unpack and installs every planned file.
         let key = StorePath::from(format!("root/seeds/o.r/{three}.tar.zst"));
         let bytes = object_store::ObjectStoreExt::get(mem.as_ref(), &key)
@@ -513,7 +581,8 @@ assets/*.png
         )
         .await;
         move_master(&reg, &e, cs).await;
-        let src = RegistrySeeds::new(reg.clone(), tmp.path().to_owned());
+        let (rules, _) = no_rules().await;
+        let src = RegistrySeeds::new(reg.clone(), rules.clone(), tmp.path().to_owned());
         let plan = src.plan(&Slug::parse("o.r").unwrap()).await.unwrap();
         let file = |b: &[u8]| ObjKey::File(FileId::of(b)).path();
         assert!(plan.files.contains(&file(b"PNG-bytes")));
@@ -526,10 +595,80 @@ assets/*.png
 "
         )));
         // The budget leaves out what does not fit.
-        let tight = RegistrySeeds::new(reg.clone(), tmp.path().to_owned()).with_limits(1, 2);
+        let tight = RegistrySeeds::new(reg.clone(), rules, tmp.path().to_owned()).with_limits(1, 2);
         let plan = tight.plan(&Slug::parse("o.r").unwrap()).await.unwrap();
         assert!(plan.files.contains(&file(b"{}")));
         assert!(!plan.files.contains(&file(b"PNG-bytes")));
+    }
+
+    #[tokio::test]
+    async fn a_repo_with_path_rules_or_no_rules_store_gets_no_seed() {
+        let reg = registry().await;
+        let e = repo(&reg).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let cs = commit(&e, &[], &[("src/main.rs", b"fn main() {}\n")]).await;
+        move_master(&reg, &e, cs).await;
+        let slug = Slug::parse("o.r").unwrap();
+        // No path rules store: fail closed.
+        let unset = RegistrySeeds::new(
+            reg.clone(),
+            Arc::new(PathRulesSlot::default()),
+            tmp.path().to_owned(),
+        );
+        assert!(unset.tip(&slug).await.is_err());
+        assert!(unset.plan(&slug).await.is_err());
+        assert!(!unset.serve(&slug, &e.ns.hex()).await.unwrap());
+        // An empty store: seeded and served.
+        let (rules, hub) = no_rules().await;
+        let src = RegistrySeeds::new(reg.clone(), rules, tmp.path().to_owned());
+        assert_eq!(src.tip(&slug).await.unwrap().0, cs.to_string());
+        assert!(src.serve(&slug, &e.ns.hex()).await.unwrap());
+        // One rule anywhere in the repo: neither cut nor served.
+        let rule = [crate::pathrules::parse_rule("secret", "*", "none").unwrap()];
+        hub.set("O/R", &rule, 0, "pat:admin").await.unwrap();
+        let err = src.plan(&slug).await.unwrap_err().to_string();
+        assert!(err.contains("path rules"), "{err}");
+        assert!(!src.serve(&slug, &e.ns.hex()).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn the_gate_refuses_a_seed_of_a_deleted_or_replaced_repo() {
+        let reg = registry().await;
+        let e = repo(&reg).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let (rules, _) = no_rules().await;
+        let src = RegistrySeeds::new(reg.clone(), rules, tmp.path().to_owned());
+        let slug = Slug::parse("o.r").unwrap();
+        let ns = e.ns.hex();
+        assert!(src.serve(&slug, &ns).await.unwrap());
+        assert!(
+            !src.serve(&slug, &"0".repeat(32)).await.unwrap(),
+            "another namespace"
+        );
+        assert!(
+            !src.serve(&Slug::parse("o.gone").unwrap(), &ns)
+                .await
+                .unwrap()
+        );
+        // Renamed away: the old name no longer has the repo.
+        sqlx::query("UPDATE repos SET name = 'o/moved' WHERE name = 'o/r'")
+            .execute(reg.pool())
+            .await
+            .unwrap();
+        assert!(!src.serve(&slug, &ns).await.unwrap());
+        assert!(
+            src.serve(&Slug::parse("o.moved").unwrap(), &ns)
+                .await
+                .unwrap()
+        );
+        // A new repo under the old name has a new namespace: the old seed stays refused.
+        sqlx::query("UPDATE repos SET name = 'o/r', ns = $1 WHERE name = 'o/moved'")
+            .bind(vec![7u8; 16])
+            .execute(reg.pool())
+            .await
+            .unwrap();
+        assert!(!src.serve(&slug, &ns).await.unwrap());
+        assert!(src.serve(&slug, &"07".repeat(16)).await.unwrap());
     }
 
     #[test]

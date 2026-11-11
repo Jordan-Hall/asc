@@ -4,10 +4,13 @@
 //! changesets, uploads it to `seeds/<owner>.<repo>/<changeset>.tar.zst`, points
 //! `seeds/<owner>.<repo>/latest` at it and keeps the newest 3. `GET /seeds/<owner>/<repo>/latest`
 //! authorises the caller for read access and redirects to a presigned URL, so the bytes never
-//! pass through the server. The archive format and the client-side unpack live in
+//! pass through the server. `latest` also names the registry id of the repo it was cut from, and a
+//! [`SeedGate`] checks at every request that the repo still exists under that id and has no path
+//! rules, so a deleted or renamed repo's seed is never served to a new repo of the same name and a
+//! seed never bypasses path-level read rules. The archive format and the client-side unpack live in
 //! [`asc_store::seed`].
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -39,7 +42,7 @@ const URL_TTL: Duration = Duration::from_secs(15 * 60);
 /// The task wakes this often to check what is due.
 const TICK: Duration = Duration::from_secs(60);
 const UPLOAD_CHUNK: usize = 8 * 1024 * 1024;
-const MAX_POINTER_BYTES: u64 = 128;
+const MAX_POINTER_BYTES: u64 = 256;
 
 /// Why a seed could not be cut or published.
 #[derive(Debug, thiserror::Error)]
@@ -59,6 +62,8 @@ pub enum SeedsError {
 pub struct SeedPlan {
     /// Lowercase hex id of the default branch's tip changeset.
     pub changeset: String,
+    /// The registry id of the repo the seed is cut from; `latest` records it for the [`SeedGate`].
+    pub repo_id: String,
     /// Landed changesets so far (monotonic); the 50-changeset trigger compares it.
     pub landed: u64,
     /// The cache directory the files are read from.
@@ -84,6 +89,14 @@ pub trait SeedSource: Send + Sync {
     async fn plan(&self, repo: &Slug) -> Result<SeedPlan, SeedsError>;
 }
 
+/// Decides at request time whether a published seed may still be served.
+#[async_trait]
+pub trait SeedGate: Send + Sync {
+    /// True when `repo` exists with registry id `repo_id` (the id the seed was cut from) and a
+    /// seed may be handed to every reader of it. A false answer is a 404.
+    async fn serve(&self, repo: &Slug, repo_id: &str) -> Result<bool, SeedsError>;
+}
+
 fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -92,6 +105,10 @@ fn unix_now() -> u64 {
 
 fn repo_dir(slug: &Slug) -> String {
     slug.repo_name().replace('/', ".")
+}
+
+fn id_ok(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 64 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
 fn hex_ok(s: &str) -> bool {
@@ -140,8 +157,9 @@ impl SeedStore {
         self.dir(slug).join("latest")
     }
 
-    /// The changeset `latest` names, if there is a valid pointer.
-    pub async fn latest(&self, slug: &Slug) -> Result<Option<String>, SeedsError> {
+    /// The changeset `latest` names and the repo id it was cut from, if there is a valid pointer.
+    /// A pointer without a repo id is not valid.
+    pub async fn latest(&self, slug: &Slug) -> Result<Option<(String, String)>, SeedsError> {
         let got = match self.store.get(&self.pointer(slug)).await {
             Ok(g) => g,
             Err(object_store::Error::NotFound { .. }) => return Ok(None),
@@ -151,11 +169,16 @@ impl SeedStore {
             return Ok(None);
         }
         let bytes = got.bytes().await?;
-        Ok(std::str::from_utf8(&bytes)
-            .ok()
-            .map(str::trim)
-            .filter(|s| hex_ok(s))
-            .map(str::to_owned))
+        let Ok(text) = std::str::from_utf8(&bytes) else {
+            return Ok(None);
+        };
+        let mut lines = text.lines().map(str::trim);
+        let (Some(changeset), Some(repo_id), None) = (lines.next(), lines.next(), lines.next())
+        else {
+            return Ok(None);
+        };
+        Ok((hex_ok(changeset) && id_ok(repo_id))
+            .then(|| (changeset.to_owned(), repo_id.to_owned())))
     }
 
     /// Uploads the seed file, then moves `latest`, then prunes to the newest [`KEEP`].
@@ -163,10 +186,14 @@ impl SeedStore {
         &self,
         slug: &Slug,
         changeset: &str,
+        repo_id: &str,
         file: &std::path::Path,
     ) -> Result<(), SeedsError> {
         if !hex_ok(changeset) {
             return Err(SeedsError::Source("bad changeset id".into()));
+        }
+        if !id_ok(repo_id) {
+            return Err(SeedsError::Source("bad repo id".into()));
         }
         let path = self.object(slug, changeset);
         let upload = self.store.put_multipart(&path).await?;
@@ -194,7 +221,14 @@ impl SeedStore {
         self.store
             .put(
                 &self.pointer(slug),
-                PutPayload::from(changeset.as_bytes().to_vec()),
+                PutPayload::from(
+                    format!(
+                        "{changeset}
+{repo_id}
+"
+                    )
+                    .into_bytes(),
+                ),
             )
             .await?;
         self.prune(slug, changeset).await
@@ -228,6 +262,31 @@ impl SeedStore {
             }
         }
         Ok(())
+    }
+
+    /// Deletes every seed directory whose `owner.repo` is not in `live`: the repo was deleted or
+    /// renamed. Returns the directories removed.
+    pub async fn sweep(&self, live: &HashSet<String>) -> Result<Vec<String>, SeedsError> {
+        let base = self.root.clone().join("seeds");
+        let listed = self.store.list_with_delimiter(Some(&base)).await?;
+        let mut gone = Vec::new();
+        for dir in listed.common_prefixes {
+            let Some(name) = dir.filename().map(str::to_owned) else {
+                continue;
+            };
+            if live.contains(&name) {
+                continue;
+            }
+            let mut listing = self.store.list(Some(&dir));
+            while let Some(m) = listing.next().await {
+                match self.store.delete(&m?.location).await {
+                    Ok(()) | Err(object_store::Error::NotFound { .. }) => {}
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            gone.push(name);
+        }
+        Ok(gone)
     }
 
     /// Changesets with a seed object, newest first.
@@ -313,7 +372,11 @@ impl SeedTask {
         .await
         .map_err(|e| SeedsError::Source(e.to_string()))?;
         let result = match packed {
-            Ok(_) => self.store.publish(slug, &plan.changeset, &file).await,
+            Ok(_) => {
+                self.store
+                    .publish(slug, &plan.changeset, &plan.repo_id, &file)
+                    .await
+            }
             Err(e) => Err(e),
         };
         let _ = tokio::fs::remove_file(&file).await;
@@ -341,7 +404,24 @@ impl SeedTask {
     /// does not stop the others. Returns the repos published.
     pub async fn tick(&self, now: u64) -> Vec<String> {
         let mut done = Vec::new();
-        for slug in self.source.repos().await {
+        let repos = self.source.repos().await;
+        // An empty list may be a failed query: sweeping then would delete every seed. The gate
+        // refuses a deleted repo's seed in any case.
+        if !repos.is_empty() {
+            let live: HashSet<String> = repos.iter().map(repo_dir).collect();
+            self.last
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .retain(|k, _| live.contains(k));
+            match self.store.sweep(&live).await {
+                Ok(gone) if !gone.is_empty() => {
+                    tracing::info!(event = "seeds.sweep", removed = ?gone);
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!(event = "seeds.sweep", error = %e),
+            }
+        }
+        for slug in repos {
             let (changeset, landed) = match self.source.tip(&slug).await {
                 Ok(t) => t,
                 Err(e) => {
@@ -397,11 +477,20 @@ impl SeedTask {
 pub struct SeedsState {
     authorizer: Arc<dyn Authorizer>,
     store: Arc<SeedStore>,
+    gate: Arc<dyn SeedGate>,
 }
 
 impl SeedsState {
-    pub fn new(authorizer: Arc<dyn Authorizer>, store: Arc<SeedStore>) -> Self {
-        Self { authorizer, store }
+    pub fn new(
+        authorizer: Arc<dyn Authorizer>,
+        store: Arc<SeedStore>,
+        gate: Arc<dyn SeedGate>,
+    ) -> Self {
+        Self {
+            authorizer,
+            store,
+            gate,
+        }
     }
 }
 
@@ -451,12 +540,20 @@ async fn latest(
         .authorize_credential(credential.as_ref(), &slug.repo_name(), Access::Read)
         .await
         .map_err(HttpError::Auth)?;
-    let changeset = s
+    let (changeset, repo_id) = s
         .store
         .latest(&slug)
         .await
         .map_err(|e| HttpError::Internal(e.to_string()))?
         .ok_or(HttpError::NotFound)?;
+    if !s
+        .gate
+        .serve(&slug, &repo_id)
+        .await
+        .map_err(|e| HttpError::Internal(e.to_string()))?
+    {
+        return Err(HttpError::NotFound);
+    }
     let signer = s.store.signer.as_ref().ok_or(HttpError::NoPresign)?;
     let url = signer
         .signed_url(Method::GET, &s.store.object(&slug, &changeset), URL_TTL)
@@ -529,6 +626,26 @@ mod tests {
         format!("{n:02x}").repeat(32)
     }
 
+    const NS: &str = "00112233445566778899aabbccddeeff";
+
+    /// Serves while `open` holds and the seed names [`NS`].
+    struct Gate {
+        open: std::sync::atomic::AtomicBool,
+    }
+
+    impl Gate {
+        fn new() -> Arc<Self> {
+            Arc::new(Self { open: true.into() })
+        }
+    }
+
+    #[async_trait]
+    impl SeedGate for Gate {
+        async fn serve(&self, _: &Slug, repo_id: &str) -> Result<bool, SeedsError> {
+            Ok(self.open.load(std::sync::atomic::Ordering::Relaxed) && repo_id == NS)
+        }
+    }
+
     struct Fixed {
         cache: PathBuf,
         files: Vec<String>,
@@ -544,6 +661,7 @@ mod tests {
             let g = self.state.lock().unwrap();
             Ok(SeedPlan {
                 changeset: g.0.clone(),
+                repo_id: NS.into(),
                 landed: g.1,
                 cache: self.cache.clone(),
                 files: self.files.clone(),
@@ -595,7 +713,10 @@ mod tests {
         let kept = store.list(&slug()).await.unwrap();
         assert_eq!(kept.len(), KEEP, "{kept:?}");
         assert!(kept.contains(&tip(4)) && !kept.contains(&tip(1)));
-        assert_eq!(store.latest(&slug()).await.unwrap().unwrap(), tip(4));
+        assert_eq!(
+            store.latest(&slug()).await.unwrap().unwrap(),
+            (tip(4), NS.to_owned())
+        );
     }
 
     #[tokio::test]
@@ -659,7 +780,12 @@ mod tests {
         let tokens = StaticTokens::new()
             .with_token("rd", "bob", Access::Read)
             .with_token("rw", "al", Access::Write);
-        let app = router(Arc::new(SeedsState::new(Arc::new(tokens), store.clone())));
+        let gate = Gate::new();
+        let app = router(Arc::new(SeedsState::new(
+            Arc::new(tokens),
+            store.clone(),
+            gate.clone(),
+        )));
         let uri = "/seeds/acme/web/latest";
         // Nothing published yet.
         assert_eq!(get(&app, uri, Some("rd")).await.0, StatusCode::NOT_FOUND);
@@ -688,6 +814,65 @@ mod tests {
             get(&app, "/seeds/ac.me/web/latest", Some("rd")).await.0,
             StatusCode::BAD_REQUEST
         );
+        // The gate refuses (the repo was deleted, replaced or got path rules): no seed.
+        gate.open.store(false, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            get(&app, uri, Some("rd")).await,
+            (StatusCode::NOT_FOUND, None)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_seed_bound_to_another_repo_id_is_not_served() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_src, mem, store, _task) = fixture(tmp.path()).await;
+        let file = tmp.path().join("s");
+        std::fs::write(&file, b"x").unwrap();
+        store
+            .publish(&slug(), &tip(1), "ffeeddccbbaa99887766554433221100", &file)
+            .await
+            .unwrap();
+        let pointer = mem
+            .get(&StorePath::from("root/seeds/acme.web/latest"))
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        assert_eq!(
+            pointer,
+            format!("{}\nffeeddccbbaa99887766554433221100\n", tip(1)).as_bytes()
+        );
+        let tokens = StaticTokens::new().with_token("rd", "bob", Access::Read);
+        let app = router(Arc::new(SeedsState::new(
+            Arc::new(tokens),
+            store,
+            Gate::new(),
+        )));
+        assert_eq!(
+            get(&app, "/seeds/acme/web/latest", Some("rd")).await.0,
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    #[tokio::test]
+    async fn the_task_sweeps_seeds_of_repos_that_are_gone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_src, mem, store, task) = fixture(tmp.path()).await;
+        let file = tmp.path().join("s");
+        std::fs::write(&file, b"x").unwrap();
+        let old = Slug::parse("acme.old").unwrap();
+        store.publish(&old, &tip(9), NS, &file).await.unwrap();
+        assert_eq!(store.list(&old).await.unwrap(), [tip(9)]);
+        assert_eq!(task.tick(1).await, ["acme/web"]);
+        assert!(store.list(&old).await.unwrap().is_empty());
+        assert!(store.latest(&old).await.unwrap().is_none());
+        assert!(
+            mem.get(&StorePath::from("root/seeds/acme.old/latest"))
+                .await
+                .is_err()
+        );
+        assert_eq!(store.list(&slug()).await.unwrap(), [tip(1)]);
     }
 
     #[tokio::test]
@@ -708,8 +893,29 @@ mod tests {
         )
         .await
         .unwrap();
+        assert!(
+            plain.latest(&slug()).await.unwrap().is_none(),
+            "a pointer without a repo id is not valid"
+        );
+        mem.put(
+            &StorePath::from("root/seeds/acme.web/latest"),
+            PutPayload::from(format!("{}\n{NS}\nextra\n", tip(1)).into_bytes()),
+        )
+        .await
+        .unwrap();
+        assert!(plain.latest(&slug()).await.unwrap().is_none());
+        mem.put(
+            &StorePath::from("root/seeds/acme.web/latest"),
+            PutPayload::from(format!("{}\n{NS}\n", tip(1)).into_bytes()),
+        )
+        .await
+        .unwrap();
         let tokens = StaticTokens::new().with_token("rd", "bob", Access::Read);
-        let app = router(Arc::new(SeedsState::new(Arc::new(tokens), plain)));
+        let app = router(Arc::new(SeedsState::new(
+            Arc::new(tokens),
+            plain,
+            Gate::new(),
+        )));
         assert_eq!(
             get(&app, "/seeds/acme/web/latest", Some("rd")).await.0,
             StatusCode::NOT_IMPLEMENTED
