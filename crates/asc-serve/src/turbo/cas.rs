@@ -208,7 +208,11 @@ impl TurboState {
         let Some(key) = hash.as_str().strip_prefix("asc-").filter(|k| id_ok(k)) else {
             return Ok(false);
         };
-        match self.store.head(&self.ac_path(c, &Scope::Trusted, key)).await {
+        match self
+            .store
+            .head(&self.ac_path(c, &Scope::Trusted, key))
+            .await
+        {
             Ok(_) => Ok(true),
             Err(object_store::Error::NotFound { .. }) => Ok(false),
             Err(e) => Err(e.into()),
