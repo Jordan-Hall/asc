@@ -15,12 +15,14 @@
 //! entry is its file's modification time, and events are appended a line at a time.
 
 mod events;
+mod files;
 mod gc;
 mod key;
 mod pack;
 mod store;
 
 pub use events::{Event, EventKind, ToolStats};
+pub use files::{EntryDoc, MAX_ENTRY_DOC, MAX_FILE, parse_entry};
 pub use gc::{GcReport, Usage};
 pub use key::{ActionKey, KeyBuilder};
 pub use pack::{MAX_UNPACKED, artifact_name, key_of_artifact};
