@@ -147,6 +147,12 @@ impl Journal {
         });
     }
 
+    /// Hints were lost outside the journal (a change watcher overflowed): the next
+    /// [`since`](Self::since) reports `fresh`, so the reader reconciles.
+    pub fn mark_lost(&self) {
+        self.lock().lost = true;
+    }
+
     /// Starts a new epoch (after a switch bumped the workspace epoch); older tokens become stale.
     pub fn set_epoch(&self, epoch: u64) {
         self.lock().epoch = epoch;
