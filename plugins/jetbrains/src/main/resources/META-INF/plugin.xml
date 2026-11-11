@@ -18,6 +18,7 @@
     <writingAccessProvider implementation="asc.asc.vcs.AscWritingAccessProvider"/>
     <directoryIndexExcludePolicy implementation="asc.asc.vcs.AscIndexExcludePolicy"/>
     <postStartupActivity implementation="asc.asc.vcs.AscHydrationWatch"/>
+    <postStartupActivity implementation="asc.asc.ui.AscAuthStartup"/>
     <notificationGroup id="asc" displayType="BALLOON"/>
     <statusBarWidgetFactory id="asc.asc.status" implementation="asc.asc.ui.AscStatusBarWidgetFactory"/>
     <toolWindow id="asc" anchor="bottom" icon="/icons/asc.svg" canCloseContents="false"
@@ -28,13 +29,34 @@
       <add-to-group group-id="VcsGroups" anchor="last"/>
       <action id="asc.asc.Up" class="asc.asc.ui.AscUpAction" text="Move Up the Stack"/>
       <action id="asc.asc.Down" class="asc.asc.ui.AscDownAction" text="Move Down the Stack"/>
+      <action id="asc.asc.Top" class="asc.asc.ui.AscTopAction" text="Go to the Top of the Stack"/>
+      <action id="asc.asc.Bottom" class="asc.asc.ui.AscBottomAction" text="Go to the Bottom of the Stack"/>
       <action id="asc.asc.Restack" class="asc.asc.ui.AscRestackAction" text="Restack"/>
       <action id="asc.asc.Sync" class="asc.asc.ui.AscSyncAction" text="Sync"/>
       <action id="asc.asc.Submit" class="asc.asc.ui.AscSubmitAction" text="Submit"/>
       <action id="asc.asc.Absorb" class="asc.asc.ui.AscAbsorbAction" text="Absorb"/>
       <action id="asc.asc.Undo" class="asc.asc.ui.AscUndoAction" text="Undo"/>
       <action id="asc.asc.Redo" class="asc.asc.ui.AscRedoAction" text="Redo"/>
+      <action id="asc.asc.Uncommit" class="asc.asc.ui.AscUncommitAction" text="Uncommit"/>
+      <action id="asc.asc.Unamend" class="asc.asc.ui.AscUnamendAction" text="Unamend"/>
+      <action id="asc.asc.Continue" class="asc.asc.ui.AscContinueAction" text="Continue the Paused Operation"/>
+      <action id="asc.asc.Abort" class="asc.asc.ui.AscAbortAction" text="Abort the Paused Operation"/>
+      <separator/>
+      <action id="asc.asc.Fetch" class="asc.asc.ui.AscFetchAction" text="Fetch"/>
+      <action id="asc.asc.Pull" class="asc.asc.ui.AscPullAction" text="Pull"/>
+      <action id="asc.asc.Push" class="asc.asc.ui.AscPushAction" text="Push"/>
+      <separator/>
+      <action id="asc.asc.StashPush" class="asc.asc.ui.AscStashPushAction" text="Stash Changes"/>
+      <action id="asc.asc.StashPushUntracked" class="asc.asc.ui.AscStashPushUntrackedAction" text="Stash Changes Including Untracked"/>
+      <action id="asc.asc.StashPop" class="asc.asc.ui.AscStashPopAction" text="Pop Stash"/>
+      <action id="asc.asc.StashApply" class="asc.asc.ui.AscStashApplyAction" text="Apply Stash"/>
+      <action id="asc.asc.StashDrop" class="asc.asc.ui.AscStashDropAction" text="Drop Stash"/>
+      <separator/>
       <action id="asc.asc.ConfigureAgents" class="asc.asc.ui.AscConfigureAgentsAction" text="Configure Agents"/>
+      <separator/>
+      <action id="asc.asc.SignIn" class="asc.asc.ui.AscSignInAction" text="Sign In to a Host..."/>
+      <action id="asc.asc.SignOut" class="asc.asc.ui.AscSignOutAction" text="Sign Out of a Host..."/>
+      <action id="asc.asc.SignInStatus" class="asc.asc.ui.AscSignInStatusAction" text="Show Sign-in Status"/>
     </group>
     <group id="asc.asc.OpenView" text="asc Views" popup="true">
       <add-to-group group-id="VcsGroups" anchor="last"/>

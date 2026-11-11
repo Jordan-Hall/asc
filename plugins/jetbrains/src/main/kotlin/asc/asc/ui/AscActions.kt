@@ -20,32 +20,53 @@ import java.nio.file.Path
 import java.nio.file.Paths
 import java.util.concurrent.ConcurrentHashMap
 
-/** The stack verbs of SPEC 24.5.1. Each runs through the allowlisted `Bridge.Run`; no argument is a secret. */
-enum class StackVerb(val verb: String, val title: String) {
+/**
+ * The verbs the menus run (SPEC 24.5.1). Each runs through the allowlisted `Bridge.Run` with [flags] and no
+ * positional argument; no argument is a secret. [question] is asked first when the allowlist marks the verb
+ * `confirm: modal`.
+ */
+enum class StackVerb(val verb: String, val title: String, val flags: List<String> = emptyList(), val question: String = "") {
     UP("up", "Move Up the Stack"),
     DOWN("down", "Move Down the Stack"),
+    TOP("top", "Go to the Top of the Stack"),
+    BOTTOM("bottom", "Go to the Bottom of the Stack"),
     RESTACK("restack", "Restack"),
     SYNC("sync", "Sync"),
-    SUBMIT("submit", "Submit"),
+    SUBMIT("submit", "Submit", question = "Submit this stack for review?"),
     ABSORB("absorb", "Absorb"),
     UNDO("undo", "Undo"),
     REDO("redo", "Redo"),
+    UNCOMMIT("uncommit", "Uncommit"),
+    UNAMEND("unamend", "Unamend"),
+    CONTINUE("continue", "Continue the Paused Operation"),
+    ABORT("abort", "Abort the Paused Operation"),
+    FETCH("fetch", "Fetch"),
+    PULL("pull", "Pull"),
+    PUSH("push", "Push", question = "Push the current branch to its remote?"),
+    STASH_PUSH("stash push", "Stash Changes"),
+    STASH_PUSH_UNTRACKED("stash push", "Stash Changes Including Untracked", listOf("-u")),
+    STASH_POP("stash pop", "Pop Stash"),
+    STASH_APPLY("stash apply", "Apply Stash"),
+    STASH_DROP("stash drop", "Drop Stash", question = "Drop the latest stash? It cannot be recovered."),
 }
 
 /** Pure argv planning for the actions; no platform types. */
 object ActionPlan {
     private const val END = "--end-of-options"
 
+    private val allowlist by lazy { GeneratedAllowlist.parse() }
+
     /** Args of a verb run directly. */
-    fun args(@Suppress("UNUSED_PARAMETER") v: StackVerb): List<String> = listOf(END)
+    fun args(v: StackVerb): List<String> = v.flags + END
 
     /** `absorb -n` shows what would move; `absorb -f` applies it after the person confirms. */
     fun absorbPreview(): List<String> = listOf("-n", END)
 
     fun absorbApply(): List<String> = listOf("-f", END)
 
-    /** `submit` publishes, so it asks first (its allowlist row is `confirm: modal`). */
-    fun needsConfirm(v: StackVerb): Boolean = v == StackVerb.SUBMIT
+    /** The allowlist decides which verbs ask first (`confirm: modal`); a verb it does not list is never run. */
+    fun needsConfirm(v: StackVerb): Boolean =
+        (allowlist.verbs[v.verb] ?: error("verb not in the allowlist: " + v.verb)).confirm == Confirm.MODAL
 
     /** The preview shown in the absorb confirmation: the last 20 non-blank stderr lines. */
     fun previewText(stderr: List<String>): String =
@@ -65,7 +86,7 @@ object AscActions {
     /** Runs [v] on [root] in a background task, serialised per root, with a confirmation first where the plan asks. */
     fun runStackVerb(project: Project, root: Path, v: StackVerb) {
         if (ActionPlan.needsConfirm(v) &&
-            Messages.showYesNoDialog(project, "Submit this stack for review?", v.title, Messages.getQuestionIcon()) !=
+            Messages.showYesNoDialog(project, v.question, v.title, Messages.getQuestionIcon()) !=
             Messages.YES
         ) return
         ProgressManager.getInstance().run(object : Task.Backgroundable(project, "asc ${v.verb}", true) {
@@ -165,6 +186,20 @@ class AscSubmitAction : AscStackAction(StackVerb.SUBMIT)
 class AscAbsorbAction : AscStackAction(StackVerb.ABSORB)
 class AscUndoAction : AscStackAction(StackVerb.UNDO)
 class AscRedoAction : AscStackAction(StackVerb.REDO)
+class AscTopAction : AscStackAction(StackVerb.TOP)
+class AscBottomAction : AscStackAction(StackVerb.BOTTOM)
+class AscUncommitAction : AscStackAction(StackVerb.UNCOMMIT)
+class AscUnamendAction : AscStackAction(StackVerb.UNAMEND)
+class AscContinueAction : AscStackAction(StackVerb.CONTINUE)
+class AscAbortAction : AscStackAction(StackVerb.ABORT)
+class AscFetchAction : AscStackAction(StackVerb.FETCH)
+class AscPullAction : AscStackAction(StackVerb.PULL)
+class AscPushAction : AscStackAction(StackVerb.PUSH)
+class AscStashPushAction : AscStackAction(StackVerb.STASH_PUSH)
+class AscStashPushUntrackedAction : AscStackAction(StackVerb.STASH_PUSH_UNTRACKED)
+class AscStashPopAction : AscStackAction(StackVerb.STASH_POP)
+class AscStashApplyAction : AscStackAction(StackVerb.STASH_APPLY)
+class AscStashDropAction : AscStackAction(StackVerb.STASH_DROP)
 
 /** "asc Views" menu: opens the tool window on one tab (SPEC 24.5.1); visible only in a project with an asc root. */
 open class AscOpenViewAction(private val title: String) : AnAction(title), DumbAware {
