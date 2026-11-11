@@ -81,6 +81,7 @@ pub mod registry;
 pub mod releases;
 pub mod review;
 pub mod secretscan;
+pub mod seed_source;
 pub mod seeds;
 pub mod sessions;
 pub mod settings;
@@ -727,8 +728,34 @@ pub async fn serve(
     if cfg.git.enabled {
         tracing::warn!("git-compat is not compiled in; git protocol disabled");
     }
+    let turbo = Arc::new(
+        turbo::TurboState::open(&cfg, authorizer.clone(), metrics.clone())
+            .map_err(|e| ConfigError::Invalid(e.to_string()))?,
+    );
+    // Seed snapshots (SPEC §12.3): published to the build cache's bucket and served by redirect,
+    // so only a presigning store gets them; the discovery document names them only then.
+    let seed_task = turbo.seed_store().map(|store| {
+        let store = Arc::new(store);
+        seeds::register(
+            &ext,
+            Arc::new(seeds::SeedsState::new(authorizer.clone(), store.clone())),
+        );
+        let source = seed_source::RegistrySeeds::new(
+            registry.clone(),
+            workdir::default_dir(&cfg, "seeds").join("stage"),
+        );
+        Arc::new(seeds::SeedTask::new(
+            Arc::new(source),
+            store,
+            workdir::default_dir(&cfg, "seeds").join("out"),
+        ))
+    });
     let well_known = http::WellKnown {
         server: cfg.public_url.clone(),
+        seeds: seed_task
+            .as_ref()
+            .and(cfg.public_url.as_deref())
+            .map(|u| format!("{}/seeds", u.trim_end_matches('/'))),
         ..http::WellKnown::default()
     };
     let stats = obs::Stats::register(&metrics);
@@ -737,10 +764,6 @@ pub async fn serve(
         .with_maintenance(ext.read_only.clone());
     http::register(&ext, http_state.clone());
     web::register(&ext, &cfg.web)?;
-    let turbo = Arc::new(
-        turbo::TurboState::open(&cfg, authorizer.clone(), metrics.clone())
-            .map_err(|e| ConfigError::Invalid(e.to_string()))?,
-    );
     turbo::register(&ext, turbo.clone());
     let actions = actions_store::register(&ext, &turbo, &registry);
     mcp::register(&ext, &cfg);
@@ -944,6 +967,7 @@ pub async fn serve(
     let sweeper = turbo.spawn_sweeper();
     let actions_sweeper = actions.spawn_sweeper();
     let warming = warmer.spawn();
+    let seeding = seed_task.map(seeds::SeedTask::spawn);
     let poller = mirror.as_ref().map(mirror::Mirror::spawn_poller);
     let admin_worker = repo_admin.spawn_worker();
     // Events older than `[audit] retention_days` are dropped, oldest first.
@@ -1003,6 +1027,9 @@ pub async fn serve(
     sweeper.abort();
     actions_sweeper.abort();
     warming.abort();
+    if let Some(t) = seeding {
+        t.abort();
+    }
     expiry.abort();
     cloud_expiry.abort();
     if let Some(p) = poller {

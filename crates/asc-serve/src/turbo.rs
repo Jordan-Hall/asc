@@ -337,6 +337,15 @@ impl TurboState {
         Ok(state)
     }
 
+    /// The seed store over the same bucket and presigner (SPEC §12.3), or `None` when the
+    /// store cannot presign: `/seeds` only ever redirects, so seeds need a presigning store.
+    pub fn seed_store(&self) -> Option<crate::seeds::SeedStore> {
+        let signer = self.signer.clone()?;
+        Some(
+            crate::seeds::SeedStore::new(self.store.clone(), self.root.clone()).with_signer(signer),
+        )
+    }
+
     /// Replaces the presigner (S3 only).
     #[must_use]
     pub fn with_signer(mut self, signer: Arc<dyn Signer>) -> Self {
@@ -1987,6 +1996,17 @@ mod tests {
         ) -> object_store::Result<url::Url> {
             Ok(url::Url::parse(&format!("https://s3.test/{path}?m={method}")).unwrap())
         }
+    }
+
+    /// Seeds need presigned downloads: a store without a signer offers none.
+    #[test]
+    fn seed_store_needs_a_signer() {
+        let (s, _) = state();
+        assert!(s.seed_store().is_none());
+        let s = Arc::into_inner(s)
+            .unwrap()
+            .with_signer(Arc::new(FakeSigner));
+        assert!(s.seed_store().is_some());
     }
 
     #[tokio::test]

@@ -42,6 +42,7 @@ blake3 = { workspace = true }
 zstd = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
+globset = { workspace = true }
 futures = { workspace = true }
 prost = { workspace = true }
 serde_json = { workspace = true }

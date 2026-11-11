@@ -66,14 +66,21 @@ pub struct SeedPlan {
     /// Cache-relative files: the tip's history metadata within the default window, all trees,
     /// the claimed manifests (G07) and the `.asc/prefetch` blobs.
     pub files: Vec<String>,
+    /// A directory the source made for this plan alone; the task removes it after packing.
+    pub staged: Option<PathBuf>,
 }
 
-/// Supplies the repos to seed and what goes into each seed. The server wiring implements it
-/// over the registry, the history window and G07's claims.
+/// Supplies the repos to seed and what goes into each seed. The server implements it over the
+/// registry, the history window and the detectors' claims ([`crate::seed_source`]).
 #[async_trait]
 pub trait SeedSource: Send + Sync {
     /// Repos whose default branch gets seeds, as `owner.repo` slugs.
     async fn repos(&self) -> Vec<Slug>;
+    /// The default branch's tip and its landed count, without building a plan: the task asks
+    /// this every minute and builds a plan only when a seed is due.
+    async fn tip(&self, repo: &Slug) -> Result<(String, u64), SeedsError> {
+        self.plan(repo).await.map(|p| (p.changeset, p.landed))
+    }
     async fn plan(&self, repo: &Slug) -> Result<SeedPlan, SeedsError>;
 }
 
@@ -253,13 +260,13 @@ struct Last {
 
 /// Decides whether a seed is due: first time, an hour old, or [`EVERY_LANDED`] landed since.
 /// An unchanged tip never republishes.
-fn due(last: Option<(Last, &str)>, plan: &SeedPlan, now: u64) -> bool {
+fn due(last: Option<(Last, &str)>, changeset: &str, landed: u64, now: u64) -> bool {
     match last {
         None => true,
-        Some((_, tip)) if tip == plan.changeset => false,
+        Some((_, tip)) if tip == changeset => false,
         Some((l, _)) => {
             now.saturating_sub(l.at) >= EVERY.as_secs()
-                || plan.landed.saturating_sub(l.landed) >= EVERY_LANDED
+                || landed.saturating_sub(l.landed) >= EVERY_LANDED
         }
     }
 }
@@ -310,6 +317,9 @@ impl SeedTask {
             Err(e) => Err(e),
         };
         let _ = tokio::fs::remove_file(&file).await;
+        if let Some(dir) = &plan.staged {
+            let _ = tokio::fs::remove_dir_all(dir).await;
+        }
         result?;
         self.last
             .lock()
@@ -332,10 +342,10 @@ impl SeedTask {
     pub async fn tick(&self, now: u64) -> Vec<String> {
         let mut done = Vec::new();
         for slug in self.source.repos().await {
-            let plan = match self.source.plan(&slug).await {
-                Ok(p) => p,
+            let (changeset, landed) = match self.source.tip(&slug).await {
+                Ok(t) => t,
                 Err(e) => {
-                    tracing::warn!(event = "seeds.plan", repo = %slug.repo_name(), error = %e);
+                    tracing::debug!(event = "seeds.tip", repo = %slug.repo_name(), error = %e);
                     continue;
                 }
             };
@@ -343,13 +353,21 @@ impl SeedTask {
                 let g = self.last.lock().unwrap_or_else(PoisonError::into_inner);
                 due(
                     g.get(&repo_dir(&slug)).map(|(l, t)| (*l, t.as_str())),
-                    &plan,
+                    &changeset,
+                    landed,
                     now,
                 )
             };
             if !go {
                 continue;
             }
+            let plan = match self.source.plan(&slug).await {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!(event = "seeds.plan", repo = %slug.repo_name(), error = %e);
+                    continue;
+                }
+            };
             match self.publish_plan(&slug, &plan, now).await {
                 Ok(()) => done.push(slug.repo_name()),
                 Err(e) => {
@@ -529,6 +547,7 @@ mod tests {
                 landed: g.1,
                 cache: self.cache.clone(),
                 files: self.files.clone(),
+                staged: None,
             })
         }
     }
@@ -699,17 +718,11 @@ mod tests {
 
     #[test]
     fn due_rules() {
-        let plan = |t: &str, landed| SeedPlan {
-            changeset: t.into(),
-            landed,
-            cache: PathBuf::new(),
-            files: vec![],
-        };
         let l = Last { at: 0, landed: 0 };
-        assert!(due(None, &plan("aa", 0), 0));
-        assert!(!due(Some((l, "aa")), &plan("aa", 500), 99_999));
-        assert!(!due(Some((l, "aa")), &plan("bb", 49), 3599));
-        assert!(due(Some((l, "aa")), &plan("bb", 50), 10));
-        assert!(due(Some((l, "aa")), &plan("bb", 1), 3600));
+        assert!(due(None, "aa", 0, 0));
+        assert!(!due(Some((l, "aa")), "aa", 500, 99_999));
+        assert!(!due(Some((l, "aa")), "bb", 49, 3599));
+        assert!(due(Some((l, "aa")), "bb", 50, 10));
+        assert!(due(Some((l, "aa")), "bb", 1, 3600));
     }
 }

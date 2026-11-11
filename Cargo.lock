@@ -532,6 +532,7 @@ dependencies = [
  "futures",
  "getrandom 0.4.3",
  "gix-attributes",
+ "globset",
  "h3",
  "h3-quinn",
  "hkdf",
