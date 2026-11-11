@@ -196,6 +196,47 @@ runIf("rspack", () => {
     expect(entries(off, "rspack")).toBe(stored);
   }, 120_000);
 
+  test("plugin options and EnvironmentPlugin variables key the build", async () => {
+    const { rspack: core } = await import("@rsbuild/core");
+    const root = workTree("rspack-define", files);
+    const keyOf = (plugins: unknown[]): string => {
+      const debug = process.env.ASC_BUILD_CACHE_DEBUG;
+      const stderr = process.stderr.write.bind(process.stderr);
+      process.env.ASC_BUILD_CACHE_DEBUG = "1";
+      let line = "";
+      process.stderr.write = ((chunk: string) => {
+        line += chunk;
+        return true;
+      }) as typeof process.stderr.write;
+      try {
+        new AscBuildCachePlugin().apply({
+          options: { context: root, mode: "production", plugins },
+          rspack: { rspackVersion: "1.7.12" },
+          hooks: { watchRun: { tapAsync: () => {} }, done: { tap: () => {} } },
+        });
+      } finally {
+        process.stderr.write = stderr;
+        if (debug === undefined) delete process.env.ASC_BUILD_CACHE_DEBUG;
+        else process.env.ASC_BUILD_CACHE_DEBUG = debug;
+      }
+      return line;
+    };
+    const a = keyOf([new core.DefinePlugin({ FLAG: JSON.stringify("a") })]);
+    const b = keyOf([new core.DefinePlugin({ FLAG: JSON.stringify("b") })]);
+    expect(a).not.toBe(b);
+    expect(a).toContain("--part pluginOptions=");
+    const env = keyOf([new core.EnvironmentPlugin(["ASC_TEST_API_URL"])]);
+    expect(env).not.toContain("--env ASC_TEST_API_URL");
+    process.env.ASC_TEST_API_URL = "https://api.example.org";
+    try {
+      expect(keyOf([new core.EnvironmentPlugin(["ASC_TEST_API_URL"])])).toContain(
+        "--env ASC_TEST_API_URL",
+      );
+    } finally {
+      delete process.env.ASC_TEST_API_URL;
+    }
+  });
+
   test("a webpack compiler is keyed as webpack and stored after a clean run", () => {
     const root = workTree("webpack-a", files);
     const done: ((stats: { hasErrors(): boolean }) => void)[] = [];
