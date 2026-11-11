@@ -1,11 +1,16 @@
-//! The server tier of the build cache (docs/designs/build-cache.md §3): an entry travels as one
-//! packed artefact named `asc-<key>` on the server's turbo store, and each revision lists the keys
-//! its builds used, so `asc cache warm` can fetch them before the next build.
+//! The server tier of the build cache (docs/designs/build-cache.md §3): an entry and each output
+//! file travel separately on the file-level routes (§3.1), so one changed file is the only upload
+//! and, on a machine that holds the rest, the only download. A server without those routes gets
+//! the whole entry as one packed artefact named `asc-<key>`. Each revision lists the keys its
+//! builds used, so `asc cache warm` can fetch them before the next build.
 
 use std::io::Write;
 use std::process::ExitCode;
 
-use asc_buildcache::{Action, ActionKey, Store, artifact_name, human_size, key_of_artifact};
+use asc_buildcache::{
+    Action, ActionKey, MAX_ENTRY_DOC, Store, artifact_name, hex, human_size, key_of_artifact,
+    parse_entry,
+};
 use bytes::Bytes;
 use futures::StreamExt;
 use reqwest::{Method, StatusCode};
@@ -19,8 +24,10 @@ use crate::cli::common::{CliError, Ctx, Result};
 pub(crate) const MAX_ARTIFACT: usize = 512 << 20;
 /// Body limit of a reply that is only a status.
 const SMALL: usize = 64 << 10;
-/// Artefacts moved at once.
+/// Artefacts or files moved at once.
 const PARALLEL: usize = 8;
+/// Largest compressed file fetched on its own.
+const MAX_FILE_BODY: usize = 512 << 20;
 
 /// `asc.buildcache.remote`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -152,6 +159,100 @@ pub(crate) async fn fetch(api: &HttpApi, store: &Store, key: &ActionKey) -> Resu
 }
 
 async fn fetch_one(api: &HttpApi, store: &Store, key: &ActionKey) -> Result<Fetched> {
+    match fetch_files(api, store, key).await? {
+        Fetched::Missing => fetch_artifact(api, store, key).await,
+        got => Ok(got),
+    }
+}
+
+/// Fetches the entry of `key` on the file-level routes, then only the files the store lacks.
+/// `Missing` when the server has no such entry or no such routes.
+async fn fetch_files(api: &HttpApi, store: &Store, key: &ActionKey) -> Result<Fetched> {
+    let res = api
+        .turbo(
+            Method::GET,
+            &format!("/v8/asc/ac/{key}"),
+            Bytes::new(),
+            MAX_ENTRY_DOC,
+        )
+        .await
+        .map_err(fatal)?;
+    if matches!(
+        res.status,
+        StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED
+    ) {
+        return Ok(Fetched::Missing);
+    }
+    if !res.status.is_success() {
+        return Err(fatal(failure(res)));
+    }
+    if res.truncated {
+        return Ok(Fetched::TooLarge);
+    }
+    let doc = whole(res).map_err(fatal)?;
+    let blobs = match parse_entry(&doc) {
+        Ok((_, blobs)) => blobs,
+        Err(e) => return Ok(Fetched::Refused(e.to_string())),
+    };
+    let wanted: Vec<[u8; 32]> = blobs.into_iter().filter(|b| !store.has_blob(b)).collect();
+    let mut bytes = doc.len() as u64;
+    let mut got = futures::stream::iter(wanted)
+        .map(|id| async move { (id, fetch_file(api, store, &id).await) })
+        .buffer_unordered(PARALLEL);
+    while let Some((id, r)) = got.next().await {
+        match r? {
+            FileGot::Stored(n) => bytes += n,
+            // The entry outlived one of its files: the next build stores it again.
+            FileGot::Missing => return Ok(Fetched::Missing),
+            FileGot::Refused(m) => {
+                return Ok(Fetched::Refused(format!("file {}: {m}", hex(&id))));
+            }
+        }
+    }
+    drop(got);
+    Ok(match store.accept_entry(key, &doc) {
+        Ok(_) => Fetched::Stored(bytes),
+        Err(e) => Fetched::Refused(e.to_string()),
+    })
+}
+
+/// What fetching one file did.
+enum FileGot {
+    /// Stored; the compressed bytes received.
+    Stored(u64),
+    Missing,
+    Refused(String),
+}
+
+async fn fetch_file(api: &HttpApi, store: &Store, id: &[u8; 32]) -> Result<FileGot> {
+    let res = api
+        .turbo(
+            Method::GET,
+            &format!("/v8/asc/cas/{}", hex(id)),
+            Bytes::new(),
+            MAX_FILE_BODY,
+        )
+        .await
+        .map_err(fatal)?;
+    if res.status == StatusCode::NOT_FOUND {
+        return Ok(FileGot::Missing);
+    }
+    if !res.status.is_success() {
+        return Err(fatal(failure(res)));
+    }
+    if res.truncated {
+        return Ok(FileGot::Refused("too large".into()));
+    }
+    let body = whole(res).map_err(fatal)?;
+    Ok(match store.put_blob_zstd(id, &body) {
+        Ok(_) => FileGot::Stored(body.len() as u64),
+        Err(e) => FileGot::Refused(e.to_string()),
+    })
+}
+
+/// Fetches the whole entry as one packed artefact (a server without the file-level routes, or an
+/// entry stored before them).
+async fn fetch_artifact(api: &HttpApi, store: &Store, key: &ActionKey) -> Result<Fetched> {
     let path = format!("/v8/artifacts/{}", artifact_name(key));
     let res = api
         .turbo(Method::GET, &path, Bytes::new(), MAX_ARTIFACT)
@@ -206,6 +307,99 @@ async fn send(api: &HttpApi, store: &Store, key: &ActionKey) -> Result<Sent> {
 }
 
 async fn send_one(api: &HttpApi, store: &Store, key: &ActionKey) -> Result<Sent> {
+    match send_files(api, store, key).await? {
+        Some(sent) => Ok(sent),
+        None => send_artifact(api, store, key).await,
+    }
+}
+
+/// Sends `key` on the file-level routes: asks which files the server lacks, uploads those, then
+/// the entry. `None` when the server has no such routes, or a file cannot go alone.
+async fn send_files(api: &HttpApi, store: &Store, key: &ActionKey) -> Result<Option<Sent>> {
+    let entry = format!("/v8/asc/ac/{key}");
+    let head = api
+        .turbo(Method::HEAD, &entry, Bytes::new(), SMALL)
+        .await
+        .map_err(fatal)?;
+    if head.status.is_success() {
+        return Ok(Some(Sent::Present));
+    }
+    let Some((doc, blobs)) = store.entry_doc(key).map_err(io_err)? else {
+        return Ok(Some(Sent::Gone));
+    };
+    let ids: Vec<String> = blobs.iter().map(hex).collect();
+    let res = api
+        .turbo(
+            Method::POST,
+            "/v8/asc/cas/missing",
+            Bytes::from(json!({ "ids": ids }).to_string()),
+            MAX_ENTRY_DOC,
+        )
+        .await
+        .map_err(fatal)?;
+    if matches!(
+        res.status,
+        StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED
+    ) {
+        return Ok(None);
+    }
+    if !res.status.is_success() {
+        return Err(fatal(failure(res)));
+    }
+    let answer: serde_json::Value = serde_json::from_slice(&whole(res).map_err(fatal)?)
+        .map_err(|e| CliError::Fatal(format!("build cache: bad answer: {e}")))?;
+    let missing: Vec<[u8; 32]> = answer["missing"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|v| asc_buildcache::unhex(v.as_str()?))
+        .filter(|id| blobs.contains(id))
+        .collect();
+    let mut bytes = doc.len() as u64;
+    let mut sent = futures::stream::iter(missing)
+        .map(|id| async move { send_file(api, store, &id).await })
+        .buffer_unordered(PARALLEL);
+    while let Some(r) = sent.next().await {
+        match r? {
+            Some(n) => bytes += n,
+            // Evicted since, or too large to send alone: the artefact route decides.
+            None => return Ok(None),
+        }
+    }
+    drop(sent);
+    let res = api
+        .turbo(Method::PUT, &entry, Bytes::from(doc), SMALL)
+        .await
+        .map_err(fatal)?;
+    if !res.status.is_success() {
+        return Err(fatal(failure(res)));
+    }
+    Ok(Some(Sent::Uploaded(bytes)))
+}
+
+/// Uploads one file, compressed: its compressed size, or `None` when it is gone or too large.
+async fn send_file(api: &HttpApi, store: &Store, id: &[u8; 32]) -> Result<Option<u64>> {
+    let Some(z) = store.blob_zstd(id).map_err(io_err)? else {
+        return Ok(None);
+    };
+    let n = z.len() as u64;
+    let res = api
+        .turbo(
+            Method::PUT,
+            &format!("/v8/asc/cas/{}", hex(id)),
+            Bytes::from(z),
+            SMALL,
+        )
+        .await
+        .map_err(fatal)?;
+    if !res.status.is_success() {
+        return Err(fatal(failure(res)));
+    }
+    Ok(Some(n))
+}
+
+/// Sends `key` as one packed artefact (a server without the file-level routes).
+async fn send_artifact(api: &HttpApi, store: &Store, key: &ActionKey) -> Result<Sent> {
     let path = format!("/v8/artifacts/{}", artifact_name(key));
     let head = api
         .turbo(Method::HEAD, &path, Bytes::new(), SMALL)
