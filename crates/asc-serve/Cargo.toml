@@ -39,6 +39,7 @@ prost-reflect = { workspace = true }
 tokio-util = { workspace = true }
 roaring = { workspace = true }
 blake3 = { workspace = true }
+zstd = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }

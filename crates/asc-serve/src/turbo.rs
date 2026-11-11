@@ -25,6 +25,8 @@ use object_store::signer::Signer;
 use object_store::{ObjectStore, ObjectStoreExt, WriteMultipart};
 use serde::{Deserialize, Serialize};
 
+mod cas;
+
 use crate::config::{ServeConfig, TurboConfig};
 use crate::http::Metrics;
 use crate::registry::Extensions;
@@ -569,6 +571,14 @@ impl TurboState {
         let prefix = self.root.clone().join("turbo");
         let skip = prefix.parts().count();
         let mut stats = SweepStats::default();
+        let retention = |scope: &str| {
+            let days = if scope == "trusted" {
+                self.cfg.trusted_retention_days
+            } else {
+                self.cfg.pr_retention_days
+            };
+            Duration::from_secs(u64::from(days) * DAY_SECS)
+        };
         let mut list = self.store.list(Some(&prefix));
         while let Some(obj) = list.try_next().await? {
             let parts: Vec<String> = obj
@@ -577,14 +587,6 @@ impl TurboState {
                 .skip(skip)
                 .map(|p| p.as_ref().to_owned())
                 .collect();
-            let retention = |scope: &str| {
-                let days = if scope == "trusted" {
-                    self.cfg.trusted_retention_days
-                } else {
-                    self.cfg.pr_retention_days
-                };
-                Duration::from_secs(u64::from(days) * DAY_SECS)
-            };
             let age = now
                 .duration_since(SystemTime::from(obj.last_modified))
                 .unwrap_or_default();
@@ -622,6 +624,9 @@ impl TurboState {
             }
             stats.deleted += 1;
         }
+        let (scanned, deleted) = self.sweep_files(now, retention).await?;
+        stats.scanned += scanned;
+        stats.deleted += deleted;
         Ok(stats)
     }
 
@@ -1031,6 +1036,15 @@ pub fn router(state: Arc<TurboState>) -> axum::Router {
             "/v8/asc/build-revs/{rev}",
             get(get_build_rev).post(post_build_rev),
         )
+        .route("/v8/asc/cas/missing", post(cas::post_missing))
+        .route(
+            "/v8/asc/cas/{id}",
+            get(cas::get_file).head(cas::get_file).put(cas::put_file),
+        )
+        .route(
+            "/v8/asc/ac/{key}",
+            get(cas::get_entry).head(cas::get_entry).put(cas::put_entry),
+        )
         .with_state(state);
     // The edge answers 401 with the Basic challenge first, and 400 for a malformed header.
     crate::authn::guard(routes, crate::authn::Surface::Api)
@@ -1187,7 +1201,7 @@ async fn register_paths(
     let (mut registered, mut missing) = (0u64, Vec::new());
     for (hash, path) in checked {
         let meta = s.meta_path(&caller.slug, &Scope::Trusted, &hash);
-        if s.read_meta(&meta).await?.is_none() {
+        if s.read_meta(&meta).await?.is_none() && !s.has_trusted_entry(&caller, &hash).await? {
             missing.push(hash.as_str().to_owned());
             continue;
         }
@@ -2053,4 +2067,5 @@ mod tests {
         let url = url::Url::parse("s3://b?endpoint=https://garage.example&region=garage").unwrap();
         assert!(s3_signer(&url).is_ok());
     }
+
 }
