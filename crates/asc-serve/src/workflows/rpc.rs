@@ -669,7 +669,7 @@ impl Workflows for WorkflowService {
         );
         let stream = futures::stream::unfold(
             state,
-            move |(hub, id, mut after, mut buf, mut done, permit, mut end)| async move {
+            move |(hub, id, mut after, mut buf, done, permit, mut end)| async move {
                 loop {
                     if let Some(ev) = buf.pop_front() {
                         after = ev.seq;
@@ -709,7 +709,8 @@ impl Workflows for WorkflowService {
                                             step,
                                         });
                                     }
-                                    done = true;
+                                    // These may still precede the event that shows the end: the
+                                    // stream ends once one does, or after the grace below.
                                     continue;
                                 }
                                 // The run is over and nothing new is stored. The state of a run changes before its
