@@ -56,6 +56,32 @@ install to you.
 asc config asc.worktree.cloneDeps false   # never clone dependencies into new worktrees
 ```
 
+## Putting worktrees on a volume that clones
+
+Plain worktrees, cloned `node_modules` and build cache restores cost no space only on a volume that
+can reflink. Keep the repository, its worktrees and the asc home on the same such volume: a reflink
+cannot cross volumes.
+
+| System | Volume | How to get one |
+|---|---|---|
+| Windows 11 | Dev Drive (ReFS) | Settings, System, Storage, Disks and volumes, Create Dev Drive; or `Format-Volume -DriveLetter E -DevDrive` on a new partition or VHDX |
+| Linux | XFS with `reflink=1` (the default of `mkfs.xfs` since 5.1), or Btrfs | `mkfs.xfs /dev/sdX` or `mkfs.btrfs /dev/sdX` |
+| macOS | APFS | every APFS volume |
+
+Then point asc at it:
+
+```sh
+export ASC_HOME=/vol/asc                       # the object store, shared blobs and the build cache
+asc config --global asc.buildcache.dir /vol/asc/buildcache
+asc clone <url> /vol/src/app && cd /vol/src/app
+asc worktree add /vol/src/app-review topic     # same volume: files and node_modules are clones
+```
+
+`asc cache status` tells you what the build cache found: `blobs plain, restored by reflink` on a
+volume that clones, `blobs compressed where it saves space` on one that does not. On a volume that
+cannot reflink, link mode (below) is what keeps worktree files from being stored twice, and the
+build cache keeps its blobs compressed (`asc.buildcache.compress`).
+
 ## How link mode works
 
 * Each unchanged file in the worktree is a symbolic link to
