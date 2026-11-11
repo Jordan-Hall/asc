@@ -30,26 +30,8 @@ const NOT_A_REPARSE_POINT: i32 = 4390;
 /// `ERROR_REPARSE_TAG_MISMATCH`.
 const TAG_MISMATCH: i32 = 4394;
 
-/// What the walk did, with the deleted items as `/`-separated root-relative paths.
-#[derive(Debug, Default, PartialEq, Eq)]
-pub struct Unvirtualized {
-    /// Items the user deleted while the root was virtual (tombstones).
-    pub deleted: Vec<String>,
-    /// Placeholder files removed, to be written again.
-    pub dropped: usize,
-}
-
-/// The `\\?\` form of an absolute path, so long paths work.
-fn verbatim(p: &Path) -> PathBuf {
-    let s = p.as_os_str().to_string_lossy();
-    if s.starts_with(r"\\?\") {
-        p.to_path_buf()
-    } else if let Some(unc) = s.strip_prefix(r"\\") {
-        PathBuf::from(format!(r"\\?\UNC\{unc}"))
-    } else {
-        PathBuf::from(format!(r"\\?\{s}"))
-    }
-}
+pub use crate::win::Unvirtualized;
+use crate::win::verbatim;
 
 /// The error of `op` on `p`, naming both, with the OS error kind kept.
 fn at(op: &str, p: &Path) -> impl FnOnce(io::Error) -> io::Error {

@@ -23,7 +23,10 @@ use tokio::runtime::Handle;
 use crate::core::CoreFs;
 
 pub mod engine;
+pub mod idle;
 pub mod paths;
+#[cfg(test)]
+pub mod testkit;
 
 /// The placeholder times of paths (SPEC §10.1).
 pub trait TimeSource: Send + Sync {
@@ -60,6 +63,39 @@ impl TimeSource for DbTimes {
     fn times(&self, paths: &[RepoPath]) -> io::Result<Vec<i64>> {
         block(&self.rt, entry_times_of(&self.db, &self.ws, paths))
             .map_err(|e| io::Error::other(e.to_string()))
+    }
+}
+
+/// What reconcile found, for the daemon's metrics.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Reconciled {
+    /// On-disk entries examined.
+    pub examined: u64,
+    pub modified: u64,
+    pub created: u64,
+    pub deleted: u64,
+}
+
+/// What turning a stopped root back into a plain directory did, with the deleted items as
+/// `/`-separated root-relative paths.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Unvirtualized {
+    /// Items the user deleted while the root was virtual.
+    pub deleted: Vec<String>,
+    /// Placeholder files removed, to be written again.
+    pub dropped: usize,
+}
+
+/// The `\\?\` form of an absolute path, so long paths work.
+pub fn verbatim(p: &std::path::Path) -> std::path::PathBuf {
+    // Windows does not parse a verbatim path, so every `/` becomes `\` first.
+    let s = p.as_os_str().to_string_lossy().replace('/', "\\");
+    if s.starts_with(r"\\?\") {
+        p.to_path_buf()
+    } else if let Some(unc) = s.strip_prefix(r"\\") {
+        std::path::PathBuf::from(format!(r"\\?\UNC\{unc}"))
+    } else {
+        std::path::PathBuf::from(format!(r"\\?\{s}"))
     }
 }
 

@@ -35,12 +35,8 @@ use std::sync::atomic::Ordering;
 
 #[cfg(test)]
 use asc_core::id::TreeId;
-#[cfg(test)]
-use asc_core::object::Change;
 use asc_core::object::Kind;
 use asc_core::path::RepoPath;
-#[cfg(test)]
-use asc_state::{StateDb, WorkspaceId};
 #[cfg(test)]
 use asc_wc::intent;
 use asc_wc::intent::Replayed;
@@ -412,7 +408,7 @@ impl ProjfsProvider {
         let inner = self.inner().ok_or(VfsError::NotMounted)?;
         let _live = inner.begin().ok_or(VfsError::NotMounted)?;
         let store = self.intent_store();
-        engine::resume(store.as_ref(), &inner.cfg.core, &inner.cfg.rt, || {
+        engine::resume(store.as_ref(), &inner.cfg.core, &inner.cfg.rt, |_| {
             Run::new(&inner, Mode::Safe, time)
         })
     }
@@ -428,241 +424,34 @@ impl ProjfsProvider {
 /// A real ProjFS instance over a tree built in memory, for the tests of this module tree.
 #[cfg(test)]
 pub(crate) mod lab {
-    use std::collections::{BTreeMap, HashMap};
-    use std::io::{BufRead, BufReader};
-    use std::path::{Path, PathBuf};
-    use std::process::{Child, Command, Stdio};
+    use std::ops::Deref;
     use std::sync::Arc;
-    use std::sync::Mutex;
-    use std::time::{Duration, Instant};
-
-    use asc_core::git::blob_oid;
-    use asc_core::id::FileId;
-    use asc_core::object::Kind;
-    use asc_state::state::repos::{NewRepo, RemoteKind};
-    use asc_state::state::workspaces::{self, NewWorkspace};
-    use asc_state::{AscHome, RepoId};
-    use asc_store::bucket::BucketObjects;
-    use asc_store::key::ObjKey;
-    use asc_wc::journal::Op;
-    use asc_wc::redirect::Redirections;
-    use asc_wc::switch::{Dirty, plan};
 
     use super::*;
-    use crate::core::{CoreFs, Options, Provider};
-    use crate::policy::HydrationPolicy;
-    use crate::projfs::fixture::{self, EPOCH_TIME};
-    use crate::projfs::{Config, JournalSink, TimeSource};
+    use crate::core::{CoreFs, Provider};
+    use crate::win::testkit::WORKSPACE;
+    pub(crate) use crate::win::testkit::{Files, Holder, Kit, p};
 
-    pub(crate) type Files<'a> = &'a [(&'a str, &'a [u8])];
-
-    /// `entry_times`: the placeholder time of a path, the clone time unless a switch stamped it.
-    pub(crate) struct Clock {
-        stamped: Mutex<HashMap<Vec<u8>, i64>>,
-    }
-
-    impl Clock {
-        pub(crate) fn stamp(&self, path: &RepoPath, t: i64) {
-            self.stamped
-                .lock()
-                .unwrap()
-                .insert(path.as_bytes().to_vec(), t);
-        }
-    }
-
-    impl TimeSource for Clock {
-        fn times(&self, paths: &[RepoPath]) -> io::Result<Vec<i64>> {
-            let m = self.stamped.lock().unwrap();
-            Ok(paths
-                .iter()
-                .map(|p| m.get(p.as_bytes()).copied().unwrap_or(EPOCH_TIME))
-                .collect())
-        }
-    }
-
-    #[derive(Default)]
-    pub(crate) struct Rec(Mutex<Vec<(Op, Vec<u8>)>>);
-
-    impl JournalSink for Rec {
-        fn record(&self, op: Op, path: &[u8]) {
-            self.0.lock().unwrap().push((op, path.to_vec()));
-        }
-    }
-
-    impl Rec {
-        pub(crate) fn clear(&self) {
-            self.0.lock().unwrap().clear();
-        }
-
-        pub(crate) fn has(&self, op: Op, path: &str) -> bool {
-            self.0
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|(o, p)| *o == op && p == path.as_bytes())
-        }
-
-        pub(crate) fn any_under(&self, prefix: &str) -> bool {
-            self.0
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|(_, p)| p.starts_with(prefix.as_bytes()))
-        }
-
-        pub(crate) fn dump(&self) -> Vec<(Op, String)> {
-            self.0
-                .lock()
-                .unwrap()
-                .iter()
-                .map(|(o, p)| (*o, String::from_utf8_lossy(p).into_owned()))
-                .collect()
-        }
-    }
-
-    enum N {
-        F(Vec<u8>),
-        D(BTreeMap<String, N>),
-    }
-
-    fn insert(map: &mut BTreeMap<String, N>, path: &str, data: &[u8]) {
-        match path.split_once('/') {
-            None => {
-                map.insert(path.to_owned(), N::F(data.to_vec()));
-            }
-            Some((d, rest)) => {
-                let e = map
-                    .entry(d.to_owned())
-                    .or_insert_with(|| N::D(BTreeMap::new()));
-                if let N::D(m) = e {
-                    insert(m, rest, data);
-                }
-            }
-        }
-    }
-
-    fn write_tree(
-        rt: &tokio::runtime::Runtime,
-        store: &BucketObjects,
-        m: &BTreeMap<String, N>,
-        prefix: &str,
-        missing: &[&str],
-    ) -> TreeId {
-        let mut entries = Vec::new();
-        for (name, n) in m {
-            let full = format!("{prefix}{name}");
-            match n {
-                N::F(data) => {
-                    let id = FileId::of(data);
-                    if !missing.contains(&full.as_str()) {
-                        rt.block_on(fixture::put(store, ObjKey::File(id), data));
-                    }
-                    entries.push(fixture::entry(
-                        name,
-                        Kind::File,
-                        *id.as_bytes(),
-                        data.len() as u64,
-                    ));
-                }
-                N::D(sub) => {
-                    let id = write_tree(rt, store, sub, &format!("{full}/"), missing);
-                    entries.push(fixture::entry(name, Kind::Dir, *id.as_bytes(), 0));
-                }
-            }
-        }
-        rt.block_on(fixture::tree(store, entries))
-    }
-
-    fn make_tree(
-        rt: &tokio::runtime::Runtime,
-        store: &BucketObjects,
-        files: Files<'_>,
-        missing: &[&str],
-    ) -> TreeId {
-        let mut top = BTreeMap::new();
-        for (path, data) in files {
-            insert(&mut top, path, data);
-        }
-        write_tree(rt, store, &top, "", missing)
-    }
-
+    /// A mounted ProjFS root over the kit's tree; the kit is reached through `Deref`.
     pub(crate) struct Lab {
-        pub(crate) rt: tokio::runtime::Runtime,
-        pub(crate) dir: tempfile::TempDir,
-        pub(crate) store: Arc<BucketObjects>,
+        kit: Kit,
         pub(crate) core: Arc<CoreFs>,
-        pub(crate) journal: Arc<Rec>,
-        pub(crate) clock: Arc<Clock>,
         pub(crate) provider: ProjfsProvider,
-        pub(crate) db: StateDb,
-        pub(crate) ws: WorkspaceId,
         guid: [u8; 16],
-        deny: String,
-        _home: tempfile::TempDir,
     }
 
-    pub(crate) fn p(s: &str) -> RepoPath {
-        RepoPath::new(s).unwrap()
-    }
+    impl Deref for Lab {
+        type Target = Kit;
 
-    fn core_over(store: &Arc<BucketObjects>, root: TreeId, deny: &str) -> Arc<CoreFs> {
-        let opts = Options {
-            redirections: Redirections::parse("node_modules\n"),
-            policy: if deny.is_empty() {
-                HydrationPolicy::allow_all()
-            } else {
-                HydrationPolicy::parse(deny)
-            },
-            ..Options::windows()
-        };
-        Arc::new(CoreFs::new(store.clone(), root, opts))
-    }
-
-    fn config(
-        guid: [u8; 16],
-        core: Arc<CoreFs>,
-        store: &Arc<BucketObjects>,
-        clock: &Arc<Clock>,
-        journal: &Arc<Rec>,
-        rt: &tokio::runtime::Runtime,
-    ) -> Config {
-        Config {
-            workspace: guid,
-            core,
-            objects: store.clone(),
-            local: None,
-            times: clock.clone(),
-            journal: journal.clone(),
-            redirections: Redirections::parse("node_modules\n"),
-            rt: rt.handle().clone(),
+        fn deref(&self) -> &Kit {
+            &self.kit
         }
     }
 
     impl Lab {
-        pub(crate) fn root(&self) -> PathBuf {
-            self.dir.path().join("ws")
-        }
-
-        pub(crate) fn at(&self, rel: &str) -> PathBuf {
-            let mut b = self.root();
-            for c in rel.split('/') {
-                b.push(c);
-            }
-            b
-        }
-
-        /// Stores the objects of `files` (except those named in `missing`) and the trees.
-        pub(crate) fn tree_missing(&self, files: Files<'_>, missing: &[&str]) -> TreeId {
-            make_tree(&self.rt, &self.store, files, missing)
-        }
-
-        pub(crate) fn tree(&self, files: Files<'_>) -> TreeId {
-            self.tree_missing(files, &[])
-        }
-
         /// Mounts a workspace with `files`, or `None` (saying why) where ProjFS is unavailable.
         pub(crate) fn new(files: Files<'_>) -> Option<Self> {
-            Self::build(fixture::WORKSPACE, files, &[], "")
+            Self::build(WORKSPACE, files, &[], "")
         }
 
         pub(crate) fn with_guid(guid: [u8; 16], files: Files<'_>) -> Option<Self> {
@@ -671,63 +460,14 @@ pub(crate) mod lab {
 
         /// As `new`, with the objects of `missing` left out of the store (an offline fetch).
         pub(crate) fn offline(files: Files<'_>, missing: &[&str]) -> Option<Self> {
-            Self::build(fixture::WORKSPACE, files, missing, "")
+            Self::build(WORKSPACE, files, missing, "")
         }
 
         fn build(guid: [u8; 16], files: Files<'_>, missing: &[&str], deny: &str) -> Option<Self> {
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            let home = tempfile::tempdir().unwrap();
-            let (db, ws) = rt.block_on(async {
-                let h = AscHome::open(home.path().join("home")).unwrap();
-                let db = StateDb::open(&h).await.unwrap();
-                let repo = asc_state::state::repos::insert(
-                    &db,
-                    &NewRepo {
-                        id: RepoId::new(),
-                        name: "r".into(),
-                        ns: vec![1, 2, 3],
-                        remote_url: None,
-                        remote_kind: RemoteKind::Server,
-                        default_branch: "master".into(),
-                        windows_safe: true,
-                    },
-                )
-                .await
-                .unwrap();
-                let ws = WorkspaceId::new();
-                workspaces::insert(
-                    &db,
-                    &NewWorkspace {
-                        id: ws,
-                        repo,
-                        path: "/w".into(),
-                        mount: "/w".into(),
-                        mode: workspaces::Mode::Virtual,
-                        head: "refs/heads/master".into(),
-                        base_cs: None,
-                        sparse: None,
-                        ephemeral_until: None,
-                    },
-                )
-                .await
-                .unwrap();
-                (db, ws)
-            });
-            let store = Arc::new(BucketObjects::memory());
-            let clock = Arc::new(Clock {
-                stamped: Mutex::new(HashMap::new()),
-            });
-            let journal = Arc::new(Rec::default());
-            let root = make_tree(&rt, &store, files, missing);
-            let core = core_over(&store, root, deny);
-            let provider = match ProjfsProvider::new(config(
-                guid,
-                core.clone(),
-                &store,
-                &clock,
-                &journal,
-                &rt,
-            )) {
+            let kit = Kit::new(deny);
+            let root = kit.tree_missing(files, missing);
+            let core = kit.core(root);
+            let provider = match ProjfsProvider::new(kit.config(guid, core.clone())) {
                 Ok(p) => p,
                 Err(e) => {
                     eprintln!("skipping: {e}");
@@ -735,27 +475,16 @@ pub(crate) mod lab {
                 }
             };
             let lab = Self {
-                rt,
-                dir: tempfile::tempdir().unwrap(),
-                store,
+                kit,
                 core,
-                journal,
-                clock,
                 provider,
-                db,
-                ws,
                 guid,
-                deny: deny.to_owned(),
-                _home: home,
             };
             if let Err(e) = lab.provider.mount(&lab.root()) {
                 eprintln!("skipping: {e}");
                 return None;
             }
-            lab.provider.set_store(Store {
-                db: lab.db.clone(),
-                ws: lab.ws,
-            });
+            lab.provider.set_store(lab.store_handle());
             Some(lab)
         }
 
@@ -763,49 +492,11 @@ pub(crate) mod lab {
         /// the base tree `base`.
         pub(crate) fn restart(&mut self, base: TreeId) {
             self.provider.unmount().unwrap();
-            self.core = core_over(&self.store, base, &self.deny);
-            self.provider = ProjfsProvider::new(config(
-                self.guid,
-                self.core.clone(),
-                &self.store,
-                &self.clock,
-                &self.journal,
-                &self.rt,
-            ))
-            .unwrap();
+            self.core = self.kit.core(base);
+            self.provider =
+                ProjfsProvider::new(self.kit.config(self.guid, self.core.clone())).unwrap();
             self.provider.mount(&self.root()).unwrap();
-            self.provider.set_store(Store {
-                db: self.db.clone(),
-                ws: self.ws,
-            });
-        }
-
-        /// The plan of `old` to `new`, as `asc_wc::switch::plan` makes it from the leaf diff.
-        pub(crate) fn plan(&self, old: Files<'_>, new: Files<'_>) -> Plan {
-            let old: BTreeMap<&str, &[u8]> = old.iter().copied().collect();
-            let new_m: BTreeMap<&str, &[u8]> = new.iter().copied().collect();
-            let mut diff = Vec::new();
-            for (path, data) in &new_m {
-                if old.get(path) != Some(data) {
-                    diff.push((
-                        p(path),
-                        Change::write(
-                            Kind::File,
-                            FileId::of(data),
-                            data.len() as u64,
-                            blob_oid(data),
-                            None,
-                        )
-                        .unwrap(),
-                    ));
-                }
-            }
-            for path in old.keys() {
-                if !new_m.contains_key(path) {
-                    diff.push((p(path), Change::Delete));
-                }
-            }
-            plan(&diff, &Dirty::default(), Mode::Safe)
+            self.provider.set_store(self.store_handle());
         }
 
         /// A switch from `old` to `new` at time `t`, stamping every changed path as the daemon does.
@@ -817,14 +508,7 @@ pub(crate) mod lab {
             extra: &[&str],
             t: i64,
         ) -> Result<Report> {
-            let plan = self.plan(old, new);
-            let extra: BTreeSet<RepoPath> = extra.iter().map(|s| p(s)).collect();
-            for (path, _) in &plan.updates {
-                self.clock.stamp(path, t);
-            }
-            for path in plan.deletes.iter().chain(extra.iter()) {
-                self.clock.stamp(path, t);
-            }
+            let (plan, extra) = self.stamp(old, new, extra, t);
             let (from, to) = (self.tree(old), self.tree(new));
             self.provider.switch(
                 &Request {
@@ -846,43 +530,6 @@ pub(crate) mod lab {
             }
         }
     }
-
-    /// A child process that holds `path` open for reading without allowing delete or rename.
-    pub(crate) struct Holder(Child);
-
-    impl Holder {
-        pub(crate) fn new(path: &Path) -> Self {
-            let s = path.to_string_lossy().into_owned();
-            assert!(!s.contains('\''), "{s}");
-            let script = format!(
-                "$f=[System.IO.File]::Open('{s}','Open','Read','Read'); [Console]::Out.WriteLine('ready'); [Console]::Out.Flush(); Start-Sleep -Seconds 120"
-            );
-            let mut child = Command::new("powershell")
-                .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null())
-                .spawn()
-                .unwrap();
-            let mut out = BufReader::new(child.stdout.take().unwrap());
-            let mut line = String::new();
-            let until = Instant::now() + Duration::from_secs(30);
-            while Instant::now() < until {
-                line.clear();
-                if out.read_line(&mut line).unwrap() == 0 || line.trim() == "ready" {
-                    break;
-                }
-            }
-            assert_eq!(line.trim(), "ready", "the child did not open the file");
-            // Keep the pipe open so the child's output never fails.
-            std::mem::forget(out);
-            Self(child)
-        }
-
-        pub(crate) fn release(mut self) {
-            let _ = self.0.kill();
-            let _ = self.0.wait();
-        }
-    }
 }
 
 #[cfg(test)]
@@ -891,7 +538,7 @@ pub(crate) mod tests {
 
     use super::lab::*;
     use super::*;
-    use crate::projfs::fixture::{EPOCH_TIME, mtime};
+    use crate::win::testkit::{EPOCH_TIME, mtime};
 
     pub(crate) const T: i64 = EPOCH_TIME + 100;
 

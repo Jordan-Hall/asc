@@ -24,15 +24,7 @@ pub const MAX_DIR_ENTRIES: usize = 1 << 20;
 /// Most entries one walk visits, and most paths one directory-tombstone expansion yields.
 pub const MAX_ENTRIES: usize = MAX_WALK;
 
-/// What reconcile found, for the daemon's metrics.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Reconciled {
-    /// On-disk entries examined.
-    pub examined: u64,
-    pub modified: u64,
-    pub created: u64,
-    pub deleted: u64,
-}
+pub use crate::win::Reconciled;
 
 /// The root-relative, backslash separated, NUL terminated form of a path.
 pub(crate) fn rel_wide(path: &RepoPath) -> Option<Vec<u16>> {

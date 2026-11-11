@@ -9,7 +9,7 @@
 //! this provider started: after a daemon restart nothing is dropped for the idle period.
 
 use std::io;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use asc_core::path::RepoPath;
 
@@ -18,36 +18,8 @@ use super::provider::{Inner, ProjfsProvider};
 use super::reconcile::{Found, Visitor, is_clean_hydrated, rel_wide, state_bits, walk};
 use crate::core::{DehydrateOutcome, Result, VfsError};
 
-/// No process has read the file for this long: it is dropped.
-pub const IDLE: Duration = Duration::from_secs(3 * 24 * 3600);
-/// `asc.vfs.hydrationBudget` default: 500 MiB.
-pub const DEFAULT_BUDGET: u64 = 500 * 1024 * 1024;
-
-/// When the idle pass drops files.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Policy {
-    pub idle: Duration,
-    pub budget: u64,
-}
-
-impl Default for Policy {
-    fn default() -> Self {
-        Self {
-            idle: IDLE,
-            budget: DEFAULT_BUDGET,
-        }
-    }
-}
-
-/// What an idle pass did.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Report {
-    pub files: u64,
-    /// Bytes of the files that went back to empty.
-    pub bytes: u64,
-    /// Candidates that could not be dehydrated (open, changed meanwhile).
-    pub skipped: Vec<RepoPath>,
-}
+use crate::win::idle::{Candidate, select};
+pub use crate::win::idle::{DEFAULT_BUDGET, IDLE, Policy, Report};
 
 /// How one dehydration ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,13 +28,6 @@ pub(crate) enum Outcome {
     Done,
     /// Not eligible or in use.
     Skipped,
-}
-
-/// A hydrated clean file, collected by the scan.
-struct Candidate {
-    path: RepoPath,
-    size: u64,
-    last_read: SystemTime,
 }
 
 struct Scan<'a> {
@@ -147,23 +112,7 @@ impl ProjfsProvider {
     /// The idle pass at `now`. The daemon runs it after 60 s without notifications.
     pub fn dehydrate_idle(&self, policy: &Policy, now: SystemTime) -> Result<Report> {
         let inner = self.inner().ok_or(VfsError::NotMounted)?;
-        let mut all = scan(&inner, None)?;
-        let total: u64 = all.iter().map(|c| c.size).sum();
-        let idle_for =
-            |c: &Candidate| now.duration_since(c.last_read).unwrap_or_default() >= policy.idle;
-        let (mut chosen, mut rest): (Vec<_>, Vec<_>) = all.drain(..).partition(|c| idle_for(c));
-        let mut left = total.saturating_sub(chosen.iter().map(|c| c.size).sum());
-        if left > policy.budget {
-            // Least recently hydrated first, until the rest fits.
-            rest.sort_by(|a, b| a.last_read.cmp(&b.last_read).then(a.path.cmp(&b.path)));
-            for c in rest {
-                if left <= policy.budget {
-                    break;
-                }
-                left = left.saturating_sub(c.size);
-                chosen.push(c);
-            }
-        }
+        let chosen = select(scan(&inner, None)?, policy, now);
         let mut report = Report::default();
         for c in chosen {
             match dehydrate_one(&inner, &c.path)? {
@@ -221,6 +170,7 @@ mod tests {
     use crate::core::Provider;
     use crate::projfs::switch::lab::{Holder, Lab, p};
     use crate::projfs::switch::tests::V1;
+    use std::time::Duration;
 
     fn total(files: &[(&str, &[u8])]) -> u64 {
         files.iter().map(|(_, d)| d.len() as u64).sum()

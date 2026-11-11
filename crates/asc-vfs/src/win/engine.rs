@@ -277,12 +277,13 @@ pub fn switch<A: Apply>(
 }
 
 /// Re-runs the stored intent with SAFE rules: after a restart (the interrupted switch completes)
-/// and every 5 s for paths that were held open. `None` when there is no intent.
+/// and every 5 s for paths that were held open. `make` is given the intent's `from_root`. `None`
+/// when there is no intent.
 pub fn resume<A: Apply>(
     store: Option<&Store>,
     core: &CoreFs,
     rt: &Handle,
-    make: impl FnOnce() -> A,
+    make: impl FnOnce(TreeId) -> A,
 ) -> Result<Option<Replayed>> {
     let Some(st) = store else {
         return Ok(None);
@@ -291,7 +292,7 @@ pub fn resume<A: Apply>(
         return Ok(None);
     };
     core.set_root(current.to_root);
-    let run = make();
+    let run = make(current.from_root);
     // The same as `intent::replay` (applied paths leave the list, busy ones stay, an error saves
     // the progress), but synchronous: the apply step blocks on the runtime.
     let (mut keep, mut applied, mut failure) = (Vec::new(), 0usize, None);

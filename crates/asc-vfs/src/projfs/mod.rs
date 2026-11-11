@@ -44,18 +44,12 @@ mod tests {
 /// Tests against the real ProjFS. Each skips (and says so) where `Client-ProjFS` is not enabled.
 #[cfg(test)]
 mod fixture {
-    use std::path::Path;
-    use std::sync::{Arc, Mutex};
-    use std::time::{Duration, Instant, UNIX_EPOCH};
+    use std::sync::Arc;
 
-    use asc_core::codec::Enveloped;
-    use asc_core::id::{FileId, GitOid, TreeId};
-    use asc_core::object::{Entry, Kind, Tree};
-    use asc_core::path::Name;
+    use asc_core::id::{FileId, TreeId};
+    use asc_core::object::Kind;
     use asc_store::bucket::BucketObjects;
-    use asc_store::codec::encode_stored;
     use asc_store::key::ObjKey;
-    use asc_store::objects::Objects;
     use asc_wc::redirect::Redirections;
 
     pub(super) use asc_core::path::RepoPath;
@@ -67,55 +61,14 @@ mod fixture {
     use crate::policy::HydrationPolicy;
 
     pub(super) const FILES: usize = 1000;
-    pub(super) const EPOCH_TIME: i64 = 1_700_000_000;
-    pub(super) const WORKSPACE: [u8; 16] = [
-        0x6b, 0x1f, 0x3a, 0x90, 0x11, 0x22, 0x4c, 0x33, 0x84, 0x55, 0x01, 0x02, 0x03, 0x04, 0x05,
-        0x06,
-    ];
-
+    pub(super) use crate::win::testkit::{
+        EPOCH_TIME, Rec as Recorded, WORKSPACE, entry, mtime, put, tree,
+    };
     pub(super) struct FixedTimes;
 
     impl TimeSource for FixedTimes {
         fn times(&self, paths: &[RepoPath]) -> io::Result<Vec<i64>> {
             Ok(vec![EPOCH_TIME; paths.len()])
-        }
-    }
-
-    #[derive(Default)]
-    pub(super) struct Recorded(Mutex<Vec<(Op, Vec<u8>)>>);
-
-    impl JournalSink for Recorded {
-        fn record(&self, op: Op, path: &[u8]) {
-            self.0.lock().unwrap().push((op, path.to_vec()));
-        }
-    }
-
-    impl Recorded {
-        pub(super) fn has(&self, op: Op, path: &str) -> bool {
-            self.0
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|(o, p)| *o == op && p == path.as_bytes())
-        }
-
-        pub(super) fn any_under(&self, prefix: &str) -> bool {
-            self.0
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|(_, p)| p.starts_with(prefix.as_bytes()))
-        }
-
-        pub(super) fn wait_for(&self, op: Op, path: &str) -> bool {
-            let until = Instant::now() + Duration::from_secs(10);
-            while Instant::now() < until {
-                if self.has(op, path) {
-                    return true;
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            false
         }
     }
 
@@ -133,29 +86,8 @@ mod fixture {
         }
     }
 
-    pub(super) fn entry(name: &str, kind: Kind, id: [u8; 32], size: u64) -> Entry {
-        Entry {
-            name: Name::new(name).unwrap(),
-            kind,
-            id,
-            size,
-            git: GitOid::from_bytes([0; 20]),
-        }
-    }
-
     pub(super) fn body(i: usize) -> Vec<u8> {
         format!("file number {i}\n").into_bytes()
-    }
-
-    pub(super) async fn put(store: &BucketObjects, key: ObjKey, data: &[u8]) {
-        store.put(&key, encode_stored(data)).await.unwrap();
-    }
-
-    pub(super) async fn tree(store: &BucketObjects, mut entries: Vec<Entry>) -> TreeId {
-        entries.sort_by(|a, b| a.name.cmp(&b.name));
-        let t = Tree::new(entries, true).unwrap();
-        put(store, ObjKey::Tree(t.id()), &t.to_envelope()).await;
-        t.id()
     }
 
     /// `src/f0000.txt` .. `src/f0999.txt` and `README`.
@@ -232,11 +164,6 @@ mod fixture {
             return None;
         }
         Some(fx)
-    }
-
-    pub(super) fn mtime(p: &Path) -> i64 {
-        let t = std::fs::metadata(p).unwrap().modified().unwrap();
-        i64::try_from(t.duration_since(UNIX_EPOCH).unwrap().as_secs()).unwrap()
     }
 }
 
