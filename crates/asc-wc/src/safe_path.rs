@@ -45,17 +45,13 @@ fn os_name(b: &[u8]) -> Option<OsString> {
     std::str::from_utf8(b).ok().map(OsString::from)
 }
 
-/// Whether `meta` describes a symlink or (Windows) any reparse point such as a junction.
+/// Whether `meta` describes a symlink or (Windows) a reparse point that names another place:
+/// a symbolic link, a junction or a mount point. On Windows `is_symlink` is true for every
+/// name-surrogate reparse tag. Reparse points that only change how data is stored and stay in
+/// place (Cloud Files and ProjFS placeholders, deduplication, compression) are not links: the
+/// work tree of a virtual workspace is made of them.
 pub fn is_link(meta: &fs::Metadata) -> bool {
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        meta.file_type().is_symlink() || meta.file_attributes() & 0x400 != 0
-    }
-    #[cfg(not(windows))]
-    {
-        meta.file_type().is_symlink()
-    }
+    meta.file_type().is_symlink()
 }
 
 /// Whether `path` lies below `root` and every directory between them is a real directory,
