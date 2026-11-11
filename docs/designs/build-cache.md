@@ -230,9 +230,11 @@ What the plugins send:
   `rspackVersion` or webpack's `version`), the mode, the plugin names, the plugin's own version, and a digest of the rest of the configuration (keys sorted,
   functions by their source, the work-tree root replaced by a placeholder, so the same configuration in another work
   tree has the same digest). For Rspack and webpack the options that do not change the output (`stats`, `watch`,
-  `watchOptions`, `devServer`, `cache`, `snapshot`, `infrastructureLogging`, `profile`, `parallelism`) are left out.
+  `watchOptions`, `devServer`, `cache`, `snapshot`, `infrastructureLogging`, `profile`, `parallelism`) are left out, and
+  each plugin's own options (a `DefinePlugin`'s values, a copy pattern) are a separate digest, so a changed define is a
+  miss.
 - **Environment**: `NODE_ENV`, every variable with a public prefix (`PUBLIC_` for Rsbuild, `envPrefix` or `VITE_` for
-  Vite) and the names in the `env` option.
+  Vite), the names in the `env` option, and for Rspack and webpack the `keys` of every `EnvironmentPlugin`.
 
 On a hit, the outputs are restored before the tool reads a module. The tool still runs, but does almost nothing:
 
