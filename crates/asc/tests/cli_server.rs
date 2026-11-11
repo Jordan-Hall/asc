@@ -729,3 +729,139 @@ fn a_refused_child_update_leaves_the_parent_unmoved() {
         parent_before
     );
 }
+
+/// Every verifiable file of a client's object cache, as a seed's entry list.
+fn cache_entries(cache: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    for class in ["c", "t", "f", "k"] {
+        let Ok(dirs) = std::fs::read_dir(cache.join(class)) else {
+            continue;
+        };
+        for d in dirs.flatten() {
+            for f in std::fs::read_dir(d.path()).unwrap().flatten() {
+                out.push(format!(
+                    "{class}/{}/{}",
+                    d.file_name().to_string_lossy(),
+                    f.file_name().to_string_lossy()
+                ));
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn clone_with_a_seed_unpacks_it_and_fetches_less() {
+    let server = Server::start(&["acme/app"]);
+    let url = server.url("acme/app");
+    let sb = Sandbox::new();
+    let a = first_client(&sb, "a", &url);
+    commit_file(&sb, &a, "two.txt", "two\n");
+    ok(&sb, &a, &["push", "origin", "master"]);
+
+    // Without a seed, a fresh machine reads the objects over the wire.
+    let plain = Sandbox::new();
+    let root = plain.tmp.path().to_owned();
+    server.forget_calls();
+    ok(&plain, &root, &["clone", "-q", &url, "p"]);
+    let unseeded = server.count("GetObjects");
+    assert!(unseeded > 0, "{:?}", server.calls());
+
+    // A seed cut from what that clone fetched (its `store/`, laid out as a cache), as
+    // `ci warm` would publish one.
+    let cache = plain.asc_home.join("store");
+    let entries = cache_entries(&cache);
+    assert!(!entries.is_empty(), "no cache under {}", cache.display());
+    let seed = sb.tmp.path().join("app.seed");
+    let manifest = asc_store::seed::SeedManifest::new("acme/app", &"0".repeat(64), 1_700_000_000);
+    let packed = asc_store::seed::pack(
+        &cache,
+        &manifest,
+        &entries,
+        std::fs::File::create(&seed).unwrap(),
+    )
+    .unwrap();
+    assert!(packed.files > 0);
+
+    let seeded_sb = Sandbox::new();
+    let root = seeded_sb.tmp.path().to_owned();
+    server.forget_calls();
+    let seed_arg = seed.to_string_lossy().into_owned();
+    let out = ok(
+        &seeded_sb,
+        &root,
+        &["clone", "--seed", &seed_arg, &url, "s"],
+    );
+    let err = text(&out.stderr);
+    assert!(
+        err.contains("Unpacked ") && err.contains(" objects from the seed."),
+        "{err}"
+    );
+    let s = root.join("s");
+    assert_eq!(std::fs::read_to_string(s.join("two.txt")).unwrap(), "two\n");
+    assert!(
+        server.count("GetObjects") < unseeded,
+        "seeded {:?} vs {unseeded}",
+        server.calls()
+    );
+
+    // A seed of another repository is refused, as an explicit seed fails the command.
+    let other = Sandbox::new();
+    let wrong = other.tmp.path().join("wrong.seed");
+    let m = asc_store::seed::SeedManifest::new("acme/other", &"0".repeat(64), 1_700_000_000);
+    asc_store::seed::pack(&cache, &m, &entries, std::fs::File::create(&wrong).unwrap()).unwrap();
+    let root = other.tmp.path().to_owned();
+    let out = asc(
+        &other,
+        &root,
+        &["clone", "-q", "--seed", &wrong.to_string_lossy(), &url, "w"],
+    );
+    assert!(!out.status.success(), "{}", text(&out.stderr));
+}
+
+#[test]
+fn clone_depth_keeps_the_window_and_checks_its_arguments() {
+    let server = Server::start(&["acme/app"]);
+    let url = server.url("acme/app");
+    let sb = Sandbox::new();
+    let a = first_client(&sb, "a", &url);
+    commit_file(&sb, &a, "two.txt", "two\n");
+    commit_file(&sb, &a, "three.txt", "three\n");
+    ok(&sb, &a, &["push", "origin", "master"]);
+
+    let other = Sandbox::new();
+    let root = other.tmp.path().to_owned();
+    ok(
+        &other,
+        &root,
+        &[
+            "clone",
+            "-q",
+            "--depth",
+            "1",
+            "--filter=blob:none",
+            &url,
+            "d",
+        ],
+    );
+    let d = root.join("d");
+    let window = text(&ok(&other, &d, &["config", "asc.fetch.historyWindow"]).stdout);
+    assert_eq!(window.trim(), "1");
+    assert_eq!(
+        std::fs::read_to_string(d.join("three.txt")).unwrap(),
+        "three\n"
+    );
+
+    for (args, msg) in [
+        (["--depth", "0"], "is not a positive number"),
+        (["--filter", "bogus"], "invalid filter-spec 'bogus'"),
+    ] {
+        let mut argv = vec!["clone", "-q"];
+        argv.extend(args);
+        argv.extend([url.as_str(), "x"]);
+        let out = asc(&other, &root, &argv);
+        assert!(!out.status.success());
+        assert!(text(&out.stderr).contains(msg), "{}", text(&out.stderr));
+        assert!(!root.join("x").exists());
+    }
+}
