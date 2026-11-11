@@ -47,7 +47,12 @@ jobs:
           key: git-oracle-${{ runner.os }}-${{ hashFiles('build/git-oracle/pins.env', 'build/git-oracle/oracle.sh') }}
       - name: Pinned git oracle build tools
         if: steps.oracle-cache.outputs.cache-hit != 'true'
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq build-essential libcurl4-openssl-dev zlib1g-dev xz-utils curl
+        run: |
+          for i in 1 2 3; do
+            sudo apt-get update -qq && sudo apt-get install -y -qq build-essential libcurl4-openssl-dev zlib1g-dev xz-utils curl && exit 0
+            sleep 20
+          done
+          exit 1
       - name: Pinned git oracle
         run: |
           set -euo pipefail
@@ -150,7 +155,13 @@ jobs:
         run: bun run codegen
       - name: Install Chromium
         working-directory: web
-        run: bun x playwright install --with-deps chromium
+        # The system packages come from apt, whose mirrors flake: three tries.
+        run: |
+          for i in 1 2 3; do
+            bun x playwright install --with-deps chromium && exit 0
+            sleep 30
+          done
+          exit 1
       - name: Playwright
         working-directory: web
         run: bun x playwright test
@@ -175,8 +186,15 @@ jobs:
       - name: Toolchain (from rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # The runner image ships the server binaries; apt is only the fallback, retried because its mirrors flake.
       - name: PostgreSQL server
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq postgresql
+        run: |
+          ls /usr/lib/postgresql/*/bin/initdb >/dev/null 2>&1 && exit 0
+          for i in 1 2 3; do
+            sudo apt-get update -qq && sudo apt-get install -y -qq postgresql && exit 0
+            sleep 20
+          done
+          exit 1
       - run: bash build/ci/postgres-it.sh
 
   # asc-store's S3 suite against real Garage (no Docker); results in docs/garage-compat.md.
