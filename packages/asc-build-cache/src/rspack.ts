@@ -80,6 +80,20 @@ function pluginName(p: unknown): string {
   return "";
 }
 
+/** The environment variables an `EnvironmentPlugin` reads at compile time: its `keys`. */
+function environmentKeys(plugins: unknown[]): string[] {
+  const names: string[] = [];
+  for (const p of plugins) {
+    if (p && typeof p === "object" && p.constructor?.name === "EnvironmentPlugin") {
+      const keys = (p as { keys?: unknown }).keys;
+      if (Array.isArray(keys)) {
+        names.push(...keys.filter((k): k is string => typeof k === "string"));
+      }
+    }
+  }
+  return names;
+}
+
 export class AscBuildCachePlugin {
   readonly name = NAME;
   private readonly opts: AscBuildCacheOptions;
@@ -98,6 +112,8 @@ export class AscBuildCachePlugin {
     const options = compiler.options;
     const root = resolve(options.context ?? process.cwd());
     const out = resolve(root, options.output?.path ?? "dist");
+    const roots = [workTree(root) ?? root];
+    const plugins = (options.plugins ?? []).filter((p) => p !== this);
     const keyed: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(options)) {
       if (!NOT_KEYED.has(k)) {
@@ -111,13 +127,13 @@ export class AscBuildCachePlugin {
       parts: {
         version,
         mode: options.mode ?? process.env.NODE_ENV ?? "production",
-        plugins: (options.plugins ?? [])
-          .filter((p) => p !== this)
-          .map(pluginName)
-          .join(","),
-        config: digest(keyed, [workTree(root) ?? root]),
+        plugins: plugins.map(pluginName).join(","),
+        // Each plugin's own options key the build too: DefinePlugin's values, a copy pattern.
+        pluginOptions: digest(plugins, roots),
+        config: digest(keyed, roots),
       },
-      envPrefixes: [],
+      // An exact name is a prefix that matches itself.
+      envPrefixes: environmentKeys(plugins),
     };
     const got = restore(build, opts);
     if (!got) {
