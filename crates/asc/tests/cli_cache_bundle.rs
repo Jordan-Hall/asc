@@ -1,6 +1,7 @@
 //! `asc cache restore` and `asc cache save`, the two halves a build tool's plugin calls: a miss
 //! names the key, `save` stores the outputs under it, and `restore` in another work tree with the
-//! same inputs and parts replaces the outputs there. A changed part or input is a miss.
+//! same inputs and parts brings the outputs there, writing only the files that differ. A changed
+//! part or input is a miss.
 
 mod support;
 
@@ -97,6 +98,40 @@ fn a_saved_build_is_restored_in_another_work_tree() {
         "one()\n"
     );
     assert!(!b.join("out/stale.txt").exists());
+    assert_eq!(
+        (&hit["written"], &hit["kept"], &hit["removed"]),
+        (&Value::from(2), &Value::from(0), &Value::from(1))
+    );
+
+    // Restoring again over the same tree writes nothing: the files keep their times.
+    let t = std::fs::metadata(b.join("out/index.html"))
+        .unwrap()
+        .modified()
+        .unwrap();
+    std::fs::write(
+        b.join("out/assets/app.js"),
+        "edited
+",
+    )
+    .unwrap();
+    let again = restore(&sb, &b, "production");
+    assert_eq!(
+        (&again["written"], &again["kept"]),
+        (&Value::from(1), &Value::from(1)),
+        "only the edited file is put back"
+    );
+    assert_eq!(
+        std::fs::metadata(b.join("out/index.html"))
+            .unwrap()
+            .modified()
+            .unwrap(),
+        t
+    );
+    assert_eq!(
+        std::fs::read_to_string(b.join("out/assets/app.js")).unwrap(),
+        "one()
+"
+    );
 
     // Another part, and another input, are misses with other keys.
     let mode = restore(&sb, &b, "development");
