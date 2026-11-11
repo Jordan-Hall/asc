@@ -100,6 +100,30 @@ directory and the caller may build there.
 - **Mode**: `asc.buildcache.remote = off | read | read-write`; unset it is `read-write` when `CI` is set and `read`
   elsewhere. `off` refuses push and warm; adapters fetch on a local miss in `read` and `read-write`.
 
+### 3.1 File-level routes
+
+An entry and each output file also travel separately, so a build that changed one file uploads that file and the
+entry, and a machine that holds the other files downloads only the changed one. Push and warm use these routes first
+and fall back to the artefact of §3 when the server answers 404 or 405 to them.
+
+```
+POST /v8/asc/cas/missing   {"ids":[<FileId>…]} → {"missing":[…]}   which files the caller cannot read (write access)
+GET|HEAD|PUT /v8/asc/cas/<FileId>                                   one file, zstd; PUT is checked against the id
+GET|HEAD|PUT /v8/asc/ac/<key>                                       the entry JSON of §2
+```
+
+- **Store**: `turbo/<slug>/<scope>/cas/<FileId>` and `.../ac/<key>`. A file is stored only when its decompressed bytes
+  hash to its id (at most 512 MiB); a larger output keeps its entry on the artefact route. An entry is refused while a
+  file it names is not readable by the caller, and when its paths fail the output safety rules of §3.
+- **Scopes**: as for artefacts, writes go to the caller's scope and reads try it, then `trusted`. Under path rules a
+  `trusted` file is never served directly and a `trusted` entry only where its key (`asc-<key>`) was registered for a
+  directory the caller may build; the caller's own scope is always readable.
+- **Push**: heads the entry; when absent, asks which of its files are missing, uploads those (eight at a time), then
+  puts the entry. **Warm** gets the entry, fetches only the files the local store lacks, and stores the entry once
+  every file is present. A fetched file whose bytes differ from its id is refused and the entry skipped.
+- **Sweep**: entries past their scope's retention go first; then a file no live entry names is deleted once it is an
+  hour old (it may belong to an upload in progress).
+
 ## 4. Adapters
 
 Every adapter uses the same store and server tier. Most tools already speak a cache protocol; the daemon answers
