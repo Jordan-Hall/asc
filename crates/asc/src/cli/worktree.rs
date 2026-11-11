@@ -743,6 +743,9 @@ async fn materialise(
             .map(|(p, _)| p)
             .collect();
         sync_worktree(&fresh, root, &paths, true).await?;
+        if fresh.config.bool("asc.worktree.cloneDeps").unwrap_or(true) {
+            clone_deps(Path::new(&ws.workspace.ws.mount), mount, o.quiet);
+        }
     }
 
     // The branch.
@@ -796,6 +799,34 @@ async fn materialise(
             .map_err(|e| fatal(format!("asc: cannot host the virtual worktree: {e}")))?;
     }
     Ok(fresh)
+}
+
+/// Clones the installed dependencies and build caches of the worktree the command ran in into
+/// the new one, by reflink only (SPEC §9.3.2). A clone only saves an install, so a failure warns
+/// and the worktree stands.
+fn clone_deps(src: &Path, dst: &Path, quiet: bool) {
+    use asc_wc::depclone::{self, Skipped};
+    let install = "run the package manager in the new worktree";
+    match depclone::clone_deps(src, dst) {
+        Ok(Ok(c)) if !quiet => {
+            eprintln!(
+                "Cloned {} by reflink ({} files sharing their blocks, no extra space).",
+                c.dirs.join(", "),
+                c.files
+            );
+            if let Some(lock) = c.lockfile_differs {
+                eprintln!("hint: dependencies not cloned: {lock} differs; {install}.");
+            }
+        }
+        Ok(Err(Skipped::LockfilesDiffer(lock))) if !quiet => {
+            eprintln!("hint: dependencies not cloned: {lock} differs; {install}.");
+        }
+        Ok(Err(Skipped::NoReflink)) if !quiet => eprintln!(
+            "hint: node_modules not cloned: this volume cannot reflink (a Dev Drive, ReFS, Btrfs, XFS or APFS volume can); {install}."
+        ),
+        Ok(_) => {}
+        Err(e) => eprintln!("warning: dependencies not cloned: {e}"),
+    }
 }
 
 async fn add_command(ctx: &Ctx, argv: &[OsString]) -> Result<ExitCode> {
