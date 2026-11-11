@@ -171,7 +171,7 @@ and in `deploy/asc-serve.toml.example`.
 
 ## 1. Repository policy
 
-*Today:* `Repo.GetPolicy` (read-only) and the parser in `asc-core/src/policy.rs`. *Done when:* the file can be read, validated, proposed
+*Built:* `asc-serve/src/policy/` reads, validates, proposes and evaluates the file; the hub edits it (`routers/web/repo/editor_asc_policy.go`). *Done when:* the file can be read, validated, proposed
 and evaluated through the API and the hub shows it; every key below is parsed strictly and enforced.
 
 - **RPCs** (`policy.proto`, feature `policy-api.v1`): `Policy.GetSource` (repo read), `Validate` (repo read), `Propose` (repo write; makes a
@@ -228,7 +228,7 @@ and evaluated through the API and the hub shows it; every key below is parsed st
 
 ## 3. Audit log
 
-*Today:* an `asc audit:` line in the hub log. *Done when:* the append is in every mutating path, the chain verifies, the page filters and exports.
+*Built:* `asc-serve/src/audit/` appends and verifies the chain; the hub page is `routers/web/repo/asc_audit.go`. *Done when:* the append is in every mutating path, the chain verifies, the page filters and exports.
 
 - **RPCs** (`audit.proto`, `audit.v1`): `Audit.List`, `Export`, `VerifyChain`, `ListActions`, `Append` (the host service only; `audit.append.v1`).
 - **Append.** The host application keeps settings asc does not see (who may register, the maintenance notice). It records a change of one with `Audit.Append` after the change is made: an action from the catalogue whose name starts with `host.` (`host.setting.updated`, `host.maintenance.updated`, and on a person `host.user.suspended`, `host.user.unsuspended`, `host.user.2fa_reset`, each with its `reason`, and `host.moderation.acted` for an action on an abuse report, with the content type and id, the actions taken and the reason), the login of the person as `actor` and the host service as `on_behalf_of`, details cut to the action's allow-list, and the address of the person's request kept as a /24 or /48. Any other caller is `PERMISSION_DENIED`, any other action `INVALID_ARGUMENT`. The event is written to the instance log (and the repository's, when `repo` is set) in one transaction and returns its sequence number. It is not idempotent.
@@ -296,7 +296,7 @@ and evaluated through the API and the hub shows it; every key below is parsed st
 
 ## 6. Stacks: restack, revert, undo
 
-*Today:* `Changes.RestackChanges` primitive; hub `TODO(C22)` and `TODO(C52)` markers; `services/pull/asc_revert_stack.go` unrouted.
+*Built:* `asc-serve/src/audit/stacks_rpc.rs`, `changes/revert_landed.rs` and `audit/undo.rs`; the hub routes restack and revert (`routers/web/repo/asc_restack.go`, `asc_revert.go`).
 
 - **RPCs** (`stacks.proto`, `stacks.v1`): `Stacks.Restack`, `RevertLanded`, `ListRefLog`, `UndoRef`.
 - **Behaviour:** `Restack` orders the stack bottom to top, rewrites each change onto its (new) parent with `Changes.RestackChanges`
@@ -317,8 +317,7 @@ and evaluated through the API and the hub shows it; every key below is parsed st
 
 ## 7. Merge queue
 
-*Today:* the hub queue lands the largest ready prefix; revalidation after a content merge fails closed. `asc serve` does not mount
-the `MergeQueue` service: its methods answer `UNIMPLEMENTED` from the router until it is built, and no client calls it.
+*Built:* `asc serve` mounts `MergeQueue` (`asc-serve/src/queue/`, feature `mergequeue.v1`); the hub queue page is `routers/web/repo/asc_queue.go`.
 
 - **RPCs** (`mergequeue.proto`, `mergequeue.v1`): `MergeQueue.Enqueue`, `Dequeue`, `List`, `Get`, `Revalidate`, `SetPaused`, `Watch`.
   `Changes.RequestMerge` stays and calls `Enqueue`.
