@@ -13,7 +13,7 @@ The asc build cache stores each compile once, under a key made from the compile'
 
 | Part | Where | Written | What a backup sees |
 |---|---|---|---|
-| Blobs (`cas/`) | the job's own store, then the server | once, read only, named by their BLAKE3 hash | only new compiles; a blob never changes after it is written |
+| Blobs (`cas/`) | the job's own store, then the server | once, read only, named by their BLAKE3 hash; zstd on a volume that cannot reflink (`asc.buildcache.compress`) | only new compiles; a blob never changes after it is written |
 | Entries (`ac/`) | the same | once per compile, a few hundred bytes | small new files |
 | The job's own store | `RUNNER_TEMP/asc-buildcache` | during the job | nothing: the runner deletes it when the job ends |
 | Host stores (`lower`) | a directory the runner mounts read only | never by a job | only what the process that fills it adds |

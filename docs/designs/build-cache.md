@@ -51,6 +51,8 @@ moves it.
 
 ```
 cas/<2 hex>/<FileId>            output bytes as they are, read-only, written once (temp file + rename)
+cas/<2 hex>/<FileId>.zst        the same bytes as one zstd frame, when the store compresses (below)
+volume                          `reflink` or `copy`: whether this volume clones files, probed once
 ac/<2 hex>/<action key>         action entry (JSON): the outputs (relative path, kind, size, blob), exit code,
                                 captured stdout and stderr blobs, label, creation time and origin
 events/<yyyy-mm-dd>.jsonl       one line per hit, miss and write (tool, key, worktree, workflow, bytes), kept 14 days
@@ -61,7 +63,14 @@ tmp/                            files being written
   there is no database to lock (a single-writer store such as redb would serialise them). The last use of an entry is
   the modification time of its file, touched on every hit. Each event is one append of one line.
 - **Blob ids are the asc `FileId`** (blake3, key `asc v1 file`), the same id the work tree has for the same bytes.
-  Blobs are stored uncompressed so a restore can clone them.
+  Blobs are stored uncompressed where the volume can reflink, so a restore clones them and uses no new space.
+- **Compression** (`asc.buildcache.compress`, default `auto`): on a volume that cannot reflink (NTFS, ext4) a restore
+  copies bytes anyway, so a blob of 4 KiB or more is kept as `<FileId>.zst` (zstd level 3, the plain size in the frame
+  header) when that saves at least a tenth; output that is already compressed stays plain. `true` compresses on any
+  volume, `false` never. A blob is one file or the other, every reader takes both, and its id is always that of the
+  plain bytes. The Go adapter's `DiskPath` and the turbo front's streamed bodies need a plain file, so they store
+  that blob plain at its first use. A compressed blob goes to the server as it is stored: it is already the zstd body
+  the server takes.
 - **Action key** = blake3 (key `asc build action v1`) over the tool name, the tool's own key material (version, flags,
   environment it reads; each part length-prefixed) and the input digest of §1. Keys never contain absolute paths.
   Each adapter (§4) decides its key material and documents it.
@@ -369,7 +378,8 @@ run`: `--name`, `--inputs` and `--outputs` (added to the ones below), `--env`, `
 
 ## 5. Commands
 
-- `asc cache status [--json]`: store size, entries, hit rate per tool over the last day and week, and the server
+- `asc cache status [--json]`: store size, entries, whether blobs are compressed and how many are (`compress`,
+  `compressed_blobs`), hit rate per tool over the last day and week, and the server
   tier: its mode, the entries waiting in the outbox, and when the last exchange with the server succeeded or why it
   failed (`remote.json` in the store).
 - `asc cache ls [--tool T] [--json]`, `asc cache show <key>`: entries, their origin (worktree, workflow, CI) and the
