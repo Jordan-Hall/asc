@@ -475,6 +475,25 @@ mod tests {
     }
 
     #[test]
+    fn a_peek_reads_without_touching_the_running_overlay() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("ov");
+        assert!(Overlay::peek(&dir).is_none());
+        let o = Overlay::open(&dir).unwrap();
+        o.create_file(&rp("src/edited"), 0o644, false).unwrap();
+        o.set_white(&rp("gone")).unwrap();
+        let (_tmp, in_flight) = o.new_tmp().unwrap();
+
+        let p = Overlay::peek(&dir).unwrap();
+
+        assert!(p.shows_base(&rp("src/clean")).unwrap());
+        assert!(!p.shows_base(&rp("src/edited")).unwrap());
+        assert!(!p.shows_base(&rp("gone")).unwrap());
+        assert!(!p.shows_base(&rp("gone/below")).unwrap());
+        assert!(in_flight.exists(), "a peek never clears the mount's files");
+    }
+
+    #[test]
     fn whiteouts_hide_descendants_and_survive_reopen() {
         let d = tempfile::tempdir().unwrap();
         let dir = d.path().join("ov");
