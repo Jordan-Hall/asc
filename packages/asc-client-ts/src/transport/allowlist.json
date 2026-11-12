@@ -120,6 +120,7 @@
       "asc.v1.Workspace/Mount",
       "asc.v1.Workspace/Unmount",
       "asc.v1.Workspace/Switch",
+      "asc.v1.Workspace/Retarget",
       "asc.v1.Workspace/Dehydrate",
       "asc.v1.Workspace/Prefetch",
       "asc.v1.Workspace/Journal",

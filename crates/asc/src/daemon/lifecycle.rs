@@ -838,6 +838,13 @@ mod tests {
             not_served()
         }
 
+        async fn retarget(
+            &self,
+            _: Request<wire::RetargetRequest>,
+        ) -> Result<Response<wire::RetargetResponse>, Status> {
+            not_served()
+        }
+
         async fn journal(
             &self,
             _: Request<wire::JournalRequest>,

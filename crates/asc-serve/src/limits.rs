@@ -596,6 +596,7 @@ const TABLE: &[(&str, Class, &[&str])] = &[
             "Mount",
             "Ping",
             "Prefetch",
+            "Retarget",
             "Shutdown",
             "Stage",
             "Status",

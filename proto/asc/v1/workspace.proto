@@ -23,6 +23,7 @@ service Workspace {
   rpc Mount(MountRequest) returns (MountResponse);              // ws_id → starts provider
   rpc Unmount(UnmountRequest) returns (UnmountResponse);
   rpc Switch(SwitchRequest) returns (SwitchResponse);           // ws_id, from_root, to_root, mode {SAFE|MERGE|FORCE}
+  rpc Retarget(RetargetRequest) returns (RetargetResponse);     // ws_id, to_root: HEAD moved; the projected base follows, the files stay as they are
   rpc Journal(JournalRequest) returns (JournalResponse);        // since token → paths + new token + fresh flag
   rpc ClearJournal(ClearJournalRequest) returns (ClearJournalResponse);
   rpc Dehydrate(DehydrateRequest) returns (DehydrateResponse);  // ws_id, pathspec
@@ -81,6 +82,10 @@ message UnmountResponse { repeated bytes deleted = 1 [(asc.v1.json) = JSON_KIND_
 enum SwitchMode { SWITCH_MODE_SAFE = 0; SWITCH_MODE_MERGE = 1; SWITCH_MODE_FORCE = 2; }
 message SwitchRequest { string ws_id = 1; bytes from_root = 2 [(asc.v1.json) = JSON_KIND_HEX]; bytes to_root = 3 [(asc.v1.json) = JSON_KIND_HEX]; SwitchMode mode = 4; }
 message SwitchResponse { repeated bytes conflicts = 1 [(asc.v1.json) = JSON_KIND_PATH]; }
+// kept: paths copied into the overlay (or hidden) so they still show what they showed; dropped: overlay entries
+// and deletion markers removed because the new base shows the same.
+message RetargetRequest { string ws_id = 1; bytes to_root = 2 [(asc.v1.json) = JSON_KIND_HEX]; }
+message RetargetResponse { uint64 kept = 1; uint64 dropped = 2; }
 message JournalRequest { string ws_id = 1; string since_token = 2; }
 message JournalResponse { repeated bytes paths = 1 [(asc.v1.json) = JSON_KIND_PATH]; string token = 2; bool fresh = 3; }
 message ClearJournalRequest { string ws_id = 1; string token = 2; }

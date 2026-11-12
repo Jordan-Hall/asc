@@ -111,6 +111,14 @@ pub trait Hosted: Send + Sync {
     ) -> Result<Vec<Vec<u8>>, HostError> {
         Err(plain("switch"))
     }
+    /// HEAD moved to the tree `to` without the files changing (a commit, `reset --soft`, a
+    /// checkout written through the mount): the tree the files are projected from follows it,
+    /// and nothing the mount shows changes. Answers `(kept, dropped)`: paths copied locally so
+    /// they keep what they showed, and local entries dropped because the new tree shows the
+    /// same. A host whose files hold no base tree has nothing to move.
+    async fn retarget(&self, _to: &[u8]) -> Result<(u64, u64), HostError> {
+        Ok((0, 0))
+    }
     /// Fetches the content of `paths` into the machine cache; answers `(files, bytes)`.
     async fn prefetch(&self, _paths: &[RepoPath]) -> Result<(u64, u64), HostError> {
         Err(plain("prefetch"))
@@ -850,6 +858,22 @@ impl WorkspaceRpc for Service {
         Ok(Response::new(wire::SwitchResponse {
             conflicts: conflicts.into_iter().map(bytes::Bytes::from).collect(),
         }))
+    }
+
+    async fn retarget(
+        &self,
+        req: Request<wire::RetargetRequest>,
+    ) -> Result<Response<wire::RetargetResponse>, Status> {
+        let r = req.into_inner();
+        if r.to_root.len() > MAX_ROOT {
+            return Err(Status::invalid_argument("tree id too long"));
+        }
+        let (kept, dropped) = self
+            .hosted(&r.ws_id, "retarget", async |m| {
+                m.hosted.retarget(&r.to_root).await
+            })
+            .await?;
+        Ok(Response::new(wire::RetargetResponse { kept, dropped }))
     }
 
     async fn journal(

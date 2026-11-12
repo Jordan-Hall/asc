@@ -1,4 +1,4 @@
-//! The Unix backends of the daemon (SPEC §10.3, §10.4): hosts a virtual workspace with
+//! The Unix backends of the daemon (SPEC §10.3, §10.3b): hosts a virtual workspace with
 //! [`asc_vfs::fuse::FuseProvider`] (Linux) or [`asc_vfs::nfs::NfsProvider`] (macOS, or Linux when
 //! asked for) over one merged file system, and answers the daemon's `Hosted` calls with it.
 //!
@@ -9,7 +9,12 @@
 //!   `wc/<ws>/overlay`, and mounts it at the workspace root with a read-only `.git` gitfile.
 //! * [`Hosted::switch`] plans the switch like the Windows host and then moves the base tree: the
 //!   core serves the new tree, and the overlay entries of the switched paths are dropped. Every
-//!   write goes through the daemon, so nothing is ever left pending.
+//!   write goes through the daemon, so nothing is ever left pending. The switch must start from
+//!   the tree the mount projects.
+//! * [`Hosted::retarget`] follows HEAD when it moved without the files changing (a commit,
+//!   `reset --soft`): the base tree moves and the overlay keeps exactly what differs from it.
+//!   The base is recorded beside the overlay, so a restart mounts that tree and then follows
+//!   HEAD the same way.
 //! * Clean files hold nothing locally (they are read from the shared content cache), so
 //!   dehydration only drops what the kernel cached and frees no disk.
 
@@ -154,9 +159,26 @@ async fn start(cx: HostContext, rt: Handle) -> Result<Arc<dyn Hosted>, HostError
     let kind = choose(opened.backend.as_deref(), &loadable())?;
     let objects: Arc<dyn Objects> = opened.objects.clone();
     let redirections = Redirections::load(&root).unwrap_or_default();
+    let ws_dir = cx.home.workspace_dir(cx.ws.ws.id);
+    let overlay = ws_dir.join("overlay");
+    // The overlay holds what differs from the tree it was last projected over; mount that tree
+    // and move it to HEAD, so a HEAD that moved while the daemon was down (a commit, a reset)
+    // changes no file.
+    let (base, catch_up) = match unixfs::load_base(&overlay) {
+        Some(b) if b != opened.root => match opened.engine.leafdiff(b, opened.root, None).await {
+            Ok(diff) => (b, Some(diff)),
+            Err(e) => {
+                eprintln!(
+                    "asc daemon: the tree {b} the overlay was projected over cannot be read                      ({e}); serving HEAD"
+                );
+                (opened.root, None)
+            }
+        },
+        _ => (opened.root, None),
+    };
     let core = Arc::new(CoreFs::new(
         objects,
-        opened.root,
+        base,
         Options {
             redirections: redirections.clone(),
             policy: HydrationPolicy::parse(&opened.deny),
@@ -165,7 +187,6 @@ async fn start(cx: HostContext, rt: Handle) -> Result<Arc<dyn Hosted>, HostError
             ..Options::default()
         },
     ));
-    let ws_dir = cx.home.workspace_dir(cx.ws.ws.id);
     let cfg = unixfs::Config {
         core: core.clone(),
         local: opened.local,
@@ -174,7 +195,7 @@ async fn start(cx: HostContext, rt: Handle) -> Result<Arc<dyn Hosted>, HostError
             ws: cx.ws.ws.id,
             rt: rt.clone(),
         }),
-        overlay: ws_dir.join("overlay"),
+        overlay: overlay.clone(),
         redirect: cx.home.redirect_dir(cx.ws.ws.id),
         redirections,
         times: Arc::new(DbTimes {
@@ -201,14 +222,28 @@ async fn start(cx: HostContext, rt: Handle) -> Result<Arc<dyn Hosted>, HostError
         root.display(),
         provider.backend()
     );
-    Ok(Arc::new(UnixHost {
+    let host = UnixHost {
         provider,
         core,
         engine: opened.engine,
         db: cx.db,
         ws: cx.ws.ws.id,
         journal: cx.journal,
-    }))
+        overlay,
+    };
+    match catch_up {
+        Some(diff) => {
+            let (kept, dropped) = host.move_base(opened.root, diff).await?;
+            eprintln!(
+                "asc daemon: HEAD moved while stopped; the projected tree follows it ({kept} kept,                  {dropped} dropped)"
+            );
+        }
+        None => {
+            let (dir, head) = (host.overlay.clone(), opened.root);
+            blocking(move || unixfs::save_base(&dir, head).map_err(failed)).await?;
+        }
+    }
+    Ok(Arc::new(host))
 }
 
 /// One workspace served by a Unix backend.
@@ -219,9 +254,28 @@ struct UnixHost {
     db: StateDb,
     ws: asc_state::WorkspaceId,
     journal: Arc<Journal>,
+    /// `wc/<ws>/overlay/`, which also records the tree the mount projects.
+    overlay: PathBuf,
 }
 
 impl UnixHost {
+    /// Moves the projected tree to `to` along `diff` (every path that differs from the current
+    /// one) without changing what the mount shows; answers `(kept, dropped)`.
+    async fn move_base(
+        &self,
+        to: TreeId,
+        diff: Vec<(RepoPath, Change)>,
+    ) -> Result<(u64, u64), HostError> {
+        let paths: Vec<RepoPath> = diff.into_iter().map(|(p, _)| p).collect();
+        let fs = self.provider.merged().clone();
+        blocking(move || {
+            fs.retarget(to, &paths)
+                .map(|r| (r.kept, r.dropped))
+                .map_err(vfs)
+        })
+        .await
+    }
+
     /// The paths the journal hints at, after a reconcile when the hints are not trustworthy.
     async fn hints(&self) -> Result<Vec<RepoPath>, HostError> {
         let mut answer = self.journal.since(None).await.map_err(failed)?;
@@ -326,6 +380,12 @@ impl Hosted for UnixHost {
         mode: wire::SwitchMode,
     ) -> Result<Vec<Vec<u8>>, HostError> {
         let (from, to) = (tree_id(from)?, tree_id(to)?);
+        let projected = self.core.root();
+        if from != projected {
+            return Err(HostError::Precondition(format!(
+                "the workspace projects {projected}, not {from}: retarget it first"
+            )));
+        }
         let mode = vhost::switch_mode(mode);
         let diff = self.engine.leafdiff(from, to, None).await.map_err(failed)?;
         let touched: Vec<RepoPath> = diff.iter().map(|(p, _)| p.clone()).collect();
@@ -367,6 +427,7 @@ impl Hosted for UnixHost {
         .await
         .map_err(failed)?;
         let (provider, core) = (self.provider.clone(), self.core.clone());
+        let dir = self.overlay.clone();
         blocking(move || {
             core.set_root(to);
             provider.apply_switch(&planned, times).map_err(|e| {
@@ -374,10 +435,21 @@ impl Hosted for UnixHost {
                 // tree again keeps every untouched path as it was.
                 core.set_root(from);
                 vfs(e)
-            })
+            })?;
+            unixfs::save_base(&dir, to).map_err(failed)
         })
         .await?;
         Ok(Vec::new())
+    }
+
+    async fn retarget(&self, to: &[u8]) -> Result<(u64, u64), HostError> {
+        let to = tree_id(to)?;
+        let from = self.core.root();
+        if from == to {
+            return Ok((0, 0));
+        }
+        let diff = self.engine.leafdiff(from, to, None).await.map_err(failed)?;
+        self.move_base(to, diff).await
     }
 
     async fn prefetch(&self, paths: &[RepoPath]) -> Result<(u64, u64), HostError> {
