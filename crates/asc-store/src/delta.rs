@@ -175,16 +175,11 @@ impl BucketObjects {
         let mut best: Option<Planned> = None;
         let mut why: Option<Skip> = None;
         let mut tried = HashSet::new();
-        let mut refused = Vec::new();
         for &base in bases {
             if base == key || !tried.insert(base) {
                 continue;
             }
-            let planned = self.plan_delta_cached(key, base, cache).await?;
-            if matches!(planned, Err(Skip::BadBase)) {
-                refused.push(base);
-            }
-            match planned {
+            match self.plan_delta_cached(key, base, cache).await? {
                 Ok(p) => {
                     if best
                         .as_ref()
@@ -202,30 +197,6 @@ impl BucketObjects {
                 }
             }
         }
-        // A base whose chain is full: the nearest version below it that still leaves room, so a
-        // file edited often stays a delta (of an older version) instead of being stored whole.
-        if best.is_none() {
-            for base in refused {
-                let Some(alt) = self.room_below(key, base, cache).await? else {
-                    continue;
-                };
-                if !tried.insert(alt) {
-                    continue;
-                }
-                match self.plan_delta_cached(key, alt, cache).await? {
-                    Ok(p) => {
-                        if best
-                            .as_ref()
-                            .is_none_or(|b| p.stored.len() < b.stored.len())
-                        {
-                            best = Some(p);
-                        }
-                    }
-                    Err(Skip::NoGain) => why = Some(Skip::NoGain),
-                    Err(_) => {}
-                }
-            }
-        }
         match best {
             Some(p) => {
                 // Each plan recorded its own base; the one kept is the link that counts.
@@ -235,30 +206,6 @@ impl BucketObjects {
             // A `NoGain` plan already recorded `key` as full.
             None => Ok(Err(why.unwrap_or(Skip::BadBase))),
         }
-    }
-
-    /// The version in `base`'s chain nearest to it that `key` can take as a base within the
-    /// read limit, when `base` itself is too deep; `None` when `base` is unusable, not too deep,
-    /// or the chain holds `key`.
-    async fn room_below(
-        &self,
-        key: ObjKey,
-        base: ObjKey,
-        cache: &mut PlanCache,
-    ) -> Result<Option<ObjKey>> {
-        let Some((_, chain)) = self.base_state(base, cache).await? else {
-            return Ok(None);
-        };
-        let mut path = Vec::with_capacity(chain.len() + 1);
-        path.push(base);
-        path.extend(chain);
-        let max = MAX_DELTA_DEPTH as usize;
-        if path.len() < max {
-            return Ok(None);
-        }
-        // `key` against `path[i]` makes a chain of `path.len() - i` links.
-        let i = path.len() + 1 - max;
-        Ok((!path[i..].contains(&key)).then(|| path[i]))
     }
 
     /// The verified bytes of `base` and the keys below it in its delta chain (empty for a full
