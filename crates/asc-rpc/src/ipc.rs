@@ -287,8 +287,12 @@ fn os_verify_server(stream: &Stream) -> io::Result<Option<u32>> {
     #[cfg(unix)]
     {
         unix::require_current_user(creds.euid())?;
+        #[cfg(target_vendor = "apple")]
+        let pid = unix::peer_pid(stream)?;
+        #[cfg(not(target_vendor = "apple"))]
+        let pid = creds.pid();
         // `pid_t` is signed; a pid that does not fit `u32` is no pid.
-        Ok(creds.pid().and_then(|p| u32::try_from(p).ok()))
+        Ok(pid.and_then(|p| u32::try_from(p).ok()))
     }
 }
 
@@ -309,6 +313,36 @@ mod unix {
     use super::{IpcEndpoint, IpcError};
     use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt};
     use std::path::Path;
+
+    /// The pid of the process at the other end of `stream`, from `LOCAL_PEERPID`: Apple's peer
+    /// credentials (`LOCAL_PEERCRED`) carry no pid.
+    #[cfg(target_vendor = "apple")]
+    #[allow(unsafe_code)] // one getsockopt into a pid_t of its true size.
+    pub(super) fn peer_pid(stream: &super::Stream) -> std::io::Result<Option<i32>> {
+        use std::os::fd::{AsFd, AsRawFd};
+        #[allow(unreachable_patterns)]
+        let fd = match stream {
+            super::Stream::UdSocket(s) => s.inner().as_fd().as_raw_fd(),
+            _ => return Ok(None),
+        };
+        let mut pid: libc::pid_t = 0;
+        let mut len = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
+        // SAFETY: `fd` is a live socket borrowed from `stream`; `pid` and `len` are valid for
+        // writes of the sizes given.
+        let rc = unsafe {
+            libc::getsockopt(
+                fd,
+                libc::SOL_LOCAL,
+                libc::LOCAL_PEERPID,
+                (&raw mut pid).cast(),
+                &mut len,
+            )
+        };
+        if rc != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok((pid > 0).then_some(pid))
+    }
 
     /// This process's effective uid.
     pub(super) fn own_euid() -> u32 {

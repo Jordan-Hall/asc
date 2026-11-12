@@ -55,6 +55,10 @@ windows = { workspace = true, features = ["Win32_Security_Authorization", "Win32
 # Effective uid: the run directory and every peer must belong to it.
 rustix = { workspace = true, features = ["process"] }
 
+[target.'cfg(target_vendor = "apple")'.dependencies]
+# The server's pid (`LOCAL_PEERPID`): the peer credentials Apple reports carry none.
+libc = "0.2"
+
 [dev-dependencies]
 protox = { workspace = true }
 sqlx = { workspace = true }
