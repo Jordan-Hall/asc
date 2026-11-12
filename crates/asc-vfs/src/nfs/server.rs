@@ -173,8 +173,8 @@ pub struct ServerConfig {
     /// owner can read, so nobody else can make a handle (AUTH_SYS names a uid it cannot prove).
     pub tag: u64,
     pub workers: usize,
-    /// Whether MOUNT answers from the start. The provider keeps it shut except while its own
-    /// mount command runs, so the root handle reaches the kernel and nobody else.
+    /// Whether MOUNT always answers (tests). Otherwise it is shut, and the provider lets one
+    /// MOUNT through while its own mount command runs (see [`Server::allow_one_mount`]).
     pub mounts_open: bool,
 }
 
@@ -192,6 +192,7 @@ struct Shared {
     generation: AtomicU64,
     /// Whether MOUNT hands out the root handle now.
     mounts_open: AtomicBool,
+    mount_once: AtomicBool,
 }
 
 /// Why a procedure failed.
@@ -1037,7 +1038,8 @@ impl Shared {
                     return rpc::accepted(xid, Accept::GarbageArgs, &[]);
                 };
                 if (cred.uid != self.cfg.owner && cred.uid != 0)
-                    || !self.mounts_open.load(Ordering::SeqCst)
+                    || !(self.mounts_open.load(Ordering::SeqCst)
+                        || self.mount_once.swap(false, Ordering::SeqCst))
                 {
                     w.u32(MNT3ERR_ACCES);
                 } else if path != EXPORT.as_bytes() && path != b"/" {
@@ -1097,6 +1099,7 @@ impl Server {
             listings: Mutex::new(Listings::default()),
             replies: Mutex::new(Replies::default()),
             mounts_open: AtomicBool::new(cfg.mounts_open),
+            mount_once: AtomicBool::new(false),
             cfg,
             verf: (boot as u64).to_be_bytes(),
             generation: AtomicU64::new(0),
@@ -1159,6 +1162,13 @@ impl Server {
     /// Opens or shuts MOUNT (see [`ServerConfig::mounts_open`]).
     pub fn set_mounts_open(&self, open: bool) {
         self.shared.mounts_open.store(open, Ordering::SeqCst);
+    }
+
+    /// Lets exactly one MOUNT through (`true`), or takes back an unused permit (`false`).
+    /// Whoever asks first gets the root handle; if that was not the kernel, the system mount
+    /// fails and the provider drops the server and its handle secret.
+    pub fn allow_one_mount(&self, allow: bool) {
+        self.shared.mount_once.store(allow, Ordering::SeqCst);
     }
 
     pub fn held(&self) -> usize {

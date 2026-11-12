@@ -229,11 +229,19 @@ impl NfsProvider {
         Ok(addr)
     }
 
-    /// Opens or shuts MOUNT on the running server, as `mount` does around the mount command.
+    /// Opens or shuts MOUNT for good on the running server.
     #[cfg(test)]
     pub(crate) fn set_mounts_open(&self, open: bool) {
         if let Some(m) = lock(&self.state).as_ref() {
             m.server.set_mounts_open(open);
+        }
+    }
+
+    /// Lets one MOUNT through, as `mount` does around the mount command.
+    #[cfg(test)]
+    pub(crate) fn allow_one_mount(&self) {
+        if let Some(m) = lock(&self.state).as_ref() {
+            m.server.allow_one_mount(true);
         }
     }
 
@@ -285,19 +293,20 @@ impl Provider for NfsProvider {
         }
         let addr = self.serve()?;
         let (prog, args) = mount_command(cfg!(target_os = "macos"), addr.port(), root);
-        // MOUNT answers only while the system's client mounts.
+        // One MOUNT answers, while the system's client mounts.
         let window = |open: bool| {
-            if let Some(m) = lock(&self.state).as_ref()
-                && !self.mounts_open
-            {
-                m.server.set_mounts_open(open);
+            if let Some(m) = lock(&self.state).as_ref() {
+                m.server.allow_one_mount(open);
             }
         };
         window(true);
         let ran = run_privileged(prog, &args);
         window(false);
         if let Err(msg) = ran {
+            // Someone else may have taken the root handle: drop the server and the secret in
+            // every handle it gave out, so the next mount starts with a new one.
             *lock(&self.state) = None;
+            let _ = fs::remove_file(self.fs.overlay_dir().join(TAG_FILE));
             return Err(VfsError::Io(io::Error::other(format!(
                 "could not mount the NFS work tree at {}: {msg} (see WORKTREES.md, \
                  \"macOS: the NFS backend\")",
