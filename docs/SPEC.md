@@ -4214,7 +4214,7 @@ Seen in: **GK** GitKraken Desktop, **GL** GitLens, **GT** Graphite (CLI, VS Code
 | Uncommit, unamend, abandon | ISL | stack menu and commands (P26b) | `asc-ui` Stack tab context menu (P15) | Run `uncommit`, `unamend`, `abandon` (C51) | Y | Y |
 | Multi-root and nested worktrees | GK GL | one `SourceControl` per asc root | one VCS root mapping per root | `Bridge.Hello` per root | Y | Y |
 | Stash: push (with untracked), pop, apply, drop, list | GK VG JB | SCM `...` menu and a "Stashes" group in the Worktrees tree | – (v1.x; JetBrains Shelf is not wired to `refs/stash`) | Run `stash push\|pop\|apply\|drop\|list` (`--json`: P45) | Y | – |
-| Tags: list, create, delete | GK GL | – (v1.x; needs `Repo.ListRefs`, §24.8.2 API additions) | – | Run `tag` | – | – |
+| Tags: list, create, delete, push | GK GL | "Tags" tree (`asc.tags`): create (lightweight, or annotated with a message), delete (modal), push all (`push --tags`, modal); a tag the server does not list is marked "not pushed" | – (v1.x) | Run `tag`, `tag --list`, `tag --delete`, `push --tags`; `Repo.ListRefs` kind `tag` (A3) | Y | – |
 | Fetch, pull, push (git-remote mode only; hidden in server mode, where `sync` and `submit` apply) | GK VG JB | SCM `...` menu, status-bar sync | VCS menu actions | Run `fetch`, `pull`, `push` (`--json`: P45) | Y | Y |
 | Add to `.ascignore` (from an untracked or ignored file) | GK | resource menu → appends the pattern to the nearest `.ascignore` through a `WorkspaceEdit` | `IgnoredFileContentProvider` for `.ascignore` + "Add to .ascignore" action | file edit; `Status` then refreshes via `Watch` | Y | Y |
 | Signing | GK | no settings UI (out of scope, §24.3.6); a "signed" badge in commit details | same | `commit.gpgSign` is honoured by `create`/`modify`; the badge is `%G?` from `Log` | – | – |
@@ -4460,9 +4460,12 @@ All trees are `TreeDataProvider`s in the `asc` activity-bar container, except Fi
       "stash push":  { "flags": { "-u": "bool", "-m": "str:1024" }, "pos": "path*" },
       "stash pop":   {}, "stash apply": {}, "stash list": {},
       "stash drop":  { "confirm": "modal" },
+      "tag":         { "flags": { "-m": "str:1024" }, "pos": "str:255 rev?" },
+      "tag --delete": { "pos": "str:255", "confirm": "modal" },
+      "tag --list":  {},
       "fetch":       { "flags": { "--prune": "bool" } },
       "pull":        { "flags": { "--rebase": "bool", "--ff-only": "bool" } },
-      "push":        { "flags": { "-u": "bool" }, "confirm": "modal" }
+      "push":        { "flags": { "-u": "bool", "--tags": "bool" }, "confirm": "modal" }
     }
   },
   "forgejo": {
@@ -4753,7 +4756,7 @@ Required tests beyond each acceptance command are the layers of §24.7.1 (bridge
 |---|---|---|---|---|
 | A1 | `WsStack.behind` (field 3 of §20.6's `WsStack`, already defined) means the number of trunk commits that are not in the stack base, capped at 999; 0 when the base is the trunk tip. There is no `behind_trunk` field (§24.10 ruling 3). | status bar `↓N` (§24.4.2) | §20.6 | P57 (test), C31 |
 | A2 | The first `CommitGraphResponse` page carries `uint64 total = 3` (rows) and `repeated RefMarker ref_markers = 4` (`message RefMarker { string name = 1; uint64 row = 2; }`); the server may omit both when the total is not cheaply known, and later pages never carry them | minimap (§24.4.5) | §20.5, §20.6 | P57 |
-| A3 | `Repo.ListRefs` with kind `tag`/`branch`, paged | tags view (v1.x) | §7 | none in v1 |
+| A3 | `Repo.ListRefs` with kind `tag`/`branch` (`RefKind kind = 6`), paged; the kind becomes the `refs/tags/` or `refs/heads/` prefix, and a prefix outside that namespace is `INVALID_ARGUMENT`. Plain and branchless repos both serve it | tags view | §7 | done |
 | A4 | `message TargetCmd { repeated string argv = 1; }` and `AffectedProject += map<string, TargetCmd> targets = 5`; source: `argv = { <target> = ["bun", "run", "test"] }` in a `[[project]]` of `.asc/projects.toml`, run with the project root as cwd. asc never runs it (`asc run` stays out of scope, §0) | "Run target" task (§24.4.7) | §12A.8 | P57 |
 | A5 | `ASC_NO_ALIASES=1` disables `alias.*` resolution and external `git-<name>`/`asc-<name>` lookup | bridge argv rule 1 | §11.4 | P01b |
 | A6 | `GET /user/asc/inbox?section=&limit=` returns `X-Total-Count` and honours `If-None-Match` | inbox count poll (§24.4.7) | §20.8, C41b | P58 |

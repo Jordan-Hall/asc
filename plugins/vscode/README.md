@@ -28,6 +28,10 @@ process.
   { "type": "asc-build", "name": "docs", "inputs": ["docs"], "outputs": ["site"], "command": ["mkdocs", "build"] }
   ```
 
+- Tags: a Tags view lists the local tags of each root. A tag the asc server does not hold is
+  marked "not pushed". Create makes a lightweight tag, or an annotated tag when you give a
+  message. Delete and Push all tags (`push --tags`) ask for confirmation first.
+
 - TSRX: the `.tsrx` language with a TextMate grammar. It colours component bodies (`@{ }`), the
   control flow (`@if`, `@else`, `@for`, `@empty`, `@switch`, `@case`, `@default`, `@try`,
   `@pending`, `@catch`), tags, attributes, `{expr}` slots and fragments, with TypeScript between
