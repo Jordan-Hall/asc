@@ -3003,6 +3003,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_fork_gets_full_values_where_the_source_holds_deltas() {
+        use asc_core::id::FileId;
+        let big = |edit: usize| -> Vec<u8> {
+            (0..3000)
+                .map(|i| {
+                    if i == edit {
+                        format!("edited line {i}\n")
+                    } else {
+                        format!("line {i} of a file that changes little\n")
+                    }
+                })
+                .collect::<String>()
+                .into_bytes()
+        };
+        let f = fx().await;
+        let e = f.repo("o/src").await;
+        let (v0, v1) = (big(usize::MAX), big(7));
+        let a = commit(&e, &[], &[("f", &v0)]).await;
+        let b = commit(&e, &[a], &[("f", &v1)]).await;
+        f.ingest(&e, &[a, b]).await;
+        f.set_ref(&e, "refs/heads/master", RefTarget::Changeset(b))
+            .await;
+        for (pos, cs) in [(0i64, a), (1, b)] {
+            sqlx::query("INSERT INTO mainline (ns, ref, pos, cs) VALUES ($1, $2, $3, $4)")
+                .bind(e.ns.as_bytes().to_vec())
+                .bind("refs/heads/master")
+                .bind(pos)
+                .bind(cs.as_bytes().to_vec())
+                .execute(f.registry.pool())
+                .await
+                .unwrap();
+        }
+        let settings = crate::delta_service::DeltaSettings {
+            enabled: true,
+            ..Default::default()
+        };
+        let rep = crate::delta_service::pass(f.registry.pool(), &e, &settings)
+            .await
+            .unwrap();
+        assert_eq!(rep.written, 1, "{rep:?}");
+        let i1 = FileId::of(&v1);
+        assert_eq!(
+            e.objects.delta_base_of(i1).await.unwrap(),
+            Some(FileId::of(&v0))
+        );
+
+        let (id, lease) = f
+            .admin
+            .begin_fork(&name("o/fork"), &name("o/src"))
+            .await
+            .unwrap();
+        f.admin.run_fork(id, lease, "alice").await.unwrap();
+        let fork = f.registry.open(&name("o/fork")).await.unwrap();
+        // The fork has no base rows, so it holds the full value, and reads it.
+        assert_eq!(fork.objects.delta_base_of(i1).await.unwrap(), None);
+        assert_eq!(
+            fork.objects.get(&ObjKey::File(i1)).await.unwrap().unwrap(),
+            v1
+        );
+        assert_eq!(f.count("delta_bases", fork.ns).await, 0);
+        assert_eq!(f.count("delta_bases", e.ns).await, 1);
+        // The source keeps its delta.
+        assert!(e.objects.delta_base_of(i1).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
     async fn a_fork_is_readable_only_after_the_copy_completes() {
         let f = fx().await;
         let s = source(&f).await;

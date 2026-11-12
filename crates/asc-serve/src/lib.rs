@@ -25,6 +25,8 @@ pub mod commit_graph_markers;
 pub mod commit_graph_rpc;
 pub mod config;
 pub mod delta_service;
+#[cfg(test)]
+mod delta_tests;
 pub mod deps;
 pub mod expire;
 pub mod export;
