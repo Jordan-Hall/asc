@@ -9,7 +9,7 @@ mod index;
 mod ls_files;
 mod ls_tree;
 pub(crate) mod objects;
-mod quote;
+pub(crate) mod quote;
 mod tree_merge;
 mod update_index;
 mod usage;

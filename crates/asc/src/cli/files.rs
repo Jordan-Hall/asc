@@ -13,6 +13,7 @@ use std::process::ExitCode;
 use asc_core::object::Kind;
 
 use super::common::{CliError, Ctx, Result};
+use super::plumbing::quote::Names;
 use super::revparse::commit_of;
 use crate::native::NativeSpec;
 
@@ -94,6 +95,12 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         .await
         .map_err(|e| CliError::Fatal(e.to_string()))?;
     let mut out = std::io::stdout().lock();
+    // Like ls-files: C-style quoting (`core.quotePath`) so a control byte in a path cannot reach
+    // the terminal; `-z` prints names raw.
+    let names = Names {
+        terminator: if a.nul { 0 } else { b'\n' },
+        quote_high: ctx.config.bool("core.quotePath").unwrap_or(true),
+    };
     let io = |e: std::io::Error| CliError::Fatal(e.to_string());
     for h in &hits {
         if a.json {
@@ -104,9 +111,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
             });
             writeln!(out, "{line}").map_err(io)?;
         } else {
-            out.write_all(h.path.as_bytes()).map_err(io)?;
-            out.write_all(if a.nul { b"\0" } else { b"\n" })
-                .map_err(io)?;
+            names.write(&mut out, h.path.as_bytes()).map_err(io)?;
         }
     }
     out.flush().map_err(io)?;
