@@ -27,7 +27,7 @@ final class AscItem: FSItem {
 }
 
 func identifier(_ ino: UInt64) -> FSItem.Identifier {
-    FSItem.Identifier(rawValue: ino &+ 1)
+    FSItem.Identifier(rawValue: ino &+ 1) ?? .invalid
 }
 
 func itemType(_ k: ItemKind) -> FSItem.ItemType {
@@ -41,7 +41,8 @@ func itemType(_ k: ItemKind) -> FSItem.ItemType {
 final class AscVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperations,
     FSVolume.OpenCloseOperations
 {
-    let id: String
+    /// The work tree's id (the daemon socket's name). Not `id`: `FSVolume` has one.
+    let workTreeID: String
     let client: Client
     let root: AscItem
     let maxIO: UInt32
@@ -50,7 +51,7 @@ final class AscVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperatio
     private var stats: StatFS?
 
     init(id: String, client: Client, hello: Hello) {
-        self.id = id
+        self.workTreeID = id
         self.client = client
         self.root = AscItem(attr: hello.rootAttr)
         self.maxIO = max(4096, min(hello.maxIO, Wire.maxIO))
