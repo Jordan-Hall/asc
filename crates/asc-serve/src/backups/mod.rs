@@ -510,22 +510,8 @@ impl BackupsHub {
             ),
             Err(m) => (store::FAILED, 0, 0, note_of(m), String::new()),
         };
-        if let Err(e) = self
-            .store
-            .finish(
-                &run.id,
-                state,
-                now,
-                i64::try_from(size).unwrap_or(i64::MAX),
-                i64::try_from(objects).unwrap_or(i64::MAX),
-                run.encrypted && outcome.is_ok(),
-                &note,
-                &sealed,
-            )
-            .await
-        {
-            tracing::error!(class = %crate::ai::store::class(&e), "backup record");
-        }
+        // The audit record is written before the row leaves RUNNING, so whoever sees the run
+        // finished also finds its record.
         let result = if outcome.is_ok() { "ok" } else { "failed" };
         self.record(Entry {
             target: &run.id,
@@ -544,6 +530,22 @@ impl BackupsHub {
             )
         })
         .await;
+        if let Err(e) = self
+            .store
+            .finish(
+                &run.id,
+                state,
+                now,
+                i64::try_from(size).unwrap_or(i64::MAX),
+                i64::try_from(objects).unwrap_or(i64::MAX),
+                run.encrypted && outcome.is_ok(),
+                &note,
+                &sealed,
+            )
+            .await
+        {
+            tracing::error!(class = %crate::ai::store::class(&e), "backup record");
+        }
         if outcome.is_ok() {
             self.prune().await;
         }
