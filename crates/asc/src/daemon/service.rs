@@ -1133,6 +1133,7 @@ mod tests {
     struct Host {
         dehydrated: AtomicU32,
         switched: AtomicU32,
+        retargeted: AtomicU32,
     }
 
     #[async_trait]
@@ -1159,6 +1160,10 @@ mod tests {
                 return Ok(vec![]);
             }
             Ok(vec![[from, b":", to].concat()])
+        }
+        async fn retarget(&self, to: &[u8]) -> Result<(u64, u64), HostError> {
+            self.retargeted.fetch_add(1, Ordering::SeqCst);
+            Ok((to.len() as u64, 1))
         }
         async fn prefetch(&self, _: &[RepoPath]) -> Result<(u64, u64), HostError> {
             Err(HostError::Failed("the cache is full".into()))
@@ -1326,11 +1331,28 @@ mod tests {
             .await;
         assert_eq!(code(r), tonic::Code::FailedPrecondition);
         let r = svc
+            .retarget(Request::new(wire::RetargetRequest {
+                ws_id: id.clone(),
+                ..Default::default()
+            }))
+            .await;
+        assert_eq!(code(r), tonic::Code::FailedPrecondition);
+        let r = svc
             .stats(Request::new(wire::StatsRequest { ws_id: id.clone() }))
             .await;
         assert_eq!(code(r), tonic::Code::FailedPrecondition);
 
         mount(&svc, &id).await.unwrap();
+        // A plain workspace projects no tree: there is nothing to move.
+        let r = svc
+            .retarget(Request::new(wire::RetargetRequest {
+                ws_id: id.clone(),
+                to_root: bytes::Bytes::from(vec![1u8; 32]),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!((r.kept, r.dropped), (0, 0));
         // A plain workspace has no placeholders.
         let r = svc
             .dehydrate(Request::new(wire::DehydrateRequest {
@@ -1475,6 +1497,17 @@ mod tests {
         assert!(forced.conflicts.is_empty());
         assert_eq!(host.switched.load(Ordering::SeqCst), 2);
 
+        let moved = svc
+            .retarget(Request::new(wire::RetargetRequest {
+                ws_id: id.clone(),
+                to_root: bytes::Bytes::from_static(b"head"),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!((moved.kept, moved.dropped), (4, 1));
+        assert_eq!(host.retargeted.load(Ordering::SeqCst), 1);
+
         // A host failure is an internal error and is counted; a precondition is not.
         let r = svc
             .prefetch(Request::new(wire::PrefetchRequest {
@@ -1553,8 +1586,17 @@ mod tests {
             }))
             .await;
         assert_eq!(code(r), tonic::Code::InvalidArgument);
+        let r = svc
+            .retarget(Request::new(wire::RetargetRequest {
+                ws_id: id.clone(),
+                to_root: bytes::Bytes::from(vec![0u8; MAX_ROOT + 1]),
+            }))
+            .await;
+        assert_eq!(code(r), tonic::Code::InvalidArgument);
         assert_eq!(
-            host.dehydrated.load(Ordering::SeqCst) + host.switched.load(Ordering::SeqCst),
+            host.dehydrated.load(Ordering::SeqCst)
+                + host.switched.load(Ordering::SeqCst)
+                + host.retargeted.load(Ordering::SeqCst),
             0,
             "nothing reached the host"
         );
