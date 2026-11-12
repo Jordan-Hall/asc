@@ -28,9 +28,12 @@ tokio = { workspace = true }
 projfs = ["dep:asc-state", "dep:libloading", "dep:tokio"]
 cloudfiles = ["dep:asc-state", "dep:tokio", "dep:windows"]
 fuse = ["dep:fuser", "dep:asc-state", "dep:tokio", "dep:rustix"]
+nfs = ["dep:asc-state", "dep:tokio", "dep:rustix"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 fuser = { workspace = true, optional = true }
+
+[target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]

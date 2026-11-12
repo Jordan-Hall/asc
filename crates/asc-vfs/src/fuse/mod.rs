@@ -1,25 +1,19 @@
-//! Linux FUSE backend (SPEC §10.3): [`inodes`] is the persisted inode table, [`overlay`] holds
-//! what the user changed, [`passthrough`] hands clean files to the kernel, and [`fs`] is the
-//! `fuser` file system and the [`core::Provider`](crate::core::Provider) over it.
+//! Linux FUSE backend (SPEC §10.3): the merged file system of [`crate::unixfs`] served through
+//! `fuser`. [`passthrough`] hands clean files to the kernel, and [`fs`] is the `fuser` file
+//! system and the [`core::Provider`](crate::core::Provider) over it.
 //!
 //! Every name, path and handle the kernel sends is untrusted: names are validated once, paths are
 //! built as `RepoPath`s, and the overlay is only reached through `SafeRoot`, so a symlink in an
 //! ancestor is never followed.
 
-use std::future::Future;
 use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
-use asc_core::path::RepoPath;
-use asc_wc::journal::Op;
-use tokio::runtime::Handle;
-
 pub mod fs;
-pub mod inodes;
-pub mod overlay;
 pub mod passthrough;
 
+pub use crate::unixfs::{JournalSink, TimeSource, inodes, overlay};
 pub use fs::{Config, FuseProvider};
 
 /// The note `asc switch`, `pull` and `reset` print when a process watches the mount (SPEC §10.3
@@ -37,43 +31,6 @@ const MAX_SCAN_PROCS: usize = 200_000;
 const MAX_SCAN_FDS: usize = 2_000_000;
 /// Longest `fdinfo` text read.
 const MAX_FDINFO: u64 = 1 << 20;
-
-/// The placeholder times of paths (SPEC §10.1).
-pub trait TimeSource: Send + Sync {
-    /// The time, in Unix seconds, of each path, in order.
-    fn times(&self, paths: &[RepoPath]) -> io::Result<Vec<i64>>;
-}
-
-/// Where the file system appends its change hints. Every write passes through the daemon, so the
-/// hints are exact.
-pub trait JournalSink: Send + Sync {
-    /// Never blocks and never fails.
-    fn record(&self, op: Op, path: &[u8]);
-}
-
-impl JournalSink for asc_wc::journal::Journal {
-    fn record(&self, op: Op, path: &[u8]) {
-        asc_wc::journal::Journal::record(self, op, path);
-    }
-}
-
-/// Runs `f` to completion from a thread that may or may not be inside the runtime. FUSE worker
-/// threads are not; `DiskState` callers may be.
-pub(crate) fn block<F>(rt: &Handle, f: F) -> F::Output
-where
-    F: Future + Send,
-    F::Output: Send,
-{
-    if Handle::try_current().is_ok() {
-        std::thread::scope(|s| {
-            s.spawn(|| rt.block_on(f))
-                .join()
-                .unwrap_or_else(|e| std::panic::resume_unwind(e))
-        })
-    } else {
-        rt.block_on(f)
-    }
-}
 
 /// Whether one `/proc/<pid>/fdinfo/<fd>` text is an inotify descriptor with a watch on the file
 /// system whose kernel device number is `sdev`.
@@ -178,6 +135,9 @@ mod fixture {
     use asc_store::key::ObjKey;
     use asc_store::objects::Objects;
     use asc_wc::redirect::Redirections;
+
+    use asc_core::path::RepoPath;
+    use asc_wc::journal::Op;
 
     use super::inodes::MemInodes;
     use super::*;
@@ -413,6 +373,8 @@ mod mounted {
 
     use asc_core::id::{FileId, GitOid};
     use asc_core::object::{Change, Kind};
+    use asc_core::path::RepoPath;
+    use asc_wc::journal::Op;
     use asc_wc::switch::Plan;
     use asc_wc::times::Switched;
     use asc_wc::vstatus::{DiskKind, PathState};
