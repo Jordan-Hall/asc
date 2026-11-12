@@ -381,3 +381,49 @@ fn a_modify_that_pauses_a_restack_prints_paused_and_abort_prints_ok() {
     let aborted = r.json(&["abort", "--json"]);
     assert_eq!(aborted["status"], "ok", "{aborted}");
 }
+
+#[test]
+fn tag_creates_lists_and_deletes_with_the_bridge_argv() {
+    let r = Repo::new();
+    let head = r.head();
+    // The argv the bridge builds for `tag`, `tag --list` and `tag --delete`.
+    let v = r.json(&["tag", "--json", "--end-of-options", "v1"]);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["tag"]["action"], "create");
+    let v = r.json(&[
+        "tag",
+        "--json",
+        "--message=release two",
+        "--end-of-options",
+        "v2",
+        "HEAD",
+    ]);
+    assert_eq!(v["tag"]["action"], "create");
+    let v = r.json(&["tag", "--list", "--json"]);
+    assert_eq!(v["tag"]["action"], "list");
+    let tags = v["tag"]["tags"].as_array().unwrap();
+    assert_eq!(tags.len(), 2, "{v}");
+    assert_eq!(tags[0]["name"], "v1");
+    assert_eq!(tags[0]["target"], head.as_str());
+    assert!(tags[0]["annotated"].is_null() || tags[0]["annotated"] == false);
+    assert_eq!(tags[1]["name"], "v2");
+    assert_eq!(tags[1]["annotated"], true);
+    assert_eq!(
+        tags[1]["target"],
+        head.as_str(),
+        "an annotated tag peels to its commit"
+    );
+    assert_eq!(tags[1]["subject"], "release two");
+
+    let v = r.json(&["tag", "--delete", "--json", "--end-of-options", "v1"]);
+    assert_eq!(v["tag"]["action"], "delete");
+    assert_eq!(v["status"], "ok");
+    let tags = v["tag"]["tags"].as_array().unwrap();
+    assert_eq!(tags.len(), 1);
+    assert_eq!(tags[0]["name"], "v2");
+
+    // A failed verb prints no result and keeps its exit code.
+    let out = r.run_in(&r.root, &["tag", "--json", "--end-of-options", "v2"]);
+    assert_ne!(out.status.code(), Some(0));
+    assert!(text(&out.stdout).trim().is_empty());
+}
