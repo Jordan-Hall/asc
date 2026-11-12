@@ -159,6 +159,21 @@ runIf("rspack", () => {
     expect(Object.values(tree(join(b, "dist"))).some((t) => t.includes("changed"))).toBe(true);
   }, 120_000);
 
+  test("a built miss learns the sources it read into a prefetch profile", async () => {
+    const app = workTree("rspack-learn", {
+      ...files,
+      "src/greet.js": 'export const greet = () => "learned";\n',
+    });
+    const top = join(app, "..");
+    asc(top, "config", "user.name", "T");
+    asc(top, "config", "user.email", "t@example.com");
+    asc(top, "add", ".");
+    asc(top, "commit", "-q", "-m", "base");
+    expect(await rspack(app)).toBe(false);
+    const shown = asc(top, "prefetch", "--show", "rspack:bundle").trim().split("\n").toSorted();
+    expect(shown).toEqual(["app/package.json", "app/src/greet.js", "app/src/index.js"]);
+  }, 120_000);
+
   test("a failed, watched or disabled build stores nothing", async () => {
     const broken = workTree("rspack-broken", {
       ...files,
