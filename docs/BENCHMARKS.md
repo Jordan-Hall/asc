@@ -27,3 +27,27 @@ change: the importer's caches were already bounded, and the batch buffer (at mos
 them. A sample of every 50th object reads back in all three. On S3 the difference is larger than on a local
 disk, because the cost there is a request per object (not measured here).
 
+## Delta storage (dash)
+
+`import_bench ... delta` imports as `batched`, then stores what the server's delta pass would
+(docs/design/DELTA-STORAGE.md): each modified file against its previous version at the same path, each
+new chunk of a file over 4 MiB against the old version's chunk at the same place, and each changed tree
+(roots and subdirectories) against the same directory's old tree, whenever the delta is under half the
+stored value. Same source and machine as above; bytes per object kind.
+
+| store | files (`f`) | chunks (`k`) | trees (`t`) | total |
+|---|---|---|---|---|
+| no deltas (`batched`) | 441 MB | 130 MB | 28.2 MB | 605 MB |
+| file deltas, zstd level 3 | 359 MB | 130 MB | 28.2 MB | 523 MB |
+| file deltas, zstd level 9 | 299 MB | 130 MB | 28.2 MB | 463 MB |
+| file, chunk and tree deltas, level 9 (current) | 299 MB | 113 MB | 7.9 MB | 426 MB |
+
+Deltas written: 4,948 of 7,905 file pairs, 59 of 124 chunk pairs and 17,786 of 25,964 tree pairs. The
+pass took 44 s for files, 5 s for chunks and 189 s for trees. A sample of every 50th object reads back
+(deltas resolved) in 2.1 s. The git bare repository is 162 MB; git packs its trees in 2.5 MB and its
+large-file versions in 50 MB.
+
+Choosing the delta level: over all 22,704 same-path pairs of every commit, the deltas stored 129 MB at
+level 3, 56 MB at 6, 24.6 MB at 9, 23.7 MB at 12 and 21.6 MB at 19, with encode times of 5.8 s, 9.9 s,
+16.5 s, 37.9 s and 198 s and decode under 1 s at every level. Level 9 is the knee.
+
