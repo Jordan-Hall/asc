@@ -522,6 +522,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_best_base_is_the_one_giving_the_smallest_delta() {
+        let b = BucketObjects::memory();
+        // `far` shares half the lines of the file, `near` all but one.
+        let far: Vec<u8> = (0..3000)
+            .map(|i| match i % 2 {
+                0 => format!("fn item_{i}() -> u32 {{ {} }}\n", i * 3),
+                _ => format!("const OTHER_{i}: u64 = {};\n", i * 7),
+            })
+            .collect::<String>()
+            .into_bytes();
+        let (far, near) = (put(&b, &far).await, put(&b, &version(usize::MAX)).await);
+        let file = put(&b, &version(7)).await;
+        let mut cache = PlanCache::default();
+        let p = b
+            .plan_best(file, &[far, file, near, far], &mut cache)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(p.base, near);
+        assert_eq!(cache.links.get(&file), Some(&Some(near)));
+        b.store_delta(&p).await.unwrap();
+        assert_eq!(b.get(&file).await.unwrap().unwrap(), version(7));
+        // An object already a delta takes no other base; no usable base is a refusal.
+        assert_eq!(
+            b.plan_best(file, &[far], &mut cache)
+                .await
+                .unwrap()
+                .unwrap_err(),
+            Skip::AlreadyDelta
+        );
+        assert_eq!(
+            b.plan_best(far, &[far], &mut cache)
+                .await
+                .unwrap()
+                .unwrap_err(),
+            Skip::BadBase
+        );
+    }
+
+    #[tokio::test]
     async fn a_remembered_base_is_not_read_again() {
         let b = BucketObjects::memory();
         let base = put(&b, &version(usize::MAX)).await;

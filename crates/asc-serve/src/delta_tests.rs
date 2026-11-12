@@ -259,11 +259,20 @@ async fn a_merge_brings_its_side_branch_into_the_pass() {
         .await
         .unwrap();
     let rep = f.gc.run_delta_repo(&name(), &on()).await.unwrap();
-    // The merge, then `s2` and `s1`; the walk stops at `c`, which is on the mainline.
+    // The merge, then `s2` and `s1`; the walk stops at `c`, which is on the mainline. `s1`'s
+    // new `side` is stored against a similar file beside it, `s2`'s edit against `s1`'s.
     assert_eq!(
         (rep.changesets, rep.side, rep.files()),
-        (1, 2, 1),
+        (1, 2, 2),
         "{rep:?}"
+    );
+    assert!(
+        f.entry
+            .objects
+            .delta_base_of(ObjKey::File(j0))
+            .await
+            .unwrap()
+            .is_some()
     );
     assert_eq!(
         f.entry
@@ -588,4 +597,44 @@ async fn a_changed_directory_is_stored_as_a_tree_delta_and_its_base_is_a_root() 
     assert_eq!(e.objects.delta_base_of(new_key).await.unwrap(), None);
     assert_eq!(e.objects.get(&new_key).await.unwrap().unwrap(), want);
     assert!(roots.roots(&ns).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_new_file_is_stored_against_a_similar_file_of_its_directory() {
+    let reg = registry().await;
+    let e = repo(&reg).await;
+    let (near, other_ext) = (version(usize::MAX), version(3));
+    // Too large to pair (over double), and a different extension: neither is tried.
+    let big: Vec<u8> = [version(1), version(2), version(4)].concat();
+    let a = commit(
+        &e,
+        &[],
+        &[
+            ("src/a.rs", &near),
+            ("src/big.rs", &big),
+            ("src/c.txt", &other_ext),
+        ],
+    )
+    .await;
+    let added = version(5);
+    let b = commit(&e, &[a], &[("src/b.rs", &added)]).await;
+    let ns = e.ns.as_bytes().to_vec();
+    for (pos, cs) in [a, b].into_iter().enumerate() {
+        sqlx::query("INSERT INTO mainline (ns, ref, pos, cs) VALUES ($1, $2, $3, $4)")
+            .bind(ns.clone())
+            .bind("refs/heads/master")
+            .bind(pos as i64)
+            .bind(cs.as_bytes().to_vec())
+            .execute(reg.pool())
+            .await
+            .unwrap();
+    }
+    let key = ObjKey::File(FileId::of(&added));
+    let rep = delta_service::pass(reg.pool(), &e, &on()).await.unwrap();
+    assert_eq!(rep.files(), 1, "{rep:?}");
+    assert_eq!(
+        e.objects.delta_base_of(key).await.unwrap(),
+        Some(ObjKey::File(FileId::of(&near)))
+    );
+    assert_eq!(e.objects.get(&key).await.unwrap().unwrap(), added);
 }
