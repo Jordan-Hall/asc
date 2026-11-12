@@ -31,6 +31,10 @@ const MAX_LINE: usize = 16 * 1024;
 
 /// Largest request head read from a metrics client.
 const MAX_REQUEST: usize = 8 * 1024;
+/// How long a closing connection keeps reading what the client still sends.
+const LINGER: Duration = Duration::from_millis(500);
+/// The most a closing connection reads before it closes anyway.
+const MAX_DRAIN: usize = 64 * 1024;
 /// How long a metrics client may take to send its request head.
 const REQUEST_WAIT: Duration = Duration::from_secs(2);
 /// Metrics connections served at once.
@@ -324,7 +328,8 @@ pub fn rss_bytes() -> Option<u64> {
 
 /// The memory this process owns: its resident set without the file-backed pages of the
 /// executable and its libraries. On Linux that is `RssAnon + RssShmem`; on Windows the private
-/// committed bytes, capped by the working set (private resident pages are in both); elsewhere
+/// committed bytes, capped by the working set (private resident pages are in both); on macOS the
+/// physical footprint, capped by the resident set; elsewhere
 /// the platform cannot split the figure and it is [`rss_bytes`]. The file-backed part is shared with every
 /// other process that maps the same image and the kernel drops it under pressure, but it grows
 /// with the size of the binary (relocations touch much of a position-independent image), so it
@@ -416,7 +421,34 @@ mod imp {
     }
 }
 
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(target_vendor = "apple")]
+#[allow(unsafe_code)] // one libc call, with a zeroed out-struct of the flavour asked for.
+mod imp {
+    /// This process's usage record (`RUSAGE_INFO_V2`).
+    fn usage() -> Option<libc::rusage_info_v2> {
+        // SAFETY: `info` is a plain-data struct of the flavour passed, which the call fills;
+        // `getpid` names this process.
+        unsafe {
+            let mut info: libc::rusage_info_v2 = std::mem::zeroed();
+            let ptr = (&raw mut info).cast::<libc::rusage_info_t>();
+            if libc::proc_pid_rusage(libc::getpid(), libc::RUSAGE_INFO_V2, ptr) != 0 {
+                return None;
+            }
+            Some(info)
+        }
+    }
+
+    pub fn rss_bytes() -> Option<u64> {
+        Some(usage()?.ri_resident_size)
+    }
+
+    pub fn private_rss_bytes() -> Option<u64> {
+        let u = usage()?;
+        Some(u.ri_phys_footprint.min(u.ri_resident_size))
+    }
+}
+
+#[cfg(not(any(target_os = "linux", windows, target_vendor = "apple")))]
 mod imp {
     pub fn rss_bytes() -> Option<u64> {
         None
@@ -600,7 +632,26 @@ async fn respond_typed(
     );
     stream.write_all(head.as_bytes()).await?;
     stream.write_all(body.as_bytes()).await?;
-    stream.shutdown().await
+    stream.shutdown().await?;
+    linger(stream).await;
+    Ok(())
+}
+
+/// Reads what the client still sends after the answer (a refused oversized head), for at most
+/// [`LINGER`] and [`MAX_DRAIN`] bytes. Closing a socket with unread input makes the kernel send a
+/// reset, and on macOS the reset can arrive before the client has read the answer.
+async fn linger(stream: &mut TcpStream) {
+    let mut sink = [0u8; 1024];
+    let drain = async {
+        let mut left = MAX_DRAIN;
+        while left > 0 {
+            match stream.read(&mut sink).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => left = left.saturating_sub(n),
+            }
+        }
+    };
+    let _ = tokio::time::timeout(LINGER, drain).await;
 }
 
 // ---------------------------------------------------------------------------------- log
@@ -988,13 +1039,13 @@ mod tests {
         );
     }
 
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", windows, target_vendor = "apple"))]
     #[test]
     fn rss_is_readable() {
         assert!(rss_bytes().is_some_and(|b| b > 0));
     }
 
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", windows, target_vendor = "apple"))]
     #[test]
     fn the_private_figure_is_part_of_the_resident_set() {
         let private = private_rss_bytes().expect("readable");

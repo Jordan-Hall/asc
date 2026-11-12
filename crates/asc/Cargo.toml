@@ -93,6 +93,10 @@ asc-vfs = { workspace = true, optional = true }
 # Ownership check of the safe.directory gate (cli/safe_dir.rs).
 windows-sys = { workspace = true }
 
+[target.'cfg(target_vendor = "apple")'.dependencies]
+# Resident and private memory of the daemon (`proc_pid_rusage`, daemon/metrics.rs).
+libc = "0.2"
+
 [target.'cfg(unix)'.dependencies]
 asc-vfs = { workspace = true, optional = true }
 # Effective uid for the safe.directory gate (cli/safe_dir.rs).
