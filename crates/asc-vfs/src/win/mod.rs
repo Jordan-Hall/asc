@@ -5,6 +5,8 @@
 //! * The path rules every notification applies first ([`paths`]).
 //! * The switch engine ([`engine`]): the intent, the per-path work, retries of held-open paths and
 //!   the pending list. Each backend supplies only how one path is brought to the target version.
+//! * The surface the daemon drives on either backend ([`host::WinProvider`]) and which backend
+//!   serves a root ([`select`]).
 
 use std::future::Future;
 use std::io;
@@ -23,8 +25,10 @@ use tokio::runtime::Handle;
 use crate::core::CoreFs;
 
 pub mod engine;
+pub mod host;
 pub mod idle;
 pub mod paths;
+pub mod select;
 #[cfg(test)]
 pub mod testkit;
 
