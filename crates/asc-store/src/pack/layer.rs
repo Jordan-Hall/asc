@@ -1,7 +1,7 @@
 //! The pack layer inside [`BucketObjects`]: how reads, bulk writes, deletes and listings use
 //! packs. `BucketObjects` calls these from its `Objects` implementation.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
@@ -12,11 +12,13 @@ use futures::stream::{self, BoxStream};
 use futures::{StreamExt, TryStreamExt};
 use object_store::path::Path;
 use object_store::{ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload};
+use zstd::dict::DecoderDictionary;
 
 use super::format::{self, BuiltPack, PackId};
 use super::index::{PackIndex, PackInfo, PackLoc, PackState};
 use super::{PackConfig, unix_now};
 use crate::bucket::BucketObjects;
+use crate::codec::PACK_DICT;
 use crate::key::{KeyClass, KeyPrefix, ObjKey};
 use crate::objects::{Error, PUT_CONCURRENCY, Result, decode_verified};
 
@@ -40,7 +42,13 @@ pub struct PackLayer {
     negative_at: Mutex<Option<Instant>>,
     /// When this process first learned of a live pack.
     live_since: Mutex<Option<Instant>>,
+    /// The prepared dictionaries of version 2 packs read so far. Packs never change, so an
+    /// entry stays right; the map is emptied when it reaches [`DICT_CACHE`].
+    dicts: Mutex<HashMap<PackId, Arc<DecoderDictionary<'static>>>>,
 }
+
+/// How many pack dictionaries one namespace keeps prepared.
+const DICT_CACHE: usize = 64;
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
@@ -56,6 +64,7 @@ impl PackLayer {
             gated: AtomicBool::new(false),
             negative_at: Mutex::new(None),
             live_since: Mutex::new(None),
+            dicts: Mutex::new(HashMap::new()),
         }
     }
 
@@ -207,13 +216,64 @@ impl BucketObjects {
         self.packs.as_ref().filter(|_| key.packable())
     }
 
+    /// The prepared dictionary of the version 2 pack `id`, read once and kept.
+    async fn pack_dict(&self, id: PackId) -> Result<Option<Arc<DecoderDictionary<'static>>>> {
+        let Some(l) = &self.packs else {
+            return Ok(None);
+        };
+        if let Some(d) = lock(&l.dicts).get(&id) {
+            return Ok(Some(d.clone()));
+        }
+        let path = self.pack_path(id);
+        let head = self
+            .store
+            .get_range(&path, 0..format::HEADER_LEN as u64)
+            .await?;
+        let Ok((2, n)) = format::header(&head) else {
+            return Ok(None);
+        };
+        let start = format::HEADER_LEN as u64;
+        let raw = self.store.get_range(&path, start..start + n as u64).await?;
+        if raw.len() != n {
+            return Ok(None);
+        }
+        let d = Arc::new(DecoderDictionary::copy(&raw));
+        let mut m = lock(&l.dicts);
+        if m.len() >= DICT_CACHE {
+            m.clear();
+        }
+        m.insert(id, d.clone());
+        Ok(Some(d))
+    }
+
+    /// A packed entry as readers take it: codec `3` decoded with its pack's dictionary. An
+    /// entry that cannot be decoded is returned as it is, so verification reports it damaged
+    /// and the read falls back to the loose copy.
+    async fn unpack_entry(&self, id: PackId, b: Bytes) -> Result<Bytes> {
+        if b.first() != Some(&PACK_DICT) {
+            return Ok(b);
+        }
+        let dict = match self.pack_dict(id).await {
+            Ok(d) => d,
+            Err(Error::Store(object_store::Error::NotFound { .. })) => None,
+            Err(e) => return Err(e),
+        };
+        match format::decode_entry(b.clone(), dict.as_deref()) {
+            Ok(full) => Ok(full),
+            Err(e) => {
+                tracing::warn!(pack = %id, error = %e, "packed entry does not decode with its dictionary");
+                Ok(b)
+            }
+        }
+    }
+
     /// Reads the bytes a row names. A pack that is missing or shorter than the row says counts
     /// as no copy: the caller falls back to the loose object.
     pub(crate) async fn read_loc(&self, loc: &PackLoc) -> Result<Option<Bytes>> {
         let path = self.pack_path(loc.pack);
         let range = loc.offset..loc.offset.saturating_add(loc.len);
         match self.store.get_range(&path, range).await {
-            Ok(b) if b.len() as u64 == loc.len => Ok(Some(b)),
+            Ok(b) if b.len() as u64 == loc.len => self.unpack_entry(loc.pack, b).await.map(Some),
             Ok(b) => {
                 tracing::warn!(pack = %loc.pack, got = b.len(), want = loc.len, "pack is shorter than its index says");
                 Ok(None)
@@ -493,7 +553,8 @@ impl BucketObjects {
         items: Vec<(ObjKey, Bytes)>,
     ) -> Result<PackInfo> {
         l.allow_write().await?;
-        let built = format::build(PackId::random(), items).map_err(from_format)?;
+        let built = format::build_with(PackId::random(), items, l.config().dict.as_ref())
+            .map_err(from_format)?;
         self.store_pack(&built).await?;
         let info = PackInfo {
             id: built.id,

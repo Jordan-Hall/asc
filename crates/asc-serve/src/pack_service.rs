@@ -13,6 +13,7 @@ use asc_git::import::ImportPolicy;
 use asc_rpc::server::RepoName;
 use asc_store::objects::Error as StoreError;
 use asc_store::pack::PackConfig;
+use asc_store::pack::format::DictOpts;
 use asc_store::pack::job::{PackReport, PackStatus, ReindexReport, VerifyReport};
 use serde::Deserialize;
 use sqlx::Row;
@@ -56,6 +57,12 @@ pub struct PackSettings {
     pub orphan_age: Secs,
     /// A bulk write of fewer small objects than this stays loose.
     pub min_batch: usize,
+    /// Trains a zstd dictionary for each pack written and keeps it when it saves bytes.
+    pub dictionary: bool,
+    /// The size of each pack's dictionary.
+    pub dictionary_size: ByteSize,
+    /// A pack of fewer objects than this gets no dictionary.
+    pub dictionary_min_objects: usize,
 }
 
 impl Default for PackSettings {
@@ -75,6 +82,9 @@ impl Default for PackSettings {
             retire_age: Secs(d.retire_age.as_secs()),
             orphan_age: Secs(d.orphan_age.as_secs()),
             min_batch: d.min_batch,
+            dictionary: true,
+            dictionary_size: ByteSize(DictOpts::default().size as u64),
+            dictionary_min_objects: DictOpts::default().min_objects,
         }
     }
 }
@@ -113,6 +123,12 @@ impl PackSettings {
         if self.min_batch == 0 {
             return bad("min_batch must be at least 1");
         }
+        if !(1024..=(1 << 20)).contains(&self.dictionary_size.0) {
+            return bad("dictionary_size must be 1KiB to 1MiB");
+        }
+        if self.dictionary_min_objects < 8 {
+            return bad("dictionary_min_objects must be at least 8");
+        }
         Ok(PackConfig {
             enabled: self.enabled,
             max_object: self.max_object.0 as usize,
@@ -127,6 +143,10 @@ impl PackSettings {
             orphan_age: Duration::from_secs(self.orphan_age.0),
             min_batch: self.min_batch,
             negative_ttl: PackConfig::default().negative_ttl,
+            dict: self.dictionary.then_some(DictOpts {
+                size: self.dictionary_size.0 as usize,
+                min_objects: self.dictionary_min_objects,
+            }),
         })
     }
 }
@@ -381,6 +401,9 @@ mod tests {
         assert_eq!(c.max_object, PackConfig::default().max_object);
         assert!(!c.enabled);
         assert!((c.compact_below - 0.5).abs() < f64::EPSILON);
+        assert_eq!(c.dict, Some(DictOpts::default()));
+        let off: PackSettings = toml::from_str("dictionary = false").unwrap();
+        assert_eq!(off.to_config().unwrap().dict, None);
         let p = ImportSettings::default().to_policy().unwrap();
         assert_eq!(p.batch_commits, 500);
         assert_eq!(p.batch_bytes, 128 << 20);
@@ -403,6 +426,9 @@ mod tests {
         assert!(s(|s| s.compact_below_percent = 101));
         assert!(s(|s| s.orphan_age = Secs(5)));
         assert!(s(|s| s.min_batch = 0));
+        assert!(s(|s| s.dictionary_size = ByteSize(100)));
+        assert!(s(|s| s.dictionary_size = ByteSize(2 << 20)));
+        assert!(s(|s| s.dictionary_min_objects = 2));
         let bad = ImportSettings {
             batch_commits: 0,
             ..ImportSettings::default()

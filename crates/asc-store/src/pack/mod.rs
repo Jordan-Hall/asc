@@ -55,6 +55,9 @@ pub struct PackConfig {
     /// How long a "no packs here" answer is trusted. Also how long the first pack of a
     /// namespace keeps its loose copies, so a reader that has not noticed it still finds them.
     pub negative_ttl: Duration,
+    /// Train a zstd dictionary for each pack written, and keep it when it saves more than it
+    /// costs (format version 2). `None` writes version 1 packs only.
+    pub dict: Option<format::DictOpts>,
 }
 
 impl Default for PackConfig {
@@ -73,6 +76,7 @@ impl Default for PackConfig {
             orphan_age: Duration::from_secs(3600),
             min_batch: 16,
             negative_ttl: Duration::from_secs(5),
+            dict: Some(format::DictOpts::default()),
         }
     }
 }

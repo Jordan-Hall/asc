@@ -4,13 +4,19 @@
 //! `2 ‖ base FileId (32 bytes) ‖ one zstd frame` compressed with the base file's bytes as a raw
 //! content dictionary. It never travels: [`check_codec`] refuses it, and the bucket turns it back
 //! into codec `0` or `1` before anyone reads it.
+//!
+//! Codec `3` exists only inside a version 2 pack (docs/design/PACKED-OBJECTS.md, "Dictionaries"):
+//! `3 ‖ one zstd frame` compressed with the dictionary trained for that pack. It never travels
+//! either: the pack layer turns it into codec `0` as it reads the entry.
 
 use bytes::{BufMut, Bytes, BytesMut};
 
 const RAW: u8 = 0;
 const ZSTD: u8 = 1;
 const DELTA: u8 = 2;
-const ZSTD_LEVEL: i32 = 3;
+/// A pack entry compressed with its pack's trained dictionary.
+pub const PACK_DICT: u8 = 3;
+pub(crate) const ZSTD_LEVEL: i32 = 3;
 /// Bytes before a delta's zstd frame: the codec byte and the base id.
 const DELTA_HEADER: usize = 1 + 32;
 
@@ -99,6 +105,59 @@ pub fn decode_delta(stored: &[u8], base: &[u8], max_decoded: u64) -> Result<Byte
     if out.len() as u64 != size {
         return Err(CodecError::BadFrame);
     }
+    Ok(out.into())
+}
+
+/// Encodes `data` as codec `3` with the pack dictionary `dict`, or `None` when the result is not
+/// smaller than `than` bytes.
+pub fn encode_pack_dict(
+    dict: &zstd::dict::EncoderDictionary<'_>,
+    data: &[u8],
+    than: usize,
+) -> Option<Bytes> {
+    let mut c = zstd::bulk::Compressor::with_prepared_dictionary(dict).ok()?;
+    c.include_contentsize(true).ok()?;
+    c.include_checksum(false).ok()?;
+    c.include_dictid(false).ok()?;
+    let z = c.compress(data).ok()?;
+    if 1 + z.len() >= than {
+        return None;
+    }
+    let mut out = BytesMut::with_capacity(1 + z.len());
+    out.put_u8(PACK_DICT);
+    out.extend_from_slice(&z);
+    Some(out.freeze())
+}
+
+/// Decodes a codec `3` pack entry with its pack's dictionary into a codec `0` stored value,
+/// rejecting values larger than `max_decoded`.
+pub fn decode_pack_dict(
+    stored: &[u8],
+    dict: &zstd::dict::DecoderDictionary<'_>,
+    max_decoded: u64,
+) -> Result<Bytes, CodecError> {
+    if stored.first() != Some(&PACK_DICT) {
+        return Err(CodecError::BadFrame);
+    }
+    let body = &stored[1..];
+    let size = zstd::zstd_safe::get_frame_content_size(body)
+        .ok()
+        .flatten()
+        .ok_or(CodecError::BadFrame)?;
+    if size > max_decoded {
+        return Err(CodecError::TooLarge(max_decoded));
+    }
+    let mut d = zstd::bulk::Decompressor::with_prepared_dictionary(dict)
+        .map_err(|_| CodecError::BadFrame)?;
+    let mut out = Vec::with_capacity(1 + size as usize);
+    out.push(RAW);
+    let data = d
+        .decompress(body, size as usize)
+        .map_err(|_| CodecError::BadFrame)?;
+    if data.len() as u64 != size {
+        return Err(CodecError::BadFrame);
+    }
+    out.extend_from_slice(&data);
     Ok(out.into())
 }
 

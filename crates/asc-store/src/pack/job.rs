@@ -431,16 +431,18 @@ impl BucketObjects {
                 rep.damaged += 1;
                 continue;
             };
-            if format::parse(&bytes).is_err() {
-                tracing::warn!(pack = %id, "pack does not verify; left alone");
-                rep.damaged += 1;
-                continue;
-            }
+            let reader = match format::parse(&bytes).and_then(|_| format::PackReader::new(&bytes)) {
+                Ok(r) => r,
+                Err(_) => {
+                    tracing::warn!(pack = %id, "pack does not verify; left alone");
+                    rep.damaged += 1;
+                    continue;
+                }
+            };
             let mut mine = Vec::new();
             let mut ok = true;
             for row in l.index.rows_of(id).await? {
-                let stored = format::slice(&bytes, &row).filter(|s| s.len() == row.len as usize);
-                match stored {
+                match reader.entry(&row) {
                     Some(s) if decode_verified(&row.key, &s).is_ok() => mine.push((row.key, s)),
                     _ => {
                         ok = false;
@@ -466,8 +468,8 @@ impl BucketObjects {
             return Ok(true);
         }
         l.allow_rewrite().await?;
-        let built =
-            format::build(PackId::random(), items).map_err(|e| Error::Index(e.to_string()))?;
+        let built = format::build_with(PackId::random(), items, cfg.dict.as_ref())
+            .map_err(|e| Error::Index(e.to_string()))?;
         self.store_pack(&built).await?;
         let info = PackInfo {
             id: built.id,
@@ -604,8 +606,10 @@ impl BucketObjects {
                     .push(format!("pack {id} is in the index but its file is missing"));
                 continue;
             };
-            let entries = match format::parse(&bytes) {
-                Ok(e) => e,
+            let (entries, reader) = match format::parse(&bytes)
+                .and_then(|e| Ok((e, format::PackReader::new(&bytes)?)))
+            {
+                Ok(v) => v,
                 Err(e) => {
                     rep.problems.push(format!("pack {id}: {e}"));
                     continue;
@@ -622,7 +626,7 @@ impl BucketObjects {
                     ));
                     continue;
                 }
-                let stored = format::slice(&bytes, &row);
+                let stored = reader.entry(&row);
                 if stored.is_none_or(|s| decode_verified(&row.key, &s).is_err()) {
                     rep.problems
                         .push(format!("pack {id}: {} does not verify", row.key));
