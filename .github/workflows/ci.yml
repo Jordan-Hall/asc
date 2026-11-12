@@ -292,6 +292,11 @@ jobs:
       - run: GARAGE_BIN="$HOME/garage-bin/garage" ASC_IT_GARAGE_EXPECT_EXCLUSIVE=false bash build/ci/garage-it.sh
 
   windows:
+    name: windows (${{ matrix.part }})
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [libs, asc]
     runs-on: windows-2022
     timeout-minutes: 120
     env:
@@ -303,14 +308,19 @@ jobs:
       - name: Toolchain (from rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: ${{ matrix.part }}
       - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-nextest
       # The asc unit tests and every library crate; the git-oracle suites (pinned git is built on Linux) and the
       # server, which ships for Linux, stay on the Linux job. The virtual workspace has its own job below.
-      - name: Test
+      # The two halves build different targets, so they run side by side.
+      - name: Test (libraries)
+        if: matrix.part == 'libs'
         run: cargo nextest run --locked --profile ci --workspace --exclude asc --exclude asc-serve
       - name: asc unit tests
+        if: matrix.part == 'asc'
         run: cargo nextest run --locked --profile ci -p asc --bins
 
   # macOS serves virtual workspaces through the asc FSKit module or the loopback NFS server;
