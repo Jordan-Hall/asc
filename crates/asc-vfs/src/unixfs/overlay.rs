@@ -73,6 +73,29 @@ impl Overlay {
         Ok(o)
     }
 
+    /// Reads the overlay below `dir` without creating or clearing anything, for a process other
+    /// than the mount's (the CLI asking while the mount runs). `None` when there is no overlay.
+    pub fn peek(dir: &Path) -> Option<Self> {
+        let data = dir.join("data");
+        if !fs::symlink_metadata(&data).is_ok_and(|m| m.is_dir()) {
+            return None;
+        }
+        Some(Self {
+            dir: dir.to_path_buf(),
+            data: SafeRoot::new(data),
+            white: dir.join("white"),
+            tmp: dir.join("tmp"),
+            hydrate: dir.join("hydrate"),
+            seq: AtomicU64::new(0),
+        })
+    }
+
+    /// Whether `p` still shows the base tree's entry: nothing was written there and no deletion
+    /// marker hides it.
+    pub fn shows_base(&self, p: &RepoPath) -> io::Result<bool> {
+        Ok(self.meta(p)?.is_none() && !self.hides_base(p))
+    }
+
     /// The disk path of `p` in `data/`, or `None` when an ancestor is a link or not a directory.
     pub fn resolve(&self, p: &RepoPath) -> Option<PathBuf> {
         self.data.resolve(p)

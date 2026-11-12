@@ -13,7 +13,8 @@ pub(crate) fn for_workspace(ws: &WsCtx) -> Option<Box<dyn Projected>> {
     if ws.workspace.ws.mode != Mode::Virtual {
         return None;
     }
-    imp::open(ws.projection.toplevel())
+    let overlay = ws.home.workspace_dir(ws.workspace.ws.id).join("overlay");
+    imp::open(&overlay, ws.projection.toplevel())
 }
 
 #[cfg(all(windows, any(feature = "vfs-projfs", feature = "vfs-cloudfiles")))]
@@ -69,7 +70,7 @@ mod imp {
         }
     }
 
-    pub(super) fn open(root: &Path) -> Option<Box<dyn Projected>> {
+    pub(super) fn open(_overlay: &Path, root: &Path) -> Option<Box<dyn Projected>> {
         let gate = SafeRoot::new(root);
         match select::found(root) {
             #[cfg(feature = "vfs-cloudfiles")]
@@ -89,49 +90,56 @@ mod imp {
     }
 }
 
-#[cfg(all(target_os = "linux", feature = "vfs-fuse"))]
+#[cfg(any(
+    all(target_os = "linux", feature = "vfs-fuse"),
+    all(unix, feature = "vfs-nfs")
+))]
 mod imp {
     use std::io;
     use std::path::Path;
 
     use asc_core::path::RepoPath;
-    use asc_vfs::fuse::PROJECTED_XATTR;
-    use asc_wc::SafeRoot;
+    use asc_vfs::unixfs::overlay::Overlay;
     use asc_wc::plain::Projected;
+    use asc_wc::redirect::Redirections;
 
-    /// The mount's `user.asc.projected` attribute: a base-tree file nobody wrote to.
-    struct Fuse {
-        gate: SafeRoot,
+    /// The workspace's overlay, read beside the running mount: a file shows the base tree's
+    /// content while nothing was written at it and no deletion hides it. FUSE and NFS mounts
+    /// share the overlay, and NFS has no extended attributes to ask through the mount.
+    struct Unix {
+        overlay: Overlay,
+        redirections: Redirections,
     }
 
-    impl Projected for Fuse {
+    impl Projected for Unix {
         fn unchanged(&self, path: &RepoPath) -> io::Result<bool> {
-            let Some(abs) = self.gate.resolve(path) else {
+            // A redirected directory is a real one outside the overlay.
+            if self.redirections.covers(path) {
                 return Ok(false);
-            };
-            let mut value = [0u8; 1];
-            Ok(rustix::fs::lgetxattr(&abs, PROJECTED_XATTR, &mut value[..])
-                .is_ok_and(|n| value[..n] == *b"1"))
+            }
+            self.overlay.shows_base(path)
         }
     }
 
-    pub(super) fn open(root: &Path) -> Option<Box<dyn Projected>> {
-        Some(Box::new(Fuse {
-            gate: SafeRoot::new(root),
+    pub(super) fn open(overlay: &Path, root: &Path) -> Option<Box<dyn Projected>> {
+        Some(Box::new(Unix {
+            overlay: Overlay::peek(overlay)?,
+            redirections: Redirections::load(root).ok()?,
         }))
     }
 }
 
 #[cfg(not(any(
     all(windows, any(feature = "vfs-projfs", feature = "vfs-cloudfiles")),
-    all(target_os = "linux", feature = "vfs-fuse")
+    all(target_os = "linux", feature = "vfs-fuse"),
+    all(unix, feature = "vfs-nfs")
 )))]
 mod imp {
     use std::path::Path;
 
     use asc_wc::plain::Projected;
 
-    pub(super) fn open(_root: &Path) -> Option<Box<dyn Projected>> {
+    pub(super) fn open(_overlay: &Path, _root: &Path) -> Option<Box<dyn Projected>> {
         None
     }
 }
