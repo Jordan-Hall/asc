@@ -121,6 +121,17 @@ impl BucketObjects {
         Ok(true)
     }
 
+    /// Overwrites the loose copy of `key` with `stored`, a wire value checked against the key
+    /// first. A fork uses it to put full values where the copy brought deltas.
+    pub async fn replace_loose(&self, key: &ObjKey, stored: Bytes) -> Result<()> {
+        crate::codec::check_codec(&stored).map_err(|e| crate::objects::Error::Codec(*key, e))?;
+        decode_verified(key, &stored)?;
+        self.store
+            .put(&self.key_path(key), PutPayload::from_bytes(stored))
+            .await?;
+        Ok(())
+    }
+
     /// The base of `file` when its loose copy is a delta.
     pub async fn delta_base_of(&self, file: FileId) -> Result<Option<FileId>> {
         Ok(self

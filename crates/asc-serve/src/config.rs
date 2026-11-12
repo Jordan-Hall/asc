@@ -1069,6 +1069,8 @@ pub struct ServeConfig {
     pub gc: crate::gc::GcSettings,
     /// `[pack]`: packed objects (docs/design/PACKED-OBJECTS.md).
     pub pack: crate::pack_service::PackSettings,
+    /// `[delta]`: delta storage at rest (docs/design/DELTA-STORAGE.md).
+    pub delta: crate::delta_service::DeltaSettings,
     /// `[import]`: how a git import batches its writes.
     pub import: crate::pack_service::ImportSettings,
     /// `[cloud]` (SPEC §21.3.7): `max_user_refs` and `max_user_bytes`.
@@ -1132,6 +1134,7 @@ impl Default for ServeConfig {
             ssh: SshConfig::default(),
             gc: crate::gc::GcSettings::default(),
             pack: crate::pack_service::PackSettings::default(),
+            delta: crate::delta_service::DeltaSettings::default(),
             import: crate::pack_service::ImportSettings::default(),
             cloud: CloudConfig::default(),
             web: WebConfig::default(),
@@ -1183,6 +1186,7 @@ impl ServeConfig {
     pub fn validate(&self) -> Result<(), ConfigError> {
         self.gc.to_config()?;
         self.pack.to_config()?;
+        self.delta.check()?;
         self.import.to_policy()?;
         if let Some(store) = &self.store {
             let scheme = url_scheme(store);

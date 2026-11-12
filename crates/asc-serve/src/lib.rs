@@ -24,6 +24,7 @@ pub mod codeintel;
 pub mod commit_graph_markers;
 pub mod commit_graph_rpc;
 pub mod config;
+pub mod delta_service;
 pub mod deps;
 pub mod expire;
 pub mod export;
@@ -993,16 +994,22 @@ pub async fn serve(
     #[cfg(feature = "git-ssh")]
     let ssh_task = ssh.map(|server| tokio::spawn(server.run(std::future::pending())));
     // Collection deletes data, so it runs only when `[gc] enabled` is set.
-    let collector = if cfg.gc.enabled {
-        let service = Arc::new(gc::GcService::new(
-            registry.clone(),
-            ext.pipeline.clone(),
-            cfg.gc.to_config()?,
-        ));
-        Some(service.spawn_worker(std::time::Duration::from_secs(cfg.gc.interval_hours * 3600)))
-    } else {
-        None
-    };
+    // The delta pass shares the collection lock, so both run through one service.
+    let gc_service = Arc::new(gc::GcService::new(
+        registry.clone(),
+        ext.pipeline.clone(),
+        cfg.gc.to_config()?,
+    ));
+    let collector = cfg.gc.enabled.then(|| {
+        gc_service
+            .clone()
+            .spawn_worker(std::time::Duration::from_secs(cfg.gc.interval_hours * 3600))
+    });
+    // Deltas rewrite stored values, so the pass runs only when `[delta] enabled` is set.
+    let deltas = cfg
+        .delta
+        .enabled
+        .then(|| gc_service.clone().spawn_delta_worker(cfg.delta.clone()));
     // Packing writes data in a new form, so it runs only when `[pack] enabled` is set.
     let packer = cfg.pack.enabled.then(|| {
         Arc::new(pack_service::PackService::new(
@@ -1055,6 +1062,9 @@ pub async fn serve(
     }
     if let Some(p) = packer {
         p.abort();
+    }
+    if let Some(d) = deltas {
+        d.abort();
     }
     admin.abort();
     match &served {

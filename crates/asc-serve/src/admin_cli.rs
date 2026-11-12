@@ -83,6 +83,8 @@ pub enum AdminCliError {
     Status(String),
     #[error(transparent)]
     Pack(#[from] crate::pack_service::PackError),
+    #[error(transparent)]
+    Gc(#[from] asc_store::gc::GcError),
 }
 
 impl From<RealGitError> for AdminCliError {
@@ -126,6 +128,8 @@ pub struct AdminCli {
     git: Option<RealGit>,
     service: Arc<AdminService>,
     packs: Arc<crate::pack_service::PackService>,
+    gc: Arc<crate::gc::GcService>,
+    delta: crate::delta_service::DeltaSettings,
 }
 
 /// What `maintenance` does (SPEC §14.5).
@@ -157,6 +161,15 @@ pub enum PackCmd {
     Reindex,
 }
 
+/// What `delta` does (docs/design/DELTA-STORAGE.md).
+#[derive(Debug, Clone)]
+pub enum DeltaCmd {
+    /// One delta pass under the collection lock, whether or not `[delta] enabled` is set.
+    Run,
+    /// Deltas, bases and the mainline backlog.
+    Status,
+}
+
 /// Opens the database and the store of `cfg`. The schema must already be migrated.
 pub async fn open(cfg: &ServeConfig) -> Result<AdminCli, AdminCliError> {
     let (Some(db), Some(store)) = (&cfg.db, &cfg.store) else {
@@ -184,7 +197,11 @@ pub async fn open(cfg: &ServeConfig) -> Result<AdminCli, AdminCliError> {
         ))),
         _ => None,
     };
-    Ok(AdminCli::new(registry, mirror, mirror_dir, git))
+    let gc = cfg
+        .gc
+        .to_config()
+        .map_err(|e| AdminCliError::Invalid(e.to_string()))?;
+    Ok(AdminCli::new(registry, mirror, mirror_dir, git).with_gc(gc, cfg.delta.clone()))
 }
 
 fn name_of(repo: &str) -> Result<RepoName, AdminCliError> {
@@ -203,6 +220,11 @@ impl AdminCli {
             registry.clone(),
             Arc::new(PipelineHooks::default()),
         ));
+        let gc = Arc::new(crate::gc::GcService::new(
+            registry.clone(),
+            Arc::new(PipelineHooks::default()),
+            asc_store::gc::GcConfig::default(),
+        ));
         Self {
             registry,
             mirror,
@@ -210,7 +232,78 @@ impl AdminCli {
             git,
             service,
             packs,
+            gc,
+            delta: crate::delta_service::DeltaSettings::default(),
         }
+    }
+
+    /// Uses `cfg` for collections and `delta` for delta passes in place of the defaults.
+    #[must_use]
+    pub fn with_gc(
+        mut self,
+        cfg: asc_store::gc::GcConfig,
+        delta: crate::delta_service::DeltaSettings,
+    ) -> Self {
+        self.gc = Arc::new(crate::gc::GcService::new(
+            self.registry.clone(),
+            Arc::new(PipelineHooks::default()),
+            cfg,
+        ));
+        self.delta = delta;
+        self
+    }
+
+    // -------------------------------------------------------------------------------- delta
+
+    /// `delta run|status`, for `--repo <r>` (repeatable) or `--all`.
+    pub async fn delta(
+        &self,
+        cmd: &DeltaCmd,
+        repos: &[String],
+        all: bool,
+    ) -> Result<Report, AdminCliError> {
+        if all != repos.is_empty() {
+            return Err(AdminCliError::Invalid(
+                "name the repositories with --repo, or use --all, not both".into(),
+            ));
+        }
+        let names: Vec<String> = if all {
+            sqlx::query_scalar("SELECT name FROM repos ORDER BY id")
+                .fetch_all(self.registry.pool())
+                .await?
+        } else {
+            repos.to_vec()
+        };
+        let mut text = String::new();
+        for n in names {
+            let name = name_of(&n)?;
+            match cmd {
+                DeltaCmd::Run => {
+                    let r = self.gc.run_delta_repo(&name, &self.delta).await?;
+                    let _ = writeln!(
+                        text,
+                        "{n}: read {} changeset(s), {} candidate(s); wrote {} delta(s),                          {} without gain, {} skipped; {} -> {} stored byte(s); expanded {}",
+                        r.changesets,
+                        r.candidates,
+                        r.written,
+                        r.no_gain,
+                        r.skipped,
+                        r.bytes_before,
+                        r.bytes_after,
+                        r.expanded
+                    );
+                }
+                DeltaCmd::Status => {
+                    let s = self.gc.delta_status(&name).await?;
+                    let _ = writeln!(
+                        text,
+                        "{n}: {} delta(s) over {} base(s); {} mainline changeset(s) not yet read",
+                        s.deltas, s.bases, s.backlog
+                    );
+                }
+            }
+        }
+        Ok(Report::new(text, true))
     }
 
     // --------------------------------------------------------------------------------- pack

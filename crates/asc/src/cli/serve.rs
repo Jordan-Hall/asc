@@ -155,6 +155,18 @@ mod real {
             #[arg(long, global = true)]
             all: bool,
         },
+        /// Delta storage: `run` stores mainline file versions as deltas against their previous
+        /// version under the collection lock, `status` counts deltas, bases and the backlog.
+        Delta {
+            #[command(subcommand)]
+            cmd: DeltaSub,
+            /// A repository; repeatable.
+            #[arg(long = "repo", global = true)]
+            repos: Vec<String>,
+            /// Every repository.
+            #[arg(long, global = true)]
+            all: bool,
+        },
         /// Read-only maintenance (SPEC §14.5): `on` refuses every write on every node until
         /// `off`; `status` prints the switch.
         Maintenance {
@@ -191,6 +203,13 @@ mod real {
         Status,
         Verify,
         Reindex,
+    }
+
+    #[derive(clap::Subcommand, Debug)]
+    pub enum DeltaSub {
+        /// One delta pass, whether or not `[delta] enabled` is set.
+        Run,
+        Status,
     }
 
     #[derive(clap::Subcommand, Debug)]
@@ -456,6 +475,13 @@ mod real {
                     PackSub::Reindex => ac::PackCmd::Reindex,
                 };
                 cli.pack(&cmd, &repos, all).await
+            }
+            AdminCmd::Delta { cmd, repos, all } => {
+                let cmd = match cmd {
+                    DeltaSub::Run => ac::DeltaCmd::Run,
+                    DeltaSub::Status => ac::DeltaCmd::Status,
+                };
+                cli.delta(&cmd, &repos, all).await
             }
             AdminCmd::Maintenance { cmd } => {
                 let cmd = match cmd {

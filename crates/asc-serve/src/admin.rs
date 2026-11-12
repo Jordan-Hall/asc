@@ -89,8 +89,10 @@ const INDEX_PAGE: i64 = 5000;
 const CHUNK_THRESHOLD: u64 = 4 * 1024 * 1024;
 /// Tables keyed by a namespace; the drop of a deleted repository clears each. A test checks that
 /// every table with an `ns` column is named here.
-const NS_TABLES: [&str; 59] = [
+const NS_TABLES: [&str; 61] = [
     "packs",
+    "delta_bases",
+    "delta_cursor",
     "pack_objects",
     "storage_usage",
     "storage_reads",
@@ -1084,6 +1086,10 @@ impl AdminService {
         while let Some(batch) = walk.next_batch().await? {
             lease = self.renew(id, lease).await?;
             copy_keys(&src_store, &src_prefix, &dst_store, &dst_prefix, &batch).await?;
+            // The fork has no delta rows: deltas the copy brought are rewritten in full.
+            crate::delta_service::expand_copied(&src, &dst, &batch)
+                .await
+                .map_err(|e| internal("fork", &e))?;
             copy_rows(&self.registry, src.ns, &dst, &batch).await?;
             copied += batch.len() as u64;
         }

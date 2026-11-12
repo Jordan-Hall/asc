@@ -462,7 +462,14 @@ impl SweepObserver for SqlSweepObserver {
                         &["DELETE FROM changes WHERE ns = $1 AND meta = $2"],
                         m.as_bytes().to_vec(),
                     ),
-                    ObjKey::File(f) | ObjKey::ChunkList(f) => (
+                    ObjKey::File(f) => (
+                        &[
+                            "DELETE FROM file_meta WHERE ns = $1 AND file = $2",
+                            "DELETE FROM delta_bases WHERE ns = $1 AND file = $2",
+                        ],
+                        f.as_bytes().to_vec(),
+                    ),
+                    ObjKey::ChunkList(f) => (
                         &["DELETE FROM file_meta WHERE ns = $1 AND file = $2"],
                         f.as_bytes().to_vec(),
                     ),
@@ -591,7 +598,16 @@ impl GcService {
             hooks: self.hooks.clone(),
             pool: pool.clone(),
         };
-        let extra = self.hooks.gc_roots().all();
+        // A purged delta base must be free to go: its dependents become full values first. The
+        // remaining bases are strict roots.
+        if !dry_run {
+            crate::delta_service::release_purged(pool, &entry).await?;
+        }
+        let mut extra = self.hooks.gc_roots().all();
+        extra.push(Arc::new(crate::delta_service::DeltaRoots {
+            pool: pool.clone(),
+            ns: ns.clone(),
+        }));
         let report = Collector {
             ns: &ns,
             objects: &*entry.objects,
@@ -656,6 +672,101 @@ impl GcService {
                             "gc finished"
                         ),
                         Err(e) => tracing::warn!(repo = %name, error = %e, "gc failed"),
+                    }
+                }
+            }
+        })
+    }
+
+    // -------------------------------------------------------------------------- delta pass
+
+    /// One delta pass over `name` (docs/design/DELTA-STORAGE.md). It holds the collection lock,
+    /// so no sweep runs between the record of a base and the write of its delta.
+    pub async fn run_delta_repo(
+        &self,
+        name: &RepoName,
+        settings: &crate::delta_service::DeltaSettings,
+    ) -> Result<crate::delta_service::DeltaReport, GcError> {
+        let guard = self.acquire().await?;
+        let out = async {
+            let entry = self
+                .registry
+                .open(name)
+                .await
+                .map_err(|e| GcError::Other(format!("{name}: {e}")))?;
+            crate::delta_service::pass(self.registry.pool(), &entry, settings).await
+        }
+        .await;
+        guard.release().await;
+        out
+    }
+
+    /// The delta counts and backlog of `name`.
+    pub async fn delta_status(
+        &self,
+        name: &RepoName,
+    ) -> Result<crate::delta_service::DeltaStatus, GcError> {
+        let entry = self
+            .registry
+            .open(name)
+            .await
+            .map_err(|e| GcError::Other(format!("{name}: {e}")))?;
+        crate::delta_service::status(self.registry.pool(), &entry).await
+    }
+
+    /// Every repository in turn; one failing does not stop the others.
+    pub async fn run_delta_all(
+        &self,
+        settings: &crate::delta_service::DeltaSettings,
+    ) -> Vec<(String, Result<crate::delta_service::DeltaReport, GcError>)> {
+        let names: Vec<String> = match sqlx::query_scalar("SELECT name FROM repos ORDER BY id")
+            .fetch_all(self.registry.pool())
+            .await
+        {
+            Ok(n) => n,
+            Err(e) => return vec![("(repos)".into(), Err(sql("repos", e)))],
+        };
+        let mut out = Vec::new();
+        for n in names {
+            let res = match RepoName::parse(&n) {
+                Ok(name) => self.run_delta_repo(&name, settings).await,
+                Err(_) => Err(GcError::Other(format!("repository name {n:?} is invalid"))),
+            };
+            out.push((n, res));
+        }
+        out
+    }
+
+    /// Runs [`run_delta_all`](Self::run_delta_all) every `settings.interval` until aborted. A
+    /// pass compresses file versions, so it runs on a blocking thread.
+    pub fn spawn_delta_worker(
+        self: Arc<Self>,
+        settings: crate::delta_service::DeltaSettings,
+    ) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(settings.interval()).await;
+                let (this, s) = (self.clone(), settings.clone());
+                let handle = tokio::runtime::Handle::current();
+                let pass =
+                    tokio::task::spawn_blocking(move || handle.block_on(this.run_delta_all(&s)))
+                        .await;
+                let Ok(results) = pass else {
+                    tracing::warn!("a delta pass did not finish");
+                    continue;
+                };
+                for (name, res) in results {
+                    match res {
+                        Ok(r) if r.written > 0 => tracing::info!(
+                            repo = %name,
+                            changesets = r.changesets,
+                            written = r.written,
+                            saved = r.bytes_before.saturating_sub(r.bytes_after),
+                            "delta pass finished"
+                        ),
+                        Ok(_) => {}
+                        Err(GcError::Busy(m)) => tracing::debug!(repo = %name, "{m}"),
+                        Err(e) => tracing::warn!(repo = %name, error = %e, "delta pass failed"),
                     }
                 }
             }
