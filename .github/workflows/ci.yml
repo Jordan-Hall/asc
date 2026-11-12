@@ -300,6 +300,8 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Mounted FUSE tests
         run: 'cargo test --locked -p asc-vfs --features fuse,nfs --lib -- --include-ignored --test-threads=1 fuse::'
+      - name: Virtual workspaces end to end over FUSE
+        run: 'cargo test --locked -p asc --test unix_virtual -- --ignored --test-threads=1'
 
   jetbrains:
     runs-on: ubuntu-24.04
