@@ -249,6 +249,23 @@ pub struct Hosting {
     pub extra_jobs: Vec<(scheduler::Spec, Arc<dyn scheduler::Job>)>,
 }
 
+/// How often the daemon checks that its home still exists.
+const HOME_CHECK: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Stops the daemon once `root` is gone: a CI job's `ASC_HOME` lives in the job's temporary
+/// directory, and when the runner removes it the daemon unmounts and exits instead of holding
+/// the job's work tree (SPEC §12.3 virtual CI).
+async fn stop_when_gone(root: PathBuf, every: std::time::Duration, stop: Arc<Notify>) {
+    let mut tick = tokio::time::interval(every);
+    loop {
+        tick.tick().await;
+        if !tokio::fs::try_exists(&root).await.unwrap_or(true) {
+            stop.notify_one();
+            return;
+        }
+    }
+}
+
 /// Runs the daemon until `Shutdown` arrives or `interrupt` resolves. Fails with
 /// [`IpcError::InUse`] when another daemon already answers on the endpoint (single instance).
 /// The socket and the pid file are removed on the way out. This daemon hosts no workspaces; see
@@ -297,6 +314,11 @@ async fn run_with(
             );
             let meter = Arc::new(metrics::Metrics::new());
             let home = h.home.clone();
+            tokio::spawn(stop_when_gone(
+                home.root().to_path_buf(),
+                HOME_CHECK,
+                stop.clone(),
+            ));
             let state = service::State::new(db, h.home, h.backend, meter.clone(), events.clone());
             state.restore().await;
             let mut tasks = scheduler::builtin(state.clone(), &h.settings, &h.hooks);
@@ -359,6 +381,25 @@ mod tests {
     use std::sync::atomic::AtomicBool;
 
     use super::*;
+
+    #[tokio::test]
+    async fn the_daemon_stops_once_its_home_is_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("asc-home");
+        std::fs::create_dir(&home).unwrap();
+        let stop = Arc::new(Notify::new());
+        tokio::spawn(stop_when_gone(
+            home.clone(),
+            Duration::from_millis(10),
+            stop.clone(),
+        ));
+        let early = tokio::time::timeout(Duration::from_millis(100), stop.notified()).await;
+        assert!(early.is_err(), "stopped while the home exists");
+        std::fs::remove_dir(&home).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), stop.notified())
+            .await
+            .expect("no stop after the home went away");
+    }
 
     #[test]
     fn watchdog_fires_only_for_a_callback_over_the_limit() {
