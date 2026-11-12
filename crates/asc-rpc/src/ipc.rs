@@ -190,10 +190,26 @@ impl IpcListener {
         {
             use interprocess::os::unix::local_socket::ListenerOptionsExt as _;
             let own_uid = unix::prepare(endpoint)?;
-            let inner = ListenerOptions::new()
+            let inner = match ListenerOptions::new()
                 .name(endpoint.name()?)
                 .mode(0o600)
-                .create_tokio()?;
+                .create_tokio()
+            {
+                // macOS cannot set a socket's mode before bind. The socket is still private:
+                // it lives in the 0700 directory `prepare` checked, and `accept` admits only
+                // peers with this user's euid. Its mode is narrowed after bind as well.
+                Err(e) if e.kind() == io::ErrorKind::Unsupported => {
+                    let inner = ListenerOptions::new()
+                        .name(endpoint.name()?)
+                        .create_tokio()?;
+                    std::fs::set_permissions(
+                        endpoint.as_str(),
+                        std::os::unix::fs::PermissionsExt::from_mode(0o600),
+                    )?;
+                    inner
+                }
+                other => other?,
+            };
             Ok(Self { inner, own_uid })
         }
     }
