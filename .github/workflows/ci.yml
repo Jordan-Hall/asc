@@ -253,8 +253,8 @@ jobs:
       - name: asc unit tests
         run: cargo nextest run --locked --profile ci -p asc --bins
 
-  # macOS serves virtual workspaces through the loopback NFS server; nothing else compiles that
-  # path, so the build, lints and the in-process NFS tests run here.
+  # macOS serves virtual workspaces through the asc FSKit module or the loopback NFS server;
+  # nothing else compiles those paths for macOS, so the build, lints and the in-process tests run here.
   macos:
     runs-on: macos-15
     timeout-minutes: 120
@@ -270,12 +270,27 @@ jobs:
       - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-nextest
-      - name: Clippy (NFS backend and the daemon host)
-        run: cargo clippy --locked -p asc-vfs -p asc --features asc-vfs/nfs --all-targets -- -D warnings
-      - name: NFS tests
-        run: cargo nextest run --locked --profile ci -p asc-vfs --features nfs
+      - name: Clippy (NFS and FSKit backends and the daemon host)
+        run: cargo clippy --locked -p asc-vfs -p asc --features asc-vfs/nfs,asc-vfs/fskit --all-targets -- -D warnings
+      - name: NFS and FSKit server tests
+        run: cargo nextest run --locked --profile ci -p asc-vfs --features nfs,fskit
       - name: asc unit tests
         run: cargo nextest run --locked --profile ci -p asc --bins
+
+  # The asc FSKit module (macos/fskit): the wire client's tests, the extension built against the
+  # macOS 26 SDK, and AscFS.app assembled and ad-hoc signed. Loading it needs a Developer ID
+  # signature with the FSKit entitlement and the user enabling it, which CI cannot do.
+  fskit-swift:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Swift toolchain
+        run: swift --version
+      - name: Wire client tests
+        run: swift test --package-path macos/fskit
+      - name: Build and assemble AscFS.app
+        run: macos/fskit/scripts/build-app.sh --adhoc
 
   # The FUSE tests that mount a real file system; they need /dev/fuse and fusermount.
   fuse:
