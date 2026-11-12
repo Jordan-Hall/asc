@@ -1,5 +1,5 @@
 //! [`NfsProvider`]: serves [`MergedFs`] over loopback NFSv3 and mounts it with the system's NFS
-//! client (SPEC §10.4). macOS ships that client in the kernel, so no extension is installed.
+//! client (SPEC §10.3b). macOS ships that client in the kernel, so no extension is installed.
 
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
@@ -284,6 +284,30 @@ impl unixfs::UnixProvider for NfsProvider {
     }
     fn backend(&self) -> &'static str {
         "nfs"
+    }
+    fn switch_note(&self) -> Option<String> {
+        let root = lock(&self.state).as_ref()?.root.clone()?;
+        watched(&root).then(|| unixfs::WATCH_NOTE.to_owned())
+    }
+}
+
+/// Whether a process may be watching the mount at `root`. macOS cannot say who listens to
+/// FSEvents, and FSEvents never reports what the server changes, so a mounted workspace always
+/// counts as watched there. Linux asks `/proc` for inotify watches on the mount.
+fn watched(root: &Path) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = root;
+        true
+    }
+    #[cfg(all(target_os = "linux", feature = "fuse"))]
+    {
+        crate::fuse::inotify_users(root).is_ok_and(|p| !p.is_empty())
+    }
+    #[cfg(not(any(target_os = "macos", all(target_os = "linux", feature = "fuse"))))]
+    {
+        let _ = root;
+        false
     }
 }
 

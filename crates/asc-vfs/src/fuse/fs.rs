@@ -759,6 +759,9 @@ impl unixfs::UnixProvider for FuseProvider {
     fn backend(&self) -> &'static str {
         "fuse"
     }
+    fn switch_note(&self) -> Option<String> {
+        FuseProvider::switch_note(self)
+    }
 }
 
 impl Provider for FuseProvider {

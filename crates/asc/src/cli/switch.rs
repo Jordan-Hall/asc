@@ -833,6 +833,9 @@ async fn daemon_switch(
     switch_answer(answer.map(|r| r.into_inner()))
 }
 
+/// Most daemon notes printed after one switch.
+const MAX_NOTES: usize = 4;
+
 /// What a `Switch` answer means for the caller. A workspace the daemon does not serve, or serves
 /// from another tree, answers `FailedPrecondition`: the caller writes the files itself. Any other
 /// failure is reported; the daemon has put the old tree back.
@@ -840,12 +843,17 @@ fn switch_answer(
     answer: std::result::Result<wire::SwitchResponse, tonic::Status>,
 ) -> Result<Option<Vec<RepoPath>>> {
     match answer {
-        Ok(r) => r
-            .conflicts
-            .iter()
-            .map(|p| RepoPath::new(p.to_vec()).map_err(fatal))
-            .collect::<Result<Vec<_>>>()
-            .map(Some),
+        Ok(r) => {
+            let conflicts = r
+                .conflicts
+                .iter()
+                .map(|p| RepoPath::new(p.to_vec()).map_err(fatal))
+                .collect::<Result<Vec<_>>>()?;
+            for note in r.notes.iter().take(MAX_NOTES) {
+                eprintln!("{}", note.replace(|c: char| c.is_control(), " "));
+            }
+            Ok(Some(conflicts))
+        }
         Err(s) if s.code() == tonic::Code::FailedPrecondition => Ok(None),
         Err(s) => Err(CliError::Fatal(format!(
             "the daemon could not move the files: {}",
@@ -1788,10 +1796,15 @@ mod tests {
 
     #[test]
     fn a_switch_answer_moves_falls_back_or_fails() {
-        let moved = switch_answer(Ok(wire::SwitchResponse { conflicts: vec![] })).unwrap();
+        let moved = switch_answer(Ok(wire::SwitchResponse {
+            conflicts: vec![],
+            notes: vec!["note: watched".into()],
+        }))
+        .unwrap();
         assert_eq!(moved, Some(vec![]));
         let blocked = switch_answer(Ok(wire::SwitchResponse {
             conflicts: vec![bytes::Bytes::from_static(b"src/a.rs")],
+            notes: vec![],
         }))
         .unwrap();
         assert_eq!(blocked, Some(vec![RepoPath::new("src/a.rs").unwrap()]));
@@ -1801,6 +1814,7 @@ mod tests {
         assert!(matches!(failed, Err(CliError::Fatal(m)) if m.contains("disk full")));
         let hostile = switch_answer(Ok(wire::SwitchResponse {
             conflicts: vec![bytes::Bytes::from_static(b"../etc/passwd")],
+            notes: vec![],
         }));
         assert!(hostile.is_err());
     }

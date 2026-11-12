@@ -90,6 +90,12 @@ impl Notify for NoNotify {
     fn inode(&self, _ino: u64) {}
 }
 
+/// The note `asc switch`, `pull` and `reset` print when a process may be watching the mount
+/// (SPEC §10.3 [audit: watchers-virtual-switch], §10.3b): kernel watch APIs do not report the
+/// changes the file system server makes itself.
+pub const WATCH_NOTE: &str =
+    "note: file watchers do not see this switch; restart watch processes or use polling";
+
 /// What a merged file system needs from the daemon.
 pub struct Config {
     pub core: Arc<CoreFs>,
@@ -120,6 +126,11 @@ pub trait UnixProvider: Provider {
     fn merged(&self) -> &Arc<MergedFs>;
     /// The backend's name, for logs and `asc doctor`.
     fn backend(&self) -> &'static str;
+    /// The note to print after a switch changed files, when a process watching the mount would
+    /// miss the change ([`WATCH_NOTE`]); `None` when nothing watches it.
+    fn switch_note(&self) -> Option<String> {
+        None
+    }
 }
 
 /// What reconcile journaled, for the daemon's metrics.

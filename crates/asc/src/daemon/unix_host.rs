@@ -452,6 +452,11 @@ impl Hosted for UnixHost {
         self.move_base(to, diff).await
     }
 
+    async fn switch_note(&self) -> Option<String> {
+        let provider = self.provider.clone();
+        blocking(move || Ok(provider.switch_note())).await.ok().flatten()
+    }
+
     async fn prefetch(&self, paths: &[RepoPath]) -> Result<(u64, u64), HostError> {
         vhost::prefetch(&self.core, paths).await
     }

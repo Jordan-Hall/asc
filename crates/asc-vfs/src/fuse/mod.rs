@@ -16,10 +16,7 @@ pub mod passthrough;
 pub use crate::unixfs::{JournalSink, TimeSource, inodes, overlay};
 pub use fs::{Config, FuseProvider};
 
-/// The note `asc switch`, `pull` and `reset` print when a process watches the mount (SPEC §10.3
-/// [audit: watchers-virtual-switch]).
-pub const WATCH_NOTE: &str =
-    "note: file watchers do not see this switch; restart watch processes or use polling";
+pub use crate::unixfs::WATCH_NOTE;
 
 /// The extended attribute a file of the mount has, with the value `1`, while it is a base-tree
 /// entry nobody wrote to. Status reads it instead of the file, so a clean file is never fetched.

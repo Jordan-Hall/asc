@@ -119,6 +119,11 @@ pub trait Hosted: Send + Sync {
     async fn retarget(&self, _to: &[u8]) -> Result<(u64, u64), HostError> {
         Ok((0, 0))
     }
+    /// The note the client prints after a switch moved the files, when a process watching the
+    /// work tree would miss the change; `None` when nothing watches it or watchers see it.
+    async fn switch_note(&self) -> Option<String> {
+        None
+    }
     /// Fetches the content of `paths` into the machine cache; answers `(files, bytes)`.
     async fn prefetch(&self, _paths: &[RepoPath]) -> Result<(u64, u64), HostError> {
         Err(plain("prefetch"))
@@ -850,13 +855,20 @@ impl WorkspaceRpc for Service {
         }
         let mode = wire::SwitchMode::try_from(r.mode)
             .map_err(|_| Status::invalid_argument("unknown switch mode"))?;
-        let conflicts = self
+        let (conflicts, notes) = self
             .hosted(&r.ws_id, "switch", async |m| {
-                m.hosted.switch(&r.from_root, &r.to_root, mode).await
+                let conflicts = m.hosted.switch(&r.from_root, &r.to_root, mode).await?;
+                let notes = if conflicts.is_empty() {
+                    m.hosted.switch_note().await.into_iter().collect()
+                } else {
+                    Vec::new()
+                };
+                Ok((conflicts, notes))
             })
             .await?;
         Ok(Response::new(wire::SwitchResponse {
             conflicts: conflicts.into_iter().map(bytes::Bytes::from).collect(),
+            notes,
         }))
     }
 
