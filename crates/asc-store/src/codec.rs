@@ -219,6 +219,31 @@ mod tests {
     }
 
     #[test]
+    fn a_delta_frame_is_at_the_delta_level_and_no_larger_than_level_3() {
+        let text = |edit: usize| -> Vec<u8> {
+            (0..4000)
+                .map(|i| match i {
+                    _ if i % 997 == edit => format!("let changed_{i} = {};\n", i * 7),
+                    _ => format!("let value_{i} = compute({i}, {});\n", i % 13),
+                })
+                .collect::<String>()
+                .into_bytes()
+        };
+        let (base, data) = (text(usize::MAX), text(3));
+        let plain = encode_stored(&data).len();
+        let d = encode_delta(&[1; 32], &base, &data, plain).unwrap();
+        let frame = &d[DELTA_HEADER..];
+        let mut low = zstd::bulk::Compressor::with_dictionary(ZSTD_LEVEL, &base).unwrap();
+        low.include_contentsize(true).unwrap();
+        let low = low.compress(&data).unwrap();
+        assert!(frame.len() <= low.len(), "{} > {}", frame.len(), low.len());
+        let mut high = zstd::bulk::Compressor::with_dictionary(DELTA_LEVEL, &base).unwrap();
+        high.include_contentsize(true).unwrap();
+        assert_eq!(frame, &high.compress(&data).unwrap()[..]);
+        assert_eq!(delta_base(&d), Some([1; 32]));
+    }
+
+    #[test]
     fn incompressible_and_tiny_stay_raw() {
         let mut noise = vec![0u8; 4096];
         blake3::Hasher::new()
