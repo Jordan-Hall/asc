@@ -308,6 +308,11 @@ async fn fetch_artifact(api: &HttpApi, store: &Store, key: &ActionKey) -> Result
     })
 }
 
+/// The client of the build cache's server for `ctx`: `asc.buildcache.server`, else `origin`.
+pub(crate) async fn api(ctx: &Ctx) -> Result<HttpApi> {
+    http_api(ctx, server(ctx, None).as_deref()).await
+}
+
 /// A remote hit for `key`, or `None` on a miss, without a server, or when the server cannot be
 /// reached (the build goes on as on a miss).
 pub(crate) async fn fetch_entry(ctx: &Ctx, store: &Store, key: &ActionKey) -> Option<Action> {
@@ -327,14 +332,14 @@ pub(crate) async fn fetch_entry(ctx: &Ctx, store: &Store, key: &ActionKey) -> Op
 }
 
 /// What sending one queued key did.
-enum Sent {
+pub(crate) enum Sent {
     Uploaded(u64),
     Present,
     Gone,
     TooLarge,
 }
 
-async fn send(api: &HttpApi, store: &Store, key: &ActionKey) -> Result<Sent> {
+pub(crate) async fn send(api: &HttpApi, store: &Store, key: &ActionKey) -> Result<Sent> {
     let r = send_one(api, store, key).await;
     record(store, &r);
     r

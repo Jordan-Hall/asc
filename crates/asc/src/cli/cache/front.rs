@@ -17,7 +17,7 @@ use asc_buildcache::{Action, ActionKey, Output, OutputKind, Store, hex, unhex};
 use asc_state::AscHome;
 use axum::Router;
 use axum::body::Body;
-use axum::extract::{DefaultBodyLimit, Path as UrlPath, Request, State};
+use axum::extract::{DefaultBodyLimit, Path as UrlPath, RawQuery, Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -31,6 +31,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 
 use super::remote::MAX_ARTIFACT;
+use super::upstream::{self, Upstream};
 
 /// The front file's name in the asc home.
 const FILE: &str = "buildcache-front.json";
@@ -112,14 +113,22 @@ struct Front {
     token: Arc<str>,
     /// Queue what is stored for `asc cache push` (the server tier in read-write mode).
     queue: bool,
+    /// The daemon's server tier for turbo, per team.
+    upstream: Option<Arc<dyn Upstream>>,
 }
 
 /// The routes of every front over `store`.
-pub fn router(store: Store, token: &str, queue: bool) -> Router {
+pub(crate) fn router(
+    store: Store,
+    token: &str,
+    queue: bool,
+    upstream: Option<Arc<dyn Upstream>>,
+) -> Router {
     let front = Front {
         store,
         token: Arc::from(token),
         queue,
+        upstream,
     };
     Router::new()
         .route("/v8/artifacts/status", get(turbo_status))
@@ -415,13 +424,35 @@ async fn kv(
     }
 }
 
+/// The team turbo names in the query (`slug`, or `teamId`), when it is a work tree's.
+fn team(query: Option<&str>) -> Option<String> {
+    url::form_urlencoded::parse(query?.as_bytes())
+        .find(|(k, _)| k == "slug" || k == "teamId")
+        .map(|(_, v)| v.into_owned())
+        .filter(|t| upstream::is_team(t))
+}
+
 async fn turbo(
     State(f): State<Front>,
     UrlPath(hash): UrlPath<String>,
+    RawQuery(query): RawQuery,
     method: Method,
     headers: HeaderMap,
     body: Body,
 ) -> Response {
+    let up = f
+        .upstream
+        .clone()
+        .zip(team(query.as_deref()))
+        .filter(|_| valid(&hash));
+    let artifact = key("turbo", "artifact", &hash);
+    // A local miss is fetched from the team's server first, so the answer below is a hit.
+    if let Some((up, team)) = &up
+        && matches!(method, Method::GET | Method::HEAD)
+        && f.store.get_action(&artifact).ok().flatten().is_none()
+    {
+        up.fetch(team, &f.store, &artifact).await;
+    }
     let res = kv(
         &f,
         Kv {
@@ -438,6 +469,9 @@ async fn turbo(
     .await;
     // Turbo reads a JSON reply to an upload.
     if method == Method::PUT && res.status() == StatusCode::OK {
+        if let Some((up, team)) = up {
+            up.send(team, f.store.clone(), artifact);
+        }
         return axum::Json(serde_json::json!({ "urls": [] })).into_response();
     }
     res
@@ -575,6 +609,7 @@ async fn ccache(
 /// Serves the fronts the front file names, following it: started when it appears, restarted
 /// when its port, token or store change, stopped when it goes. The daemon runs this.
 pub async fn supervise(home: AscHome, mut stop: tokio::sync::watch::Receiver<bool>) {
+    let tier: Arc<dyn Upstream> = Arc::new(upstream::ServerTier::new(home.clone()));
     let mut current: Option<(FrontFile, tokio::sync::oneshot::Sender<()>)> = None;
     loop {
         let wanted = FrontFile::load(&home);
@@ -587,7 +622,7 @@ pub async fn supervise(home: AscHome, mut stop: tokio::sync::watch::Receiver<boo
                 && let Ok(listener) = bind(&f).await
             {
                 let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-                let app = router(store, &f.token, false);
+                let app = router(store, &f.token, false, Some(tier.clone()));
                 tokio::spawn(serve(listener, app, async move {
                     let _ = rx.await;
                 }));
@@ -661,6 +696,129 @@ mod tests {
         for bad in ["", "a/../b", "a//b", "./a", "a b", "a\u{7f}"] {
             assert!(!valid(bad), "{bad:?}");
         }
+    }
+
+    /// A server tier that holds one artefact and records what it is asked.
+    struct Fake {
+        held: (ActionKey, Vec<u8>),
+        fetched: std::sync::Mutex<Vec<String>>,
+        sent: tokio::sync::mpsc::UnboundedSender<(String, ActionKey)>,
+    }
+
+    impl Upstream for Fake {
+        fn fetch<'a>(
+            &'a self,
+            team: &'a str,
+            store: &'a Store,
+            key: &'a ActionKey,
+        ) -> futures::future::BoxFuture<'a, bool> {
+            Box::pin(async move {
+                self.fetched.lock().unwrap().push(team.to_owned());
+                if *key != self.held.0 {
+                    return false;
+                }
+                let (id, size) = store.put_blob(&self.held.1).unwrap();
+                let mut action = Action::new("turbo", "held", asc_buildcache::Origin::default());
+                action.outputs.push(Output {
+                    path: "body".into(),
+                    kind: OutputKind::File,
+                    size,
+                    blob: hex(&id),
+                });
+                store.put_action(key, &action).unwrap();
+                true
+            })
+        }
+
+        fn send(&self, team: String, _store: Store, key: ActionKey) {
+            let _ = self.sent.send((team, key));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_turbo_miss_reads_through_the_team_server_and_an_upload_goes_on_to_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("s")).unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let fake = Arc::new(Fake {
+            held: (
+                key("turbo", "artifact", "remote1"),
+                b"from the server".to_vec(),
+            ),
+            fetched: std::sync::Mutex::new(Vec::new()),
+            sent: tx,
+        });
+        let app = router(store.clone(), "tok", false, Some(fake.clone()));
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(serve(listener, app, std::future::pending()));
+        let http = reqwest::Client::new();
+        let team = "asc-0123456789abcdef";
+        let get = |hash: &str, q: &str| {
+            http.get(format!("{base}/v8/artifacts/{hash}{q}"))
+                .bearer_auth("tok")
+                .send()
+        };
+
+        // A local miss is fetched from the team's server and answered as a hit.
+        let res = get("remote1", &format!("?slug={team}")).await.unwrap();
+        assert_eq!(res.status(), 200);
+        assert_eq!(res.bytes().await.unwrap(), &b"from the server"[..]);
+        // Now local: the server is not asked again.
+        let res = get("remote1", &format!("?slug={team}")).await.unwrap();
+        assert_eq!(res.status(), 200);
+        assert_eq!(fake.fetched.lock().unwrap().as_slice(), [team]);
+
+        // A miss on the server too is a miss; without a work tree's team the server is not asked.
+        assert_eq!(
+            get("absent", &format!("?teamId={team}"))
+                .await
+                .unwrap()
+                .status(),
+            404
+        );
+        assert_eq!(get("other", "?slug=asc").await.unwrap().status(), 404);
+        assert_eq!(get("other", "").await.unwrap().status(), 404);
+        assert_eq!(fake.fetched.lock().unwrap().len(), 2);
+
+        // An upload is stored locally and handed to the server tier with its team.
+        let res = http
+            .put(format!("{base}/v8/artifacts/local1?slug={team}"))
+            .bearer_auth("tok")
+            .header(TAG, "sig")
+            .body("built here")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+        let (t, k) = rx.recv().await.unwrap();
+        assert_eq!((t.as_str(), k), (team, key("turbo", "artifact", "local1")));
+        assert!(store.get_action(&k).unwrap().is_some());
+        // Without a team nothing goes on.
+        let res = http
+            .put(format!("{base}/v8/artifacts/local2"))
+            .bearer_auth("tok")
+            .body("x")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn the_team_comes_from_slug_or_team_id_and_only_a_work_tree_team_counts() {
+        assert_eq!(
+            team(Some("slug=asc-0123456789abcdef")).as_deref(),
+            Some("asc-0123456789abcdef")
+        );
+        assert_eq!(
+            team(Some("x=1&teamId=asc-fedcba9876543210")).as_deref(),
+            Some("asc-fedcba9876543210")
+        );
+        assert_eq!(team(Some("slug=asc")), None);
+        assert_eq!(team(Some("slug=asc-..%2F")), None);
+        assert_eq!(team(None), None);
     }
 
     #[test]

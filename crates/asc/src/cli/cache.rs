@@ -22,6 +22,7 @@ pub(crate) mod remote;
 pub(crate) mod run;
 pub(crate) mod rustc;
 pub(crate) mod setup;
+pub(crate) mod upstream;
 
 #[derive(clap::Parser, Debug)]
 #[command(
@@ -359,21 +360,27 @@ async fn serve(ctx: &Ctx) -> Result<ExitCode> {
         ))
     })?;
     eprintln!("asc cache: serving the build cache fronts on {}", f.url());
-    front::serve(listener, front::router(store, &f.token, queue), async {
-        let _ = tokio::signal::ctrl_c().await;
-    })
+    front::serve(
+        listener,
+        front::router(store, &f.token, queue, None),
+        async {
+            let _ = tokio::signal::ctrl_c().await;
+        },
+    )
     .await
     .map_err(io_err)?;
     Ok(ExitCode::SUCCESS)
 }
 
 /// The variables of the tools that read their cache from the environment.
-fn env_vars(f: &front::FrontFile) -> Vec<(&'static str, String)> {
+/// `team` is turbo's team: the work tree's (the daemon reaches its server tier through it), else
+/// `asc`.
+fn env_vars(f: &front::FrontFile, team: Option<String>) -> Vec<(&'static str, String)> {
     let url = f.url();
     vec![
         ("TURBO_API", url.clone()),
         ("TURBO_TOKEN", f.token.clone()),
-        ("TURBO_TEAM", "asc".into()),
+        ("TURBO_TEAM", team.unwrap_or_else(|| "asc".into())),
         ("NX_SELF_HOSTED_REMOTE_CACHE_SERVER", url.clone()),
         ("NX_SELF_HOSTED_REMOTE_CACHE_ACCESS_TOKEN", f.token.clone()),
         (
@@ -392,7 +399,13 @@ fn env_vars(f: &front::FrontFile) -> Vec<(&'static str, String)> {
 
 fn env(ctx: &Ctx, a: &EnvArgs, out: &mut impl Write) -> Result<ExitCode> {
     let f = front_file(ctx)?;
-    let vars = env_vars(&f);
+    let team = match ctx.ws_opt() {
+        Some(ws) => Some(
+            upstream::register(&AscHome::locate()?, ws.projection.toplevel()).map_err(io_err)?,
+        ),
+        None => None,
+    };
+    let vars = env_vars(&f, team);
     let shell = a.shell.unwrap_or(if cfg!(windows) {
         Shell::Pwsh
     } else {
