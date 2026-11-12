@@ -40,6 +40,7 @@ tempfile = { workspace = true }
 flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"], optional = true }
 
 [dev-dependencies]
+zstd = { workspace = true }
 tokio = { workspace = true }
 
 # Child supervision of `compat::ServerGit`: a Job Object on Windows, a process group and rlimits on
