@@ -281,7 +281,8 @@ fn wall_ms(d: Duration) -> u64 {
     u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
 
-/// The mount root must be a real directory of this user, reached through no link.
+/// The mount root must be a real directory of this user, reached through no link that anyone
+/// but the system could change. A system link (macOS's `/var` and `/tmp`) is allowed.
 pub(super) fn check_mount_root(root: &Path) -> Result<(), String> {
     if !root.is_absolute() {
         return Err("the mount root is not an absolute path".into());
@@ -296,7 +297,7 @@ pub(super) fn check_mount_root(root: &Path) -> Result<(), String> {
             }
             Err(e) => return Err(format!("cannot read '{}': {e}", dir.display())),
         };
-        if asc_wc::safe_path::is_link(&meta) {
+        if asc_wc::safe_path::is_link(&meta) && !system_link(dir, &meta) {
             return Err(format!(
                 "'{}' is a link; a workspace is never reached through one",
                 dir.display()
@@ -311,6 +312,26 @@ pub(super) fn check_mount_root(root: &Path) -> Result<(), String> {
         Ok(false) => Err("the mount root is not owned by the current user".into()),
         Err(e) => Err(format!("cannot read the owner of the mount root: {e}")),
     }
+}
+
+/// Whether the link at `dir` belongs to the system: on Unix the link and its directory are owned
+/// by root, and nobody else can write to that directory, so no unprivileged process can swap
+/// it. Windows has no such links in a workspace path.
+#[cfg(unix)]
+fn system_link(dir: &Path, meta: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Some(parent) = dir.parent() else {
+        return false;
+    };
+    let Ok(pm) = std::fs::symlink_metadata(parent) else {
+        return false;
+    };
+    meta.uid() == 0 && pm.uid() == 0 && pm.is_dir() && pm.mode() & 0o022 == 0
+}
+
+#[cfg(not(unix))]
+fn system_link(_dir: &Path, _meta: &std::fs::Metadata) -> bool {
+    false
 }
 
 impl State {
@@ -1278,6 +1299,26 @@ mod tests {
             code(mount(&svc, &id_of(&file)).await),
             tonic::Code::PermissionDenied
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_system_links_are_trusted() {
+        // A link the user made is never a system link.
+        let d = tempfile::tempdir().unwrap();
+        let link = d.path().join("l");
+        std::os::unix::fs::symlink(d.path(), &link).unwrap();
+        let meta = std::fs::symlink_metadata(&link).unwrap();
+        assert!(!super::system_link(&link, &meta));
+        // A root-owned link in a root-owned directory (macOS `/var`, merged-usr `/bin`) is.
+        for sys in ["/var", "/tmp", "/bin", "/lib", "/etc"] {
+            let p = std::path::Path::new(sys);
+            if let Ok(m) = std::fs::symlink_metadata(p)
+                && m.file_type().is_symlink()
+            {
+                assert!(super::system_link(p, &m), "{sys}");
+            }
+        }
     }
 
     #[tokio::test]
