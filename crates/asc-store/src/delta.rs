@@ -1,9 +1,9 @@
-//! Delta storage at rest (docs/design/DELTA-STORAGE.md): a file version stored as codec `2`, a
-//! zstd frame compressed against an earlier version of the same path. Only the server writes
+//! Delta storage at rest (docs/design/DELTA-STORAGE.md): a file, tree or chunk stored as codec
+//! `2`, a zstd frame compressed against an earlier object of the same kind (the version at the
+//! same path, the same directory, or the same chunk position). Only the server writes
 //! deltas, and only to loose objects; reads resolve them in [`BucketObjects`], so the wire never
 //! carries one.
 
-use asc_core::id::FileId;
 use bytes::Bytes;
 use object_store::{ObjectStoreExt, PutPayload};
 
@@ -12,65 +12,72 @@ use crate::codec::{MAX_DELTA_DEPTH, delta_base, encode_delta};
 use crate::key::ObjKey;
 use crate::objects::{Objects, Result, decode_verified};
 
-/// Why [`BucketObjects::plan_delta`] left a file alone.
+/// Why [`BucketObjects::plan_delta`] left an object alone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Skip {
-    /// The file is not a loose object (missing, or in a pack).
+    /// The object is not loose (missing, or in a pack), or is of a kind never stored as a delta.
     NotLoose,
-    /// The file is a delta already.
+    /// The object is a delta already.
     AlreadyDelta,
-    /// The base is missing or is the file itself, the file is in the base's chain, or the
-    /// chain is as deep as reads allow.
+    /// The base is missing, is the object itself or of another kind, the object is in the
+    /// base's chain, or the chain is as deep as reads allow.
     BadBase,
     /// The delta would not be under half of the stored size.
     NoGain,
 }
 
-/// A delta ready to store: the file, its base and the codec `2` bytes.
+/// A delta ready to store: the object, its base and the codec `2` bytes.
 #[derive(Clone, Debug)]
 pub struct Planned {
-    pub file: FileId,
-    pub base: FileId,
+    pub key: ObjKey,
+    pub base: ObjKey,
     pub stored: Bytes,
     /// The stored size the delta replaces.
     pub was: u64,
 }
 
 impl BucketObjects {
-    /// Builds a delta of `file` against `base` without writing anything.
-    pub async fn plan_delta(&self, file: FileId, base: FileId) -> Result<Result<Planned, Skip>> {
-        if file == base {
+    /// Builds a delta of `key` against `base`, an object of the same kind, without writing
+    /// anything.
+    pub async fn plan_delta(&self, key: ObjKey, base: ObjKey) -> Result<Result<Planned, Skip>> {
+        let Some(base_id) = base.delta_id() else {
+            return Ok(Err(Skip::BadBase));
+        };
+        if key.delta_id().is_none() {
+            return Ok(Err(Skip::NotLoose));
+        }
+        if key == base || key.delta_base_key(base_id) != Some(base) {
             return Ok(Err(Skip::BadBase));
         }
-        let key = ObjKey::File(file);
         let Some(raw) = self.get_loose_raw(&key).await? else {
             return Ok(Err(Skip::NotLoose));
         };
         if delta_base(&raw).is_some() {
             return Ok(Err(Skip::AlreadyDelta));
         }
-        // Walk the base's chain: it must not contain `file` (a cycle no read could resolve)
+        // Walk the base's chain: it must not contain `key` (a cycle no read could resolve)
         // and must leave room for one more link under the read limit.
         let mut at = base;
         let mut depth = 1u8;
         loop {
-            if at == file || depth >= MAX_DELTA_DEPTH {
+            if at == key || depth >= MAX_DELTA_DEPTH {
                 return Ok(Err(Skip::BadBase));
             }
-            match self
-                .get_loose_raw(&ObjKey::File(at))
-                .await?
-                .and_then(|b| delta_base(&b))
-            {
+            match self.get_loose_raw(&at).await?.and_then(|b| delta_base(&b)) {
                 Some(next) => {
-                    at = FileId::from_bytes(next);
+                    at = key
+                        .delta_base_key(next)
+                        .ok_or(crate::objects::Error::Codec(
+                            at,
+                            crate::codec::CodecError::DeltaKind,
+                        ))?;
                     depth += 1;
                 }
                 // A full value, packed (packs never hold deltas) or missing: `get` tells which.
                 None => break,
             }
         }
-        let base_data = match self.get(&ObjKey::File(base)).await {
+        let base_data = match self.get(&base).await {
             Ok(Some(d)) => d,
             Ok(None)
             | Err(crate::objects::Error::Codec(..) | crate::objects::Error::Corrupt(_)) => {
@@ -79,23 +86,23 @@ impl BucketObjects {
             Err(e) => return Err(e),
         };
         let data = decode_verified(&key, &raw)?;
-        let Some(stored) = encode_delta(base.as_bytes(), &base_data, &data, raw.len()) else {
+        let Some(stored) = encode_delta(&base_id, &base_data, &data, raw.len()) else {
             return Ok(Err(Skip::NoGain));
         };
         Ok(Ok(Planned {
-            file,
+            key,
             base,
             stored,
             was: raw.len() as u64,
         }))
     }
 
-    /// Replaces the loose copy of `p.file` with the planned delta. The caller records the base
+    /// Replaces the loose copy of `p.key` with the planned delta. The caller records the base
     /// first, so a collector never sees a delta whose base it may delete.
     pub async fn store_delta(&self, p: &Planned) -> Result<()> {
         self.store
             .put(
-                &self.key_path(&ObjKey::File(p.file)),
+                &self.key_path(&p.key),
                 PutPayload::from_bytes(p.stored.clone()),
             )
             .await?;
@@ -104,8 +111,7 @@ impl BucketObjects {
 
     /// Turns a loose delta back into a full value; `true` when it was a delta. Run before a
     /// base may go (a purge), then drop the base record.
-    pub async fn expand_delta(&self, file: FileId) -> Result<bool> {
-        let key = ObjKey::File(file);
+    pub async fn expand_delta(&self, key: ObjKey) -> Result<bool> {
         let Some(raw) = self.get_loose_raw(&key).await? else {
             return Ok(false);
         };
@@ -132,19 +138,21 @@ impl BucketObjects {
         Ok(())
     }
 
-    /// The base of `file` when its loose copy is a delta.
-    pub async fn delta_base_of(&self, file: FileId) -> Result<Option<FileId>> {
+    /// The base of `key` when its loose copy is a delta.
+    pub async fn delta_base_of(&self, key: ObjKey) -> Result<Option<ObjKey>> {
         Ok(self
-            .get_loose_raw(&ObjKey::File(file))
+            .get_loose_raw(&key)
             .await?
             .and_then(|r| delta_base(&r))
-            .map(FileId::from_bytes))
+            .and_then(|b| key.delta_base_key(b)))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, SystemTime};
+
+    use asc_core::id::FileId;
 
     use super::*;
     use crate::codec::encode_stored;
@@ -163,10 +171,10 @@ mod tests {
             .into_bytes()
     }
 
-    async fn put(b: &BucketObjects, data: &[u8]) -> FileId {
-        let id = FileId::of(data);
-        b.put(&ObjKey::File(id), encode_stored(data)).await.unwrap();
-        id
+    async fn put(b: &BucketObjects, data: &[u8]) -> ObjKey {
+        let key = ObjKey::File(FileId::of(data));
+        b.put(&key, encode_stored(data)).await.unwrap();
+        key
     }
 
     #[tokio::test]
@@ -184,7 +192,7 @@ mod tests {
         );
         b.store_delta(&p).await.unwrap();
         assert_eq!(b.delta_base_of(file).await.unwrap(), Some(base));
-        let key = ObjKey::File(file);
+        let key = file;
         assert_eq!(b.get(&key).await.unwrap().unwrap(), v2);
         // What leaves the bucket is a wire value, never the delta.
         let stored = b.get_stored(&key).await.unwrap().unwrap();
@@ -211,11 +219,11 @@ mod tests {
         let file = put(&b, &v2).await;
         let p = b.plan_delta(file, base).await.unwrap().unwrap();
         b.store_delta(&p).await.unwrap();
-        b.delete(&ObjKey::File(base)).await.unwrap();
-        let key = ObjKey::File(file);
+        b.delete(&base).await.unwrap();
+        let key = file;
         assert!(matches!(
             b.get(&key).await,
-            Err(Error::Codec(_, crate::codec::CodecError::BadBase(id))) if id == base
+            Err(Error::Codec(_, crate::codec::CodecError::BadBase(id))) if *id == base
         ));
         b.put(&key, encode_stored(&v2)).await.unwrap();
         assert_eq!(b.get(&key).await.unwrap().unwrap(), v2);
@@ -242,11 +250,7 @@ mod tests {
         }
         assert_eq!(stored, MAX_DELTA_DEPTH as usize);
         for (i, id) in ids.iter().enumerate() {
-            assert_eq!(
-                b.get(&ObjKey::File(*id)).await.unwrap().unwrap(),
-                version(i),
-                "version {i}"
-            );
+            assert_eq!(b.get(id).await.unwrap().unwrap(), version(i), "version {i}");
         }
         // The head of a chain may not take a delta against its own tail, nor against itself.
         assert_eq!(
@@ -273,7 +277,7 @@ mod tests {
             b.plan_delta(other, base).await.unwrap().unwrap_err(),
             Skip::NoGain
         );
-        let absent = FileId::of(b"absent");
+        let absent = ObjKey::File(FileId::of(b"absent"));
         assert_eq!(
             b.plan_delta(absent, base).await.unwrap().unwrap_err(),
             Skip::NotLoose
@@ -300,7 +304,7 @@ mod tests {
         let rep = b.pack_run(&crate::gc::NoFence, later, true).await.unwrap();
         assert_eq!(rep.packed, 1, "{rep:?}");
         assert_eq!(b.delta_base_of(file).await.unwrap(), Some(base));
-        assert_eq!(b.get_loose_raw(&ObjKey::File(base)).await.unwrap(), None);
-        assert_eq!(b.get(&ObjKey::File(file)).await.unwrap().unwrap(), small(5));
+        assert_eq!(b.get_loose_raw(&base).await.unwrap(), None);
+        assert_eq!(b.get(&file).await.unwrap().unwrap(), small(5));
     }
 }

@@ -13,7 +13,6 @@ use object_store::memory::InMemory;
 use object_store::path::Path;
 use object_store::{ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload};
 
-use asc_core::id::FileId;
 use futures::future::BoxFuture;
 
 use crate::codec::{
@@ -156,9 +155,11 @@ impl BucketObjects {
             let Some(base) = delta_base(&raw) else {
                 return Ok(Some(raw));
             };
-            let base = FileId::from_bytes(base);
-            let bad = || Error::Codec(*key, CodecError::BadBase(base));
-            if depth >= MAX_DELTA_DEPTH || !matches!(key, ObjKey::File(_)) {
+            let base = key
+                .delta_base_key(base)
+                .ok_or(Error::Codec(*key, CodecError::DeltaKind))?;
+            let bad = || Error::Codec(*key, CodecError::BadBase(Box::new(base)));
+            if depth >= MAX_DELTA_DEPTH {
                 return Err(bad());
             }
             let base_data = self.base_bytes(base, depth).await?.ok_or_else(bad)?;
@@ -171,8 +172,7 @@ impl BucketObjects {
 
     /// The verified bytes of a delta's base, from packs or loose, or `None` when it is missing
     /// or damaged.
-    async fn base_bytes(&self, base: FileId, depth: u8) -> Result<Option<Bytes>> {
-        let key = ObjKey::File(base);
+    async fn base_bytes(&self, key: ObjKey, depth: u8) -> Result<Option<Bytes>> {
         if let Some(stored) = self.read_packed(&key).await?
             && let Ok(d) = decode_verified(&key, &stored)
         {

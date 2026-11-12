@@ -269,6 +269,28 @@ impl ObjKey {
         })
     }
 
+    /// The id of a key whose value may be stored as a delta at rest (a file, a tree or a chunk;
+    /// docs/design/DELTA-STORAGE.md), or `None` for every other kind.
+    pub fn delta_id(&self) -> Option<[u8; 32]> {
+        match self {
+            Self::File(i) => Some(*i.as_bytes()),
+            Self::Tree(i) => Some(*i.as_bytes()),
+            Self::Chunk(i) => Some(*i.as_bytes()),
+            _ => None,
+        }
+    }
+
+    /// The key of a delta's base: the same kind as `self` with id `base`. A delta's base is
+    /// always of its own kind; `None` for a kind that is never a delta.
+    pub fn delta_base_key(&self, base: [u8; 32]) -> Option<Self> {
+        match self {
+            Self::File(_) => Some(Self::File(FileId::from_bytes(base))),
+            Self::Tree(_) => Some(Self::Tree(TreeId::from_bytes(base))),
+            Self::Chunk(_) => Some(Self::Chunk(ChunkId::from_bytes(base))),
+            _ => None,
+        }
+    }
+
     /// Layout key relative to the namespace root, e.g. `f/ab/abcd...`.
     pub fn path(&self) -> String {
         let dir = self.class().dir();

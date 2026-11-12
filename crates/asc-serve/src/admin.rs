@@ -3042,11 +3042,11 @@ mod tests {
         let rep = crate::delta_service::pass(f.registry.pool(), &e, &settings)
             .await
             .unwrap();
-        assert_eq!(rep.written, 1, "{rep:?}");
+        assert_eq!(rep.files(), 1, "{rep:?}");
         let i1 = FileId::of(&v1);
         assert_eq!(
-            e.objects.delta_base_of(i1).await.unwrap(),
-            Some(FileId::of(&v0))
+            e.objects.delta_base_of(ObjKey::File(i1)).await.unwrap(),
+            Some(ObjKey::File(FileId::of(&v0)))
         );
 
         let (id, lease) = f
@@ -3057,7 +3057,10 @@ mod tests {
         f.admin.run_fork(id, lease, "alice").await.unwrap();
         let fork = f.registry.open(&name("o/fork")).await.unwrap();
         // The fork has no base rows, so it holds the full value, and reads it.
-        assert_eq!(fork.objects.delta_base_of(i1).await.unwrap(), None);
+        assert_eq!(
+            fork.objects.delta_base_of(ObjKey::File(i1)).await.unwrap(),
+            None
+        );
         assert_eq!(
             fork.objects.get(&ObjKey::File(i1)).await.unwrap().unwrap(),
             v1
@@ -3065,7 +3068,13 @@ mod tests {
         assert_eq!(f.count("delta_bases", fork.ns).await, 0);
         assert_eq!(f.count("delta_bases", e.ns).await, 1);
         // The source keeps its delta.
-        assert!(e.objects.delta_base_of(i1).await.unwrap().is_some());
+        assert!(
+            e.objects
+                .delta_base_of(ObjKey::File(i1))
+                .await
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[tokio::test]

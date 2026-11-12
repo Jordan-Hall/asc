@@ -1,8 +1,8 @@
 //! Stored-value codec: `codec: u8 ‖ data` (SPEC §3.1).
 //!
 //! Codec `2` is a delta, used only at rest in the server's bucket (docs/design/DELTA-STORAGE.md):
-//! `2 ‖ base FileId (32 bytes) ‖ one zstd frame` compressed with the base file's bytes as a raw
-//! content dictionary. It never travels: [`check_codec`] refuses it, and the bucket turns it back
+//! `2 ‖ base id (32 bytes) ‖ one zstd frame` compressed with the base's bytes as a raw content
+//! dictionary. The base is an object of the delta's own kind (a file, a tree or a chunk). It never travels: [`check_codec`] refuses it, and the bucket turns it back
 //! into codec `0` or `1` before anyone reads it.
 //!
 //! Codec `3` exists only inside a version 2 pack (docs/design/PACKED-OBJECTS.md, "Dictionaries"):
@@ -32,8 +32,11 @@ pub enum CodecError {
     #[error("decoded size exceeds the {0} byte limit")]
     TooLarge(u64),
     /// A delta whose base is missing, damaged, or more than [`MAX_DELTA_DEPTH`] deltas deep.
-    #[error("delta base {0} is missing, damaged or too deep")]
-    BadBase(asc_core::id::FileId),
+    #[error("delta base {} is missing, damaged or too deep", .0.path())]
+    BadBase(Box<crate::key::ObjKey>),
+    /// A delta stored under a kind of key that is never a delta.
+    #[error("a delta is stored under a key that cannot hold one")]
+    DeltaKind,
 }
 
 /// The most deltas a read follows before it reaches a full value.

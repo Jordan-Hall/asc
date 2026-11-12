@@ -473,7 +473,14 @@ impl SweepObserver for SqlSweepObserver {
                         &["DELETE FROM file_meta WHERE ns = $1 AND file = $2"],
                         f.as_bytes().to_vec(),
                     ),
-                    ObjKey::Tree(t) => (&[], t.as_bytes().to_vec()),
+                    ObjKey::Tree(t) => (
+                        &["DELETE FROM delta_bases WHERE ns = $1 AND file = $2"],
+                        t.as_bytes().to_vec(),
+                    ),
+                    ObjKey::Chunk(c) => (
+                        &["DELETE FROM delta_bases WHERE ns = $1 AND file = $2"],
+                        c.as_bytes().to_vec(),
+                    ),
                     ObjKey::Tag(t) => (&[], t.as_bytes().to_vec()),
                     _ => continue,
                 };

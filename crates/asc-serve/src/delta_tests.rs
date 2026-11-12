@@ -187,13 +187,27 @@ async fn a_pass_stores_edited_versions_as_deltas_that_read_back_in_full() {
     assert_eq!(rep.changesets, 3, "{rep:?}");
     // `f` in `b` against `a`, `g` in `c` against `f` in `b` (the copy source); `small` is
     // under the minimum size.
-    assert_eq!(rep.written, 2, "{rep:?}");
+    assert_eq!(rep.files(), 2, "{rep:?}");
     assert!(rep.bytes_after * 10 < rep.bytes_before, "{rep:?}");
     let mut want = vec![(i1, i0), (i2, i1)];
     want.sort();
     assert_eq!(f.rows().await, want);
-    assert_eq!(f.entry.objects.delta_base_of(i1).await.unwrap(), Some(i0));
-    assert_eq!(f.entry.objects.delta_base_of(i2).await.unwrap(), Some(i1));
+    assert_eq!(
+        f.entry
+            .objects
+            .delta_base_of(ObjKey::File(i1))
+            .await
+            .unwrap(),
+        Some(ObjKey::File(i0))
+    );
+    assert_eq!(
+        f.entry
+            .objects
+            .delta_base_of(ObjKey::File(i2))
+            .await
+            .unwrap(),
+        Some(ObjKey::File(i1))
+    );
     assert_eq!(f.read(i1).await, v1);
     assert_eq!(f.read(i2).await, v2);
     // What leaves the bucket is a wire value.
@@ -210,7 +224,7 @@ async fn a_pass_stores_edited_versions_as_deltas_that_read_back_in_full() {
     assert_eq!((s.deltas, s.bases, s.backlog), (2, 2, 0));
     // The cursor moved: a second pass reads nothing.
     let again = f.gc.run_delta_repo(&name(), &on()).await.unwrap();
-    assert_eq!((again.changesets, again.written), (0, 0), "{again:?}");
+    assert_eq!((again.changesets, again.files()), (0, 0), "{again:?}");
     // A new landed changeset is read on the next pass.
     let d = commit(&f.entry, &[f.css[2]], &[("f", &version(30))]).await;
     sqlx::query("INSERT INTO mainline (ns, ref, pos, cs) VALUES ($1, $2, 3, $3)")
@@ -222,7 +236,7 @@ async fn a_pass_stores_edited_versions_as_deltas_that_read_back_in_full() {
         .unwrap();
     assert_eq!(f.gc.delta_status(&name()).await.unwrap().backlog, 1);
     let next = f.gc.run_delta_repo(&name(), &on()).await.unwrap();
-    assert_eq!((next.changesets, next.written), (1, 1), "{next:?}");
+    assert_eq!((next.changesets, next.files()), (1, 1), "{next:?}");
     assert_eq!(f.read(FileId::of(&version(30))).await, version(30));
 }
 
@@ -247,11 +261,18 @@ async fn a_merge_brings_its_side_branch_into_the_pass() {
     let rep = f.gc.run_delta_repo(&name(), &on()).await.unwrap();
     // The merge, then `s2` and `s1`; the walk stops at `c`, which is on the mainline.
     assert_eq!(
-        (rep.changesets, rep.side, rep.written),
+        (rep.changesets, rep.side, rep.files()),
         (1, 2, 1),
         "{rep:?}"
     );
-    assert_eq!(f.entry.objects.delta_base_of(j1).await.unwrap(), Some(j0));
+    assert_eq!(
+        f.entry
+            .objects
+            .delta_base_of(ObjKey::File(j1))
+            .await
+            .unwrap(),
+        Some(ObjKey::File(j0))
+    );
     assert_eq!(f.read(j1).await, w1);
     // A side changeset is read once: the next pass has nothing to do.
     let again = f.gc.run_delta_repo(&name(), &on()).await.unwrap();
@@ -311,14 +332,14 @@ async fn a_pass_respects_the_size_bounds_and_its_batch_limit() {
         ..on()
     };
     let rep = f.gc.run_delta_repo(&name(), &big).await.unwrap();
-    assert_eq!((rep.changesets, rep.written), (3, 0), "{rep:?}");
+    assert_eq!((rep.changesets, rep.files()), (3, 0), "{rep:?}");
     let f = Fx::new().await;
     let one = DeltaSettings {
         max_changesets: 2,
         ..on()
     };
     let rep = f.gc.run_delta_repo(&name(), &one).await.unwrap();
-    assert_eq!((rep.changesets, rep.written), (2, 1), "{rep:?}");
+    assert_eq!((rep.changesets, rep.files()), (2, 1), "{rep:?}");
     assert_eq!(f.gc.delta_status(&name()).await.unwrap().backlog, 1);
 }
 
@@ -395,7 +416,14 @@ async fn a_purged_base_expands_its_dependents_and_takes_no_new_ones() {
     let t1 = SystemTime::now() + D15;
     f.gc.run_repo(&name(), t1, true).await.unwrap();
     assert_eq!(f.rows().await.len(), 1);
-    assert!(f.entry.objects.delta_base_of(i1).await.unwrap().is_some());
+    assert!(
+        f.entry
+            .objects
+            .delta_base_of(ObjKey::File(i1))
+            .await
+            .unwrap()
+            .is_some()
+    );
 
     let r =
         f.gc.run_repo(&name(), t1 + Duration::from_secs(60), false)
@@ -404,14 +432,28 @@ async fn a_purged_base_expands_its_dependents_and_takes_no_new_ones() {
     assert_eq!(r.sweep.purged, 1, "{r}");
     assert!(!f.has(i0).await, "the purged base is gone");
     assert!(f.rows().await.is_empty());
-    assert_eq!(f.entry.objects.delta_base_of(i1).await.unwrap(), None);
+    assert_eq!(
+        f.entry
+            .objects
+            .delta_base_of(ObjKey::File(i1))
+            .await
+            .unwrap(),
+        None
+    );
     assert_eq!(f.read(i1).await, v1, "its dependent was expanded first");
 
     // A pass makes no delta against a purged base.
     purge_row(ObjKey::File(i1)).await.unwrap();
     let next = f.gc.run_delta_repo(&name(), &on()).await.unwrap();
-    assert_eq!((next.changesets, next.written), (1, 0), "{next:?}");
-    assert_eq!(f.entry.objects.delta_base_of(i2).await.unwrap(), None);
+    assert_eq!((next.changesets, next.files()), (1, 0), "{next:?}");
+    assert_eq!(
+        f.entry
+            .objects
+            .delta_base_of(ObjKey::File(i2))
+            .await
+            .unwrap(),
+        None
+    );
 }
 
 #[tokio::test]
@@ -475,7 +517,14 @@ async fn the_admin_command_runs_and_reports() {
     assert!(f.rows().await.is_empty());
     let i2 = FileId::of(&version(20));
     assert_eq!(f.read(i2).await, version(20));
-    assert_eq!(f.entry.objects.delta_base_of(i2).await.unwrap(), None);
+    assert_eq!(
+        f.entry
+            .objects
+            .delta_base_of(ObjKey::File(i2))
+            .await
+            .unwrap(),
+        None
+    );
     let again = cli.delta(&DeltaCmd::Run, &[], true).await.unwrap();
     assert!(again.text.contains("read 0 changeset(s)"), "{}", again.text);
 }

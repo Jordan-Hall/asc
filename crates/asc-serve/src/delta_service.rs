@@ -2,16 +2,19 @@
 //!
 //! The pass reads each land branch's mainline from where it last stopped, and with each merge the
 //! side-branch changesets it brought in. For every file a changeset writes, it takes the version
-//! the same path (or the `copy_from` path) held in the first parent's tree as the base, and stores
-//! the new version as a delta when that saves at least half. It runs under the collection lock ([`crate::gc::GcService`]), records the base in
-//! `delta_bases` before it writes, and GC then keeps every recorded base as a strict root.
+//! the same path (or the `copy_from` path) held in the first parent's tree as the base; for every
+//! directory the changeset changed, the same directory's tree in the parent; for every new chunk
+//! of a large file, the old version's chunk at the same place. It stores the new object as a delta
+//! when that saves at least half. It runs under the collection lock ([`crate::gc::GcService`]),
+//! records the base in `delta_bases` before it writes, and GC then keeps every recorded base as a
+//! strict root.
 
 use std::collections::HashSet;
 use std::time::Duration;
 
 use asc_core::codec::decode_envelope;
-use asc_core::id::{ChangesetId, FileId, TreeId};
-use asc_core::object::{Change, Changeset, Entry, Kind, Tree};
+use asc_core::id::{ChangesetId, ChunkId, FileId, TreeId};
+use asc_core::object::{Change, Changeset, ChunkList, Entry, Kind, Tree};
 use asc_core::path::{Name, RepoPath};
 use asc_store::delta::Skip;
 use asc_store::gc::{GcError, GcRootSource};
@@ -24,7 +27,7 @@ use sqlx::{AnyPool, Row};
 use crate::config::{ByteSize, ConfigError, Secs};
 use crate::registry::RepoEntry;
 
-/// Largest file stored whole (SPEC §3.1); larger ones are chunked and never deltas.
+/// Largest file stored whole (SPEC §3.1); larger ones are chunked, and their chunks are deltas.
 const CHUNK_THRESHOLD: u64 = 4 * 1024 * 1024;
 /// Mainline rows read per query.
 const PAGE: i64 = 200;
@@ -82,25 +85,36 @@ pub struct DeltaReport {
     pub changesets: u64,
     /// Changesets read on the side branches merges brought in.
     pub side: u64,
-    /// Files that had a base in the parent tree.
+    /// Files, trees and chunks that had a base in the parent.
     pub candidates: u64,
-    /// Files now stored as deltas.
+    /// Objects now stored as deltas.
     pub written: u64,
-    /// Files whose delta would not save half.
+    /// Of `written`, directory trees.
+    pub trees: u64,
+    /// Of `written`, large-file chunks.
+    pub chunks: u64,
+    /// Objects whose delta would not save half.
     pub no_gain: u64,
-    /// Files skipped for another reason (packed, already a delta, base unusable).
+    /// Objects skipped for another reason (packed, already a delta, base unusable).
     pub skipped: u64,
-    /// Stored bytes of the written files before and after.
+    /// Stored bytes of the written objects before and after.
     pub bytes_before: u64,
     pub bytes_after: u64,
     /// Deltas turned back into full values because their base was purged.
     pub expanded: u64,
 }
 
+impl DeltaReport {
+    /// Of `written`, files stored whole (not trees or chunks).
+    pub fn files(&self) -> u64 {
+        self.written - self.trees - self.chunks
+    }
+}
+
 /// What `delta status` shows for one repository.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DeltaStatus {
-    /// Files recorded as deltas.
+    /// Objects recorded as deltas.
     pub deltas: u64,
     /// Distinct bases they name.
     pub bases: u64,
@@ -124,25 +138,43 @@ impl GcRootSource for DeltaRoots {
         if ns != self.ns.as_slice() {
             return Ok(Vec::new());
         }
-        let rows = sqlx::query("SELECT DISTINCT base FROM delta_bases WHERE ns = $1")
+        let rows = sqlx::query("SELECT DISTINCT kind, base FROM delta_bases WHERE ns = $1")
             .bind(self.ns.clone())
             .fetch_all(&self.pool)
             .await
             .map_err(|e| sql("delta_bases", e))?;
         let mut out = Vec::with_capacity(rows.len());
         for r in rows {
-            let b: Vec<u8> = r.try_get(0).map_err(|e| sql("delta_bases", e))?;
-            out.push(ObjKey::File(file_id(&b)?));
+            let k: i16 = r.try_get(0).map_err(|e| sql("delta_bases", e))?;
+            let b: Vec<u8> = r.try_get(1).map_err(|e| sql("delta_bases", e))?;
+            out.push(row_key(k, &b)?);
         }
         Ok(out)
     }
 }
 
-fn file_id(b: &[u8]) -> Result<FileId, GcError> {
-    let a: [u8; 32] = b
+/// The `kind` column of `delta_bases`: 0 file, 1 tree, 2 chunk. A delta and its base are always
+/// of the same kind.
+fn row_kind(key: &ObjKey) -> Option<i16> {
+    match key {
+        ObjKey::File(_) => Some(0),
+        ObjKey::Tree(_) => Some(1),
+        ObjKey::Chunk(_) => Some(2),
+        _ => None,
+    }
+}
+
+/// The key a `delta_bases` row names.
+fn row_key(kind: i16, id: &[u8]) -> Result<ObjKey, GcError> {
+    let a: [u8; 32] = id
         .try_into()
         .map_err(|_| GcError::Marks("delta_bases: an id is not 32 bytes".into()))?;
-    Ok(FileId::from_bytes(a))
+    match kind {
+        0 => Ok(ObjKey::File(FileId::from_bytes(a))),
+        1 => Ok(ObjKey::Tree(TreeId::from_bytes(a))),
+        2 => Ok(ObjKey::Chunk(ChunkId::from_bytes(a))),
+        k => Err(GcError::Marks(format!("delta_bases: unknown kind {k}"))),
+    }
 }
 
 /// Before a sweep: every delta whose base an operator purged is turned back into a full value
@@ -156,16 +188,20 @@ pub async fn release_purged(pool: &AnyPool, entry: &RepoEntry) -> Result<u64, Gc
         .map_err(|e| sql("gc_purge", e))?;
     let mut expanded = 0;
     for key in purged.iter().filter_map(|k| ObjKey::parse(k)) {
-        let ObjKey::File(base) = key else { continue };
-        let deps: Vec<Vec<u8>> =
-            sqlx::query_scalar("SELECT file FROM delta_bases WHERE ns = $1 AND base = $2")
-                .bind(ns.clone())
-                .bind(base.as_bytes().to_vec())
-                .fetch_all(pool)
-                .await
-                .map_err(|e| sql("delta_bases", e))?;
+        let (Some(kind), Some(base)) = (row_kind(&key), key.delta_id()) else {
+            continue;
+        };
+        let deps: Vec<Vec<u8>> = sqlx::query_scalar(
+            "SELECT file FROM delta_bases WHERE ns = $1 AND base = $2 AND kind = $3",
+        )
+        .bind(ns.clone())
+        .bind(base.to_vec())
+        .bind(kind)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| sql("delta_bases", e))?;
         for d in deps {
-            if entry.objects.expand_delta(file_id(&d)?).await? {
+            if entry.objects.expand_delta(row_key(kind, &d)?).await? {
                 expanded += 1;
             }
             sqlx::query("DELETE FROM delta_bases WHERE ns = $1 AND file = $2")
@@ -188,8 +224,7 @@ pub async fn expand_copied(
 ) -> Result<u64, GcError> {
     let mut n = 0;
     for key in keys {
-        let ObjKey::File(f) = key else { continue };
-        if src.objects.delta_base_of(*f).await?.is_none() {
+        if key.delta_id().is_none() || src.objects.delta_base_of(*key).await?.is_none() {
             continue;
         }
         let Some(full) = src.objects.get_stored(key).await? else {
@@ -399,8 +434,10 @@ impl Walk<'_> {
     }
 }
 
-/// Stores the files `id` writes as deltas against its first parent's tree. Returns its parents
-/// (none when the changeset is missing).
+/// Stores what `id` writes as deltas against its first parent: each file against the version
+/// at the same path, each changed directory's tree against the same directory's old tree, and
+/// each new chunk of a large file against the old version's chunk at the same place. Returns its
+/// parents (none when the changeset is missing).
 async fn one_changeset(
     pool: &AnyPool,
     entry: &RepoEntry,
@@ -418,7 +455,22 @@ async fn one_changeset(
     let Some(parent) = changeset(entry, *parent).await? else {
         return Ok(cs.parents.clone());
     };
+    let mut d = Deltas {
+        pool,
+        entry,
+        purged,
+        rep,
+    };
+    // Every directory above a changed path changed too; the root is handled on its own.
+    let mut dirs: HashSet<RepoPath> = HashSet::new();
     for (path, change) in cs.changes.as_slice() {
+        let mut up = path.parent();
+        while let Some(p) = up {
+            up = p.parent();
+            if !dirs.insert(p) {
+                break;
+            }
+        }
         let Change::Write {
             kind,
             file,
@@ -429,63 +481,168 @@ async fn one_changeset(
         else {
             continue;
         };
-        if *kind == Kind::Symlink || *size < s.min_size.0 || *size > CHUNK_THRESHOLD {
+        if *kind == Kind::Symlink || *size < s.min_size.0 {
             continue;
         }
         let from = copy_from.as_ref().unwrap_or(path);
         let Some(old) = lookup(entry, parent.root, from).await? else {
             continue;
         };
-        if !matches!(old.kind, Kind::File | Kind::Exec) || old.size > CHUNK_THRESHOLD {
+        if !matches!(old.kind, Kind::File | Kind::Exec) {
             continue;
         }
         let base = FileId::from_bytes(old.id);
-        if base == *file || purged.contains(&ObjKey::File(base)) {
+        if base == *file {
             continue;
         }
+        match (*size > CHUNK_THRESHOLD, old.size > CHUNK_THRESHOLD) {
+            (false, false) => d.try_one(ObjKey::File(*file), ObjKey::File(base)).await?,
+            (true, true) => d.chunks(*file, base).await?,
+            _ => {}
+        }
+    }
+    if cs.root != parent.root {
+        d.try_one(ObjKey::Tree(cs.root), ObjKey::Tree(parent.root))
+            .await?;
+    }
+    for dir in &dirs {
+        let (Some(new), Some(old)) = (
+            lookup(entry, cs.root, dir).await?,
+            lookup(entry, parent.root, dir).await?,
+        ) else {
+            continue;
+        };
+        if new.kind == Kind::Dir && old.kind == Kind::Dir && new.id != old.id {
+            let (n, o) = (TreeId::from_bytes(new.id), TreeId::from_bytes(old.id));
+            d.try_one(ObjKey::Tree(n), ObjKey::Tree(o)).await?;
+        }
+    }
+    Ok(cs.parents.clone())
+}
+
+/// The delta writes of one changeset.
+struct Deltas<'a> {
+    pool: &'a AnyPool,
+    entry: &'a RepoEntry,
+    purged: &'a HashSet<ObjKey>,
+    rep: &'a mut DeltaReport,
+}
+
+impl Deltas<'_> {
+    /// Pairs the chunks of a large file's new version with the old version's: a chunk both share
+    /// needs nothing, and each new chunk takes the next old chunk the new version dropped, in
+    /// order between the chunks they share (content-defined boundaries line up again after an
+    /// edit).
+    async fn chunks(&mut self, file: FileId, base: FileId) -> Result<(), GcError> {
+        let (Some(new), Some(old)) = (self.chunk_list(file).await?, self.chunk_list(base).await?)
+        else {
+            return Ok(());
+        };
+        for (c, o) in pair_chunks(&new, &old) {
+            self.try_one(ObjKey::Chunk(c), ObjKey::Chunk(o)).await?;
+        }
+        Ok(())
+    }
+
+    async fn chunk_list(&self, f: FileId) -> Result<Option<ChunkList>, GcError> {
+        let Some(b) = self.entry.objects.get(&ObjKey::ChunkList(f)).await? else {
+            return Ok(None);
+        };
+        Ok(decode_envelope(&b).ok())
+    }
+
+    /// Stores `key` as a delta against `base` when that saves half.
+    async fn try_one(&mut self, key: ObjKey, base: ObjKey) -> Result<(), GcError> {
+        if key == base || self.purged.contains(&base) {
+            return Ok(());
+        }
+        let (Some(kind), Some(id), Some(base_id)) =
+            (row_kind(&key), key.delta_id(), base.delta_id())
+        else {
+            return Ok(());
+        };
+        let rep = &mut *self.rep;
         rep.candidates += 1;
-        let planned = match entry.objects.plan_delta(*file, base).await? {
+        let planned = match self.entry.objects.plan_delta(key, base).await? {
             Ok(p) => p,
             Err(Skip::NoGain) => {
                 rep.no_gain += 1;
-                continue;
+                return Ok(());
             }
             Err(_) => {
                 rep.skipped += 1;
-                continue;
+                return Ok(());
             }
         };
         // The row first: from here on GC keeps the base, whatever happens to the write.
         sqlx::query(
-            "INSERT INTO delta_bases (ns, file, base) VALUES ($1, $2, $3) \
-             ON CONFLICT (ns, file) DO UPDATE SET base = excluded.base",
+            "INSERT INTO delta_bases (ns, file, base, kind) VALUES ($1, $2, $3, $4) \
+             ON CONFLICT (ns, file) DO UPDATE SET base = excluded.base, kind = excluded.kind",
         )
-        .bind(entry.ns.as_bytes().to_vec())
-        .bind(file.as_bytes().to_vec())
-        .bind(base.as_bytes().to_vec())
-        .execute(pool)
+        .bind(self.entry.ns.as_bytes().to_vec())
+        .bind(id.to_vec())
+        .bind(base_id.to_vec())
+        .bind(kind)
+        .execute(self.pool)
         .await
         .map_err(|e| sql("delta_bases", e))?;
-        entry.objects.store_delta(&planned).await?;
+        self.entry.objects.store_delta(&planned).await?;
         rep.written += 1;
+        match kind {
+            1 => rep.trees += 1,
+            2 => rep.chunks += 1,
+            _ => {}
+        }
         rep.bytes_before += planned.was;
         rep.bytes_after += planned.stored.len() as u64;
+        Ok(())
     }
-    Ok(cs.parents.clone())
+}
+
+/// `(new chunk, old chunk)` pairs for two versions of a large file. A chunk in both is left out;
+/// each other new chunk takes the next old chunk that the new version dropped, counting from the
+/// last chunk both share.
+fn pair_chunks(new: &ChunkList, old: &ChunkList) -> Vec<(ChunkId, ChunkId)> {
+    let in_new: HashSet<ChunkId> = new.chunks.iter().map(|c| c.0).collect();
+    let at_old: std::collections::HashMap<ChunkId, usize> = old
+        .chunks
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (c.0, i))
+        .collect();
+    let mut out = Vec::new();
+    let mut j = 0;
+    for &(c, _) in &new.chunks {
+        if let Some(&i) = at_old.get(&c) {
+            j = j.max(i + 1);
+            continue;
+        }
+        while j < old.chunks.len() && in_new.contains(&old.chunks[j].0) {
+            j += 1;
+        }
+        let Some(&(o, _)) = old.chunks.get(j) else {
+            break;
+        };
+        j += 1;
+        out.push((c, o));
+    }
+    out
 }
 
 /// Rewrites every delta of `entry` as a full value and drops its row: the rollback of delta
 /// storage. The cursors stay, so a pass that runs later does not redo old history.
 pub async fn expand_all(pool: &AnyPool, entry: &RepoEntry) -> Result<u64, GcError> {
     let ns = entry.ns.as_bytes().to_vec();
-    let files: Vec<Vec<u8>> = sqlx::query_scalar("SELECT file FROM delta_bases WHERE ns = $1")
+    let rows = sqlx::query("SELECT kind, file FROM delta_bases WHERE ns = $1")
         .bind(ns.clone())
         .fetch_all(pool)
         .await
         .map_err(|e| sql("delta_bases", e))?;
     let mut n = 0;
-    for f in files {
-        if entry.objects.expand_delta(file_id(&f)?).await? {
+    for r in rows {
+        let k: i16 = r.try_get(0).map_err(|e| sql("delta_bases", e))?;
+        let f: Vec<u8> = r.try_get(1).map_err(|e| sql("delta_bases", e))?;
+        if entry.objects.expand_delta(row_key(k, &f)?).await? {
             n += 1;
         }
         sqlx::query("DELETE FROM delta_bases WHERE ns = $1 AND file = $2")
