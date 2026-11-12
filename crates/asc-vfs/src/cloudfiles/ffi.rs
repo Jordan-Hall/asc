@@ -680,7 +680,7 @@ pub fn delete_on_close(h: &Handle) -> io::Result<()> {
         FILE_DISPOSITION_INFO, FileDispositionInfo, SetFileInformationByHandle,
     };
     let info = FILE_DISPOSITION_INFO {
-        DeleteFile: true.into(),
+        DeleteFile: true,
     };
     // SAFETY: a valid handle; the structure outlives the call and its size is passed.
     unsafe {
