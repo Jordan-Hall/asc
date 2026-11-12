@@ -4,8 +4,9 @@
 //! Usage: `cargo run -p asc-git --release --example import_bench -- <git-dir> <out-dir> <mode>`
 //! where mode is `loose` (a write after every commit, no packs: the shape before batching),
 //! `batched` (500 commits per batch, loose objects), `packed` (batched, small objects in packs) or
-//! `delta` (batched, then every modified file stored as a delta against its previous version at the
-//! same path, as the server's delta pass does; the pairs come from `git log --raw`). The source is only
+//! `delta` (batched, then every modified file, large-file chunk and changed tree stored as a delta
+//! against its previous version at the same place, as the server's delta pass does; the pairs come
+//! from `git log --raw -t`). The source is only
 //! read; `<out-dir>` must not exist. Bytes are also reported per object kind (the store's top folder).
 #![allow(clippy::print_stderr, clippy::print_stdout)]
 
@@ -221,29 +222,118 @@ async fn explore(objects: &BucketObjects, map: &Map, git_dir: &Path) {
     }
 }
 
-/// Stores each modified file as a delta against its previous version when that saves half.
-/// `(deltas written, pairs tried, stored bytes saved)`.
-async fn delta_pass(objects: &BucketObjects, map: &Map, git_dir: &Path) -> (u64, u64, u64) {
-    use asc_core::id::FileId;
-    let pairs = modified_pairs(git_dir);
+/// Stores what the server's delta pass would: each modified file as a delta against its previous
+/// version at the same path, each new chunk of a large file against the old version's chunk at the
+/// same place, and each changed tree (roots and subdirectories) against the same directory's old
+/// tree, when that saves half. Prints one line per kind.
+async fn delta_pass(objects: &BucketObjects, map: &Map, git_dir: &Path) {
+    use asc_core::codec::decode_envelope;
+    use asc_core::id::{FileId, TreeId};
+    use asc_core::object::ChunkList;
+    use asc_store::delta::pair_chunks;
     let rows = map.rows.lock().unwrap().clone();
-    let file = |g: &GitOid| {
-        rows.get(&(*g, 1))
-            .map(|b| asc_store::key::ObjKey::File(FileId::from_bytes(*b)))
+    let id = |g: &GitOid, k: u8| rows.get(&(*g, k)).copied();
+    let chunk_list = async |f: [u8; 32]| -> Option<ChunkList> {
+        let b = objects
+            .get(&ObjKey::ChunkList(FileId::from_bytes(f)))
+            .await
+            .ok()??;
+        decode_envelope(&b).ok()
     };
-    let (mut written, mut tried, mut saved) = (0, 0, 0);
-    for (old, new) in &pairs {
-        let (Some(base), Some(f)) = (file(old), file(new)) else {
+    let mut files = Vec::new();
+    let mut chunks = Vec::new();
+    for (old, new) in &modified_pairs(git_dir) {
+        let (Some(b), Some(f)) = (id(old, 1), id(new, 1)) else {
             continue;
         };
-        tried += 1;
-        if let Ok(p) = objects.plan_delta(f, base).await.expect("plan") {
-            objects.store_delta(&p).await.expect("store");
-            written += 1;
-            saved += p.was.saturating_sub(p.stored.len() as u64);
+        let (fk, bk) = (
+            ObjKey::File(FileId::from_bytes(f)),
+            ObjKey::File(FileId::from_bytes(b)),
+        );
+        if objects.has_many(&[fk]).await.expect("has")[0] {
+            files.push((fk, bk));
+        } else if let (Some(n), Some(o)) = (chunk_list(f).await, chunk_list(b).await) {
+            chunks.extend(
+                pair_chunks(&n, &o)
+                    .into_iter()
+                    .map(|(c, o)| (ObjKey::Chunk(c), ObjKey::Chunk(o))),
+            );
         }
     }
-    (written, tried, saved)
+    let trees: Vec<(ObjKey, ObjKey)> = tree_pairs(git_dir)
+        .iter()
+        .filter_map(|(old, new)| {
+            let (b, t) = (id(old, 2)?, id(new, 2)?);
+            Some((
+                ObjKey::Tree(TreeId::from_bytes(t)),
+                ObjKey::Tree(TreeId::from_bytes(b)),
+            ))
+        })
+        .collect();
+    for (kind, pairs) in [("file", files), ("chunk", chunks), ("tree", trees)] {
+        let t = Instant::now();
+        let (mut written, mut saved) = (0u64, 0u64);
+        for (key, base) in &pairs {
+            if let Ok(p) = objects.plan_delta(*key, *base).await.expect("plan") {
+                objects.store_delta(&p).await.expect("store");
+                written += 1;
+                saved += p.was.saturating_sub(p.stored.len() as u64);
+            }
+        }
+        println!(
+            "delta kind={kind} pairs={} written={written} saved_bytes={saved} wall={:.1}s",
+            pairs.len(),
+            t.elapsed().as_secs_f64()
+        );
+    }
+}
+
+/// `(old, new)` tree pairs in history order: each commit's root against its first parent's root,
+/// then every modified subdirectory against the same directory before (`git log --raw -t`).
+fn tree_pairs(git_dir: &Path) -> Vec<(GitOid, GitOid)> {
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .arg("--git-dir")
+            .arg(git_dir)
+            .args(args)
+            .output()
+            .expect("run git");
+        assert!(out.status.success(), "git {args:?} failed");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let log = git(&["log", "--all", "--reverse", "--format=%H %T %P"]);
+    let commits: Vec<Vec<&str>> = log.lines().map(|l| l.split(' ').collect()).collect();
+    let tree_of: HashMap<&str, &str> = commits
+        .iter()
+        .filter(|c| c.len() >= 2)
+        .map(|c| (c[0], c[1]))
+        .collect();
+    let mut out: Vec<(GitOid, GitOid)> = commits
+        .iter()
+        .filter_map(|c| {
+            let (t, p) = (*c.get(1)?, *c.get(2)?);
+            let pt = *tree_of.get(p)?;
+            (pt != t).then(|| Some((pt.parse().ok()?, t.parse().ok()?)))?
+        })
+        .collect();
+    let raw = git(&[
+        "log",
+        "--all",
+        "--reverse",
+        "--raw",
+        "-t",
+        "--no-abbrev",
+        "--no-renames",
+        "--format=",
+    ]);
+    out.extend(raw.lines().filter_map(|l| {
+        // :040000 040000 <old> <new> M	<dir>
+        let mut f = l.strip_prefix(':')?.split_whitespace();
+        let (a, b, old, new, st) = (f.next()?, f.next()?, f.next()?, f.next()?, f.next()?);
+        (a == "040000" && b == "040000" && st == "M" && old != new)
+            .then(|| Some((old.parse().ok()?, new.parse().ok()?)))?
+    }));
+    out
 }
 
 /// [`du`] per top folder of the store (one folder per object kind).
@@ -322,12 +412,7 @@ async fn main() {
         return;
     }
     if mode == "delta" {
-        let t = Instant::now();
-        let (written, tried, saved) = delta_pass(&objects, &map, &src).await;
-        println!(
-            "delta pairs={tried} written={written} saved_bytes={saved} wall={:.1}s",
-            t.elapsed().as_secs_f64()
-        );
+        delta_pass(&objects, &map, &src).await;
     }
     let (files, bytes, blocks) = du(&out);
     for (kind, (f, b, _)) in by_kind(&out) {
