@@ -363,12 +363,18 @@ mod projfs {
         ok(&sb, &ws, &["commit", "-q", "-m", "edit"]);
         assert_eq!(ok(&sb, &ws, &["status", "--porcelain"]), "");
 
-        // Switching between branches whose objects are already local downloads nothing.
+        // A switch moves placeholders and hydrates nothing, the committed edit included (its
+        // bytes are the old tree's, so it is clean); only the reads after it do.
         let before = downloads(&sb, &ws);
         ok(&sb, &ws, &["switch", "-q", "side"]);
+        assert_eq!(downloads(&sb, &ws), before, "the switch hydrated files");
         assert_eq!(std::fs::read_to_string(ws.join("c.txt")).unwrap(), "c\n");
+        assert_eq!(std::fs::read_to_string(ws.join("a.txt")).unwrap(), "a\n");
+        let before = downloads(&sb, &ws);
         ok(&sb, &ws, &["switch", "-q", "master"]);
-        assert_eq!(downloads(&sb, &ws), before, "switch downloaded objects");
+        assert_eq!(downloads(&sb, &ws), before, "the switch hydrated files");
+        assert_eq!(std::fs::read_to_string(ws.join("a.txt")).unwrap(), "a2\n");
+        assert_eq!(ok(&sb, &ws, &["status", "--porcelain"]), "");
     }
 
     #[test]
@@ -603,6 +609,12 @@ mod cloudfiles {
         found(dir) == Found::Virtual(Backend::CloudFiles)
     }
 
+    /// A placeholder whose data is not on disk (`FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS`).
+    fn is_dehydrated(p: &Path) -> bool {
+        use std::os::windows::fs::MetadataExt;
+        std::fs::symlink_metadata(p).is_ok_and(|m| m.file_attributes() & 0x40_0000 != 0)
+    }
+
     #[test]
     #[ignore = "needs Windows with the Cloud Files API and starts a daemon"]
     fn clone_reads_edits_commits_and_switches() {
@@ -638,17 +650,26 @@ mod cloudfiles {
         ok(&sb, &ws, &["commit", "-q", "-m", "edit"]);
         assert_eq!(ok(&sb, &ws, &["status", "--porcelain"]), "");
 
+        // A switch moves placeholders and hydrates nothing; only the reads after it do.
         let before = downloads(&sb, &ws);
         ok(&sb, &ws, &["switch", "-q", "side"]);
+        assert_eq!(downloads(&sb, &ws), before, "the switch hydrated files");
+        // The daemon moved the committed edit like a clean file: a.txt is a placeholder again
+        // whose data comes back on the next read, not a file the command wrote.
+        assert!(
+            is_dehydrated(&ws.join("a.txt")),
+            "the committed a.txt was rewritten instead of moved back to a placeholder"
+        );
         assert_eq!(std::fs::read_to_string(ws.join("c.txt")).unwrap(), "c\n");
         assert_eq!(std::fs::read_to_string(ws.join("a.txt")).unwrap(), "a\n");
         assert!(!ws.join("new.txt").exists());
         assert!(ws.join("src").join("b.txt").is_file());
+        let before = downloads(&sb, &ws);
         ok(&sb, &ws, &["switch", "-q", "master"]);
+        assert_eq!(downloads(&sb, &ws), before, "the switch hydrated files");
         assert_eq!(std::fs::read_to_string(ws.join("a.txt")).unwrap(), "a2\n");
         assert!(!ws.join("c.txt").exists());
         assert_eq!(ok(&sb, &ws, &["status", "--porcelain"]), "");
-        assert_eq!(downloads(&sb, &ws), before, "switch downloaded objects");
     }
 
     #[test]

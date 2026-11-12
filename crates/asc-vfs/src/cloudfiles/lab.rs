@@ -521,6 +521,35 @@ mod tests {
     }
 
     #[test]
+    fn safe_mode_moves_written_files_that_hold_the_old_bytes() {
+        let Some(lab) = Lab::new(V1) else { return };
+        lab.hydrate(V1);
+        // Written placeholders: one back to the old bytes, one with an edit of its own.
+        lab.write("a.txt", b"alpha");
+        lab.write("b.txt", b"bravo");
+        lab.write("c.txt", b"mine");
+        // A plain file put back in place of a placeholder, with the old bytes.
+        lab.remove("d.txt").unwrap();
+        lab.write("d.txt", b"delta");
+        let v3: Files<'_> = &[
+            ("a.txt", b"alpha three"),
+            ("c.txt", b"charlie three"),
+            ("d.txt", b"delta three"),
+            ("sub/x.txt", b"xray"),
+            ("src/main.rs", b"fn main() {}"),
+        ];
+        let r = lab.run(V1, v3, Mode::Safe, &[], T).unwrap();
+        assert_eq!(r.dirty_skipped, vec![p("c.txt")], "{r:?}");
+        assert!(r.pending.is_empty(), "{r:?}");
+        assert!(!lab.exists("b.txt"));
+        assert_eq!(lab.state("a.txt"), PathState::Placeholder);
+        assert_eq!(lab.state("d.txt"), PathState::Placeholder);
+        assert_eq!(lab.read("a.txt").unwrap(), b"alpha three");
+        assert_eq!(lab.read("d.txt").unwrap(), b"delta three");
+        assert_eq!(lab.read("c.txt").unwrap(), b"mine");
+    }
+
+    #[test]
     fn a_file_held_open_is_pending_then_resumed() {
         let Some(lab) = Lab::new(V1) else { return };
         lab.hydrate(V1);

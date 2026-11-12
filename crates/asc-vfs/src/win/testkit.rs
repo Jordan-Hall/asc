@@ -196,7 +196,9 @@ fn write_tree(
                 if !missing.contains(&full.as_str()) {
                     rt.block_on(put(store, ObjKey::File(id), data));
                 }
-                entries.push(entry(name, Kind::File, *id.as_bytes(), data.len() as u64));
+                let mut e = entry(name, Kind::File, *id.as_bytes(), data.len() as u64);
+                e.git = blob_oid(data);
+                entries.push(e);
             }
             N::D(sub) => {
                 let id = write_tree(rt, store, sub, &format!("{full}/"), missing);
