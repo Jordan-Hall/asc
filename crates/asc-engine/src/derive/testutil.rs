@@ -93,3 +93,40 @@ pub async fn commit_on(e: &TestEngine, parents: &[ChangesetId], content: &[u8]) 
     .await
     .unwrap()
 }
+
+/// A changeset on `parent` applying `ops` to its tree (`None` deletes); small files only.
+pub async fn commit_ops(
+    e: &TestEngine,
+    parents: &[ChangesetId],
+    ops: &[(&str, Option<&[u8]>)],
+) -> ChangesetId {
+    let base = match parents.first() {
+        Some(&p) => e.get_changeset(p).await.unwrap().root,
+        None => TestEngine::empty_tree_id(),
+    };
+    let mut changes = Vec::new();
+    for (path, content) in ops {
+        let c = match content {
+            Some(b) => put_file(e, b).await,
+            None => Change::Delete,
+        };
+        changes.push((RepoPath::new(*path).unwrap(), c));
+    }
+    changes.sort_by(|a, b| a.0.cmp(&b.0));
+    let root = e.apply(base, &changes).await.unwrap();
+    let sig = Signature::new(b"A".to_vec(), b"a@x".to_vec(), 1, 0).unwrap();
+    e.create_changeset(
+        NewChangeset {
+            parents: parents.to_vec(),
+            author: sig.clone(),
+            committer: sig,
+            message: b"m\n".to_vec(),
+            extra: Vec::new(),
+            root,
+            copies: Vec::new(),
+        },
+        PathPolicy::Native { windows_safe: true },
+    )
+    .await
+    .unwrap()
+}

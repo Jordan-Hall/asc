@@ -306,6 +306,34 @@ fn decode_token(t: &PageToken) -> Result<(Option<usize>, LogCursor)> {
 }
 
 impl<O: Objects, R: Refs> Engine<O, R> {
+    /// A first-parent log of one path from one start, answered from `pathlog.v1` memos instead
+    /// of reading every changeset (SPEC §5). `None` when the query has any other shape, or when
+    /// the chain reaches history this engine does not hold: the full walk answers then.
+    async fn path_log_fast(&self, q: &LogQuery) -> Option<crate::graph::LogPage> {
+        let simple = q.first_parent
+            && q.exclude.is_empty()
+            && q.paths.len() == 1
+            && !q.follow
+            && q.author.is_none()
+            && q.grep.is_none()
+            && q.since.is_none()
+            && q.until.is_none();
+        if !simple {
+            return None;
+        }
+        let start = match &q.cursor {
+            Some(c) => c.single()?,
+            None if q.skip == 0 && q.include.len() == 1 => q.include[0],
+            None => return None,
+        };
+        let limit = q.limit.unwrap_or(LOG_PAGE);
+        let (ids, next) = self.path_log_page(start, &q.paths[0], limit).await.ok()?;
+        Some(crate::graph::LogPage {
+            ids,
+            next: next.map(LogCursor::at),
+        })
+    }
+
     fn graph(
         &self,
     ) -> (
@@ -359,7 +387,10 @@ impl<O: Objects, R: Refs> HistoryApi for Engine<O, R> {
             None => q.limit,
         };
         q.limit = Some(remaining.map_or(LOG_PAGE, |r| r.min(LOG_PAGE)));
-        let out = g.log_page(q).await?;
+        let out = match self.path_log_fast(&q).await {
+            Some(out) => out,
+            None => g.log_page(q).await?,
+        };
         let nodes = g.nodes(&out.ids).await?;
         let mut entries = Vec::with_capacity(out.ids.len());
         for (&id, n) in out.ids.iter().zip(&nodes) {
@@ -969,6 +1000,57 @@ mod tests {
             include: vec![id],
             ..LogQuery::default()
         }
+    }
+
+    #[tokio::test]
+    async fn a_first_parent_path_log_from_pathlog_memos_matches_the_full_walk() {
+        let dir = tempfile::tempdir().unwrap();
+        let refs = sqlite(dir.path(), "r.db").await;
+        let e = engine(&refs, 1);
+        let policy = || crate::commit::PathPolicy::Native { windows_safe: true };
+        let mut tip = commit_files(&e, &[], &[("a/x", b"0")], policy(), Vec::new()).await;
+        for i in 1..150u32 {
+            let path = if i % 4 == 0 { "a/x" } else { "b" };
+            let body = i.to_string();
+            tip = commit_files(&e, &[tip], &[(path, body.as_bytes())], policy(), Vec::new()).await;
+        }
+        // A side branch touching the path, merged back: first-parent logs leave it out.
+        let side = commit_files(&e, &[tip], &[("a/x", b"side")], policy(), Vec::new()).await;
+        let merged = commit_files(&e, &[tip, side], &[("a/x", b"m")], policy(), Vec::new()).await;
+        for path in ["a/x", "a", "b", "missing"] {
+            let q = LogQuery {
+                first_parent: true,
+                paths: vec![RepoPath::new(path).unwrap()],
+                ..from(merged)
+            };
+            let want = full_log(&e, q.clone()).await;
+            for limit in [None, Some(7)] {
+                let mut got = Vec::new();
+                let mut page = None;
+                let mut paged = q.clone();
+                paged.limit = limit;
+                loop {
+                    let out = HistoryApi::log(&*e, &paged, page.as_ref()).await.unwrap();
+                    got.extend(out.entries.iter().map(|x| x.id));
+                    match out.next {
+                        Some(t) => page = Some(t),
+                        None => break,
+                    }
+                }
+                let cut: Vec<_> = want
+                    .iter()
+                    .copied()
+                    .take(limit.unwrap_or(usize::MAX))
+                    .collect();
+                assert_eq!(got, cut, "{path} {limit:?}");
+            }
+        }
+        // The answer came from memos: the tip now has one for the path.
+        let mk = crate::derive::keyed::memo_key::<crate::derive::pathlog::PathLog>(
+            merged,
+            &RepoPath::new("a/x").unwrap(),
+        );
+        assert!(e.objects.get(&mk).await.unwrap().is_some());
     }
 
     /// A server with a 40-changeset line, a side branch merged back, and a client that
