@@ -614,7 +614,7 @@ impl Prefetcher for ExePrefetcher {
     async fn prefetch(&self, ws: &Workspace) -> Result<String, String> {
         let dir = PathBuf::from(&ws.ws.mount);
         let mut cmd = tokio::process::Command::new(&self.asc_exe);
-        cmd.args(["prefetch", "--auto", "--quiet"])
+        cmd.args([crate::dispatch::ASC_ENTRY, "prefetch", "--auto", "--quiet"])
             .current_dir(&dir)
             // The child reads through the object stack, not the mount, and must not call back
             // into this daemon or take its repository from the daemon's environment.
@@ -659,7 +659,7 @@ impl EphemeralExpiry {
             .await
             .map_err(|e| e.to_string())??;
         let mut cmd = tokio::process::Command::new(&self.asc_exe);
-        cmd.args(["worktree", "prune"])
+        cmd.args([crate::dispatch::ASC_ENTRY, "worktree", "prune"])
             .current_dir(&dir)
             // The child must not call back into this daemon, and must not take its repository
             // from the daemon's environment.

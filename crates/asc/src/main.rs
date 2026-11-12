@@ -34,8 +34,10 @@ use dispatch::Program;
 fn main() -> ExitCode {
     child::keep_std_handles_private();
     let args: Vec<OsString> = std::env::args_os().collect();
-    // The daemon started from a binary of another name (the `git` shim) runs as `asc daemon`.
-    let (args, forced_asc) = match daemon::lifecycle::daemon_entry(&args) {
+    // The daemon started from a binary of another name (the `git` shim) runs as `asc daemon`,
+    // and asc's own background children run as `asc`.
+    let entry = daemon::lifecycle::daemon_entry(&args).or_else(|| dispatch::asc_entry(&args));
+    let (args, forced_asc) = match entry {
         Some(a) => (a, true),
         None => (args, false),
     };

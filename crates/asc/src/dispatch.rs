@@ -11,6 +11,21 @@ use crate::cli::common::{CliError, Ctx, Result};
 use crate::env::{EnvError, GitEnv};
 use crate::msg::Msg;
 
+/// The first argument with which asc starts itself as `asc`, whatever the binary's name: a
+/// background child of a command that ran as the `git` shim would otherwise be read as git
+/// (`git prefetch` falls through to real git).
+pub const ASC_ENTRY: &str = "--asc-entry";
+
+/// `args` (argv0 first) without [`ASC_ENTRY`] when it is the first argument, else `None`.
+pub fn asc_entry(args: &[OsString]) -> Option<Vec<OsString>> {
+    if args.get(1).is_none_or(|a| a != ASC_ENTRY) {
+        return None;
+    }
+    let mut out = args.to_vec();
+    out.remove(1);
+    Some(out)
+}
+
 /// How the binary was invoked (argv[0], SPEC §11.4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Program {
@@ -946,6 +961,17 @@ mod tests {
             let file = format!("{prefix}{name}");
             self.externals.contains(&file).then(|| PathBuf::from(file))
         }
+    }
+
+    #[test]
+    fn the_asc_entry_argument_is_dropped_only_in_first_place() {
+        let os = |a: &[&str]| a.iter().map(OsString::from).collect::<Vec<_>>();
+        assert_eq!(
+            asc_entry(&os(&["git", ASC_ENTRY, "prefetch", "--auto"])),
+            Some(os(&["git", "prefetch", "--auto"]))
+        );
+        assert_eq!(asc_entry(&os(&["git", "prefetch", ASC_ENTRY])), None);
+        assert_eq!(asc_entry(&os(&["git"])), None);
     }
 
     fn fake(aliases: &[(&str, &str)], externals: &[&str]) -> Fake {

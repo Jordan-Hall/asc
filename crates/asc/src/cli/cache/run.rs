@@ -136,7 +136,7 @@ pub(crate) fn spawn_push(store: &Store, cwd: &Path) {
         return;
     };
     let mut cmd = Command::new(exe);
-    cmd.args(["cache", "push"])
+    cmd.args([crate::dispatch::ASC_ENTRY, "cache", "push"])
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::null())

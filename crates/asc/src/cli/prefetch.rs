@@ -49,6 +49,8 @@ use serde_json::json;
 use super::common::{CliError, Ctx, Result, WsCtx};
 use super::restore::Spec;
 use crate::daemon::lifecycle::{self, Config, Probe};
+use crate::dispatch::Program;
+use crate::env::GitEnv;
 use crate::native::NativeSpec;
 
 const USAGE: &str = "usage: asc prefetch <pathspec>... [--history <n>]
@@ -107,6 +109,7 @@ pub const NATIVE: &[NativeSpec] = &[NativeSpec {
         "--forget",
         "-q",
         "--quiet",
+        "--in",
     ],
     placeholders: &[],
 }];
@@ -132,6 +135,9 @@ struct Opts {
     replace: bool,
     json: bool,
     quiet: bool,
+    /// `--in <dir>`: the workspace to warm, for a background child started outside it (a
+    /// process whose current directory is inside a work tree keeps Windows from deleting it).
+    within: Option<std::path::PathBuf>,
     action: Action,
 }
 
@@ -155,6 +161,7 @@ fn parse(rest: &[OsString]) -> Result<Opts> {
         replace: false,
         json: false,
         quiet: false,
+        within: None,
         action: Action::Warm,
     };
     let mut it = rest.iter();
@@ -172,6 +179,11 @@ fn parse(rest: &[OsString]) -> Result<Opts> {
         let text = a.to_string_lossy();
         if literal || !text.starts_with('-') || text == "-" {
             o.paths.push(a.clone());
+            continue;
+        }
+        if text == "--in" {
+            let dir = it.next().ok_or_else(|| usage("--in needs a directory"))?;
+            o.within = Some(dir.into());
             continue;
         }
         let (name, inline) = match text.split_once('=') {
@@ -240,6 +252,7 @@ fn parse(rest: &[OsString]) -> Result<Opts> {
         Action::Warm if !o.warms() => return Err(CliError::Usage(USAGE.to_owned())),
         Action::Warm if o.replace || o.json => return Err(usage(only_with)),
         Action::Warm => {}
+        _ if o.within.is_some() => return Err(usage("--in goes with a warm")),
         _ if o.warms() => return Err(usage("a learn or a listing warms nothing")),
         Action::Record { cmd, .. } if cmd.is_empty() => {
             return Err(usage("--record needs a command after `--'"));
@@ -758,6 +771,11 @@ async fn forget(ctx: &Ctx, o: &Opts, name: &str) -> Result<ExitCode> {
 
 pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
     let o = parse(&args.rest)?;
+    if let Some(dir) = &o.within {
+        let dir = ctx.cwd.join(dir);
+        let inner = Ctx::open(Program::Asc, GitEnv::from_process(), dir).await?;
+        return warm(&inner, &o).await;
+    }
     match &o.action {
         Action::Warm => warm(ctx, &o).await,
         Action::Learn { name } => learn(ctx, &o, name).await,
@@ -770,9 +788,11 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
 
 // ------------------------------------------------------------------- background warms
 
-/// Starts `asc <args>` in `dir`, detached, with no input or output. Best effort; nothing starts
-/// without a daemon (`ASC_NO_DAEMON`, SPEC §9.1) or under `ASC_NO_BACKGROUND`.
-fn spawn_detached(dir: &Path, args: &[&str]) {
+/// Starts `asc prefetch <args> --in <top>` detached, with no input or output, from asc's home
+/// directory rather than the work tree, so the work tree can still be deleted while it runs.
+/// Best effort; nothing starts without a daemon (`ASC_NO_DAEMON`, SPEC §9.1) or under
+/// `ASC_NO_BACKGROUND`.
+fn spawn_detached(ws: &WsCtx, args: &[&str]) {
     let get = |k: &str| std::env::var_os(k);
     if lifecycle::disabled(&get) || background_off(&get) {
         return;
@@ -781,8 +801,11 @@ fn spawn_detached(dir: &Path, args: &[&str]) {
         return;
     };
     let mut cmd = Command::new(exe);
-    cmd.args(args)
-        .current_dir(dir)
+    cmd.args([crate::dispatch::ASC_ENTRY, "prefetch"])
+        .args(args)
+        .arg("--in")
+        .arg(ws.projection.toplevel())
+        .current_dir(ws.home.root())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -815,10 +838,7 @@ pub(crate) async fn after_switch(ctx: &Ctx, ws: &WsCtx) {
         return;
     }
     if learned_names(ctx, ws).await.is_ok_and(|n| !n.is_empty()) {
-        spawn_detached(
-            ws.projection.toplevel(),
-            &["prefetch", "--learned", "--quiet"],
-        );
+        spawn_detached(ws, &["--learned", "--quiet"]);
     }
 }
 
@@ -834,7 +854,7 @@ pub(crate) async fn after_clone(ctx: &Ctx, ws: &WsCtx) {
     {
         return;
     }
-    spawn_detached(ws.projection.toplevel(), &["prefetch", "--auto", "--quiet"]);
+    spawn_detached(ws, &["--auto", "--quiet"]);
 }
 
 #[cfg(test)]
