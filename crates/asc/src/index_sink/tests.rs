@@ -405,3 +405,15 @@ async fn a_head_move_records_the_stat_of_the_files_it_verified() {
         .unwrap();
     assert_eq!(a.mtime, StatTime::default(), "same size, other content");
 }
+
+#[test]
+fn following_head_is_quiet_unless_the_daemon_failed() {
+    assert_eq!(follow_warning(Ok(wire::RetargetResponse::default())), None);
+    assert_eq!(
+        follow_warning(Err(tonic::Status::failed_precondition("not mounted"))),
+        None,
+        "the next mount catches up"
+    );
+    let w = follow_warning(Err(tonic::Status::internal("disk full"))).unwrap();
+    assert!(w.contains("disk full") && w.contains("next mounts"), "{w}");
+}
