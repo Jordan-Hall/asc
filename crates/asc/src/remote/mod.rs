@@ -240,7 +240,8 @@ pub async fn open(ctx: &Ctx, ws: &WsCtx, arg: &str, intent: Intent) -> Result<Op
         }
         _ => {}
     }
-    open_url(&ws.db, name, stored, is_named, mode, intent).await
+    let cache = crate::cli::common::pack_cache_spec(&ws.home, &ctx.config)?;
+    open_url_cached(&ws.db, name, stored, is_named, mode, intent, Some(&cache)).await
 }
 
 /// Opens the remote at `stored` (a URL as the user typed it) over `db`.
@@ -251,6 +252,19 @@ pub async fn open_url(
     configured: bool,
     mode: RefsMode,
     intent: Intent,
+) -> Result<Opened> {
+    open_url_cached(db, name, stored, configured, mode, intent, None).await
+}
+
+/// [`open_url`], keeping whole packs of the bucket in `cache` when given.
+pub async fn open_url_cached(
+    db: &StateDb,
+    name: String,
+    stored: String,
+    configured: bool,
+    mode: RefsMode,
+    intent: Intent,
+    cache: Option<&crate::ext::PackCacheSpec>,
 ) -> Result<Opened> {
     let spec = url::parse(&stored, mode).map_err(|e| CliError::Fatal(format!("asc: {e}")))?;
     let RemoteSpec::Bucket {
@@ -268,8 +282,15 @@ pub async fn open_url(
             anon(&stored)
         )));
     }
-    let objects =
-        Arc::new(BucketObjects::from_url(bucket_url).map_err(|e| bucket_err(bucket_url, e))?);
+    let mut objects = BucketObjects::from_url(bucket_url).map_err(|e| bucket_err(bucket_url, e))?;
+    if let Some(c) = cache {
+        objects = objects.with_pack_cache(Arc::new(asc_store::pack::PackCache::new(
+            &c.root,
+            bucket_url,
+            c.fetch_max,
+        )));
+    }
+    let objects = Arc::new(objects);
     let remote: Box<dyn Remote> = match refs {
         RefsMode::Local => {
             let machine = db.machine_id().await?;
