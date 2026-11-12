@@ -253,6 +253,7 @@ pub const ASC_ONLY_VERBS: &[&str] = &[
     "cache",
     "projects",
     "graph",
+    "files",
     "landed",
     "live",
     "api",

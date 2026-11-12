@@ -64,6 +64,7 @@ pub mod diff_tree;
 pub mod doctor;
 pub mod export;
 pub mod fetch;
+pub mod files;
 pub mod format;
 pub mod format_patch;
 pub mod fsck;
@@ -284,6 +285,7 @@ pub static COMMANDS: &[Command] = &[
     entry!("cache", cache),
     entry!("projects", projects),
     entry!("graph", graph),
+    entry!("files", files),
     entry!("landed", landed),
     entry!("live", live),
     entry!("api", api),

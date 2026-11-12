@@ -51,6 +51,10 @@ const ASC_ONLY: &[(&str, &str)] = &[
     ("affected", "list the projects and targets a change touches"),
     ("projects", "list the projects of the workspace"),
     ("graph", "show the project graph"),
+    (
+        "files",
+        "find files in a revision by a few letters of their path",
+    ),
     ("landed", "show whether a change has landed"),
     ("watch", "watch the workspace for changes"),
     ("hide", "hide a draft change"),
