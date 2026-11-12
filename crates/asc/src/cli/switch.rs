@@ -21,6 +21,8 @@ use asc_core::id::{ChangesetId, FileId, GitOid, RefTarget, TreeId};
 use asc_core::object::{Change, Entry, Kind};
 use asc_core::path::{RefName, RepoPath};
 use asc_engine::graph::{EngineSource, Graph, LogQuery};
+use asc_rpc::ipc::{WorkspaceClient, connect};
+use asc_rpc::server::wire;
 use asc_git::index::{FileStat, StatSource};
 use asc_git::projection::Head;
 use asc_state::state::git_map;
@@ -35,6 +37,7 @@ use super::common::{CliEngine, CliError, Ctx, Result, StagingAfterMove, WsCtx};
 use super::refs_plumbing::args::{Cursor, Word};
 use super::restore::{WcParts, actor, index_tree, root_of, sync_worktree, tool};
 use super::revparse::commit_of;
+use crate::daemon::lifecycle::{self, Config, Probe};
 use crate::ext;
 use crate::hooks_runner::{Hook, HookEnv, Outcome, Runner, null_oid};
 use crate::native::NativeSpec;
@@ -709,7 +712,23 @@ async fn safe_move(
     if !stale.is_empty() {
         return Err(would_overwrite(&stale, &[]));
     }
-    write_safe(ctx, ws, &work).await?;
+    // The daemon takes the move only when it covers every changed path: a path staged as the
+    // target has it keeps its working content, which the daemon's SAFE move cannot leave alone.
+    let daemon = if work.len() == diff.len() {
+        daemon_switch(ws, head_root, target_root, wire::SwitchMode::Safe).await?
+    } else {
+        None
+    };
+    match daemon {
+        Some(conflicts) if !conflicts.is_empty() => {
+            let (tracked, untracked): (Vec<_>, Vec<_>) = conflicts
+                .into_iter()
+                .partition(|p| back.get(p).is_some_and(|c| !matches!(c, Change::Delete)));
+            return Err(would_overwrite(&tracked, &untracked));
+        }
+        Some(_) => {}
+        None => write_safe(ctx, ws, &work).await?,
+    }
     Ok(rows
         .into_iter()
         .filter(|r| !touched.contains(&r.path))
@@ -777,6 +796,74 @@ async fn write_safe(
         }
         Err(e) => Err(fatal(e)),
     }
+}
+
+/// Moves a virtual workspace's files from the tree `from` to `to` through the daemon that serves
+/// them (SPEC §10.2 item 8): changed placeholders are rewritten from metadata, nothing is
+/// downloaded and nothing is copied into the overlay. `None` when the daemon cannot take the
+/// move (the workspace is plain, the daemon is disabled or not running, or it does not serve the
+/// workspace from `from`); the caller then writes the files itself. `Some` holds the paths in
+/// conflict, empty when the files moved.
+async fn daemon_switch(
+    ws: &WsCtx,
+    from: TreeId,
+    to: TreeId,
+    mode: wire::SwitchMode,
+) -> Result<Option<Vec<RepoPath>>> {
+    if ws.workspace.ws.mode != workspaces::Mode::Virtual {
+        return Ok(None);
+    }
+    let Ok(cfg) = Config::for_home(&ws.home) else {
+        return Ok(None);
+    };
+    if lifecycle::disabled(&|k: &str| std::env::var_os(k))
+        || !matches!(lifecycle::probe(&cfg).await, Probe::Up(_))
+    {
+        return Ok(None);
+    }
+    let mut client = WorkspaceClient::new(connect(&cfg.endpoint));
+    let answer = client
+        .switch(wire::SwitchRequest {
+            ws_id: ws.workspace.ws.id.to_string(),
+            from_root: bytes::Bytes::copy_from_slice(from.as_bytes()),
+            to_root: bytes::Bytes::copy_from_slice(to.as_bytes()),
+            mode: mode as i32,
+        })
+        .await;
+    switch_answer(answer.map(|r| r.into_inner()))
+}
+
+/// What a `Switch` answer means for the caller. A workspace the daemon does not serve, or serves
+/// from another tree, answers `FailedPrecondition`: the caller writes the files itself. Any other
+/// failure is reported; the daemon has put the old tree back.
+fn switch_answer(
+    answer: std::result::Result<wire::SwitchResponse, tonic::Status>,
+) -> Result<Option<Vec<RepoPath>>> {
+    match answer {
+        Ok(r) => r
+            .conflicts
+            .iter()
+            .map(|p| RepoPath::new(p.to_vec()).map_err(fatal))
+            .collect::<Result<Vec<_>>>()
+            .map(Some),
+        Err(s) if s.code() == tonic::Code::FailedPrecondition => Ok(None),
+        Err(s) => Err(CliError::Fatal(format!(
+            "the daemon could not move the files: {}",
+            s.message()
+        ))),
+    }
+}
+
+/// The paths whose index entry differs from HEAD (staged or conflicted): what a forced move the
+/// daemon made from HEAD's tree still has to rewrite.
+fn staged_paths(rows: &[StageRow]) -> Result<Vec<RepoPath>> {
+    let mut out: Vec<RepoPath> = rows
+        .iter()
+        .map(|r| RepoPath::new(r.path.clone()).map_err(fatal))
+        .collect::<Result<_>>()?;
+    out.sort();
+    out.dedup();
+    Ok(out)
 }
 
 /// Every path a forced move to `target` rewrites: where the index and the target differ, every
@@ -1267,7 +1354,10 @@ pub(crate) async fn perform(ctx: &Ctx, m: Move) -> Result<ExitCode> {
         StagingAfterMove::Set(rows_over_empty(ws, index_root, &rows).await?)
     } else if m.opts.force {
         ext::op_sink().snapshot_wc();
-        let paths = force_paths(ctx, index_root, target_root).await?;
+        let paths = match daemon_switch(ws, head_root, target_root, wire::SwitchMode::Force).await? {
+            Some(_) => staged_paths(&rows)?,
+            None => force_paths(ctx, index_root, target_root).await?,
+        };
         sync_worktree(ctx, target_root, &paths, true).await?;
         StagingAfterMove::Set(Vec::new())
     } else if old_commit == target {

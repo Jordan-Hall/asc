@@ -247,7 +247,7 @@ fn follow_warning(asked: Result<wire::RetargetResponse, tonic::Status>) -> Optio
         Ok(_) => None,
         Err(s) if s.code() == tonic::Code::FailedPrecondition => None,
         Err(s) => Some(format!(
-            "warning: the virtual file system did not follow HEAD ({}); it catches up when the              daemon next mounts the workspace",
+            "warning: the virtual file system did not follow HEAD ({}); it catches up when the daemon next mounts the workspace",
             s.message()
         )),
     }
