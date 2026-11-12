@@ -127,17 +127,21 @@ fn virtual_clone_names_what_this_machine_lacks() {
     let sb = Sandbox::new();
     let url = seed(&sb);
     let parent = sb.dir("work");
-    let out = asc(
-        &sb,
-        &parent,
-        &["clone", "-q", "--mode", "virtual", &url, "v"],
-    );
+    // Elsewhere FUSE or NFS may be present, so the daemon is turned off: that refusal is the
+    // same on every machine.
+    let mut cmd = sb.asc(&parent);
+    cmd.envs(IDENT)
+        .args(["clone", "-q", "--mode", "virtual", &url, "v"]);
+    if !cfg!(windows) {
+        cmd.env("ASC_NO_DAEMON", "1");
+    }
+    let out = cmd.output().expect("spawn asc");
     assert!(!out.status.success());
     let err = text(&out.stderr);
     let want = if cfg!(windows) {
         "Client-ProjFS"
     } else {
-        "supported on Windows only"
+        "ASC_NO_DAEMON turns off"
     };
     assert!(err.contains(want), "{err}");
     assert!(err.contains("use --mode plain"), "{err}");
@@ -689,5 +693,79 @@ mod cloudfiles {
             " M a.txt\n D src/b.txt\n"
         );
         assert_eq!(std::fs::read_to_string(ws.join("c.txt")).ok(), None);
+    }
+
+    #[test]
+    #[ignore = "needs Windows with the Cloud Files API and starts a daemon"]
+    fn a_moved_worktree_keeps_its_edits_and_is_served_at_the_new_path() {
+        let sb = sandbox();
+        let url = seed(&sb);
+        let ws = virtual_clone(&sb, &url);
+        let wt = sb.dir("wts").join("w1");
+        ok(
+            &sb,
+            &ws,
+            &["worktree", "add", "-q", "-b", "w1", wt.to_str().unwrap()],
+        );
+        assert!(is_sync_root(&wt), "the worktree is not a sync root");
+        assert_eq!(
+            std::fs::read_to_string(wt.join("a.txt")).unwrap(),
+            "a
+"
+        );
+        std::fs::write(
+            wt.join("a.txt"),
+            "moved
+",
+        )
+        .unwrap();
+        std::fs::write(
+            wt.join("new.txt"),
+            "n
+",
+        )
+        .unwrap();
+        let moved = sb.dir("wts").join("w2");
+        ok(
+            &sb,
+            &ws,
+            &[
+                "worktree",
+                "move",
+                wt.to_str().unwrap(),
+                moved.to_str().unwrap(),
+            ],
+        );
+        assert!(!wt.exists(), "the old path is still there");
+        assert!(
+            is_sync_root(&moved),
+            "the moved worktree is not a sync root"
+        );
+        assert_eq!(recorded_mode(&sb, &ws, &moved), "virtual");
+        assert_eq!(
+            std::fs::read_to_string(moved.join("a.txt")).unwrap(),
+            "moved
+"
+        );
+        // A file never read hydrates at the new path.
+        assert_eq!(
+            std::fs::read_to_string(moved.join("src").join("b.txt")).unwrap(),
+            "b
+"
+        );
+        assert_eq!(
+            ok(&sb, &moved, &["status", "--porcelain"]),
+            " M a.txt
+?? new.txt
+"
+        );
+        let list = ok(&sb, &ws, &["worktree", "list", "--porcelain"]);
+        assert!(list.contains("w2"), "{list}");
+        ok(
+            &sb,
+            &ws,
+            &["worktree", "remove", "--force", moved.to_str().unwrap()],
+        );
+        assert!(!moved.exists());
     }
 }

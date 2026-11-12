@@ -215,7 +215,10 @@ fn worktree_add_list_remove_print_their_details() {
     let head = r.head();
     let wt = r.root.parent().unwrap().join("wt1");
     let wts = wt.to_string_lossy().into_owned();
-    let v = r.json(&["worktree", "add", "--json", "-b", "wtb", &wts]);
+    // Plain whatever this machine supports, so the details are the same everywhere.
+    let v = r.json(&[
+        "worktree", "add", "--json", "--mode", "plain", "-b", "wtb", &wts,
+    ]);
     let d = &v["worktree_add"];
     assert_eq!(d["rev"], head);
     assert_eq!(d["branch"], "wtb");

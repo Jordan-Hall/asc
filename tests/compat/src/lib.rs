@@ -3,7 +3,9 @@
 //! A case is a shell script (`scenarios/*.t`) that runs `git` through `PATH`. The runner runs it
 //! twice on identical fixtures with a fixed environment: once with real git, once with the asc
 //! shim installed as `git` first on `PATH` in an asc workspace (the asc side's home config sets
-//! `asc.shim.init = asc`, so the scenario's `git init` makes the workspace). It then compares
+//! `asc.shim.init = asc`, so the scenario's `git init` makes the workspace, and
+//! `asc.worktree.mode = plain`, so `git worktree add` makes a plain work tree as git does: a
+//! virtual one is served by the daemon and cannot be removed with `rm -rf`). It then compares
 //! stdout, stderr and the exit code of the script, followed by the post-state: `for-each-ref`,
 //! `rev-parse HEAD`, `status --porcelain=v2 -z`, `ls-files -s`, the gitdir state files and the
 //! work tree bytes.

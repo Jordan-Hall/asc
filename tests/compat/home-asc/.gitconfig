@@ -2,3 +2,5 @@
 	defaultBranch = master
 [asc "shim"]
 	init = asc
+[asc "worktree"]
+	mode = plain

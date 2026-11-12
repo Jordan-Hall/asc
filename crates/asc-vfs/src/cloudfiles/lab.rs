@@ -555,6 +555,52 @@ mod tests {
     }
 
     #[test]
+    fn a_stopped_root_moves_with_its_placeholders_edits_and_deletions() {
+        use super::super::ffi;
+        let Some(lab) = Lab::new(V1) else { return };
+        // The root is listed; `sub` and `src` never are. `b.txt` is dehydrated again.
+        lab.hydrate(&V1[..4]);
+        lab.provider.dehydrate(&[p("b.txt")]).unwrap();
+        lab.write("a.txt", b"moved edit");
+        lab.provider.unmount().unwrap();
+        std::fs::remove_file(lab.abs("d.txt")).unwrap();
+        std::fs::write(lab.abs("mine.txt"), b"mine").unwrap();
+        let b_id = ffi::probe(&lab.abs("b.txt")).unwrap().identity;
+        let to = lab.root().with_file_name("moved");
+        super::super::relocate(&lab.root(), &to, &WORKSPACE).unwrap();
+        assert!(!lab.root().exists());
+        assert!(ffi::is_our_sync_root(&to));
+        assert_eq!(
+            ffi::sync_root_identity(&to).as_deref(),
+            Some(&WORKSPACE[..])
+        );
+        let probe = |rel: &str| ffi::probe(&to.join(rel)).unwrap();
+        assert!(!probe("").is_unpopulated());
+        let b = probe("b.txt");
+        assert!(b.is_placeholder() && b.in_sync && !super::super::provider::is_hydrated(&b));
+        assert_eq!(b.identity, b_id);
+        let c = probe("c.txt");
+        assert!(c.is_placeholder() && c.in_sync && super::super::provider::is_hydrated(&c));
+        assert!(!probe("a.txt").in_sync);
+        assert!(probe("sub").is_unpopulated());
+        assert!(!probe("mine.txt").is_placeholder());
+        assert!(!to.join("d.txt").exists());
+        assert_eq!(std::fs::read(to.join("a.txt")).unwrap(), b"moved edit");
+        // A provider over the new path sees the edit, the new file and the deletion, nothing else.
+        let moved = CloudFilesProvider::new(lab.config(WORKSPACE, lab.core.clone())).unwrap();
+        moved.mount(&to).unwrap();
+        let r = moved.reconcile().unwrap();
+        assert_eq!((r.modified, r.created, r.deleted), (1, 1, 1), "{r:?}");
+        moved.unmount().unwrap();
+        // Another workspace's root is refused and left where it is.
+        let mut other = WORKSPACE;
+        other[0] ^= 1;
+        assert!(super::super::relocate(&to, &lab.root(), &other).is_err());
+        assert!(ffi::is_our_sync_root(&to));
+        ffi::unregister(&to).unwrap();
+    }
+
+    #[test]
     fn dehydration_drops_clean_data_only() {
         let Some(lab) = Lab::new(V1) else { return };
         lab.hydrate(V1);
