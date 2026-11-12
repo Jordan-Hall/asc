@@ -274,8 +274,11 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     };
 
     if kind == Kind::Hard {
-        ext::op_sink().snapshot_wc();
         let (index, _) = index_tree(ws, head_root).await?;
+        // The snapshot also keeps untracked files the target tree writes over.
+        let added = ws.engine.leafdiff(index, target_root, None).await?;
+        super::stash::save::snapshot_before_overwrite(ctx, ws, index, added.iter().map(|(p, _)| p))
+            .await?;
         let paths = super::switch::forced_move(ctx, head_root, index, target_root).await?;
         sync_worktree(ctx, target_root, &paths, true).await?;
     }

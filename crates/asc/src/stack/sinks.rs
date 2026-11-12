@@ -19,6 +19,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use asc_core::change::RewriteOp;
 use asc_core::id::ChangesetId;
+use asc_core::path::RepoPath;
 use asc_engine::change::{self, Recorder, RewriteSink as _};
 use asc_state::oplog::{self, Limits, NewOp};
 use tokio::runtime::{Handle, RuntimeFlavor};
@@ -40,6 +41,8 @@ struct Active {
     id: OpId,
     argv: Vec<String>,
     head_before: Option<ChangesetId>,
+    /// The branch HEAD named when the op began; `None` when detached.
+    head_ref_before: Option<String>,
     /// The newest `ref_log` row when the op began; later rows belong to this op.
     start_seq: i64,
     snapshot: Option<ChangesetId>,
@@ -143,8 +146,8 @@ fn clip(argv: &[OsString]) -> Vec<String> {
         .collect()
 }
 
-/// `git clean` without `-n`: removes untracked files that no snapshot can capture, but `asc
-/// undo` must still find the op to print the gap hint (SPEC §20.3).
+/// `git clean` without `-n`: recorded even when nothing was snapshotted, so `asc undo` finds
+/// the op and prints the hint when its untracked files passed the bound (SPEC §20.3).
 fn is_destructive_clean(argv: &[String]) -> bool {
     argv.first().map(String::as_str) == Some("clean")
         && !argv.iter().skip(1).any(|a| {
@@ -154,6 +157,14 @@ fn is_destructive_clean(argv: &[String]) -> bool {
 
 async fn head_of(ctx: &Ctx) -> Option<ChangesetId> {
     ctx.ws().ok()?.head_commit().await.ok().flatten()
+}
+
+/// The branch HEAD names, or `None` when it is detached or unreadable.
+pub(crate) fn head_ref_of(ws: &crate::cli::common::WsCtx) -> Option<String> {
+    match ws.projection.read_head().ok()? {
+        asc_git::projection::Head::Branch(b) => Some(b),
+        asc_git::projection::Head::Detached(_) => None,
+    }
 }
 
 async fn ref_log_seq(ctx: &Ctx) -> i64 {
@@ -203,9 +214,10 @@ async fn adopt_ref_log(ctx: &Ctx, active: &Active) -> bool {
     true
 }
 
-/// The snapshot of the dirty tracked files and the staging rows, or `None` when there is
-/// nothing to save, no commit yet, or unresolved conflicts (documented gap).
-async fn take_snapshot(ctx: &Ctx) -> Result<Option<ChangesetId>> {
+/// The snapshot of the dirty tracked files, the staging rows and `untracked` (as a stash's
+/// third parent), or `None` when there is nothing to save, no commit yet, or unresolved
+/// conflicts (documented gap).
+async fn take_snapshot(ctx: &Ctx, untracked: &[RepoPath]) -> Result<Option<ChangesetId>> {
     let ws = ctx.ws()?;
     let Some(head) = ws.head_commit().await? else {
         return Ok(None);
@@ -215,7 +227,11 @@ async fn take_snapshot(ctx: &Ctx) -> Result<Option<ChangesetId>> {
     if !unmerged.is_empty() {
         return Ok(None);
     }
-    Ok(save::make(ctx, ws, &Opts::default(), false)
+    let opts = Opts {
+        extra: untracked.to_vec(),
+        ..Opts::default()
+    };
+    Ok(save::make(ctx, ws, &opts, false)
         .await?
         .map(|made| made.commit))
 }
@@ -223,7 +239,11 @@ async fn take_snapshot(ctx: &Ctx) -> Result<Option<ChangesetId>> {
 async fn write_row(ctx: &Ctx, active: Active) {
     let Ok(ws) = ctx.ws() else { return };
     let moved = adopt_ref_log(ctx, &active).await;
-    let recordable = moved || active.snapshot.is_some() || is_destructive_clean(&active.argv);
+    let head_ref_after = head_ref_of(ws);
+    // A switch between branches moves no ref but HEAD; it is an op `asc undo` reverses.
+    let switched = active.head_ref_before != head_ref_after;
+    let recordable =
+        moved || switched || active.snapshot.is_some() || is_destructive_clean(&active.argv);
     if !recordable {
         return;
     }
@@ -238,6 +258,8 @@ async fn write_row(ctx: &Ctx, active: Active) {
         head_after: head_of(ctx).await,
         wc_snapshot: active.snapshot,
         undoes: None,
+        head_ref_before: active.head_ref_before,
+        head_ref_after,
     };
     // Invisible: a full or locked state.db must not fail a command that already succeeded.
     let _ = oplog::record(&ws.db, ws.repo.key, &row, limits(ctx)).await;
@@ -270,10 +292,12 @@ impl OpSink for Sinks {
         }
         let (head_before, start_seq) =
             run_sync(|| async { (head_of(&ctx).await, ref_log_seq(&ctx).await) });
+        let head_ref_before = ctx.ws().ok().and_then(head_ref_of);
         state().op = Some(Active {
             id,
             argv: clip(argv),
             head_before,
+            head_ref_before,
             start_seq,
             snapshot: None,
         });
@@ -298,13 +322,13 @@ impl OpSink for Sinks {
         }
     }
 
-    fn snapshot_wc(&self) {
+    fn snapshot_wc_with(&self, untracked: &[RepoPath]) {
         let Some(ctx) = bound() else { return };
         // One snapshot per op: the first one holds the state before anything was destroyed.
         if !matches!(&state().op, Some(a) if a.snapshot.is_none()) {
             return;
         }
-        let snap = run_sync(|| take_snapshot(&ctx)).ok().flatten();
+        let snap = run_sync(|| take_snapshot(&ctx, untracked)).ok().flatten();
         if let Some(a) = state().op.as_mut() {
             a.snapshot = snap;
         }

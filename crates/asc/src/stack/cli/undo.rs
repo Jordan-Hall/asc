@@ -141,6 +141,9 @@ pub(crate) struct Plan {
     /// Where the detached HEAD must be now, and where it goes.
     pub head_cur: Option<ChangesetId>,
     pub head_to: Option<ChangesetId>,
+    /// A switch to put back: the branch HEAD must name now and the one it goes back to
+    /// (`None` is detached, at `head_to`).
+    pub head_switch: Option<(Option<String>, Option<String>)>,
     pub snapshot: Option<ChangesetId>,
     pub label: String,
     pub argv: String,
@@ -384,7 +387,7 @@ async fn inverse(
         }
     }
     let plan = plan_for(ws, target, true).await?;
-    let hints = hints_for(&target.argv);
+    let hints = hints_for(&target.argv, saved_untracked(ws, plan.snapshot).await);
     execute(ctx, ws, which, target, plan, force, dry, json, hints).await
 }
 
@@ -419,6 +422,8 @@ pub(crate) async fn plan_for(ws: &WsCtx, op: &Op, with_snapshot: bool) -> Result
         deltas,
         head_cur: if same { op.head_after } else { None },
         head_to: if same { op.head_before } else { None },
+        head_switch: (same && op.head_ref_before != op.head_ref_after)
+            .then(|| (op.head_ref_after.clone(), op.head_ref_before.clone())),
         snapshot: if same && with_snapshot {
             op.wc_snapshot
         } else {
@@ -430,8 +435,19 @@ pub(crate) async fn plan_for(ws: &WsCtx, op: &Op, with_snapshot: bool) -> Result
     })
 }
 
-/// `hint:` lines for what undo cannot reach.
-pub(crate) fn hints_for(argv: &str) -> Vec<String> {
+/// Whether `snapshot` holds an untracked part (a stash's third parent): the files a `clean`
+/// removed, kept within `asc.opLog.untrackedMaxBytes`.
+pub(crate) async fn saved_untracked(ws: &WsCtx, snapshot: Option<ChangesetId>) -> bool {
+    let Some(snap) = snapshot else { return false };
+    ws.engine
+        .get_changeset(snap)
+        .await
+        .is_ok_and(|cs| cs.parents.len() > 2)
+}
+
+/// `hint:` lines for what undo cannot reach; `untracked_saved` when the op's snapshot kept
+/// the untracked files it removed.
+pub(crate) fn hints_for(argv: &str, untracked_saved: bool) -> Vec<String> {
     let mut words = argv.split_whitespace();
     let first = words.next().unwrap_or("");
     let second = words.next().unwrap_or("");
@@ -443,8 +459,11 @@ pub(crate) fn hints_for(argv: &str) -> Vec<String> {
             "'{first}' had remote effects; undo does not change the remote."
         ));
     }
-    if first == "clean" {
-        out.push("untracked and ignored files removed by 'clean' are not restored.".to_owned());
+    if first == "clean" && !untracked_saved {
+        out.push(
+            "untracked and ignored files removed by 'clean' are not restored (more than asc.opLog.untrackedMaxBytes, or none were saved)."
+                .to_owned(),
+        );
     }
     out
 }
@@ -635,8 +654,78 @@ pub(crate) async fn run_plan(
             new_head = Some(to);
         }
     }
-    if updates.is_empty() && plan.snapshot.is_none() {
-        return nothing(ctx, json, verb);
+    // A switch between branches (or onto or off a detached HEAD) goes back the other way.
+    let head_name = match &head_ref {
+        Head::Branch(b) => Some(b.clone()),
+        Head::Detached(_) => None,
+    };
+    let mut point: Option<(Head, String)> = None;
+    if let Some((cur_name, to_name)) = &plan.head_switch
+        && head_name != *to_name
+    {
+        if head_name != *cur_name && !force {
+            return Err(stale_ref("HEAD"));
+        }
+        match to_name {
+            Some(b) => {
+                let full = format!("refs/heads/{b}");
+                let tip = match updates.iter().find(|u| u.name.as_bytes() == full.as_bytes()) {
+                    Some(u) => u.new,
+                    None => ws.refs.get(repo, &ref_name(&full)?).await?.map(|e| e.target),
+                };
+                let Some(RefTarget::Changeset(c)) = tip else {
+                    return Err(CliError::Fatal(unborn_msg(verb, b)));
+                };
+                new_head = Some(c);
+                // HEAD names the branch again: no detached HEAD move goes with it.
+                updates.retain(|u| u.name.as_bytes() != b"HEAD");
+                point = Some((Head::Branch(b.clone()), full));
+            }
+            None => {
+                if let Some(to) = plan.head_to {
+                    let oid = crate::cli::switch::ensure_mapped(ws, to).await?;
+                    updates.push(RefUpdate {
+                        name: ref_name("HEAD")?,
+                        expect: cur_head
+                            .map_or(Expect::Absent, |c| Expect::Value(RefTarget::Changeset(c))),
+                        new: Some(RefTarget::Changeset(to)),
+                        expires_at: None,
+                    });
+                    new_head = Some(to);
+                    point = Some((Head::Detached(oid), String::new()));
+                }
+            }
+        }
+    }
+    if updates.is_empty() && plan.snapshot.is_none() && point.is_none() {
+        // An op kept only for its hint (a `clean` past the bound): the hint says what is lost,
+        // and the undo row marks it done so the next undo reaches the op before it.
+        if !dry
+            && !hints.is_empty()
+            && let Some((Which::Undo, t)) = of
+            && ctx.config.bool("asc.opLog").unwrap_or(true)
+        {
+            let row = NewOp {
+                op_id: oplog::OpId(ext::OpId::new().0),
+                ws: ws.workspace.ws.id,
+                argv: vec![verb.to_owned()],
+                kind: verb.to_owned(),
+                head_before: cur_head,
+                head_after: cur_head,
+                wc_snapshot: None,
+                undoes: Some(t.seq),
+                head_ref_before: head_name.clone(),
+                head_ref_after: head_name,
+            };
+            oplog::record(&ws.db, repo, &row, limits(ctx)).await?;
+        }
+        let code = nothing(ctx, json, verb)?;
+        if !json {
+            for h in &hints {
+                eprintln!("hint: {h}");
+            }
+        }
+        return Ok(code);
     }
 
     let mut result = OpResult::new(Status::Ok);
@@ -685,19 +774,30 @@ pub(crate) async fn run_plan(
 
     // The ref swap goes first: if it fails, nothing else has changed.
     let op_id = ext::OpId::new().0;
-    if !updates.is_empty() {
+    if !updates.is_empty() || point.is_some() {
+        let before = crate::cli::switch::Saved::capture(ws).await?;
+        if let Some((head, row_head)) = &point {
+            crate::cli::switch::point_head(ws, head, row_head, before.base).await?;
+        }
         let txn = RefTxn {
             updates,
             actor: actor(),
             reason: String::new(),
             op_id,
         };
-        ctx.update_local_refs(
-            txn,
-            &format!("{verb}: {}", plan.label),
-            StagingAfterMove::Set(Vec::new()),
-        )
-        .await?;
+        if let Err(e) = ctx
+            .update_local_refs(
+                txn,
+                &format!("{verb}: {}", plan.label),
+                StagingAfterMove::Set(Vec::new()),
+            )
+            .await
+        {
+            if point.is_some() {
+                crate::cli::switch::restore_head(ws, &before).await;
+            }
+            return Err(e);
+        }
     }
     if let Err(e) = sync_worktree(ctx, target_root, &paths, true).await {
         // The refs moved but the files did not all follow: put the saved work back.
@@ -747,6 +847,8 @@ pub(crate) async fn run_plan(
             head_after: ws.head_commit().await?,
             wc_snapshot: saved,
             undoes,
+            head_ref_before: head_name,
+            head_ref_after: crate::stack::sinks::head_ref_of(ws),
         };
         // The dispatch bracket writes the same id; this row carries `undoes`.
         oplog::record(&ws.db, repo, &row, limits(ctx)).await?;
@@ -809,9 +911,10 @@ mod tests {
 
     #[test]
     fn hints_name_remote_effects_and_clean() {
-        assert_eq!(hints_for("push origin master").len(), 1);
-        assert_eq!(hints_for("stack merge x").len(), 1);
-        assert_eq!(hints_for("clean -fd").len(), 1);
-        assert!(hints_for("rebase master").is_empty());
+        assert_eq!(hints_for("push origin master", false).len(), 1);
+        assert_eq!(hints_for("stack merge x", false).len(), 1);
+        assert_eq!(hints_for("clean -fd", false).len(), 1);
+        assert!(hints_for("clean -fd", true).is_empty());
+        assert!(hints_for("rebase master", false).is_empty());
     }
 }

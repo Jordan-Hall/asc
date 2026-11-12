@@ -136,6 +136,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         } => {
             let o = resolve_op(&ops, &op)?;
             let plan = restore_plan(ws, &ops, o).await?;
+            let saved = super::undo::saved_untracked(ws, plan.snapshot).await;
             run_plan(
                 ctx,
                 ws,
@@ -144,7 +145,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
                 force,
                 dry_run,
                 json,
-                hints_for(&o.argv),
+                hints_for(&o.argv, saved),
             )
             .await
         }
@@ -221,10 +222,18 @@ async fn restore_plan(ws: &WsCtx, ops: &[Op], target: &Op) -> Result<Plan> {
             .find(|o| o.ws == me)
             .and_then(|o| o.head_before)
     });
+    let first_mine = later.iter().find(|o| o.ws == me);
+    let head_switch = match (mine_after, first_mine) {
+        (Some(last), Some(first)) if last.head_ref_after != first.head_ref_before => {
+            Some((last.head_ref_after.clone(), first.head_ref_before.clone()))
+        }
+        _ => None,
+    };
     Ok(Plan {
         deltas,
         head_cur,
         head_to,
+        head_switch,
         snapshot: None,
         label: format!("restore {}", op_name(target)),
         argv: target.argv.clone(),

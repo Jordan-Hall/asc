@@ -208,7 +208,12 @@ pub trait OpSink: Send + Sync {
         OpId::new()
     }
     fn end(&self, _op: OpId) {}
-    fn snapshot_wc(&self) {}
+    fn snapshot_wc(&self) {
+        self.snapshot_wc_with(&[]);
+    }
+    /// The snapshot also keeps `untracked`: untracked or ignored files the op is about to
+    /// delete or overwrite, already bounded by `stash::save::bounded_extra`.
+    fn snapshot_wc_with(&self, _untracked: &[RepoPath]) {}
 }
 
 /// The default remote as the selectors see it.

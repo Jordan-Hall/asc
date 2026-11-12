@@ -388,6 +388,59 @@ fn remove_tree(gate: &SafeRoot, rel: &[u8], keep_root: bool, depth: usize) -> io
     Ok(fs::symlink_metadata(&abs).is_err())
 }
 
+/// Every file `list` removes, directories expanded the way `remove_tree` walks them; `None`
+/// past the snapshot file bound or nesting depth.
+fn doomed_files(gate: &SafeRoot, list: &[Entry]) -> Option<Vec<RepoPath>> {
+    let limit = crate::cli::stash::save::MAX_SNAPSHOT_UNTRACKED_FILES;
+    let mut out = Vec::new();
+    for entry in list {
+        match entry {
+            Entry::File(p) => out.push(RepoPath::new(p.clone()).ok()?),
+            Entry::Dir(p) => files_under(gate, p, 0, &mut out, limit)?,
+        }
+        if out.len() > limit {
+            return None;
+        }
+    }
+    Some(out)
+}
+
+fn files_under(
+    gate: &SafeRoot,
+    rel: &[u8],
+    depth: usize,
+    out: &mut Vec<RepoPath>,
+    limit: usize,
+) -> Option<()> {
+    if depth > MAX_DEPTH || out.len() > limit {
+        return None;
+    }
+    let abs = gate.resolve(&RepoPath::new(rel.to_vec()).ok()?)?;
+    let meta = fs::symlink_metadata(&abs).ok()?;
+    if is_link(&meta) || !meta.is_dir() {
+        return Some(());
+    }
+    let listing = fs::read_dir(&abs).ok()?; // lint:allow-worktree-fs
+    for entry in listing {
+        let entry = entry.ok()?;
+        let name = name_bytes(&entry.file_name());
+        if name == b".git" {
+            continue;
+        }
+        let child = join(rel, &name);
+        let cm = entry.metadata().ok()?;
+        if is_link(&cm) || cm.is_file() {
+            out.push(RepoPath::new(child).ok()?);
+        } else if cm.is_dir() && fs::symlink_metadata(entry.path().join(".git")).is_err() {
+            files_under(gate, &child, depth + 1, out, limit)?;
+        }
+        if out.len() > limit {
+            return None;
+        }
+    }
+    Some(())
+}
+
 impl Walk<'_> {
     /// Whether removing directory `d` would also remove only parents that are safe to lose:
     /// `SafeRoot` removes the directories a removal leaves empty, innermost first.
@@ -514,6 +567,14 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
             "Refusing to remove current working directory"
         };
         let _ = writeln!(out, "{head}");
+    }
+    if !a.dry_run && !sum.list.is_empty() {
+        // The op-log snapshot keeps what is about to go, so `asc undo` can bring it back.
+        if let Some(found) = doomed_files(&gate, &sum.list)
+            && let Some(keep) = crate::cli::stash::save::bounded_extra(ctx, ws, found)
+        {
+            crate::ext::op_sink().snapshot_wc_with(&keep);
+        }
     }
     let (verb_dry, verb) = ("Would remove ", "Removing ");
     for entry in &sum.list {

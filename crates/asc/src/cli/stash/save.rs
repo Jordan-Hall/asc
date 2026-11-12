@@ -29,6 +29,13 @@ use crate::ext;
 /// Most untracked files one stash takes.
 const MAX_UNTRACKED: usize = 1_000_000;
 
+/// Default bound on the untracked and ignored bytes one op-log snapshot keeps
+/// (`asc.opLog.untrackedMaxBytes`, SPEC §20.3).
+pub const DEFAULT_SNAPSHOT_UNTRACKED_BYTES: u64 = 64 << 20;
+
+/// Most untracked and ignored files one op-log snapshot keeps.
+pub const MAX_SNAPSHOT_UNTRACKED_FILES: usize = 100_000;
+
 /// What a push or create was asked for.
 #[derive(Debug, Default)]
 pub struct Opts {
@@ -42,6 +49,77 @@ pub struct Opts {
     /// is the whole working state (`asc share`).
     pub fold_untracked: bool,
     pub paths: Vec<OsString>,
+    /// Untracked or ignored files to keep as the untracked part whatever status says: the
+    /// files an op is about to delete or overwrite (op-log snapshots, SPEC §20.3).
+    pub extra: Vec<RepoPath>,
+}
+
+/// The paths of `paths` that `index` does not track: what a forced move or a path checkout
+/// overwrites when the file is there, for `bounded_extra`.
+pub async fn untracked_among<'a>(
+    ws: &WsCtx,
+    index: TreeId,
+    paths: impl IntoIterator<Item = &'a RepoPath>,
+) -> Result<Vec<RepoPath>> {
+    let mut out = Vec::new();
+    for p in paths {
+        if ws.engine.lookup(index, p).await?.is_none() {
+            out.push(p.clone());
+        }
+    }
+    Ok(out)
+}
+
+/// The op-log snapshot before a forced move or a path checkout from `index` to `target`:
+/// the tracked state plus the untracked files the move overwrites, within the bound.
+pub async fn snapshot_before_overwrite(
+    ctx: &Ctx,
+    ws: &WsCtx,
+    index: TreeId,
+    paths: impl IntoIterator<Item = &RepoPath>,
+) -> Result<()> {
+    let candidates = untracked_among(ws, index, paths).await?;
+    let keep = bounded_extra(ctx, ws, candidates).unwrap_or_default();
+    ext::op_sink().snapshot_wc_with(&keep);
+    Ok(())
+}
+
+/// The files of `paths` an op-log snapshot keeps: the regular files and links that exist, or
+/// `None` when they pass `asc.opLog.untrackedMaxBytes` or the file bound. The op then keeps
+/// only its tracked snapshot and `asc undo` says the files are not restored.
+pub fn bounded_extra(
+    ctx: &Ctx,
+    ws: &WsCtx,
+    paths: impl IntoIterator<Item = RepoPath>,
+) -> Option<Vec<RepoPath>> {
+    // `0` turns the untracked part off; an unreadable value keeps the default.
+    let cap = match ctx.config.get("asc.opLog.untrackedMaxBytes") {
+        Some(v) if v.trim() == "0" => return None,
+        Some(v) => {
+            crate::daemon::scheduler::parse_size(&v).unwrap_or(DEFAULT_SNAPSHOT_UNTRACKED_BYTES)
+        }
+        None => DEFAULT_SNAPSHOT_UNTRACKED_BYTES,
+    };
+    let gate = asc_wc::SafeRoot::new(ws.projection.toplevel());
+    let mut total = 0u64;
+    let mut out = Vec::new();
+    for p in paths {
+        let Some(abs) = gate.resolve(&p) else {
+            continue;
+        };
+        let Ok(meta) = std::fs::symlink_metadata(&abs) else {
+            continue;
+        };
+        if !(meta.is_file() || meta.file_type().is_symlink()) {
+            continue;
+        }
+        total = total.saturating_add(meta.len());
+        out.push(p);
+        if total > cap || out.len() > MAX_SNAPSHOT_UNTRACKED_FILES {
+            return None;
+        }
+    }
+    Some(out)
 }
 
 /// A stash that was written, and what the clean-up needs.
@@ -165,6 +243,11 @@ pub async fn make(ctx: &Ctx, ws: &WsCtx, o: &Opts, notice: bool) -> Result<Optio
                 }
             }
         }
+        untracked.sort();
+        untracked.dedup();
+    }
+    if !o.extra.is_empty() {
+        untracked.extend(o.extra.iter().filter(|p| matches(p)).cloned());
         untracked.sort();
         untracked.dedup();
     }

@@ -24,7 +24,6 @@ use super::switch::{
     Cmd, Dest, Move, Opts, Rev, RevKind, abbrev_len, bad_branch_name, create_tracking, fatal,
     guess_remote, parse, perform, report_tracking, resolve_rev, valid_branch_name,
 };
-use crate::ext;
 use crate::hooks_runner::{Hook, HookEnv, Outcome, Runner};
 use crate::native::NativeSpec;
 
@@ -177,7 +176,7 @@ async fn checkout_paths(
     }
     let written = files.len();
     if !files.is_empty() {
-        ext::op_sink().snapshot_wc();
+        crate::cli::stash::save::snapshot_before_overwrite(ctx, ws, index, &files).await?;
         let files: Vec<RepoPath> = files.into_iter().collect();
         sync_worktree(ctx, wanted, &files, false).await?;
     }

@@ -1385,7 +1385,14 @@ pub(crate) async fn perform(ctx: &Ctx, m: Move) -> Result<ExitCode> {
     let staging = if m.keep_tree {
         StagingAfterMove::Set(rows_over_empty(ws, index_root, &rows).await?)
     } else if m.opts.force {
-        ext::op_sink().snapshot_wc();
+        let added = ws.engine.leafdiff(index_root, target_root, None).await?;
+        crate::cli::stash::save::snapshot_before_overwrite(
+            ctx,
+            ws,
+            index_root,
+            added.iter().map(|(p, _)| p),
+        )
+        .await?;
         let paths = forced_move(ctx, head_root, index_root, target_root).await?;
         sync_worktree(ctx, target_root, &paths, true).await?;
         StagingAfterMove::Set(Vec::new())

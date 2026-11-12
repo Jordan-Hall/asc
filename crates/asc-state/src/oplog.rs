@@ -67,6 +67,9 @@ pub struct NewOp {
     pub head_after: Option<ChangesetId>,
     pub wc_snapshot: Option<ChangesetId>,
     pub undoes: Option<Seq>,
+    /// The branch HEAD named before and after the op; `None` when detached.
+    pub head_ref_before: Option<String>,
+    pub head_ref_after: Option<String>,
 }
 
 /// A stored op.
@@ -82,17 +85,19 @@ pub struct Op {
     pub head_after: Option<ChangesetId>,
     pub wc_snapshot: Option<ChangesetId>,
     pub undoes: Option<Seq>,
+    /// The branch HEAD named before and after the op; `None` when detached.
+    pub head_ref_before: Option<String>,
+    pub head_ref_after: Option<String>,
 }
 
-const COLS: &str =
-    "seq, op_id, ws_id, at, argv, kind, head_before, head_after, wc_snapshot, undoes_seq";
+const COLS: &str = "seq, op_id, ws_id, at, argv, kind, head_before, head_after, wc_snapshot, undoes_seq,      head_ref_before, head_ref_after";
 
 /// Records `op` inside the caller's transaction, then prunes to `limits`. Returns its sequence.
 pub async fn record_tx(tx: &mut Tx, repo: RepoKey, op: &NewOp, limits: Limits) -> Result<Seq> {
     let at = now();
     let seq: i64 = sqlx::query_scalar(
         "INSERT INTO op_log (repo_id, op_id, ws_id, at, argv, kind, head_before, head_after, \
-         wc_snapshot, undoes_seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING seq",
+         wc_snapshot, undoes_seq, head_ref_before, head_ref_after)          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING seq",
     )
     .bind(repo.0)
     .bind(op.op_id.0.as_bytes().to_vec())
@@ -104,6 +109,8 @@ pub async fn record_tx(tx: &mut Tx, repo: RepoKey, op: &NewOp, limits: Limits) -
     .bind(op.head_after.map(|c| c.as_bytes().to_vec()))
     .bind(op.wc_snapshot.map(|c| c.as_bytes().to_vec()))
     .bind(op.undoes.map(|s| s.0))
+    .bind(op.head_ref_before.clone())
+    .bind(op.head_ref_after.clone())
     .fetch_one(&mut **tx)
     .await?;
     prune_tx(tx, repo, limits, at).await?;
@@ -223,6 +230,8 @@ fn decode(row: &AnyRow) -> Result<Op> {
         head_after: opt_cs(row, "head_after", "op_log.head_after")?,
         wc_snapshot: opt_cs(row, "wc_snapshot", "op_log.wc_snapshot")?,
         undoes: row.try_get::<Option<i64>, _>("undoes_seq")?.map(Seq),
+        head_ref_before: row.try_get("head_ref_before")?,
+        head_ref_after: row.try_get("head_ref_after")?,
     })
 }
 
