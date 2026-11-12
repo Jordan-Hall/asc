@@ -47,10 +47,10 @@ class ActionsTest {
         assertNull(StatusModel.snap(WsStacksResponse.getDefaultInstance()))
     }
 
-    @Test fun everyVerbStopsOptionParsing() {
-        for (v in StackVerb.values()) assertEquals("--end-of-options", ActionPlan.args(v).last())
-        assertEquals(listOf("-u", "--end-of-options"), ActionPlan.args(StackVerb.STASH_PUSH_UNTRACKED))
-        assertEquals(listOf("--end-of-options"), ActionPlan.args(StackVerb.STASH_PUSH))
+    @Test fun theBridgeAddsTheSeparatorSoNoVerbSendsOne() {
+        for (v in StackVerb.values()) assertFalse(v.name, "--end-of-options" in ActionPlan.args(v))
+        assertEquals(listOf("-u"), ActionPlan.args(StackVerb.STASH_PUSH_UNTRACKED))
+        assertEquals(emptyList<String>(), ActionPlan.args(StackVerb.STASH_PUSH))
     }
 
     @Test fun everyVerbIsAllowlistedWithItsFlags() {
@@ -67,15 +67,15 @@ class ActionsTest {
     }
 
     @Test fun absorbPreviewsBeforeApplying() {
-        assertEquals(listOf("-n", "--end-of-options"), ActionPlan.absorbPreview())
-        assertEquals(listOf("-f", "--end-of-options"), ActionPlan.absorbApply())
+        assertEquals(listOf("-n"), ActionPlan.absorbPreview())
+        assertEquals(listOf("-f"), ActionPlan.absorbApply())
         assertTrue(ActionPlan.nothingToAbsorb(listOf("", "  ")))
         assertFalse(ActionPlan.nothingToAbsorb(listOf("move a.txt into abc")))
     }
 
     @Test fun theAllowlistDecidesWhatAsksFirst() {
         val asks = StackVerb.values().filter { ActionPlan.needsConfirm(it) }
-        assertEquals(listOf(StackVerb.SUBMIT, StackVerb.PUSH, StackVerb.STASH_DROP), asks)
+        assertEquals(listOf(StackVerb.SUBMIT, StackVerb.PUSH, StackVerb.PUSH_TAGS, StackVerb.STASH_DROP), asks)
         for (v in asks) assertTrue(v.name, v.question.endsWith("?") || v.question.endsWith("."))
     }
 }
