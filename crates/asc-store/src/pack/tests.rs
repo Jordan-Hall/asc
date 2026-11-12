@@ -1032,7 +1032,7 @@ fn derived(n: u32) -> (ObjKey, Bytes) {
     let data = format!("blame of file {n}: lines 1-{n} by change {n}");
     (
         ObjKey::Derived {
-            name: if n % 2 == 0 { "blame" } else { "pathsearch" },
+            name: if n.is_multiple_of(2) { "blame" } else { "pathsearch" },
             version: 2,
             id,
         },
@@ -1043,7 +1043,7 @@ fn derived(n: u32) -> (ObjKey, Bytes) {
 /// How many entries of each pack file are derived values, and how many are not.
 async fn kinds_per_pack(e: &Env) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
-    for f in pack_files(&e).await {
+    for f in pack_files(e).await {
         if !f.ends_with(".pack") {
             continue;
         }
