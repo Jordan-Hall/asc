@@ -1518,6 +1518,20 @@ async fn cancelling_stops_a_waiting_run_and_is_for_its_starter_and_maintainers()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cancel_flagged_by_another_server_ends_the_run_with_its_reason() {
+    let w = world(&[(".asc/workflows/approved.toml", APPROVED)]).await;
+    enable(&w, "alice-token", "approved", true).await.unwrap();
+    let run = trigger(&w, "bob-token", "approved").await.unwrap();
+    wait_step(&w, run.id, "gate", StepState::Waiting).await;
+    let hub = w.wf.as_ref().unwrap();
+    // Only the database is told, as when the request reached another server.
+    hub.store.request_cancel(run.id, "elsewhere").await.unwrap();
+    let row = finished(&w, run.id).await;
+    assert_eq!(row.state, RunState::Cancelled);
+    assert_eq!(row.error, "cancelled: elsewhere");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_second_run_of_a_workflow_waits_its_turn_and_a_queued_run_can_be_cancelled() {
     let w = world(&[(".asc/workflows/approved.toml", APPROVED)]).await;
     enable(&w, "alice-token", "approved", true).await.unwrap();
