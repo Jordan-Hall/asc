@@ -274,8 +274,17 @@ Differences from the design above, and why:
   `PackReader`), `pack/layer.rs` (dictionary cache). A writer with the setting on records the store feature
   `pack2` next to `pack1`, so builds that read only version 1 refuse the namespace instead of misreading it.
   Rollback: `dictionary = false`; version 2 packs stay readable and merges rewrite them as version 1.
-- **Not done:** whole-pack caching in the tiered store (a packed object is fetched by range, as the design's fallback
-  says), and a packed form for `Derived` values.
+- Whole-pack caching is built in the client's object cache, not `tiered.rs`: the client reads a bucket
+  directly, so that is where the cache sits. A pack of at most `asc.cache.packFetchMax` bytes (default 8 MiB;
+  `0` turns it off) is fetched whole on the first read (one `HEAD` for the size, one `GET`), checked with the
+  pack's trailer and entries, and kept as `<cache>/pack/<scope>/<id>.pack`; later reads are local. `<scope>` is
+  the first 32 hex digits of the blake3 hash of the bucket URL: pack ids are random, so two buckets never share a
+  directory. A larger pack is read by range and remembered as such. Eviction (`CacheDir::evict_to`) counts each
+  pack as one file. `seed.rs` is unchanged: a seed already carries decoded objects, so it needs no pack files.
+  Code: `crates/asc-store/src/pack/cache.rs`, `pack/layer.rs` (`read_loc_cached`), `cachedir.rs`;
+  `crates/asc/src/cli/common.rs` (`pack_cache_spec`). Tests: `pack/cache.rs`, `pack/tests.rs`,
+  `crates/asc/tests/cli_pack_cache.rs`.
+- **Not done:** a packed form for `Derived` values.
 
 Operation: `[pack] enabled = true` turns on the job (every `repack_interval`) and the direct bulk packing;
 `asc serve admin pack run|status|verify|reindex --repo R | --all` do it by hand. Settings for dictionaries: `dictionary` (bool, default true), `dictionary_size` (1 KiB to 1 MiB, default 16 KiB),

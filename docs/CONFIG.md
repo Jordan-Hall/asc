@@ -28,6 +28,7 @@ The commands that read these keys are in [`CLI.md`](CLI.md); the index of all do
 | `asc.cache.dir` | `cache/` inside `asc.home` | The writable object cache. A CI host points every job at one warm cache. | `asc config --global asc.cache.dir /var/cache/asc` |
 | `asc.cache.readOnly` | none | A cache directory that is read, never written. Repeatable; a PR job mounts the warm cache this way. | `asc config --add asc.cache.readOnly /var/cache/asc` |
 | `asc.cache.maxSize` | the daemon's default | The size the daemon keeps the cache under (`asc.cache.maxsize` is accepted too). | `asc config --global asc.cache.maxSize 20GiB` |
+| `asc.cache.packFetchMax` | `8MiB` | Packs in a bucket remote up to this size are fetched whole on the first read and kept in the object cache; later reads of that pack are local. `0` reads by range only. | `asc config --global asc.cache.packFetchMax 32MiB` |
 | `asc.buildcache.dir` | `<ASC_HOME>/buildcache` | Where the build cache lives (`~/` expanded). | `asc config --global asc.buildcache.dir ~/.cache/asc-build` |
 | `asc.buildcache.maxSize` | 20 GiB | The size `asc cache gc` and the adapters keep the build cache under (bytes, or `K`, `M`, `G`, `T`). | `asc config --global asc.buildcache.maxSize 50G` |
 | `asc.buildcache.compress` | `auto` | Keep build cache blobs of 4 KiB or more as zstd where that saves at least a tenth: `auto` only on a volume that cannot reflink (NTFS, ext4), `true` on any volume, `false` never. Restores and adapters read both forms. | `asc config --global asc.buildcache.compress true` |
