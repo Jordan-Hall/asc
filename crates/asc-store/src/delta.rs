@@ -163,6 +163,51 @@ impl BucketObjects {
         }))
     }
 
+    /// Plans `key` against each of `bases` (duplicates and `key` itself are passed over) and
+    /// keeps the smallest delta, as git's window search does. `NoGain` when every usable base
+    /// was tried and none saved half; otherwise the first refusal met.
+    pub async fn plan_best(
+        &self,
+        key: ObjKey,
+        bases: &[ObjKey],
+        cache: &mut PlanCache,
+    ) -> Result<Result<Planned, Skip>> {
+        let mut best: Option<Planned> = None;
+        let mut why: Option<Skip> = None;
+        let mut tried = HashSet::new();
+        for &base in bases {
+            if base == key || !tried.insert(base) {
+                continue;
+            }
+            match self.plan_delta_cached(key, base, cache).await? {
+                Ok(p) => {
+                    if best
+                        .as_ref()
+                        .is_none_or(|b| p.stored.len() < b.stored.len())
+                    {
+                        best = Some(p);
+                    }
+                }
+                // Nothing else can help an object that is not loose or already a delta.
+                Err(s @ (Skip::NotLoose | Skip::AlreadyDelta)) => return Ok(Err(s)),
+                Err(s) => {
+                    if why.is_none() || s == Skip::NoGain {
+                        why = Some(s);
+                    }
+                }
+            }
+        }
+        match best {
+            Some(p) => {
+                // Each plan recorded its own base; the one kept is the link that counts.
+                cache.link(key, Some(p.base));
+                Ok(Ok(p))
+            }
+            // A `NoGain` plan already recorded `key` as full.
+            None => Ok(Err(why.unwrap_or(Skip::BadBase))),
+        }
+    }
+
     /// The verified bytes of `base` and the keys below it in its delta chain (empty for a full
     /// value), or `None` when it is missing, damaged or deeper than reads allow. Links are
     /// followed from the cache where known and read otherwise; bytes are decoded upward from the

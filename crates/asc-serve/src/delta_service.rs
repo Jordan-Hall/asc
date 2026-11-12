@@ -374,6 +374,18 @@ pub async fn pass(
     Ok(rep)
 }
 
+/// New-file bases tried per file.
+const MAX_SIBLINGS: usize = 4;
+
+/// The part of a file name after its last dot (none for a leading dot only), so `a.rs` pairs with
+/// `b.rs` and names without one pair with each other.
+fn extension(name: &[u8]) -> &[u8] {
+    match name.iter().rposition(|&c| c == b'.') {
+        Some(0) | None => b"",
+        Some(i) => &name[i + 1..],
+    }
+}
+
 async fn set_cursor(pool: &AnyPool, ns: &[u8], r: &str, pos: i64) -> Result<(), GcError> {
     sqlx::query(
         "INSERT INTO delta_cursor (ns, ref, pos) VALUES ($1, $2, $3) \
@@ -441,7 +453,8 @@ impl Walk<'_> {
 }
 
 /// Stores what `id` writes as deltas against its first parent: each file against the version
-/// at the same path, each changed directory's tree against the same directory's old tree, and
+/// at the same path (or its copy source) in every parent, keeping the smallest, a new file
+/// against similar files of the same directory, each changed directory's tree against the same directory's old tree, and
 /// each new chunk of a large file against the old version's chunk at the same place. Returns its
 /// parents (none when the changeset is missing).
 async fn one_changeset(
@@ -462,6 +475,13 @@ async fn one_changeset(
     let Some(parent) = changeset(entry, *parent).await? else {
         return Ok(cs.parents.clone());
     };
+    // A merge's file may come from any side: every parent's version is a candidate base.
+    let mut roots = vec![parent.root];
+    for p in &cs.parents[1..] {
+        if let Some(c) = changeset(entry, *p).await? {
+            roots.push(c.root);
+        }
+    }
     let mut d = Deltas {
         pool,
         entry,
@@ -493,21 +513,33 @@ async fn one_changeset(
             continue;
         }
         let from = copy_from.as_ref().unwrap_or(path);
-        let Some(old) = lookup(entry, parent.root, from).await? else {
+        let mut olds = Vec::new();
+        for root in &roots {
+            if let Some(old) = lookup(entry, *root, from).await?
+                && matches!(old.kind, Kind::File | Kind::Exec)
+            {
+                olds.push(old);
+            }
+        }
+        // A version some parent already had is not new storage.
+        if olds.iter().any(|o| o.id == *file.as_bytes()) {
             continue;
+        }
+        if *size > CHUNK_THRESHOLD {
+            if let Some(old) = olds.first().filter(|o| o.size > CHUNK_THRESHOLD) {
+                d.chunks(*file, FileId::from_bytes(old.id)).await?;
+            }
+            continue;
+        }
+        let bases: Vec<ObjKey> = if olds.is_empty() {
+            d.siblings(parent.root, path, *size, s.min_size.0).await?
+        } else {
+            olds.iter()
+                .filter(|o| o.size <= CHUNK_THRESHOLD)
+                .map(|o| ObjKey::File(FileId::from_bytes(o.id)))
+                .collect()
         };
-        if !matches!(old.kind, Kind::File | Kind::Exec) {
-            continue;
-        }
-        let base = FileId::from_bytes(old.id);
-        if base == *file {
-            continue;
-        }
-        match (*size > CHUNK_THRESHOLD, old.size > CHUNK_THRESHOLD) {
-            (false, false) => d.try_one(ObjKey::File(*file), ObjKey::File(base)).await?,
-            (true, true) => d.chunks(*file, base).await?,
-            _ => {}
-        }
+        d.try_best(ObjKey::File(*file), &bases).await?;
     }
     if cs.root != parent.root {
         d.try_one(ObjKey::Tree(cs.root), ObjKey::Tree(parent.root))
@@ -560,14 +592,74 @@ impl Deltas<'_> {
         Ok(decode_envelope(&b).ok())
     }
 
+    /// The bases a new file is tried against, as git's window search does: files of the first
+    /// parent's same directory with the same extension and a size within half to double, the
+    /// nearest sizes first, at most [`MAX_SIBLINGS`].
+    async fn siblings(
+        &self,
+        root: TreeId,
+        path: &RepoPath,
+        size: u64,
+        min_size: u64,
+    ) -> Result<Vec<ObjKey>, GcError> {
+        let dir = match path.parent() {
+            Some(p) => match lookup(self.entry, root, &p).await? {
+                Some(e) if e.kind == Kind::Dir => TreeId::from_bytes(e.id),
+                _ => return Ok(Vec::new()),
+            },
+            None => root,
+        };
+        let Some(b) = self.entry.objects.get(&ObjKey::Tree(dir)).await? else {
+            return Ok(Vec::new());
+        };
+        let Ok(tree) = decode_envelope::<Tree>(&b) else {
+            return Ok(Vec::new());
+        };
+        let name = path.file_name();
+        let ext = extension(name.as_bytes());
+        let mut near: Vec<(u64, ObjKey)> = tree
+            .entries()
+            .iter()
+            .filter(|e| {
+                matches!(e.kind, Kind::File | Kind::Exec)
+                    && e.size >= min_size
+                    && e.size <= CHUNK_THRESHOLD
+                    && e.size * 2 >= size
+                    && e.size <= size * 2
+                    && extension(e.name.as_bytes()) == ext
+            })
+            .map(|e| {
+                (
+                    e.size.abs_diff(size),
+                    ObjKey::File(FileId::from_bytes(e.id)),
+                )
+            })
+            .collect();
+        near.sort_by_key(|(d, _)| *d);
+        Ok(near
+            .into_iter()
+            .take(MAX_SIBLINGS)
+            .map(|(_, k)| k)
+            .collect())
+    }
+
     /// Stores `key` as a delta against `base` when that saves half.
     async fn try_one(&mut self, key: ObjKey, base: ObjKey) -> Result<(), GcError> {
-        if key == base || self.purged.contains(&base) {
+        self.try_best(key, &[base]).await
+    }
+
+    /// Stores `key` as a delta against whichever of `bases` gives the smallest one, when that
+    /// saves half.
+    async fn try_best(&mut self, key: ObjKey, bases: &[ObjKey]) -> Result<(), GcError> {
+        let bases: Vec<ObjKey> = bases
+            .iter()
+            .copied()
+            .filter(|b| *b != key && !self.purged.contains(b))
+            .collect();
+        if bases.is_empty() {
             return Ok(());
         }
-        let (Some(kind), Some(id), Some(base_id)) =
-            (row_kind(&key), key.delta_id(), base.delta_id())
-        else {
+        let (Some(kind), Some(id)) = (row_kind(&key), key.delta_id()) else {
             return Ok(());
         };
         let rep = &mut *self.rep;
@@ -575,7 +667,7 @@ impl Deltas<'_> {
         let planned = match self
             .entry
             .objects
-            .plan_delta_cached(key, base, self.cache)
+            .plan_best(key, &bases, self.cache)
             .await?
         {
             Ok(p) => p,
@@ -588,6 +680,7 @@ impl Deltas<'_> {
                 return Ok(());
             }
         };
+        let (base, base_id) = (planned.base, planned.base.delta_id().unwrap_or_default());
         // The row first: from here on GC keeps the base, whatever happens to the write.
         sqlx::query(
             "INSERT INTO delta_bases (ns, file, base, kind) VALUES ($1, $2, $3, $4) \
