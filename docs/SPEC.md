@@ -48,7 +48,7 @@ Crate edges (v1.9): the dependency order is asc-core, asc-store, asc-engine, the
 
 **Not built in v1** (each is additive):
 - *Measured v1.x items:* segment packing of small objects, zstd dictionaries, logical dedup across a fork network (§3.3; deviation recorded as §19 decision 6).
-- *Gated on measurement:* a path-log table beyond the mainline index (§5.1), virtual CI, daemon-side turbo cache tier, a host-level fetch proxy for CI.
+- *Gated on measurement:* a path-log table beyond the mainline index (§5.1), daemon-side turbo cache tier, a host-level fetch proxy for CI.
 - *Out of scope:* the asc RPC protocol over SSH and `asc-authenticate` (§25.11.9; git over SSH and git smart-HTTP are in scope, §15.6, §25), SSH user certificates and security-key (`sk-*`) keys on the `asc serve` listener (v1.x, §25.11.1), jj-style first-class conflicts, workspace sync, macOS NFS/FSKit, `node_modules` snapshots, `WatchRefs`, `asc run` task execution, TypeScript import-graph inference, parsing `package-lock.json`/`pnpm-lock.yaml`/`yarn.lock`/`bun.lockb` (they are eco-global files, §12A.2), compatibility with the IDEs' built-in git (ASC's plugins replace it, §24), and real git operating inside an asc workspace.
 
 ---
@@ -1428,7 +1428,7 @@ The second Windows backend, for machines where the optional ProjFS feature is of
 - Opening a clean file read-only uses **FUSE passthrough** (kernel ≥ 6.9) to the `cache/f/<id>` file, which gives zero copies and zero extra disk. Without passthrough it reads through.
 - Open-for-write, create, truncate, unlink and rename copy up into `wc/<ws>/overlay/` (the overlay holds modified files and records deletions). Every write passes through the daemon, so the journal is exact and needs no reconcile.
 - Redirected names are served as symlinks to `$ASC_HOME/redirect/<ws>/<path>`, created on first lookup.
-- CI virtual mode (later, after measurement): the daemon runs on the runner host, and the job sees the mount through an `rshared` bind mount.
+- CI virtual mode (`asc ci checkout --mode virtual`, §12.3): the daemon runs on the runner host and mounts with `allow_root` or `allow_other` (`asc.vfs.mountAccess`), and a job container sees the mount through an `rshared` bind mount.
 - **The merged file system (`asc-vfs::unixfs`)** is shared with §10.3b: the persisted inode table, the overlay (`data/`, `white/` deletion markers, `tmp/`, `hydrate/`) and every operation (lookup, readdir, read with hydration, write, create, mkdir, symlink, unlink, rmdir, rename of files and whole directories, setattr) live there once; the FUSE and NFS front ends only translate their protocol. Names and handles from the kernel are untrusted: names are validated once, paths are `RepoPath`s and the overlay is reached through `SafeRoot`, so a symlink in an ancestor is never followed.
 - **Projection state without hydration:** the mount answers `getxattr("user.asc.projected")` with `1` for a base-tree file nobody wrote to. `asc status` reads the overlay directly (`Overlay::peek`, which creates and clears nothing) so it works for both front ends: a file shows the base tree while it has no overlay entry, no deletion marker on it or an ancestor and no redirection covering it, and status then takes the tree's entry without opening the file.
 - **Reconcile:** the journal is exact while the daemon runs. After a crash, `asc reconcile` replays the overlay into it: a deletion marker with no data entry is a delete, an entry missing from the base (or hidden by a marker) a create, any other non-directory a modify.
@@ -1639,9 +1639,9 @@ plan:
 - run: turbo run build check-types test --affected
 ```
 
-`asc ci checkout --repo R --rev <head> --base <base> --dir . [--mode plain] [--sparse …]`:
+`asc ci checkout --repo R --rev <head> --base <base> --dir . [--mode plain|virtual] [--mount-access root|all] [--sparse …]`:
 
-1. authenticates with the Actions task token (`GITHUB_TOKEN`);
+1. authenticates with the task token: `ASC_TOKEN` (what the checkout action passes), else `GITHUB_TOKEN`;
 2. resolves head and base, and `MergeBase`;
 3. builds `Tiered<HostCacheRO, JobCache, Remote>`. **`HostCacheRO`** is the runner host's `/var/cache/asc/cache`, bind-mounted **read-only** into the job container. **`JobCache`** is `$RUNNER_TEMP/asc-cache`, writable and discarded after the job. Every read is BLAKE3-verified **[fix J1: CI cache poisoning]**;
 4. materialises the tree (plain, reflink or copy), writes the synthetic `.git` (§9.4; index with real stat), registers `refs/remotes/origin/<base>` in the job's `state.db`, and puts the `git` shim first on the job's `PATH` so turbo's git calls are answered by asc. No `shallow` file is written. History beyond the job's local window is answered by the server (§6.3 history boundary), so `git log`, `git describe` and `rev-parse --is-shallow-repository` (`false`) behave as in a `fetch-depth: 0` clone, whatever `fetch-depth` is set to **[audit: ci-shallow-semantics]**;
@@ -1664,7 +1664,11 @@ There is no submodule clone (sdk composed via the nested repo, §10.6) and no LF
 
 **Ignore files** follow §2.4.2 on CI as elsewhere.
 
-**Virtual CI** (FUSE on the host, the job sees the mount through a bind mount) is built later, only if measurements show plain checkout (≈ 1–3 s for 119 MiB from a warm cache) is a bottleneck.
+**Virtual CI (`--mode virtual`, Linux runners only):** the checkout clones a virtual workspace instead of writing files, so the job downloads only the files it reads. The daemon starts on the runner host with the job's `ASC_HOME` and serves the work tree over FUSE. `--mount-access` decides who besides the runner user may use the mount and is persisted as `asc.vfs.mountAccess` in the workspace config: `root` (the default, `allow_root`) for a container that runs as root, `all` (`allow_other`) for a container that runs as another user. The kernel still checks file modes, and tracked files are world-readable, so `all` lets every local user of the runner read the work tree: use it only on single-tenant runners. Before cloning, the checkout:
+- refuses to run when it is not root and `/etc/fuse.conf` lacks `user_allow_other` (without it the kernel refuses both options);
+- warns when the parent of `--dir` is not on a shared mount (`/proc/self/mountinfo` `shared:` tag of the longest covering mount point): containers started before the step do not see a mount made after they started unless the directory is a shared bind (`mount --bind D D && mount --make-rshared D`) and the container binds it with `bind-propagation=rshared`.
+
+The daemon checks every 5 s that its home still exists and stops (unmounting the work tree) once the runner removes the job's temporary directory; `asc daemon stop` with the job's `ASC_HOME` stops it at once. The daemon's own background children (prefetch, push, prune) run with `--asc-entry` from the home directory, so they hold no work tree open. Plain mode stays the default.
 
 ### 12.4 Turbo remote cache on the same store (`asc serve /v8`)
 
@@ -5151,7 +5155,7 @@ Units U84 to U88 and K19 (PLAN): SSH keys in the `Authorizer` and the token stor
 | `asc adopt` in place leaves Full files (integration) | No in-place adopt; `clone --reference` into a new workspace; the user deletes the old checkout (§6.3, §14.3) |
 | Submodule composition with nested writes on the critical path (integration) | Read-only composition, after the MVP; folding is a user decision (§10.6) |
 | Serverless refs single-machine (J2/J3) | `BucketRefs` with ref-log CAS (create-only); probe; explicit single-writer fallback (§3.4) |
-| Linux FUSE and virtual CI deferred (J2/J3) | FUSE in phase 7 with plain mode as the measured CI default; CI meets "no fetch until accessed" for history and submodules, and virtual CI is gated on measurement (§12.3) |
+| Linux FUSE and virtual CI deferred (J2/J3) | FUSE in phase 7 with plain mode as the measured CI default; CI meets "no fetch until accessed" for history and submodules, and virtual CI is opt-in on Linux runners (`--mode virtual`, §12.3) |
 | Forgejo shows asc ids at Stage 2 (J2/J3) | Separate `object_format_name` switch; `id_mode=GIT` at the boundary (§13.2) |
 | Nova folded by fiat (J2) | Not folded; it is a user decision (§19) |
 | Root/tree format coupling unstated (J3) | Stated and accepted; the v1 tree format has no size limit (§0 decision 3) |
