@@ -247,6 +247,12 @@ On a miss, the tool builds as usual. The plugin saves the outputs after a succes
 `closeBundle`, in Rsbuild's `onAfterBuild`, and in the compiler's `done` hook for Rspack and webpack (a compiler that
 has entered watch mode stores nothing).
 
+After that save, the Vite and Rspack/webpack plugins send the files the build read (Vite's module ids, the compiler's
+`fileDependencies`) to `asc prefetch --learn <tool>:<project> --replace`, NUL separated. Only absolute files inside the
+work tree and outside `node_modules` are sent, and asc keeps those HEAD tracks. A later switch or clone warms the
+profile into the machine cache (SPEC §10.2 item 5b). `learn: false` or `ASC_PREFETCH_LEARN=0` turns this off; a
+failure prints one line and never fails the build.
+
 When the plugin does not run:
 
 - A watched build (`--watch`, `build.watch` or `watch: true`) and the dev server (`serve`, `dev`, `preview`,

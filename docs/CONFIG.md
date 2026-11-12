@@ -50,6 +50,9 @@ The commands that read these keys are in [`CLI.md`](CLI.md); the index of all do
 | `asc.fetch.historyWindow` | `10000` | How many generations of history `clone` and `fetch` download below each tip. | `asc config asc.fetch.historyWindow 50000` |
 | `asc.fetch.ancestryBudget` | `100000` | The most commits a fetch walks to decide what the server must send. | `asc config asc.fetch.ancestryBudget 200000` |
 | `asc.gc.pitrDays` | `14` | Store garbage collection keeps ref-log targets newer than this many days. It must be at least the database's point-in-time-recovery window. | `asc config asc.gc.pitrDays 30` |
+| `asc.prefetch.auto` | `true` | `false` stops `clone` and `worktree add` from warming the `.asc/prefetch` globs and the learned profiles in the background. | `asc config asc.prefetch.auto false` |
+| `asc.prefetch.learned` | `true` | `false` stops a branch switch from warming the learned prefetch profiles in the background. | `asc config asc.prefetch.learned false` |
+| `asc.prefetch.learnedDays` | `14` | `--learned` warms the profiles used within this many days. | `asc config asc.prefetch.learnedDays 30` |
 | `asc.opLog` | `true` | `false` stops recording operations, so `asc undo` and `asc op` have nothing to work from. | `asc config asc.opLog false` |
 | `asc.opLog.maxDays` | `90` | Operations older than this are pruned. | `asc config asc.opLog.maxDays 30` |
 | `asc.opLog.maxOps` | `1000` | Operations beyond this many are pruned. | `asc config asc.opLog.maxOps 5000` |
@@ -138,6 +141,7 @@ they grant. See [`mcp.md`](mcp.md).
 | `ASC_REMOTE` | The remote name or URL `asc ci cache` and `asc ci artifact` use. |
 | `ASC_HOME` | The data directory (the same as `asc.home`). |
 | `ASC_NO_DAEMON` | Run without the background daemon. |
+| `ASC_NO_BACKGROUND` | Start no detached background warm after `clone`, `worktree add` or `switch`. |
 | `ASC_NO_ALIASES` | Set to `1` to ignore `alias.*` entries. The editor plugins' bridge sets it. |
 | `ASC_BRANCHLESS` | The same as `asc.branchless`. |
 | `ASC_ALLOW_LOOPBACK_HTTP` | The same as `asc.allowLoopbackHttp`. |

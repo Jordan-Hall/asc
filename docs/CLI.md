@@ -54,6 +54,8 @@ Configuration keys are in [`CONFIG.md`](CONFIG.md). Getting started is in
 | `debug trace` | Asks the running daemon for a diagnostic dump in its log directory and prints the path. | `asc debug trace` |
 | `gc` | Collects store garbage and removes shared copies no link-mode worktree uses ([`WORKTREES.md`](WORKTREES.md)). `--dry-run` only reports; `--store <url>` collects a bucket. | `asc gc --dry-run` |
 | `prefetch` | Downloads the files under a pathspec now, and `--history <n>` more history. | `asc prefetch src docs --history 500` |
+| `prefetch --learn` | Teaches a prefetch profile the paths on standard input; `--record <name> -- <command>` learns what a command read in a virtual workspace. | `git ls-files src \| asc prefetch --learn app` |
+| `prefetch --profile` | Warms a learned profile; `--learned` every recent one, `--auto` the `.asc/prefetch` globs and the profiles. `--list`, `--show` and `--forget` manage profiles. | `asc prefetch --profile vite:app` |
 | `sparse-checkout`, `sparse` | Chooses the directories in the cone: `set`, `add`, `list`, `disable`. `sparse dehydrate` re-virtualises clean files. | `asc sparse set crates/asc docs` |
 | `import` | Imports git history into a repository. | `asc import --git ../old-repo --incremental` |
 | `export` | Writes the repository as git objects into a directory. | `asc export --git ../git-copy --refs 'refs/heads/*'` |
