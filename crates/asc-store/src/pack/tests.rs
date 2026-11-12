@@ -139,6 +139,59 @@ async fn reads_work_from_loose_only_pack_only_and_both() {
 }
 
 #[tokio::test]
+async fn a_small_pack_is_fetched_whole_once_and_then_read_from_the_local_cache() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut e = env();
+    let cache = Arc::new(super::PackCache::new(
+        tmp.path(),
+        super::cache::DEFAULT_FETCH_MAX,
+    ));
+    e.objects = e.objects.with_pack_cache(cache.clone());
+    let packed = many(0..20);
+    e.objects.put_many(packed.clone()).await.unwrap();
+    let files = pack_files(&e).await;
+    let pack = files.iter().find(|f| f.ends_with(".pack")).unwrap().clone();
+    let name = pack.rsplit('/').next().unwrap().to_owned();
+
+    // The first read keeps the whole pack on disk.
+    assert!(e.objects.get(&packed[0].0).await.unwrap().is_some());
+    let local = cache.dir().join(&name);
+    assert!(local.exists(), "the pack is cached whole");
+    // With the bucket's copy gone, every object of the pack still reads: no request is made.
+    e.store.delete(&Path::from(pack)).await.unwrap();
+    all_readable(&e, &packed).await;
+
+    // A cached copy that is damaged (short) is dropped and the read goes back to the bucket,
+    // which no longer has the pack: the object is then missing, as without a cache.
+    std::fs::write(&local, b"short").unwrap();
+    assert_eq!(e.objects.get_stored(&packed[1].0).await.unwrap(), None);
+    assert!(!local.exists());
+}
+
+#[tokio::test]
+async fn a_pack_over_the_fetch_limit_is_read_by_range_and_not_cached() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut e = env();
+    let cache = Arc::new(super::PackCache::new(tmp.path(), 64));
+    e.objects = e.objects.with_pack_cache(cache.clone());
+    let packed = many(0..20);
+    e.objects.put_many(packed.clone()).await.unwrap();
+    all_readable(&e, &packed).await;
+    assert!(super::cache::list(tmp.path()).unwrap().is_empty());
+
+    // A limit of zero turns whole fetches off.
+    let tmp2 = tempfile::tempdir().unwrap();
+    let mut e2 = env();
+    e2.objects = e2
+        .objects
+        .with_pack_cache(Arc::new(super::PackCache::new(tmp2.path(), 0)));
+    let packed = many(30..50);
+    e2.objects.put_many(packed.clone()).await.unwrap();
+    all_readable(&e2, &packed).await;
+    assert!(super::cache::list(tmp2.path()).unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn get_range_slices_a_packed_file() {
     let e = env();
     let data = b"0123456789abcdef".to_vec();
