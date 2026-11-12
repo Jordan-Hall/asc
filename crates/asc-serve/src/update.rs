@@ -1187,8 +1187,9 @@ impl RefsHandler for ServerRefs {
     async fn list_refs(
         &self,
         ctx: &CallCtx,
-        req: wire::ListRefsRequest,
+        mut req: wire::ListRefsRequest,
     ) -> Result<wire::ListRefsResponse, Status> {
+        asc_rpc::server::fold_ref_kind(&mut req)?;
         let entry = self
             .registry
             .open(&ctx.repo)

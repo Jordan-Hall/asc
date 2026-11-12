@@ -60,6 +60,28 @@ pub const MAX_REF_UPDATES: usize = 1024;
 pub const DEFAULT_REF_PAGE: usize = 1000;
 /// Most refs one `ListRefs` page returns.
 pub const MAX_REF_PAGE: usize = 10_000;
+
+/// Folds `ListRefsRequest.kind` into its prefix (SPEC §24.8.2 A3): `REF_KIND_BRANCH` lists
+/// `refs/heads/` and `REF_KIND_TAG` lists `refs/tags/`. An empty prefix becomes the namespace; a
+/// prefix outside the namespace is refused, because it could match nothing the kind names. The
+/// kind is cleared, so a handler reads only the prefix.
+pub fn fold_ref_kind(req: &mut pb::ListRefsRequest) -> Result<(), Status> {
+    let ns = match pb::RefKind::try_from(req.kind) {
+        Ok(pb::RefKind::Any) => return Ok(()),
+        Ok(pb::RefKind::Branch) => "refs/heads/",
+        Ok(pb::RefKind::Tag) => "refs/tags/",
+        Err(_) => return Err(Status::invalid_argument("unknown ref kind")),
+    };
+    if req.prefix.is_empty() {
+        req.prefix = ns.to_owned();
+    } else if !req.prefix.starts_with(ns) {
+        return Err(Status::invalid_argument(format!(
+            "the prefix must start with {ns} for this kind"
+        )));
+    }
+    req.kind = pb::RefKind::Any as i32;
+    Ok(())
+}
 /// How often an open `WatchRefs` stream re-checks the caller's access, so a stream closes soon
 /// after its token expires or is revoked.
 pub const WATCH_RECHECK: Duration = Duration::from_secs(30);
@@ -1526,9 +1548,10 @@ impl<O: Objects + 'static, R: Refs + 'static> RefsHandler for EngineBackend<O, R
     async fn list_refs(
         &self,
         ctx: &CallCtx,
-        req: pb::ListRefsRequest,
+        mut req: pb::ListRefsRequest,
     ) -> Result<pb::ListRefsResponse, Status> {
         self.check(ctx)?;
+        fold_ref_kind(&mut req)?;
         if !req.contains.is_empty() {
             return Err(Status::unimplemented(
                 "ListRefs contains needs the full server",
@@ -1980,6 +2003,34 @@ impl<O: Objects + 'static, R: Refs + 'static> ReadsHandler for EngineBackend<O, 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_ref_kind_becomes_its_namespace_prefix() {
+        let req = |kind: pb::RefKind, prefix: &str| pb::ListRefsRequest {
+            prefix: prefix.into(),
+            kind: kind as i32,
+            ..pb::ListRefsRequest::default()
+        };
+        let mut r = req(pb::RefKind::Tag, "");
+        super::fold_ref_kind(&mut r).unwrap();
+        assert_eq!((r.prefix.as_str(), r.kind), ("refs/tags/", 0));
+        let mut r = req(pb::RefKind::Branch, "refs/heads/feat");
+        super::fold_ref_kind(&mut r).unwrap();
+        assert_eq!(r.prefix, "refs/heads/feat");
+        let mut r = req(pb::RefKind::Any, "refs/x");
+        super::fold_ref_kind(&mut r).unwrap();
+        assert_eq!(r.prefix, "refs/x");
+        let mut r = req(pb::RefKind::Branch, "refs/tags/");
+        assert_eq!(
+            super::fold_ref_kind(&mut r).unwrap_err().code(),
+            tonic::Code::InvalidArgument
+        );
+        let mut r = pb::ListRefsRequest {
+            kind: 9,
+            ..pb::ListRefsRequest::default()
+        };
+        assert!(super::fold_ref_kind(&mut r).is_err());
+    }
+
     use asc_core::id::FileId;
     use asc_store::codec::encode_stored;
 
