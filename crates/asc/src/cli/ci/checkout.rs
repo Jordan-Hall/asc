@@ -4,7 +4,7 @@
 //! `ASC_HOME`, `ASC_TOKEN` and the host cache set for the children: clone (which unpacks a seed
 //! when the host cache is cold and reads the host cache first), the head checkout, the base ref,
 //! the repository config of step 6, the `git` shim and the `$GITHUB_ENV` and `$GITHUB_PATH`
-//! exports. The token is read from the environment only (`GITHUB_TOKEN`, else `ASC_TOKEN`),
+//! exports. The token is read from the environment only (`ASC_TOKEN`, else `GITHUB_TOKEN`),
 //! never from argv.
 
 use std::ffi::OsString;
@@ -157,9 +157,10 @@ pub async fn run(ctx: &Ctx, rest: &[OsString]) -> Result<ExitCode> {
         std::iter::once(OsString::from("ci checkout")).chain(rest.iter().cloned()),
     )
     .map_err(|e| CliError::Usage(e.to_string()))?;
-    // The checkout action hands the task token over as `ASC_TOKEN`; a workflow that runs the
-    // command itself may have only `GITHUB_TOKEN`.
-    let token = ["GITHUB_TOKEN", "ASC_TOKEN"]
+    // The checkout action hands its `token` input over as `ASC_TOKEN`, which wins over a
+    // `GITHUB_TOKEN` the workflow may set for every step; a workflow that runs the command
+    // itself may have only `GITHUB_TOKEN`.
+    let token = ["ASC_TOKEN", "GITHUB_TOKEN"]
         .iter()
         .find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()))
         .unwrap_or_default();
