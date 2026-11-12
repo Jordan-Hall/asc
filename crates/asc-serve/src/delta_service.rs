@@ -1,9 +1,9 @@
 //! `[delta]` settings and the delta pass (docs/design/DELTA-STORAGE.md).
 //!
-//! The pass reads each land branch's mainline from where it last stopped. For every file a
-//! changeset writes, it takes the version the same path (or the `copy_from` path) held in the
-//! first parent's tree as the base, and stores the new version as a delta when that saves at least
-//! half. It runs under the collection lock ([`crate::gc::GcService`]), records the base in
+//! The pass reads each land branch's mainline from where it last stopped, and with each merge the
+//! side-branch changesets it brought in. For every file a changeset writes, it takes the version
+//! the same path (or the `copy_from` path) held in the first parent's tree as the base, and stores
+//! the new version as a delta when that saves at least half. It runs under the collection lock ([`crate::gc::GcService`]), records the base in
 //! `delta_bases` before it writes, and GC then keeps every recorded base as a strict root.
 
 use std::collections::HashSet;
@@ -80,6 +80,8 @@ impl DeltaSettings {
 pub struct DeltaReport {
     /// Mainline changesets read.
     pub changesets: u64,
+    /// Changesets read on the side branches merges brought in.
+    pub side: u64,
     /// Files that had a base in the parent tree.
     pub candidates: u64,
     /// Files now stored as deltas.
@@ -299,15 +301,12 @@ pub async fn pass(
                     .as_slice()
                     .try_into()
                     .map_err(|_| sql("mainline", "a changeset id is not 32 bytes"))?;
-                one_changeset(
-                    pool,
-                    entry,
-                    s,
-                    ChangesetId::from_bytes(cs),
-                    &purged,
-                    &mut rep,
-                )
-                .await?;
+                let cs = ChangesetId::from_bytes(cs);
+                let parents = one_changeset(pool, entry, s, cs, &purged, &mut rep).await?;
+                if parents.len() > 1 {
+                    let merged = parents[1..].to_vec();
+                    side_branches(pool, entry, s, &r, merged, &purged, &mut rep).await?;
+                }
                 rep.changesets += 1;
                 budget -= 1;
                 at = pos;
@@ -332,6 +331,49 @@ async fn set_cursor(pool: &AnyPool, ns: &[u8], r: &str, pos: i64) -> Result<(), 
     Ok(())
 }
 
+/// The changesets a merge brought in: walked from its other parents back to `ref`'s mainline,
+/// each against its own first parent, so a version written on a side branch gets a base too. At
+/// most `max_changesets` per merge; the walk never leaves the repository's own objects.
+async fn side_branches(
+    pool: &AnyPool,
+    entry: &RepoEntry,
+    s: &DeltaSettings,
+    r: &str,
+    merged: Vec<ChangesetId>,
+    purged: &HashSet<ObjKey>,
+    rep: &mut DeltaReport,
+) -> Result<(), GcError> {
+    let ns = entry.ns.as_bytes().to_vec();
+    let mut seen = HashSet::new();
+    let mut todo = merged;
+    let mut left = s.max_changesets;
+    while let Some(id) = todo.pop() {
+        if left == 0 {
+            break;
+        }
+        if !seen.insert(id) {
+            continue;
+        }
+        let on_mainline: Option<i64> =
+            sqlx::query_scalar("SELECT pos FROM mainline WHERE ns = $1 AND ref = $2 AND cs = $3")
+                .bind(ns.clone())
+                .bind(r.to_owned())
+                .bind(id.as_bytes().to_vec())
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| sql("mainline", e))?;
+        if on_mainline.is_some() {
+            continue;
+        }
+        left -= 1;
+        rep.side += 1;
+        todo.extend(one_changeset(pool, entry, s, id, purged, rep).await?);
+    }
+    Ok(())
+}
+
+/// Stores the files `id` writes as deltas against its first parent's tree. Returns its parents
+/// (none when the changeset is missing).
 async fn one_changeset(
     pool: &AnyPool,
     entry: &RepoEntry,
@@ -339,15 +381,15 @@ async fn one_changeset(
     id: ChangesetId,
     purged: &HashSet<ObjKey>,
     rep: &mut DeltaReport,
-) -> Result<(), GcError> {
+) -> Result<Vec<ChangesetId>, GcError> {
     let Some(cs) = changeset(entry, id).await? else {
-        return Ok(());
+        return Ok(Vec::new());
     };
     let Some(parent) = cs.parents.first() else {
-        return Ok(());
+        return Ok(Vec::new());
     };
     let Some(parent) = changeset(entry, *parent).await? else {
-        return Ok(());
+        return Ok(cs.parents.clone());
     };
     for (path, change) in cs.changes.as_slice() {
         let Change::Write {
@@ -402,7 +444,7 @@ async fn one_changeset(
         rep.bytes_before += planned.was;
         rep.bytes_after += planned.stored.len() as u64;
     }
-    Ok(())
+    Ok(cs.parents.clone())
 }
 
 /// Rewrites every delta of `entry` as a full value and drops its row: the rollback of delta

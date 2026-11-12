@@ -284,9 +284,11 @@ impl AdminCli {
                     let r = self.gc.run_delta_repo(&name, &self.delta).await?;
                     let _ = writeln!(
                         text,
-                        "{n}: read {} changeset(s), {} candidate(s); wrote {} delta(s), \
-                         {} without gain, {} skipped; {} -> {} stored byte(s); expanded {}",
+                        "{n}: read {} changeset(s) and {} on merged branches, {} candidate(s); \
+                         wrote {} delta(s), {} without gain, {} skipped; {} -> {} stored byte(s); \
+                         expanded {}",
                         r.changesets,
+                        r.side,
                         r.candidates,
                         r.written,
                         r.no_gain,
