@@ -185,40 +185,65 @@ pub fn build_with(
 /// Keys and stored values, in pack order.
 type Items = Vec<(ObjKey, Bytes)>;
 
+/// Entries that decode to more than this keep their stored form: a dictionary helps small values.
+const DICT_ENTRY_MAX: u64 = 1 << 20;
+/// The most decoded bytes held at once as training samples, whatever the pack holds.
+const DICT_SAMPLE_BUDGET: usize = 32 << 20;
+
 /// Trains a dictionary on `items` and codes each entry with it. `None` when there are too few
 /// entries, training fails, or the dictionary does not pay for itself.
-fn with_dictionary(
-    items: &[(ObjKey, Bytes)],
-    o: &DictOpts,
-) -> Option<(Vec<u8>, Items)> {
+///
+/// Memory stays bounded: samples are decoded until [`DICT_SAMPLE_BUDGET`], an entry larger than
+/// [`DICT_ENTRY_MAX`] is never decoded (its frame header says its size first), and the entries
+/// past the budget are decoded one at a time while coding.
+fn with_dictionary(items: &[(ObjKey, Bytes)], o: &DictOpts) -> Option<(Vec<u8>, Items)> {
     if items.len() < o.min_objects.max(8) || o.size < 256 || o.size > MAX_DICT {
         return None;
     }
-    let data: Vec<Bytes> = items
-        .iter()
-        .map(|(_, v)| decode_stored_capped(v, MAX_ENTRY_DECODED).ok())
-        .collect::<Option<_>>()?;
-    let total: usize = data.iter().map(Bytes::len).sum();
+    let mut held: Vec<Option<Bytes>> = Vec::with_capacity(items.len());
+    let mut total = 0usize;
+    for (_, v) in items {
+        if total >= DICT_SAMPLE_BUDGET {
+            held.push(None);
+            continue;
+        }
+        let d = decode_stored_capped(v, DICT_ENTRY_MAX).ok();
+        if let Some(d) = &d {
+            total += d.len();
+        }
+        held.push(d);
+    }
     // zstd wants many times the dictionary's size in samples; far less trains noise.
     if total < o.size * 8 {
         return None;
     }
-    let samples: Vec<&[u8]> = data.iter().map(|d| &d[..]).collect();
+    let samples: Vec<&[u8]> = held.iter().flatten().map(|d| &d[..]).collect();
     let dict = zstd::dict::from_samples(&samples, o.size).ok()?;
+    drop(samples);
     if dict.is_empty() || dict.len() > MAX_DICT {
         return None;
     }
     let enc = EncoderDictionary::copy(&dict, ZSTD_LEVEL);
     let mut saved = 0usize;
     let mut out = Vec::with_capacity(items.len());
-    for ((k, v), d) in items.iter().zip(&data) {
+    for ((k, v), d) in items.iter().zip(held) {
+        let d = match d {
+            Some(d) => Some(d),
+            None if total >= DICT_SAMPLE_BUDGET => decode_stored_capped(v, DICT_ENTRY_MAX).ok(),
+            None => None,
+        };
+        let Some(d) = d else {
+            // Too large for the dictionary to matter: kept as stored.
+            out.push((*k, v.clone()));
+            continue;
+        };
         // A raw value may still shrink with plain zstd where the dictionary does not help.
         let plain = if v[0] == 0 {
-            encode_stored(d)
+            encode_stored(&d)
         } else {
             v.clone()
         };
-        let best = encode_pack_dict(&enc, d, plain.len()).unwrap_or(plain);
+        let best = encode_pack_dict(&enc, &d, plain.len()).unwrap_or(plain);
         saved += v.len().saturating_sub(best.len());
         out.push((*k, best));
     }
@@ -401,6 +426,38 @@ mod tests {
             ),
             (ObjKey::ChunkList(FileId::of(b"list")), v(b"list")),
         ]
+    }
+
+    #[test]
+    fn entries_too_large_for_the_dictionary_keep_their_stored_form() {
+        // Many small similar values train a dictionary; one large one is never decoded for it.
+        let mut items: Vec<(ObjKey, Bytes)> = (0..200u32)
+            .map(|i| {
+                let v = format!(
+                    "{{\"name\":\"package-{i}\",\"version\":\"1.0.{i}\",\"license\":\"MIT\"}}"
+                );
+                {
+                    let mut r = vec![0u8];
+                    r.extend_from_slice(v.as_bytes());
+                    (ObjKey::File(FileId::of(v.as_bytes())), Bytes::from(r))
+                }
+            })
+            .collect();
+        let big = vec![7u8; (DICT_ENTRY_MAX + 1) as usize];
+        let big_key = ObjKey::File(FileId::of(&big));
+        let big_stored = encode_stored(&big);
+        items.push((big_key, big_stored.clone()));
+        let opts = DictOpts {
+            size: 1024,
+            min_objects: 8,
+        };
+        let built = build_with(PackId::random(), items, Some(&opts)).unwrap();
+        assert_eq!(header(&built.bytes).unwrap().0, 2);
+        let e = built.entries.iter().find(|e| e.key == big_key).unwrap();
+        assert_eq!(
+            PackReader::new(&built.bytes).unwrap().entry(e).unwrap(),
+            big_stored
+        );
     }
 
     #[test]
