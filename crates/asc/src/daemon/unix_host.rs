@@ -454,7 +454,10 @@ impl Hosted for UnixHost {
 
     async fn switch_note(&self) -> Option<String> {
         let provider = self.provider.clone();
-        blocking(move || Ok(provider.switch_note())).await.ok().flatten()
+        blocking(move || Ok(provider.switch_note()))
+            .await
+            .ok()
+            .flatten()
     }
 
     async fn prefetch(&self, paths: &[RepoPath]) -> Result<(u64, u64), HostError> {

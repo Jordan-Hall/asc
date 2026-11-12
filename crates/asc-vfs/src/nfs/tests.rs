@@ -715,7 +715,11 @@ fn a_retarget_moves_the_base_and_keeps_what_the_mount_shows() {
         .retarget(nx.rt.block_on(build(&nx.store)).0, &switched_paths())
         .unwrap();
     assert_eq!((back.kept, back.dropped), (0, 4));
-    assert!(overlay_entries(&nx).is_empty(), "{:?}", overlay_entries(&nx));
+    assert!(
+        overlay_entries(&nx).is_empty(),
+        "{:?}",
+        overlay_entries(&nx)
+    );
     assert!(nx.provider().merged().whiteouts().unwrap().is_empty());
     assert_eq!(c.read(&a, 0, 100).unwrap().0, b"alpha\n");
 }
@@ -758,7 +762,11 @@ fn a_retarget_after_a_commit_empties_the_overlay() {
     assert_eq!((r.kept, r.dropped), (0, 4));
     assert_eq!(overlay_entries(&nx), ["src", "src/notes.txt"]);
     assert!(nx.provider().merged().whiteouts().unwrap().is_empty());
-    assert_eq!(nx.journal.ops().len(), before, "nothing differs from HEAD anew");
+    assert_eq!(
+        nx.journal.ops().len(),
+        before,
+        "nothing differs from HEAD anew"
+    );
     assert_eq!(c.read(&a, 0, 100).unwrap().0, b"alpha two, longer\n");
     assert_eq!(c.read(&deep, 0, 100).unwrap().0, b"deep two\n");
     assert_eq!(

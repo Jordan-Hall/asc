@@ -1634,7 +1634,11 @@ impl MergedFs {
                 // empty directory appears either.
                 let mut top = p.clone();
                 while let Some(a) = top.parent() {
-                    if self.blk(self.core.resolve(&a)).map_err(vfs_errno)?.is_some() {
+                    if self
+                        .blk(self.core.resolve(&a))
+                        .map_err(vfs_errno)?
+                        .is_some()
+                    {
                         break;
                     }
                     top = a;
@@ -1658,7 +1662,10 @@ impl MergedFs {
         let mut cur = Some(p.clone());
         while let Some(c) = cur {
             if self.whites.is_white(&c)
-                && self.blk(self.core.resolve(&c)).map_err(vfs_errno)?.is_none()
+                && self
+                    .blk(self.core.resolve(&c))
+                    .map_err(vfs_errno)?
+                    .is_none()
             {
                 self.overlay.clear_white(&c).map_err(errno)?;
                 self.whites.remove(&c);
