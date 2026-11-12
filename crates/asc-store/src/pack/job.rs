@@ -238,7 +238,7 @@ impl BucketObjects {
     }
 
     async fn read_loose(&self, key: ObjKey) -> (ObjKey, Result<Option<Bytes>>) {
-        (key, self.get_loose_stored(&key).await)
+        (key, self.get_loose_raw(&key).await)
     }
 
     /// Adds one read loose object to `group`, writing the group out first when it is full.
@@ -265,6 +265,11 @@ impl BucketObjects {
                 }
                 Err(e) => return Err(e),
             };
+            if crate::codec::delta_base(&stored).is_some() {
+                // A delta stays loose: its base is read on every read of it, and the delta pass
+                // and GC track it by its loose key.
+                return Ok(());
+            }
             if decode_verified(&key, &stored).is_err() {
                 // A damaged loose object stays where it is for an operator to see.
                 rep.damaged += 1;

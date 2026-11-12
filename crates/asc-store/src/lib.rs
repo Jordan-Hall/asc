@@ -9,6 +9,7 @@ pub mod codec;
 pub mod conformance;
 #[cfg(any(test, feature = "testkit"))]
 pub mod conformance_refs;
+pub mod delta;
 pub mod gc;
 pub mod key;
 pub mod objects;

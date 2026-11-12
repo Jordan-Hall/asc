@@ -13,10 +13,14 @@ use object_store::memory::InMemory;
 use object_store::path::Path;
 use object_store::{ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload};
 
-use crate::codec::CodecError;
-use crate::codec::check_codec;
+use asc_core::id::FileId;
+use futures::future::BoxFuture;
+
+use crate::codec::{
+    CodecError, MAX_DELTA_DEPTH, check_codec, decode_delta, delta_base, encode_stored,
+};
 use crate::key::{KeyClass, KeyPrefix, ObjKey};
-use crate::objects::{Error, Objects, Result, decode_verified, max_decoded, slice_range};
+use crate::objects::{Error, Objects, Result, decode_verified, max_decoded, slice_range, verify};
 use crate::pack::PackLayer;
 
 /// Concurrent `HEAD` requests per `has_many`.
@@ -130,8 +134,56 @@ async fn collect_capped(
 }
 
 impl BucketObjects {
-    /// The loose object's stored bytes, size-capped.
+    /// The loose object's stored bytes, size-capped. A delta (codec `2`, written only by the
+    /// server's delta pass) is resolved against its base and returned as a full codec `0` or `1`
+    /// value, so no caller ever sees one.
     pub(crate) async fn get_loose_stored(&self, key: &ObjKey) -> Result<Option<Bytes>> {
+        self.loose_resolved(key, 0).await
+    }
+
+    fn loose_resolved<'a>(
+        &'a self,
+        key: &'a ObjKey,
+        depth: u8,
+    ) -> BoxFuture<'a, Result<Option<Bytes>>> {
+        Box::pin(async move {
+            let Some(raw) = self.get_loose_raw(key).await? else {
+                return Ok(None);
+            };
+            let Some(base) = delta_base(&raw) else {
+                return Ok(Some(raw));
+            };
+            let base = FileId::from_bytes(base);
+            let bad = || Error::Codec(*key, CodecError::BadBase(base));
+            if depth >= MAX_DELTA_DEPTH || !matches!(key, ObjKey::File(_)) {
+                return Err(bad());
+            }
+            let base_data = self.base_bytes(base, depth).await?.ok_or_else(bad)?;
+            let data = decode_delta(&raw, &base_data, max_decoded(key.class()))
+                .map_err(|e| Error::Codec(*key, e))?;
+            verify(key, &data)?;
+            Ok(Some(encode_stored(&data)))
+        })
+    }
+
+    /// The verified bytes of a delta's base, from packs or loose, or `None` when it is missing
+    /// or damaged.
+    async fn base_bytes(&self, base: FileId, depth: u8) -> Result<Option<Bytes>> {
+        let key = ObjKey::File(base);
+        if let Some(stored) = self.read_packed(&key).await?
+            && let Ok(d) = decode_verified(&key, &stored)
+        {
+            return Ok(Some(d));
+        }
+        match self.loose_resolved(&key, depth + 1).await {
+            Ok(Some(stored)) => Ok(decode_verified(&key, &stored).ok()),
+            Ok(None) | Err(Error::Codec(..) | Error::Corrupt(_)) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// The loose object's bytes as stored, deltas included, size-capped.
+    pub(crate) async fn get_loose_raw(&self, key: &ObjKey) -> Result<Option<Bytes>> {
         match self.store.get(&self.key_path(key)).await {
             Ok(r) => {
                 // The bucket is untrusted: refuse an oversized body without buffering it.

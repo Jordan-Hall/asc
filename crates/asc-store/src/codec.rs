@@ -1,10 +1,18 @@
 //! Stored-value codec: `codec: u8 ‖ data` (SPEC §3.1).
+//!
+//! Codec `2` is a delta, used only at rest in the server's bucket (docs/design/DELTA-STORAGE.md):
+//! `2 ‖ base FileId (32 bytes) ‖ one zstd frame` compressed with the base file's bytes as a raw
+//! content dictionary. It never travels: [`check_codec`] refuses it, and the bucket turns it back
+//! into codec `0` or `1` before anyone reads it.
 
 use bytes::{BufMut, Bytes, BytesMut};
 
 const RAW: u8 = 0;
 const ZSTD: u8 = 1;
+const DELTA: u8 = 2;
 const ZSTD_LEVEL: i32 = 3;
+/// Bytes before a delta's zstd frame: the codec byte and the base id.
+const DELTA_HEADER: usize = 1 + 32;
 
 /// A stored value that cannot be decoded.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -17,7 +25,13 @@ pub enum CodecError {
     BadFrame,
     #[error("decoded size exceeds the {0} byte limit")]
     TooLarge(u64),
+    /// A delta whose base is missing, damaged, or more than [`MAX_DELTA_DEPTH`] deltas deep.
+    #[error("delta base {0} is missing, damaged or too deep")]
+    BadBase(asc_core::id::FileId),
 }
+
+/// The most deltas a read follows before it reaches a full value.
+pub const MAX_DELTA_DEPTH: u8 = 8;
 
 /// Encodes `data` as stored bytes; zstd only when the frame is under 90% of raw.
 pub fn encode_stored(data: &[u8]) -> Bytes {
@@ -33,6 +47,59 @@ pub fn encode_stored(data: &[u8]) -> Bytes {
     out.put_u8(RAW);
     out.extend_from_slice(data);
     out.freeze()
+}
+
+/// Encodes `data` as a delta against `base` (whose id is `base_id`), or `None` when the delta is
+/// not under half of `encode_stored(data)`: a delta costs a second read, so it must pay for it.
+pub fn encode_delta(
+    base_id: &[u8; 32],
+    base: &[u8],
+    data: &[u8],
+    plain_len: usize,
+) -> Option<Bytes> {
+    let mut c = zstd::bulk::Compressor::with_dictionary(ZSTD_LEVEL, base).ok()?;
+    c.include_contentsize(true).ok()?;
+    let z = c.compress(data).ok()?;
+    if (DELTA_HEADER + z.len()) * 2 >= plain_len {
+        return None;
+    }
+    let mut out = BytesMut::with_capacity(DELTA_HEADER + z.len());
+    out.put_u8(DELTA);
+    out.extend_from_slice(base_id);
+    out.extend_from_slice(&z);
+    Some(out.freeze())
+}
+
+/// The base id of a delta, or `None` for any other stored value.
+pub fn delta_base(stored: &[u8]) -> Option<[u8; 32]> {
+    if stored.first() != Some(&DELTA) {
+        return None;
+    }
+    stored.get(1..DELTA_HEADER)?.try_into().ok()
+}
+
+/// Decodes a delta given its base's bytes, rejecting values larger than `max_decoded`.
+pub fn decode_delta(stored: &[u8], base: &[u8], max_decoded: u64) -> Result<Bytes, CodecError> {
+    if delta_base(stored).is_none() {
+        return Err(CodecError::BadFrame);
+    }
+    let body = &stored[DELTA_HEADER..];
+    let size = zstd::zstd_safe::get_frame_content_size(body)
+        .ok()
+        .flatten()
+        .ok_or(CodecError::BadFrame)?;
+    if size > max_decoded {
+        return Err(CodecError::TooLarge(max_decoded));
+    }
+    let mut d =
+        zstd::bulk::Decompressor::with_dictionary(base).map_err(|_| CodecError::BadFrame)?;
+    let out = d
+        .decompress(body, size as usize)
+        .map_err(|_| CodecError::BadFrame)?;
+    if out.len() as u64 != size {
+        return Err(CodecError::BadFrame);
+    }
+    Ok(out.into())
 }
 
 /// Checks the codec byte only, without decoding.
@@ -125,5 +192,69 @@ mod tests {
         assert!(decode_stored_capped(&s, 10_000).is_ok());
         let raw = Bytes::from_static(&[0, 1, 2, 3]);
         assert_eq!(decode_stored_capped(&raw, 2), Err(CodecError::TooLarge(2)));
+    }
+
+    fn source(lines: usize, edit: usize) -> Vec<u8> {
+        (0..lines)
+            .map(|i| {
+                if i == edit {
+                    format!(
+                        "let changed_{i} = compute({i}) + 1;
+"
+                    )
+                } else {
+                    format!(
+                        "let value_{i} = compute({i}) * {};
+",
+                        i % 7
+                    )
+                }
+            })
+            .collect::<String>()
+            .into_bytes()
+    }
+
+    #[test]
+    fn a_small_edit_is_stored_as_a_small_delta() {
+        let base = source(2000, usize::MAX);
+        let next = source(2000, 1234);
+        let id = [7u8; 32];
+        let plain = encode_stored(&next);
+        let d = encode_delta(&id, &base, &next, plain.len()).expect("a delta pays");
+        assert!(d.len() * 10 < plain.len(), "{} vs {}", d.len(), plain.len());
+        assert_eq!(delta_base(&d), Some(id));
+        assert_eq!(decode_delta(&d, &base, MAX).unwrap(), next);
+        // A delta never passes as a wire value.
+        assert_eq!(check_codec(&d), Err(CodecError::UnknownCodec(2)));
+        assert_eq!(delta_base(&plain), None);
+    }
+
+    #[test]
+    fn an_unrelated_base_gives_no_delta() {
+        let mut noise = vec![0u8; 8192];
+        blake3::Hasher::new()
+            .update(b"other")
+            .finalize_xof()
+            .fill(&mut noise);
+        let next = source(300, usize::MAX);
+        let plain = encode_stored(&next);
+        assert!(encode_delta(&[1; 32], &noise, &next, plain.len()).is_none());
+    }
+
+    #[test]
+    fn a_delta_decodes_only_with_its_base_and_within_the_cap() {
+        let base = source(500, usize::MAX);
+        let next = source(500, 10);
+        let d = encode_delta(&[3; 32], &base, &next, encode_stored(&next).len()).unwrap();
+        assert!(decode_delta(&d, b"wrong base", MAX).map_or(true, |b| b != next));
+        assert_eq!(decode_delta(&d, &base, 10), Err(CodecError::TooLarge(10)));
+        assert_eq!(
+            decode_delta(&d[..20], &base, MAX),
+            Err(CodecError::BadFrame)
+        );
+        assert_eq!(
+            decode_delta(&[1, 2, 3], &base, MAX),
+            Err(CodecError::BadFrame)
+        );
     }
 }
