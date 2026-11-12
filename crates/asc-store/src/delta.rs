@@ -443,6 +443,133 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_shared_cache_plans_chains_like_fresh_reads() {
+        let b = BucketObjects::memory();
+        let mut ids = Vec::new();
+        for i in 0..(MAX_DELTA_DEPTH as usize + 2) {
+            ids.push(put(&b, &version(i)).await);
+        }
+        let mut cache = PlanCache::default();
+        let mut stored = 0;
+        for w in ids.windows(2) {
+            match b.plan_delta_cached(w[1], w[0], &mut cache).await.unwrap() {
+                Ok(p) => {
+                    b.store_delta(&p).await.unwrap();
+                    stored += 1;
+                }
+                Err(s) => assert_eq!(s, Skip::BadBase),
+            }
+        }
+        assert_eq!(stored, MAX_DELTA_DEPTH as usize);
+        for (i, id) in ids.iter().enumerate() {
+            assert_eq!(b.get(id).await.unwrap().unwrap(), version(i), "version {i}");
+        }
+        // Remembered chains still refuse a cycle, and a fresh cache reads the same chains.
+        for mut c in [cache, PlanCache::default()] {
+            assert_eq!(
+                b.plan_delta_cached(ids[0], ids[3], &mut c)
+                    .await
+                    .unwrap()
+                    .unwrap_err(),
+                Skip::BadBase
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_remembered_base_is_not_read_again() {
+        let b = BucketObjects::memory();
+        let base = put(&b, &version(usize::MAX)).await;
+        let (x, y) = (put(&b, &version(1)).await, put(&b, &version(2)).await);
+        let mut cache = PlanCache::default();
+        assert!(
+            b.plan_delta_cached(x, base, &mut cache)
+                .await
+                .unwrap()
+                .is_ok()
+        );
+        b.delete(&base).await.unwrap();
+        // Only the cache still knows `base`; a fresh plan reads the bucket and finds nothing.
+        assert!(
+            b.plan_delta_cached(y, base, &mut cache)
+                .await
+                .unwrap()
+                .is_ok()
+        );
+        assert_eq!(
+            b.plan_delta(y, base).await.unwrap().unwrap_err(),
+            Skip::BadBase
+        );
+    }
+
+    #[test]
+    fn the_cache_drops_its_oldest_values_past_its_bound() {
+        let k = |i: u8| ObjKey::File(FileId::from_bytes([i; 32]));
+        let mut c = PlanCache::new(10);
+        c.put(k(1), Bytes::from_static(b"aaaa"));
+        c.put(k(2), Bytes::from_static(b"bbbb"));
+        c.put(k(3), Bytes::from_static(b"cccc"));
+        assert!(c.value(&k(1)).is_none());
+        assert!(c.value(&k(2)).is_some() && c.value(&k(3)).is_some());
+        assert_eq!(c.bytes, 8);
+        // A value larger than the bound is never held; replacing a value keeps the count right.
+        c.put(k(4), Bytes::from(vec![0u8; 11]));
+        assert!(c.value(&k(4)).is_none());
+        c.put(k(3), Bytes::from_static(b"cc"));
+        assert_eq!(c.bytes, 6);
+        let mut z = PlanCache::new(0);
+        z.put(k(1), Bytes::from_static(b"a"));
+        assert!(z.values.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_value_that_becomes_a_delta_lengthens_the_chains_through_it() {
+        let b = BucketObjects::memory();
+        let mut ids = Vec::new();
+        for i in 0..MAX_DELTA_DEPTH as usize {
+            ids.push(put(&b, &version(i)).await);
+        }
+        let mut cache = PlanCache::default();
+        // ids[1..] form a chain on ids[1], one short of the limit, remembered while ids[1] is full ...
+        for w in ids[1..].windows(2) {
+            let p = b
+                .plan_delta_cached(w[1], w[0], &mut cache)
+                .await
+                .unwrap()
+                .unwrap();
+            b.store_delta(&p).await.unwrap();
+        }
+        // ... then ids[1] becomes a delta of ids[0]: the chain under the head is now full, though
+        // a copy of the head's old chain would still allow one more link.
+        let p = b
+            .plan_delta_cached(ids[1], ids[0], &mut cache)
+            .await
+            .unwrap()
+            .unwrap();
+        b.store_delta(&p).await.unwrap();
+        let head = *ids.last().unwrap();
+        let extra = put(&b, &version(99)).await;
+        assert_eq!(
+            b.plan_delta_cached(extra, head, &mut cache)
+                .await
+                .unwrap()
+                .unwrap_err(),
+            Skip::BadBase
+        );
+        // ids[0] may not take a delta against anything above it.
+        assert_eq!(
+            b.plan_delta_cached(ids[0], ids[2], &mut cache)
+                .await
+                .unwrap()
+                .unwrap_err(),
+            Skip::BadBase
+        );
+        for (i, id) in ids.iter().enumerate() {
+            assert_eq!(b.get(id).await.unwrap().unwrap(), version(i), "version {i}");
+        }
+    }
+
+    #[tokio::test]
     async fn unrelated_or_absent_files_are_skipped() {
         let b = BucketObjects::memory();
         let base = put(&b, &version(usize::MAX)).await;

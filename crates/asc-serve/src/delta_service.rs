@@ -700,6 +700,59 @@ mod tests {
         assert_eq!(row_kind(&ObjKey::ChunkList(FileId::from_bytes(id))), None);
     }
 
+    #[tokio::test]
+    async fn a_base_removed_after_a_remembered_plan_keeps_the_full_value() {
+        use asc_store::codec::encode_stored;
+        use asc_store::objects::Objects;
+        let reg = crate::ingest::testutil::registry().await;
+        let entry = crate::ingest::testutil::repo(&reg).await;
+        let text = |edit: usize| -> Vec<u8> {
+            (0..3000)
+                .map(|i| match i == edit {
+                    true => format!("fn edited_{i}() {{}}\n"),
+                    false => format!("fn item_{i}() -> u32 {{ {i} }}\n"),
+                })
+                .collect::<String>()
+                .into_bytes()
+        };
+        let mut keys = Vec::new();
+        for v in [text(usize::MAX), text(1), text(2)] {
+            let k = ObjKey::File(FileId::of(&v));
+            entry.objects.put(&k, encode_stored(&v)).await.unwrap();
+            keys.push(k);
+        }
+        let (base, a, b) = (keys[0], keys[1], keys[2]);
+        let mut cache = PlanCache::default();
+        let mut rep = DeltaReport::default();
+        let purged = HashSet::new();
+        // A plan of `a` remembers `base`; then `base` goes.
+        assert!(
+            entry
+                .objects
+                .plan_delta_cached(a, base, &mut cache)
+                .await
+                .unwrap()
+                .is_ok()
+        );
+        entry.objects.delete(&base).await.unwrap();
+        let mut d = Deltas {
+            pool: reg.pool(),
+            entry: &entry,
+            purged: &purged,
+            rep: &mut rep,
+            cache: &mut cache,
+        };
+        d.try_one(b, base).await.unwrap();
+        assert_eq!((rep.candidates, rep.skipped, rep.written), (1, 1, 0));
+        let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM delta_bases")
+            .fetch_one(reg.pool())
+            .await
+            .unwrap();
+        assert_eq!(rows, 0);
+        assert_eq!(entry.objects.delta_base_of(b).await.unwrap(), None);
+        assert_eq!(entry.objects.get(&b).await.unwrap().unwrap(), text(2));
+    }
+
     #[test]
     fn the_defaults_are_valid_and_nonsense_is_refused() {
         DeltaSettings::default().check().unwrap();
