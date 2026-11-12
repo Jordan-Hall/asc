@@ -24,12 +24,15 @@ inert in projects that are not asc workspaces: its menus, tool window and status
   - Stack: Move Up, Move Down, Go to the Top, Go to the Bottom, Restack, Sync, Submit, Absorb
     (shows what would move, then asks), Undo, Redo, Uncommit, Unamend, Continue or Abort a paused
     operation.
-  - Remote: Fetch, Pull, Push.
+  - Remote: Fetch, Pull, Push, Share the Current Change, Get a Stack into a Worktree (a revision,
+    then a folder inside the root).
+  - Tags: Show Tags, Create Tag (a message makes it annotated), Delete Tag (pick one, then
+    confirm), Push All Tags.
   - Stash: Stash Changes (optionally with untracked files), Pop, Apply, Drop.
   - Configure Agents: writes the project's MCP configuration with `asc mcp install --scope project`.
   - Sign In to a Host, Sign Out of a Host, Show Sign-in Status.
 
-  Submit, Push and Drop Stash ask first; the shared allowlist decides which commands do.
+  Submit, Push, Push All Tags, Delete Tag and Drop Stash ask first; the shared allowlist decides which commands do.
 - **Status bar.** The current change, its place in the stack, how far the stack is behind trunk and
   its review state. A click restacks when the stack needs it, otherwise it opens the tool window.
 - **Path rules.** Files the repository's path rules keep read-only for you cannot be edited.

@@ -4214,7 +4214,7 @@ Seen in: **GK** GitKraken Desktop, **GL** GitLens, **GT** Graphite (CLI, VS Code
 | Uncommit, unamend, abandon | ISL | stack menu and commands (P26b) | `asc-ui` Stack tab context menu (P15) | Run `uncommit`, `unamend`, `abandon` (C51) | Y | Y |
 | Multi-root and nested worktrees | GK GL | one `SourceControl` per asc root | one VCS root mapping per root | `Bridge.Hello` per root | Y | Y |
 | Stash: push (with untracked), pop, apply, drop, list | GK VG JB | SCM `...` menu and a "Stashes" group in the Worktrees tree | – (v1.x; JetBrains Shelf is not wired to `refs/stash`) | Run `stash push\|pop\|apply\|drop\|list` (`--json`: P45) | Y | – |
-| Tags: list, create, delete, push | GK GL | "Tags" tree (`asc.tags`): create (lightweight, or annotated with a message), delete (modal), push all (`push --tags`, modal); a tag the server does not list is marked "not pushed" | – (v1.x) | Run `tag`, `tag --list`, `tag --delete`, `push --tags`; `Repo.ListRefs` kind `tag` (A3) | Y | – |
+| Tags: list, create, delete, push | GK GL | "Tags" tree (`asc.tags`): create (lightweight, or annotated with a message), delete (modal), push all (`push --tags`, modal); a tag the server does not list is marked "not pushed" | VCS > asc: Show Tags, Create Tag (name, optional message), Delete Tag (chooser, then a yes/no), Push All Tags (asks first); no "not pushed" mark | Run `tag`, `tag --list`, `tag --delete`, `push --tags`; `Repo.ListRefs` kind `tag` (A3) | Y | Y |
 | Fetch, pull, push (git-remote mode only; hidden in server mode, where `sync` and `submit` apply) | GK VG JB | SCM `...` menu, status-bar sync | VCS menu actions | Run `fetch`, `pull`, `push` (`--json`: P45) | Y | Y |
 | Add to `.ascignore` (from an untracked or ignored file) | GK | resource menu → appends the pattern to the nearest `.ascignore` through a `WorkspaceEdit` | `IgnoredFileContentProvider` for `.ascignore` + "Add to .ascignore" action | file edit; `Status` then refreshes via `Watch` | Y | Y |
 | Signing | GK | no settings UI (out of scope, §24.3.6); a "signed" badge in commit details | same | `commit.gpgSign` is honoured by `create`/`modify`; the badge is `%G?` from `Log` | – | – |
@@ -4241,7 +4241,7 @@ Seen in: **GK** GitKraken Desktop, **GL** GitLens, **GT** Graphite (CLI, VS Code
 | Change versions and interdiff | ISL GT | `asc-ui` details | same | `Changes.Versions`, `Changes.InterDiff` | Y | Y |
 | Optimistic queue (IP-D10) | ISL | `asc-ui` ops | same | Run + `Watch` | Y | Y |
 | Branch labels (opt-in) | GK GL | labels on graph rows; "Name this change" | same | `Stacks.branches`, Run `create <branch>` | Y | Y |
-| Share a snapshot link | – | command, copies `asc:<id>` and the web link (P47a) | action (v1.x) | Run `share` (C32) | Y | – |
+| Share a snapshot link | – | command, copies `asc:<id>` and the web link (P47a) | VCS > asc > Share the Current Change | Run `share` (C32) | Y | Y |
 
 #### 24.3.3 History and insight (GitLens, GitKraken)
 
@@ -4294,7 +4294,7 @@ Seen in: **GK** GitKraken Desktop, **GL** GitLens, **GT** Graphite (CLI, VS Code
 |---|---|---|
 | Inline review comments in diff editors | No stable public comments API for diff editors is verified for 2026.1 and 2026.2; the review tab in `asc-ui` carries threads | v1.x, after the API survey in spike P51 |
 | CodeLens-style authors and recent change | The platform's code vision is internal API in `261`; Annotate and the status-bar widget cover blame | v1.x |
-| Stash, tags, project graph, visual file history, share, `stack get --worktree` | Not worth a native surface yet; stash and share are Run verbs reachable from the Stack tab later | v1.x |
+| Stash list, project graph, visual file history | Not worth a native surface yet; stash push, pop, apply and drop, tags, share and `stack get --worktree` are VCS > asc actions | v1.x |
 | Everything a `VcsLogProvider` feeds (§24.5.4 lists them) | IP-D11: `readAllHashes` loads the whole history | not planned; the `asc-ui` graph replaces it |
 | Split mode and remote development | The providers need the backend; the UI needs the frontend | after v1 (§24.5) |
 
