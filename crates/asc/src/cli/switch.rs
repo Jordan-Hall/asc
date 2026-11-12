@@ -802,18 +802,17 @@ async fn write_safe(
 /// them (SPEC §10.2 item 8): changed placeholders are rewritten from metadata, nothing is
 /// downloaded and nothing is copied into the overlay. `None` when the daemon cannot take the
 /// move (the workspace is plain, the daemon is disabled or not running, or it does not serve the
-/// workspace from `from`); the caller then writes the files itself. Only the Unix backends take
-/// it: every write reaches their merged file system, so they know exactly what is local. A Cloud
-/// Files placeholder that was written and committed is no longer in sync, and the Windows
-/// provider leaves such a file alone, so on Windows the CLI writes the files. `Some` holds the paths in
-/// conflict, empty when the files moved.
+/// workspace from `from`); the caller then writes the files itself. Every backend takes it: the
+/// Unix ones see every write through their merged file system, and the Windows ones compare the
+/// bytes of a written file with `from`, so a file edited and then committed moves like a clean
+/// one (git's rule). `Some` holds the paths in conflict, empty when the files moved.
 async fn daemon_switch(
     ws: &WsCtx,
     from: TreeId,
     to: TreeId,
     mode: wire::SwitchMode,
 ) -> Result<Option<Vec<RepoPath>>> {
-    if !cfg!(unix) || ws.workspace.ws.mode != workspaces::Mode::Virtual {
+    if ws.workspace.ws.mode != workspaces::Mode::Virtual {
         return Ok(None);
     }
     let Ok(cfg) = Config::for_home(&ws.home) else {
