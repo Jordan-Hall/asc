@@ -1291,7 +1291,6 @@ async fn move_command(ctx: &Ctx, argv: &[OsString]) -> Result<ExitCode> {
         .max_by_key(|r| r.ws.path.len())
         .map(|r| PathBuf::from(&r.ws.path));
     let old_mount = PathBuf::from(&row.ws.mount);
-    let old_nested = wt::path_key(&src) != wt::path_key(&old_mount);
     let new_mount = if enclosing.is_some() {
         ws.home.worktree_mount(row.ws.id)
     } else {
@@ -1299,23 +1298,68 @@ async fn move_command(ctx: &Ctx, argv: &[OsString]) -> Result<ExitCode> {
     };
     leave(row, ws);
 
-    // The files first, then the row; the file moves are undone if the row cannot follow.
+    // A virtual workspace stops being served while its root moves, and is served again at
+    // whichever location the row ends up naming.
+    let factory = ext::workspace_factory();
+    factory
+        .release(row)
+        .await
+        .map_err(|e| fatal(format!("cannot move '{shown}': {e}")))?;
+    let moved = move_files(
+        ws,
+        row,
+        &shown,
+        to,
+        &dst,
+        &src,
+        &old_mount,
+        &new_mount,
+        enclosing.as_deref(),
+    )
+    .await;
+    let served = factory.rehost(row).await;
+    moved?;
+    if let Err(e) = served {
+        return Err(fatal(format!(
+            "moved '{shown}', but cannot serve it at its new path: {e}; run 'asc daemon \
+             restart'"
+        )));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The renames and the row update of `worktree move`; the file moves are undone if the row
+/// cannot follow.
+#[allow(clippy::too_many_arguments)]
+async fn move_files(
+    ws: &WsCtx,
+    row: &Workspace,
+    shown: &str,
+    to: &OsString,
+    dst: &Path,
+    src: &Path,
+    old_mount: &Path,
+    new_mount: &Path,
+    enclosing: Option<&Path>,
+) -> Result<()> {
+    let factory = ext::workspace_factory();
+    let old_nested = wt::path_key(src) != wt::path_key(old_mount);
     if let Some(parent) = dst.parent() {
-        match &enclosing {
+        match enclosing {
             Some(boundary) => wt::make_dirs_below(boundary, parent)?,
             None => std::fs::create_dir_all(parent)?,
         }
     }
+    let move_root = |from: &Path, to: &Path| factory.move_root(row, from, to);
     let renamed = |from: &Path, to: &Path| {
-        std::fs::rename(from, to)
-            .map_err(|e| fatal(format!("cannot move '{}': {e}", from.display())))
+        move_root(from, to).map_err(|e| fatal(format!("cannot move '{}': {e}", from.display())))
     };
     match (old_nested, enclosing.is_some()) {
-        (false, false) => renamed(&old_mount, &new_mount)?,
+        (false, false) => renamed(old_mount, new_mount)?,
         (false, true) => {
-            renamed(&old_mount, &new_mount)?;
-            if let Err(e) = wt::make_dir_link(&dst, &new_mount) {
-                let _ = std::fs::rename(&new_mount, &old_mount);
+            renamed(old_mount, new_mount)?;
+            if let Err(e) = wt::make_dir_link(dst, new_mount) {
+                let _ = move_root(new_mount, old_mount);
                 return Err(fatal(format!(
                     "cannot link '{}' to its mount: {e}",
                     to.to_string_lossy()
@@ -1323,9 +1367,9 @@ async fn move_command(ctx: &Ctx, argv: &[OsString]) -> Result<ExitCode> {
             }
         }
         (true, true) => {
-            wt::remove_tree(&src)?;
-            if let Err(e) = wt::make_dir_link(&dst, &new_mount) {
-                let _ = wt::make_dir_link(&src, &old_mount);
+            wt::remove_tree(src)?;
+            if let Err(e) = wt::make_dir_link(dst, new_mount) {
+                let _ = wt::make_dir_link(src, old_mount);
                 return Err(fatal(format!(
                     "cannot link '{}' to its mount: {e}",
                     to.to_string_lossy()
@@ -1333,29 +1377,29 @@ async fn move_command(ctx: &Ctx, argv: &[OsString]) -> Result<ExitCode> {
             }
         }
         (true, false) => {
-            wt::remove_tree(&src)?;
-            if let Err(e) = std::fs::rename(&old_mount, &new_mount) {
-                let _ = wt::make_dir_link(&src, &old_mount);
+            wt::remove_tree(src)?;
+            if let Err(e) = move_root(old_mount, new_mount) {
+                let _ = wt::make_dir_link(src, old_mount);
                 return Err(fatal(format!("cannot move '{shown}': {e}")));
             }
         }
     }
     if let Err(e) =
-        workspaces::set_location(&ws.db, row.ws.id, text_of(&dst)?, text_of(&new_mount)?).await
+        workspaces::set_location(&ws.db, row.ws.id, text_of(dst)?, text_of(new_mount)?).await
     {
         // Put the files back where the row says they are.
         if enclosing.is_some() {
-            let _ = wt::remove_tree(&dst);
+            let _ = wt::remove_tree(dst);
         }
         if new_mount != old_mount {
-            let _ = std::fs::rename(&new_mount, &old_mount);
+            let _ = move_root(new_mount, old_mount);
         }
         if old_nested {
-            let _ = wt::make_dir_link(&src, &old_mount);
+            let _ = wt::make_dir_link(src, old_mount);
         }
         return Err(e.into());
     }
-    Ok(ExitCode::SUCCESS)
+    Ok(())
 }
 
 // ------------------------------------------------------------------------------------ convert
@@ -1375,6 +1419,8 @@ async fn convert_command(ctx: &Ctx, argv: &[OsString]) -> Result<ExitCode> {
     let ws = ctx.ws()?;
     let all = rows(ws).await?;
     let row = locate(ctx, &all, typed)?;
+    // a process whose directory is inside the mount keeps it busy, and the unmount would wait
+    leave(row, ws);
     ext::workspace_factory()
         .convert_plain(row)
         .await

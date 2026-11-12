@@ -169,6 +169,12 @@ pub trait Mounts: Send + Sync {
     fn unvirtualize(&self, ws: WorkspaceId, root: &Path) -> Result<Vec<String>, SinkError>;
     /// Drops what served `ws` virtually (the Unix overlay) once conversion has finished.
     fn forget(&self, ws: WorkspaceId) -> SinkResult;
+    /// Serves the registered virtual workspace `ws` at the root its row names, starting the
+    /// daemon first.
+    async fn mount(&self, ws: WorkspaceId) -> SinkResult;
+    /// Renames the stopped root `from` of `ws` to `to`. A Windows Cloud Files root is
+    /// registered again at its new path.
+    fn move_root(&self, ws: WorkspaceId, from: &Path, to: &Path) -> std::io::Result<()>;
 }
 
 /// The mounts of the running daemon, reached over IPC.
@@ -259,6 +265,22 @@ impl Mounts for DaemonMounts {
     fn forget(&self, ws: WorkspaceId) -> SinkResult {
         remove_overlay(&AscHome::locate()?, ws)
     }
+
+    async fn mount(&self, ws: WorkspaceId) -> SinkResult {
+        Ok(mount_virtual(ws).await?)
+    }
+
+    fn move_root(&self, ws: WorkspaceId, from: &Path, to: &Path) -> std::io::Result<()> {
+        #[cfg(all(windows, feature = "vfs-cloudfiles"))]
+        {
+            asc_vfs::cloudfiles::relocate(from, to, &ws.0.into_bytes())
+        }
+        #[cfg(not(all(windows, feature = "vfs-cloudfiles")))]
+        {
+            let _ = ws;
+            fs::rename(from, to)
+        }
+    }
 }
 
 /// Removes `wc/<ws>/overlay` (what a Unix mount kept of the user's changes), if there is one.
@@ -292,6 +314,27 @@ impl DaemonWorkspaceFactory {
 impl WorkspaceFactory for DaemonWorkspaceFactory {
     fn virtual_mode(&self) -> Option<Mode> {
         self.mounts.virtual_available().then_some(Mode::Virtual)
+    }
+
+    async fn release(&self, ws: &Workspace) -> SinkResult {
+        if ws.ws.mode == Mode::Plain {
+            return Ok(());
+        }
+        self.mounts.unmount(ws.ws.id, false).await.map(|_| ())
+    }
+
+    fn move_root(&self, ws: &Workspace, from: &Path, to: &Path) -> std::io::Result<()> {
+        match ws.ws.mode {
+            Mode::Plain => fs::rename(from, to),
+            Mode::Virtual => self.mounts.move_root(ws.ws.id, from, to),
+        }
+    }
+
+    async fn rehost(&self, ws: &Workspace) -> SinkResult {
+        if ws.ws.mode == Mode::Plain {
+            return Ok(());
+        }
+        self.mounts.mount(ws.ws.id).await
     }
 
     async fn convert_plain(&self, ws: &Workspace) -> SinkResult {
@@ -478,6 +521,8 @@ mod tests {
         unmounted: Mutex<Vec<(WorkspaceId, bool)>>,
         unvirtualized: Mutex<Vec<(WorkspaceId, PathBuf)>>,
         forgotten: Mutex<Vec<WorkspaceId>>,
+        mounted: Mutex<Vec<WorkspaceId>>,
+        moved: Mutex<Vec<(WorkspaceId, PathBuf, PathBuf)>>,
         served: Vec<String>,
         deleted: Vec<String>,
     }
@@ -514,6 +559,52 @@ mod tests {
             self.forgotten.lock().unwrap().push(ws);
             Ok(())
         }
+        async fn mount(&self, ws: WorkspaceId) -> SinkResult {
+            self.mounted.lock().unwrap().push(ws);
+            Ok(())
+        }
+        fn move_root(&self, ws: WorkspaceId, from: &Path, to: &Path) -> std::io::Result<()> {
+            self.moved
+                .lock()
+                .unwrap()
+                .push((ws, from.to_path_buf(), to.to_path_buf()));
+            fs::rename(from, to)
+        }
+    }
+
+    #[tokio::test]
+    async fn moving_a_virtual_workspace_stops_renames_and_serves_it_again() {
+        let f = Fixture::new().await;
+        let mounts = Arc::new(Recording::default());
+        let factory = DaemonWorkspaceFactory::new(mounts.clone());
+        let to = f.root.with_file_name("moved");
+        // A plain workspace is renamed and nothing else.
+        let ws = workspaces::get(&f.db, f.ws).await.unwrap().unwrap();
+        factory.release(&ws).await.unwrap();
+        factory.move_root(&ws, &f.root, &to).unwrap();
+        factory.rehost(&ws).await.unwrap();
+        assert!(to.is_dir() && !f.root.exists());
+        assert!(mounts.unmounted.lock().unwrap().is_empty());
+        assert!(mounts.moved.lock().unwrap().is_empty());
+        assert!(mounts.mounted.lock().unwrap().is_empty());
+        // A virtual one is unmounted, moved by the backend and mounted again.
+        workspaces::set_mode(&f.db, f.ws, Mode::Virtual)
+            .await
+            .unwrap();
+        let ws = workspaces::get(&f.db, f.ws).await.unwrap().unwrap();
+        factory.release(&ws).await.unwrap();
+        factory.move_root(&ws, &to, &f.root).unwrap();
+        factory.rehost(&ws).await.unwrap();
+        assert!(f.root.is_dir() && !to.exists());
+        assert_eq!(*mounts.unmounted.lock().unwrap(), [(f.ws, false)]);
+        assert_eq!(
+            *mounts.moved.lock().unwrap(),
+            [(f.ws, to.clone(), f.root.clone())]
+        );
+        assert_eq!(*mounts.mounted.lock().unwrap(), [f.ws]);
+        // Without the daemon's factory a virtual move says why it cannot run.
+        let e = crate::ext::NoSink.release(&ws).await.unwrap_err();
+        assert!(e.to_string().starts_with("asc: 'worktree move': "), "{e}");
     }
 
     #[test]

@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::ops::Range;
+use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::SystemTime;
 
@@ -166,6 +167,31 @@ pub trait WorkspaceFactory: Send + Sync {
             )
             .into()),
         }
+    }
+
+    /// `worktree move`, before the root moves: stops serving a virtual workspace so its root can
+    /// be renamed. A no-op for plain workspaces.
+    async fn release(&self, ws: &Workspace) -> SinkResult {
+        match ws.ws.mode {
+            Mode::Plain => Ok(()),
+            Mode::Virtual => Err(format!(
+                "asc: 'worktree move': {}",
+                crate::daemon::workspace_factory::virtual_unavailable()
+                    .trim_end_matches("; use --mode plain")
+            )
+            .into()),
+        }
+    }
+
+    /// Renames the released root `from` of `ws` to `to`.
+    fn move_root(&self, _ws: &Workspace, from: &Path, to: &Path) -> std::io::Result<()> {
+        std::fs::rename(from, to)
+    }
+
+    /// `worktree move`, after the row records the new location (or after a failed move, at the
+    /// old one): serves a virtual workspace again. A no-op for plain workspaces.
+    async fn rehost(&self, _ws: &Workspace) -> SinkResult {
+        Ok(())
     }
 }
 
