@@ -38,6 +38,9 @@ entries  : repeated  [ key class u8 | key id 32 bytes (20 for GitTreeOverride, z
 trailer  : blake3 over everything before it (32 bytes)
 ```
 
+Version 2 (`ASCPACK2`, built; see "As built") puts a zstd dictionary between the header and the entries
+and names its length in the last header field.
+
 An entry is exactly what `put` is given, so the bytes read back are the loose bytes: the codec byte, the
 zstd frame, `verify` against the key. The trailer lets a reader or `asc serve admin verify` detect a
 damaged pack without parsing it. The size of a pack is at most `pack.max_size`, default 64 MiB, or
@@ -256,10 +259,26 @@ Differences from the design above, and why:
   `delete` forgets the row. A sweep that purged objects compacts the packs at once (`pack_compact_all`).
 - **Features.** The first pack write records `pack1` in `store_features`; opening a namespace that lists a feature
   this build does not know is refused. Older builds do not read the table: the reader ships first, as above.
+- **Dictionaries (pack format 2).** A pack written with `[pack] dictionary` (on by default) may be version 2:
+  magic `ASCPACK2`, the header's last u32 is the dictionary length (1 byte to 1 MiB), and a zstd dictionary
+  trained on that pack's entries follows the header. An entry may then be codec `3`: its data compressed with
+  the pack's dictionary (no dictionary id, no checksum). Codec `3` exists only inside a pack: `format::decode_entry`
+  turns it into codec `0` on read, so every `get` and `get_stored` returns codec `0` or `1` and the wire never
+  carries it; a loose object with codec `3` is refused. The writer trains only with at least
+  `dictionary_min_objects` entries (default 128, at least 8) and 8 times `dictionary_size` (default 16 KiB) of
+  samples, holds at most 32 MiB of decoded samples, leaves entries over 1 MiB as they are stored, and keeps
+  version 2 only when the dictionary saves more than its own size; otherwise the pack is version 1. Readers cache
+  up to 64 pack dictionaries, read with the pack's header by range. A codec `3` entry that fails to decode counts
+  as damaged, so `verify` reports it and the read falls back to a loose copy if one exists. Code:
+  `crates/asc-store/src/codec.rs` (`encode_pack_dict`, `decode_pack_dict`), `pack/format.rs` (`build_with`,
+  `PackReader`), `pack/layer.rs` (dictionary cache). A writer with the setting on records the store feature
+  `pack2` next to `pack1`, so builds that read only version 1 refuse the namespace instead of misreading it.
+  Rollback: `dictionary = false`; version 2 packs stay readable and merges rewrite them as version 1.
 - **Not done:** whole-pack caching in the tiered store (a packed object is fetched by range, as the design's fallback
   says), and a packed form for `Derived` values.
 
 Operation: `[pack] enabled = true` turns on the job (every `repack_interval`) and the direct bulk packing;
-`asc serve admin pack run|status|verify|reindex --repo R | --all` do it by hand. Rollback: set `enabled = false`;
+`asc serve admin pack run|status|verify|reindex --repo R | --all` do it by hand. Settings for dictionaries: `dictionary` (bool, default true), `dictionary_size` (1 KiB to 1 MiB, default 16 KiB),
+`dictionary_min_objects` (default 128). Rollback: set `enabled = false`;
 packs stay readable, nothing new is packed, and `pack run` still deletes retired packs.
 
