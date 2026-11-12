@@ -1081,6 +1081,8 @@ async fn diffs_under_the_message_match_git() {
             &["--summary"],
             &["--stat", "--summary"],
             &["--name-status", "--no-renames"],
+            &["--name-status", "-C"],
+            &["--stat", "-C"],
             &["-p", "--no-renames"],
             &["-s"],
             &["-p", "--patience"],
