@@ -53,6 +53,7 @@ The commands that read these keys are in [`CLI.md`](CLI.md); the index of all do
 | `asc.opLog` | `true` | `false` stops recording operations, so `asc undo` and `asc op` have nothing to work from. | `asc config asc.opLog false` |
 | `asc.opLog.maxDays` | `90` | Operations older than this are pruned. | `asc config asc.opLog.maxDays 30` |
 | `asc.opLog.maxOps` | `1000` | Operations beyond this many are pruned. | `asc config asc.opLog.maxOps 5000` |
+| `asc.opLog.untrackedMaxBytes` | `64m` | Most untracked and ignored bytes one op's snapshot keeps (files `clean` removes or a forced move overwrites), so `asc undo` can restore them. Accepts `k`, `m`, `g`; `0` turns it off. | `asc config asc.opLog.untrackedMaxBytes 256m` |
 | `asc.signByDefault` | `false` | Whether commands that write a change sign it when no flag says. Your account keeps the switch; `asc signing default` reads or sets it there and writes this key with `--global`. A set `commit.gpgSign` wins over it. | `asc signing default on` |
 
 ## Stacks and review
