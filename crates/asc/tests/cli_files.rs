@@ -55,6 +55,23 @@ async fn files_ranks_paths_and_follows_new_commits() {
     let out = f.asc().args(["files", "maintenance"]).output().unwrap();
     assert_eq!(out.status.code(), Some(1), "no match exits 1");
 
+    // A byte outside ASCII is quoted as git quotes it (`core.quotePath`), and so would a control
+    // byte be (Windows refuses one in a name); -z prints the name raw.
+    let c = f.commit(&[b], &[("caf\u{e9}name", b"1")]).await;
+    f.set_branch("accent", c).await;
+    let out = f
+        .asc()
+        .args(["files", "--rev", "accent", "cafname"])
+        .output()
+        .unwrap();
+    assert_eq!(text(&out.stdout), "\"caf\\303\\251name\"\n");
+    let out = f
+        .asc()
+        .args(["files", "--rev", "accent", "-z", "cafname"])
+        .output()
+        .unwrap();
+    assert_eq!(out.stdout, "caf\u{e9}name\0".as_bytes());
+
     // Usage errors.
     let out = f.asc().args(["files", "a", "b"]).output().unwrap();
     assert!(!out.status.success());
