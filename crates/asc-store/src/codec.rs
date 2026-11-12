@@ -17,6 +17,11 @@ const DELTA: u8 = 2;
 /// A pack entry compressed with its pack's trained dictionary.
 pub const PACK_DICT: u8 = 3;
 pub(crate) const ZSTD_LEVEL: i32 = 3;
+/// zstd level of a delta frame. Deltas are written by a background pass, not on the push path, so
+/// they can afford more effort: over every same-path pair of a 22,704-pair history, level 9 stored
+/// 24.6 MB where level 3 stored 129 MB, at 2.8 times the encode time and no slower decode; levels
+/// above 9 saved under 13% more at 2 to 12 times the encode time.
+pub(crate) const DELTA_LEVEL: i32 = 9;
 /// Bytes before a delta's zstd frame: the codec byte and the base id.
 const DELTA_HEADER: usize = 1 + 32;
 
@@ -66,7 +71,7 @@ pub fn encode_delta(
     data: &[u8],
     plain_len: usize,
 ) -> Option<Bytes> {
-    let mut c = zstd::bulk::Compressor::with_dictionary(ZSTD_LEVEL, base).ok()?;
+    let mut c = zstd::bulk::Compressor::with_dictionary(DELTA_LEVEL, base).ok()?;
     c.include_contentsize(true).ok()?;
     let z = c.compress(data).ok()?;
     if (DELTA_HEADER + z.len()) * 2 >= plain_len {
