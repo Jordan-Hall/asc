@@ -95,10 +95,10 @@ impl KeyClass {
         })
     }
 
-    /// True for the classes a pack may hold. Chunks are large and stay loose; derived values are
-    /// recomputable, many and rewritten.
+    /// True for the classes a pack may hold. Chunks are large and stay loose. Derived values go
+    /// in packs of their own (docs/design/PACKED-OBJECTS.md, "Derived values").
     pub const fn packable(self) -> bool {
-        !matches!(self, Self::Chunk | Self::Derived)
+        !matches!(self, Self::Chunk)
     }
 }
 
@@ -123,6 +123,22 @@ impl KeyPrefix {
     pub fn dir(&self) -> Option<&'static str> {
         self.0.map(KeyClass::dir)
     }
+}
+
+/// The pack id of a derived value: a hash of its name, version and id, since the three do not fit
+/// the 32 bytes a pack index keys by. The pack entry carries them whole
+/// ([`ObjKey::derived_prefix`]), so a pack can still be read without its index.
+pub fn derived_pack_id(name: &str, version: u32, id: &[u8; 32]) -> [u8; 32] {
+    let mut h = blake3::Hasher::new_derive_key("asc derived pack id v1");
+    h.update(&(name.len() as u64).to_le_bytes());
+    h.update(name.as_bytes());
+    h.update(&version.to_le_bytes());
+    h.update(id);
+    *h.finalize().as_bytes()
+}
+
+fn derived_name_ok(name: &str) -> bool {
+    !name.is_empty() && name.len() <= usize::from(u8::MAX) && !name.contains('/')
 }
 
 fn leaf(dir: &str, hex: &str) -> String {
@@ -167,9 +183,13 @@ impl ObjKey {
         }
     }
 
-    /// True when a pack may hold this key.
-    pub const fn packable(&self) -> bool {
-        self.class().packable()
+    /// True when a pack may hold this key: its class is packable, and a derived value's name
+    /// fits the entry prefix (at most 255 bytes, no `/`).
+    pub fn packable(&self) -> bool {
+        match self {
+            Self::Derived { name, .. } => derived_name_ok(name),
+            k => k.class().packable(),
+        }
     }
 
     /// The key's id bytes, zero padded to 32 (a git oid has 20). Pack files and indexes key
@@ -184,9 +204,49 @@ impl ObjKey {
             Self::Tag(i) => out = *i.as_bytes(),
             Self::GitTreeOverride(i) => out[..20].copy_from_slice(i.as_bytes()),
             Self::ChangeMeta(i) => out = *i.as_bytes(),
-            Self::Derived { id, .. } => out = *id,
+            Self::Derived { name, version, id } => out = derived_pack_id(name, *version, id),
         }
         out
+    }
+
+    /// The bytes a pack entry of a derived value carries before its stored value: the name, the
+    /// version and the id that [`id32`](Self::id32) hashes, so a pack names its keys whole.
+    /// `None` for any other class, and for a name that cannot be written (empty, longer than 255
+    /// bytes, or holding `/`).
+    pub fn derived_prefix(&self) -> Option<Vec<u8>> {
+        let Self::Derived { name, version, id } = self else {
+            return None;
+        };
+        if !derived_name_ok(name) {
+            return None;
+        }
+        let mut out = Vec::with_capacity(1 + name.len() + 4 + 32);
+        out.push(u8::try_from(name.len()).ok()?);
+        out.extend_from_slice(name.as_bytes());
+        out.extend_from_slice(&version.to_le_bytes());
+        out.extend_from_slice(id);
+        Some(out)
+    }
+
+    /// Inverse of [`derived_prefix`](Self::derived_prefix): the key at the start of `bytes` and
+    /// the prefix's length, when `bytes` starts with a well-formed one.
+    pub fn parse_derived_prefix(bytes: &[u8]) -> Option<(Self, usize)> {
+        let n = usize::from(*bytes.first()?);
+        let name = std::str::from_utf8(bytes.get(1..1 + n)?).ok()?;
+        if !derived_name_ok(name) {
+            return None;
+        }
+        let at = 1 + n;
+        let version = u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?);
+        let id: [u8; 32] = bytes.get(at + 4..at + 36)?.try_into().ok()?;
+        Some((
+            Self::Derived {
+                name: intern(name),
+                version,
+                id,
+            },
+            at + 36,
+        ))
     }
 
     /// Inverse of [`id32`](Self::id32) for the packable classes; `None` for any other, and for a
@@ -317,6 +377,12 @@ mod tests {
                     assert!(k.packable());
                     assert_eq!(back, k);
                 }
+                // A derived key is packed under a hash; its entry prefix names it.
+                None if c == KeyClass::Derived => {
+                    assert!(k.packable());
+                    let p = k.derived_prefix().unwrap();
+                    assert_eq!(ObjKey::parse_derived_prefix(&p), Some((k, p.len())));
+                }
                 None => assert!(!k.packable(), "{k}"),
             }
         }
@@ -325,6 +391,54 @@ mod tests {
         let mut padded = [0u8; 32];
         padded[25] = 1;
         assert_eq!(ObjKey::from_pack(KeyClass::GitTreeOverride, padded), None);
+    }
+
+    #[test]
+    fn derived_pack_ids_separate_every_field_and_prefixes_check_their_input() {
+        let k = |name, version, b| ObjKey::Derived {
+            name,
+            version,
+            id: [b; 32],
+        };
+        let base = k("blame", 1, 7);
+        let ids = [
+            base.id32(),
+            k("blamf", 1, 7).id32(),
+            k("blame", 2, 7).id32(),
+            k("blame", 1, 8).id32(),
+        ];
+        for (i, a) in ids.iter().enumerate() {
+            for b in &ids[i + 1..] {
+                assert_ne!(a, b);
+            }
+        }
+        // The length is hashed too: ("ab", ...) and ("a", ...) differ even when the bytes run on.
+        assert_ne!(
+            derived_pack_id("ab", 1, &[0; 32]),
+            derived_pack_id("a", 1, &[0; 32])
+        );
+
+        let p = base.derived_prefix().unwrap();
+        assert_eq!(p.len(), 1 + 5 + 4 + 32);
+        let mut longer = p.clone();
+        longer.extend_from_slice(b"value");
+        assert_eq!(ObjKey::parse_derived_prefix(&longer), Some((base, p.len())));
+        assert_eq!(ObjKey::parse_derived_prefix(&p[..p.len() - 1]), None);
+        assert_eq!(ObjKey::parse_derived_prefix(&[]), None);
+        assert_eq!(ObjKey::parse_derived_prefix(&[0, 1, 2]), None);
+        let mut slash = p.clone();
+        slash[1] = b'/';
+        assert_eq!(ObjKey::parse_derived_prefix(&slash), None);
+
+        let long: &'static str = Box::leak("n".repeat(256).into_boxed_str());
+        assert!(!k(long, 1, 0).packable());
+        assert_eq!(k(long, 1, 0).derived_prefix(), None);
+        assert!(!k("a/b", 1, 0).packable());
+        assert!(
+            ObjKey::File(FileId::from_bytes([1; 32]))
+                .derived_prefix()
+                .is_none()
+        );
     }
 
     #[test]

@@ -24,6 +24,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 use super::format::{PackEntry, PackId};
+use super::index::PackRow;
 use super::index::{PackDetail, PackIndex, PackInfo, PackLoc, PackState};
 use crate::key::{KeyClass, ObjKey};
 use crate::objects::{Error, Result};
@@ -58,6 +59,26 @@ struct ManifestPack {
 struct Manifest {
     version: u32,
     packs: Vec<ManifestPack>,
+    /// Store features a writer recorded (`pack2`, `pack-derived`): what a reader must
+    /// understand to read every pack listed. A reader refuses a feature it does not know.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    features: Vec<String>,
+}
+
+/// The features this build reads.
+pub const KNOWN_FEATURES: &[&str] = &[super::FEATURE_DICT, super::FEATURE_DERIVED];
+
+/// Refuses a manifest that lists a feature this build cannot read.
+fn check_features(features: &[String]) -> Result<()> {
+    match features
+        .iter()
+        .find(|f| !KNOWN_FEATURES.contains(&f.as_str()))
+    {
+        Some(f) => Err(bad(format!(
+            "the bucket's packs use the store feature '{f}', which this build of asc cannot              read; upgrade asc"
+        ))),
+        None => Ok(()),
+    }
 }
 
 impl ManifestPack {
@@ -86,6 +107,7 @@ impl ManifestPack {
 
 struct Loaded {
     infos: Vec<PackInfo>,
+    features: Vec<String>,
     version: Option<UpdateVersion>,
     at: Instant,
 }
@@ -194,6 +216,8 @@ pub struct BucketPackIndex {
     /// The namespace root; packs live under `<root>/pack/`.
     root: Path,
     cache: Mutex<Cache>,
+    /// Features this writer records in the manifest on every update.
+    features: Vec<&'static str>,
 }
 
 impl BucketPackIndex {
@@ -202,7 +226,26 @@ impl BucketPackIndex {
             store,
             root,
             cache: Mutex::new(Cache::default()),
+            features: Vec::new(),
         }
+    }
+
+    /// Records `features` (see [`PackConfig::features`](super::PackConfig::features)) in the
+    /// manifest whenever this index writes it. Features already there are kept.
+    #[must_use]
+    pub fn with_features(mut self, features: Vec<&'static str>) -> Self {
+        self.features = features;
+        self
+    }
+
+    /// The features the manifest lists now.
+    pub async fn features(&self) -> Result<Vec<String>> {
+        let mut c = self.cache.lock().await;
+        self.manifest(&mut c, false).await?;
+        Ok(c.manifest
+            .as_ref()
+            .map(|m| m.features.clone())
+            .unwrap_or_default())
     }
 
     fn at(&self, rel: &str) -> Path {
@@ -253,14 +296,17 @@ impl BucketPackIndex {
         let loaded = match self.read(&self.manifest_path()).await? {
             None => Loaded {
                 infos: Vec::new(),
+                features: Vec::new(),
                 version: None,
                 at: Instant::now(),
             },
             Some((body, version)) => {
                 let m: Manifest = serde_json::from_slice(&body).map_err(bad)?;
+                check_features(&m.features)?;
                 let infos = m.packs.iter().filter_map(ManifestPack::info).collect();
                 Loaded {
                     infos,
+                    features: m.features,
                     version: Some(version),
                     at: Instant::now(),
                 }
@@ -282,9 +328,21 @@ impl BucketPackIndex {
         for _ in 0..CAS_TRIES {
             let mut infos = self.manifest(c, true).await?;
             edit(&mut infos);
+            let mut features = c
+                .manifest
+                .as_ref()
+                .map(|m| m.features.clone())
+                .unwrap_or_default();
+            for f in &self.features {
+                if !features.iter().any(|g| g == f) {
+                    features.push((*f).to_owned());
+                }
+            }
+            features.sort();
             let body = serde_json::to_vec(&Manifest {
                 version: 1,
                 packs: infos.iter().map(ManifestPack::of).collect(),
+                features,
             })
             .map_err(bad)?;
             let path = self.manifest_path();
@@ -390,14 +448,6 @@ impl BucketPackIndex {
 
 fn row_key(k: &ObjKey) -> RowKey {
     (k.class().code(), k.id32())
-}
-
-fn entry_of(k: &RowKey, off: u64, len: u32) -> Option<PackEntry> {
-    Some(PackEntry {
-        key: ObjKey::from_pack(KeyClass::from_code(k.0)?, k.1)?,
-        offset: off,
-        len,
-    })
 }
 
 #[async_trait]
@@ -560,7 +610,7 @@ impl PackIndex for BucketPackIndex {
         Ok(out)
     }
 
-    async fn rows_of(&self, id: PackId) -> Result<Vec<PackEntry>> {
+    async fn rows_of(&self, id: PackId) -> Result<Vec<PackRow>> {
         let mut c = self.cache.lock().await;
         let infos = self.manifest(&mut c, false).await?;
         let live = Self::live_oldest_first(&infos);
@@ -573,10 +623,13 @@ impl PackIndex for BucketPackIndex {
             if dead.binary_search(k).is_ok() {
                 continue;
             }
-            if self.resolve(&mut c, &live, k).await?.map(|o| o.0) == Some(id)
-                && let Some(e) = entry_of(k, *off, *len)
-            {
-                out.push(e);
+            if self.resolve(&mut c, &live, k).await?.map(|o| o.0) == Some(id) {
+                out.push(PackRow {
+                    code: k.0,
+                    id: k.1,
+                    offset: *off,
+                    len: *len,
+                });
             }
         }
         Ok(out)

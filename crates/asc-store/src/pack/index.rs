@@ -61,6 +61,29 @@ pub struct PackDetail {
     pub live_bytes: u64,
 }
 
+/// One index row as the index holds it: the key's class code and pack id (for a derived value a
+/// hash, see [`ObjKey::id32`]) and where its stored value sits. The key itself comes from the
+/// pack file ([`super::format::parse`]), which names every key whole.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PackRow {
+    pub code: u8,
+    pub id: [u8; 32],
+    pub offset: u64,
+    pub len: u32,
+}
+
+impl PackRow {
+    /// The row of a pack entry.
+    pub fn of(e: &PackEntry) -> Self {
+        Self {
+            code: e.key.class().code(),
+            id: e.key.id32(),
+            offset: e.offset,
+            len: e.len,
+        }
+    }
+}
+
 /// A packed value's place.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PackLoc {
@@ -117,13 +140,15 @@ pub trait PackIndex: Send + Sync {
     async fn packs(&self) -> Result<Vec<PackDetail>>;
 
     /// The rows that point into `id`.
-    async fn rows_of(&self, id: PackId) -> Result<Vec<PackEntry>>;
+    async fn rows_of(&self, id: PackId) -> Result<Vec<PackRow>>;
 
     /// Drops a pack and any rows still pointing into it (its file is already gone or condemned).
     async fn remove(&self, id: PackId) -> Result<()>;
 
     /// Keys in key order after `after` (class code, id), at most `limit`, with the creation
-    /// time of the pack that holds them. `class` restricts the listing.
+    /// time of the pack that holds them. `class` restricts the listing. Derived values are not
+    /// listed: their rows hold a hash, not the key. Their class code sorts last, so leaving them
+    /// out only shortens the final pages.
     async fn list(
         &self,
         class: Option<KeyClass>,
@@ -256,17 +281,16 @@ impl PackIndex for MemPackIndex {
             .collect())
     }
 
-    async fn rows_of(&self, id: PackId) -> Result<Vec<PackEntry>> {
+    async fn rows_of(&self, id: PackId) -> Result<Vec<PackRow>> {
         let g = self.lock();
         Ok(g.rows
             .iter()
             .filter(|(_, v)| v.0 == id)
-            .filter_map(|(&(c, i), &(_, offset, len))| {
-                Some(PackEntry {
-                    key: ObjKey::from_pack(KeyClass::from_code(c)?, i)?,
-                    offset,
-                    len,
-                })
+            .map(|(&(code, id), &(_, offset, len))| PackRow {
+                code,
+                id,
+                offset,
+                len,
             })
             .collect())
     }

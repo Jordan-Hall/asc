@@ -6,7 +6,7 @@
 //! the GC fence. A crash after (a) leaves an unreferenced file the orphan sweep removes; a crash
 //! after (b) leaves both copies, and readers prefer the pack; no step makes an object unreadable.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::SystemTime;
 
 use bytes::Bytes;
@@ -15,8 +15,8 @@ use futures::{StreamExt, TryStreamExt};
 use object_store::ObjectStoreExt;
 
 use super::PackConfig;
-use super::format::{self, PackId};
-use super::index::{PackDetail, PackInfo, PackState};
+use super::format::{self, PackEntry, PackId};
+use super::index::{PackDetail, PackInfo, PackRow, PackState};
 use super::layer::PackLayer;
 use crate::bucket::BucketObjects;
 use crate::gc::Fence;
@@ -203,11 +203,13 @@ impl BucketObjects {
     ) -> Result<()> {
         let cfg = l.config().clone();
         let mut cands: Vec<ObjKey> = Vec::new();
-        'classes: for class in PACK_CLASSES {
+        // Derived values come last, so a run that packs both writes them into packs of their own.
+        let derived = cfg.derived.then_some(KeyClass::Derived);
+        'classes: for class in PACK_CLASSES.into_iter().chain(derived) {
             let mut s = self.list_loose_meta(class);
             while let Some((key, modified, size)) = s.try_next().await? {
                 let old = now.duration_since(modified).is_ok_and(|a| a >= cfg.min_age);
-                if size as usize <= cfg.max_object && old {
+                if size as usize <= cfg.max_object && old && cfg.packs(&key) {
                     cands.push(key);
                     if cands.len() >= MAX_CANDIDATES {
                         break 'classes;
@@ -227,6 +229,15 @@ impl BucketObjects {
         for keys in cands.chunks(PUT_CONCURRENCY) {
             let reads = futures::future::join_all(keys.iter().map(|k| self.read_loose(*k))).await;
             for (key, got) in reads {
+                let first_derived = key.class() == KeyClass::Derived
+                    && group
+                        .last()
+                        .is_some_and(|(k, _)| k.class() != KeyClass::Derived);
+                if first_derived {
+                    self.flush_group(l, fence, std::mem::take(&mut group), rep)
+                        .await?;
+                    size = format::HEADER_LEN + format::TRAILER_LEN;
+                }
                 self.take_loose(l, fence, &cfg, key, got, &mut group, &mut size, rep)
                     .await?;
             }
@@ -275,7 +286,7 @@ impl BucketObjects {
                 rep.damaged += 1;
                 return Ok(());
             }
-            let add = format::entry_size(stored.len());
+            let add = format::entry_size_of(&key, stored.len());
             if !group.is_empty()
                 && (group.len() >= cfg.max_objects || (*size + add) as u64 > cfg.max_size)
             {
@@ -431,19 +442,25 @@ impl BucketObjects {
                 rep.damaged += 1;
                 continue;
             };
-            let reader = match format::parse(&bytes).and_then(|_| format::PackReader::new(&bytes)) {
-                Ok(r) => r,
+            let (entries, reader) = match format::parse(&bytes)
+                .and_then(|e| Ok((e, format::PackReader::new(&bytes)?)))
+            {
+                Ok(v) => v,
                 Err(_) => {
                     tracing::warn!(pack = %id, "pack does not verify; left alone");
                     rep.damaged += 1;
                     continue;
                 }
             };
+            // The pack names each key whole (a derived value's row holds only a hash of it).
+            let by_row: HashMap<PackRow, PackEntry> =
+                entries.iter().map(|e| (PackRow::of(e), *e)).collect();
             let mut mine = Vec::new();
             let mut ok = true;
             for row in l.index.rows_of(id).await? {
-                match reader.entry(&row) {
-                    Some(s) if decode_verified(&row.key, &s).is_ok() => mine.push((row.key, s)),
+                let e = by_row.get(&row);
+                match e.and_then(|e| reader.entry(e).map(|s| (e.key, s))) {
+                    Some((k, s)) if decode_verified(&k, &s).is_ok() => mine.push((k, s)),
                     _ => {
                         ok = false;
                         break;
@@ -615,21 +632,22 @@ impl BucketObjects {
                     continue;
                 }
             };
-            let have: HashSet<(ObjKey, u64, u32)> =
-                entries.iter().map(|e| (e.key, e.offset, e.len)).collect();
+            let have: HashMap<PackRow, PackEntry> =
+                entries.iter().map(|e| (PackRow::of(e), *e)).collect();
             for row in l.index.rows_of(id).await? {
                 rep.objects += 1;
-                if !have.contains(&(row.key, row.offset, row.len)) {
+                let Some(e) = have.get(&row) else {
                     rep.problems.push(format!(
-                        "pack {id}: the index names {} but the pack has no such entry",
-                        row.key
+                        "pack {id}: the index names class {} id {} but the pack has no such entry",
+                        row.code,
+                        data_encoding::HEXLOWER.encode(&row.id)
                     ));
                     continue;
-                }
-                let stored = reader.entry(&row);
-                if stored.is_none_or(|s| decode_verified(&row.key, &s).is_err()) {
+                };
+                let stored = reader.entry(e);
+                if stored.is_none_or(|s| decode_verified(&e.key, &s).is_err()) {
                     rep.problems
-                        .push(format!("pack {id}: {} does not verify", row.key));
+                        .push(format!("pack {id}: {} does not verify", e.key));
                 }
             }
         }

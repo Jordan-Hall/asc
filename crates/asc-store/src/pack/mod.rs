@@ -12,6 +12,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::key::{KeyClass, ObjKey};
+
 pub mod bucket_index;
 pub mod cache;
 pub mod format;
@@ -60,6 +62,38 @@ pub struct PackConfig {
     /// Train a zstd dictionary for each pack written, and keep it when it saves more than it
     /// costs (format version 2). `None` writes version 1 packs only.
     pub dict: Option<format::DictOpts>,
+    /// Pack derived values too (in packs of their own when first packed). Off keeps them loose;
+    /// derived values already packed stay readable.
+    pub derived: bool,
+}
+
+/// The store feature a writer that packs derived values records (a SQL `store_features` row, or
+/// the bucket manifest's `features`), so builds that cannot read those entries refuse the
+/// namespace instead of misreading it.
+pub const FEATURE_DERIVED: &str = "pack-derived";
+/// The store feature a writer that may write version 2 packs (with a dictionary) records.
+pub const FEATURE_DICT: &str = "pack2";
+
+impl PackConfig {
+    /// The store features a writer with this configuration records.
+    pub fn features(&self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if self.enabled && self.dict.is_some() {
+            out.push(FEATURE_DICT);
+        }
+        if self.enabled && self.derived {
+            out.push(FEATURE_DERIVED);
+        }
+        out
+    }
+
+    /// Whether a writer with this configuration puts `k` in a pack.
+    pub fn packs(&self, k: &ObjKey) -> bool {
+        match k.class() {
+            KeyClass::Derived => self.derived && k.derived_prefix().is_some(),
+            c => c.packable(),
+        }
+    }
 }
 
 impl Default for PackConfig {
@@ -79,6 +113,7 @@ impl Default for PackConfig {
             min_batch: 16,
             negative_ttl: Duration::from_secs(5),
             dict: Some(format::DictOpts::default()),
+            derived: true,
         }
     }
 }

@@ -147,6 +147,12 @@ pub const fn entry_size(stored: usize) -> usize {
     ENTRY_HEADER_LEN + stored
 }
 
+/// Size of the entry of `k` holding `stored` bytes: a derived value's entry also carries its key
+/// ([`ObjKey::derived_prefix`]).
+pub fn entry_size_of(k: &ObjKey, stored: usize) -> usize {
+    entry_size(stored) + k.derived_prefix().map_or(0, |p| p.len())
+}
+
 /// Builds a version 1 pack of `items`: sorted, one entry per key (the first of a repeated key
 /// wins).
 pub fn build(
@@ -165,7 +171,7 @@ pub fn build_with(
 ) -> Result<BuiltPack, FormatError> {
     let mut items: Vec<(ObjKey, Bytes)> = items.into_iter().collect();
     for (k, v) in &items {
-        if !k.packable() || v.is_empty() || u32::try_from(v.len()).is_err() {
+        if !k.packable() || v.is_empty() || u32::try_from(entry_size_of(k, v.len())).is_err() {
             return Err(FormatError::NotPackable(k.to_string()));
         }
     }
@@ -251,7 +257,7 @@ fn with_dictionary(items: &[(ObjKey, Bytes)], o: &DictOpts) -> Option<(Vec<u8>, 
 }
 
 fn write(id: PackId, magic: &[u8; 8], dict: &[u8], items: &[(ObjKey, Bytes)]) -> BuiltPack {
-    let body: usize = items.iter().map(|(_, v)| entry_size(v.len())).sum();
+    let body: usize = items.iter().map(|(k, v)| entry_size_of(k, v.len())).sum();
     let mut out = BytesMut::with_capacity(HEADER_LEN + dict.len() + body + TRAILER_LEN);
     out.put_slice(magic);
     out.put_u32_le(items.len() as u32);
@@ -259,9 +265,12 @@ fn write(id: PackId, magic: &[u8; 8], dict: &[u8], items: &[(ObjKey, Bytes)]) ->
     out.put_slice(dict);
     let mut entries = Vec::with_capacity(items.len());
     for (k, v) in items {
+        // `build_with` refused a derived value without a writable name.
+        let prefix = k.derived_prefix().unwrap_or_default();
         out.put_u8(k.class().code());
         out.put_slice(&k.id32());
-        out.put_u32_le(v.len() as u32);
+        out.put_u32_le((prefix.len() + v.len()) as u32);
+        out.put_slice(&prefix);
         entries.push(PackEntry {
             key: *k,
             offset: out.len() as u64,
@@ -380,9 +389,25 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<PackEntry>, FormatError> {
                 .try_into()
                 .map_err(|_| FormatError::BadEntry(i))?,
         );
-        let key = ObjKey::from_pack(class, id).ok_or(FormatError::BadEntry(i))?;
-        let offset = (at + ENTRY_HEADER_LEN) as u64;
-        if len == 0 || offset + u64::from(len) > end as u64 {
+        let body = at + ENTRY_HEADER_LEN;
+        if len == 0 || body as u64 + u64::from(len) > end as u64 {
+            return Err(FormatError::BadEntry(i));
+        }
+        // A derived value's entry starts with its key, which must hash to the entry's id.
+        let (key, skip) = if class == KeyClass::Derived {
+            let (k, n) = ObjKey::parse_derived_prefix(&bytes[body..body + len as usize])
+                .filter(|(k, _)| k.id32() == id)
+                .ok_or(FormatError::BadEntry(i))?;
+            (k, n)
+        } else {
+            (
+                ObjKey::from_pack(class, id).ok_or(FormatError::BadEntry(i))?,
+                0,
+            )
+        };
+        let offset = (body + skip) as u64;
+        let len = len - skip as u32;
+        if len == 0 {
             return Err(FormatError::BadEntry(i));
         }
         let sk = (class.code(), id);
@@ -512,6 +537,70 @@ mod tests {
         ));
         let k = ObjKey::File(FileId::of(b"x"));
         assert!(build(PackId::random(), [(k, Bytes::new())]).is_err());
+    }
+
+    fn derived(name: &'static str, version: u32, b: u8) -> ObjKey {
+        ObjKey::Derived {
+            name,
+            version,
+            id: [b; 32],
+        }
+    }
+
+    /// Recomputes the trailer of `bytes` after an edit, so only the entry checks can object.
+    fn reseal(bytes: &mut [u8]) {
+        let end = bytes.len() - TRAILER_LEN;
+        let sum = *blake3::hash(&bytes[..end]).as_bytes();
+        bytes[end..].copy_from_slice(&sum);
+    }
+
+    #[test]
+    fn derived_values_round_trip_named_by_their_entry_prefix() {
+        let mut all = items();
+        let ds: Vec<(ObjKey, Bytes)> = (0..40u8)
+            .map(|i| {
+                let k = derived(if i % 2 == 0 { "blame" } else { "pathsearch" }, 3, i);
+                (k, encode_stored(format!("lines {i} {i} {i}").as_bytes()))
+            })
+            .collect();
+        all.extend(ds.iter().cloned());
+        for opts in [None, Some(opts())] {
+            let p = build_with(PackId::random(), all.clone(), opts.as_ref()).unwrap();
+            let parsed = parse(&p.bytes).unwrap();
+            assert_eq!(parsed, p.entries);
+            assert_eq!(parsed.len(), all.len());
+            let r = PackReader::new(&p.bytes).unwrap();
+            for (k, v) in &all {
+                let e = parsed.iter().find(|e| e.key == *k).unwrap();
+                assert_eq!(r.entry(e).unwrap(), *v, "{k}");
+            }
+        }
+
+        // Sizes count the prefix, so groups that fill to a limit still fit it.
+        let (k, v) = &ds[0];
+        assert_eq!(
+            entry_size_of(k, v.len()),
+            entry_size(v.len()) + k.derived_prefix().unwrap().len()
+        );
+
+        // A prefix naming another key than the entry's id is refused even under a good trailer.
+        let one = build(PackId::random(), [ds[0].clone()]).unwrap();
+        let mut bad = one.bytes.to_vec();
+        let body = HEADER_LEN + ENTRY_HEADER_LEN;
+        bad[body + 1 + 5 + 4] ^= 1; // the first id byte of the prefix
+        reseal(&mut bad);
+        assert_eq!(parse(&bad), Err(FormatError::BadEntry(0)));
+        let mut cut = one.bytes.to_vec();
+        cut[body] = 200; // a name length past the entry
+        reseal(&mut cut);
+        assert_eq!(parse(&cut), Err(FormatError::BadEntry(0)));
+
+        // A name the prefix cannot carry is not packable.
+        let k = derived("a/b", 1, 0);
+        assert!(matches!(
+            build(PackId::random(), [(k, encode_stored(b"v"))]),
+            Err(FormatError::NotPackable(_))
+        ));
     }
 
     /// Values shaped like trees and change records: much shared structure, little shared text.

@@ -194,10 +194,10 @@ impl BucketObjects {
     /// With `cfg.enabled` off it only reads; that is the default of every bucket-mode opener.
     #[must_use]
     pub fn with_bucket_packs(self, cfg: super::PackConfig) -> Self {
-        let index = Arc::new(super::BucketPackIndex::new(
-            self.store.clone(),
-            self.root.clone(),
-        ));
+        let index = Arc::new(
+            super::BucketPackIndex::new(self.store.clone(), self.root.clone())
+                .with_features(cfg.features()),
+        );
         let layer = Arc::new(PackLayer::new(index, cfg));
         self.with_packs(layer)
     }
@@ -588,7 +588,14 @@ impl BucketObjects {
         let cfg = l.config();
         let (small, loose): (Vec<_>, Vec<_>) = todo
             .into_iter()
-            .partition(|(k, v)| k.packable() && v.len() <= cfg.max_object);
+            .partition(|(k, v)| cfg.packs(k) && v.len() <= cfg.max_object);
+        // Derived values go in packs of their own: a reader that cannot read their entries
+        // loses only recomputable values.
+        let (mut small, derived): (Vec<_>, Vec<_>) = small
+            .into_iter()
+            .partition(|(k, _)| k.class() != KeyClass::Derived);
+        let split = small.len();
+        small.extend(derived);
         if !l.writes_ready() || small.len() < cfg.min_batch {
             let mut all = small;
             all.extend(loose);
@@ -598,10 +605,12 @@ impl BucketObjects {
         let mut groups: Vec<Vec<(ObjKey, Bytes)>> = Vec::new();
         let mut cur: Vec<(ObjKey, Bytes)> = Vec::new();
         let mut size = format::HEADER_LEN + format::TRAILER_LEN;
-        for (k, v) in small {
-            let add = format::entry_size(v.len());
+        for (i, (k, v)) in small.into_iter().enumerate() {
+            let add = format::entry_size_of(&k, v.len());
             if !cur.is_empty()
-                && (cur.len() >= cfg.max_objects || (size + add) as u64 > cfg.max_size)
+                && (i == split
+                    || cur.len() >= cfg.max_objects
+                    || (size + add) as u64 > cfg.max_size)
             {
                 groups.push(std::mem::take(&mut cur));
                 size = format::HEADER_LEN + format::TRAILER_LEN;
