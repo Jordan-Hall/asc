@@ -16,7 +16,11 @@
 //!   placeholder, hydrated, dirty or full file with every `ALLOW_*` data flag, so the path becomes
 //!   virtual and enumerates from the target tree; a tombstone is cleared with `ALLOW_TOMBSTONE`
 //!   (FORCE, or the target has no such entry), and so is a tombstoned ancestor directory.
-//!   Untracked full files are never touched.
+//!   Untracked full files are never touched. Git's rule decides what is dirty: a full file whose
+//!   bytes are still the old tree's version (edited and then committed, or changed back) is
+//!   clean, so it becomes virtual again like a clean placeholder. Its bytes are compared while it
+//!   is open without write sharing, so no writer can open it meanwhile; as in git, a write that
+//!   starts between the comparison and the update is the caller's race.
 //! * A path held open (sharing violation) is retried at 100, 300 and 900 ms, then stays in the
 //!   intent as pending; [`ProjfsProvider::resume`] retries pending paths (the daemon calls it every
 //!   5 s).
@@ -33,7 +37,6 @@ use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::sync::Mutex;
 use std::sync::atomic::Ordering;
 
-#[cfg(test)]
 use asc_core::id::TreeId;
 use asc_core::object::Kind;
 use asc_core::path::RepoPath;
@@ -55,6 +58,8 @@ pub use crate::win::engine::{MAX_THREADS, RETRY_DELAYS, Report, Request, Store};
 
 const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
 const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+/// `FILE_SHARE_READ | FILE_SHARE_DELETE`: no writer can open the file meanwhile.
+const SHARE_READ_DELETE: u32 = 0x1 | 0x4;
 /// `ALLOW_DIRTY_METADATA | ALLOW_READ_ONLY`.
 const SAFE_FLAGS: u32 = update::ALLOW_DIRTY_METADATA | update::ALLOW_READ_ONLY;
 /// `SAFE_FLAGS | ALLOW_DIRTY_DATA`.
@@ -73,6 +78,9 @@ struct Run<'a> {
     ctx: usize,
     mode: Mode,
     time: i64,
+    /// The tree the work tree was at before the switch, when known: what decides whether a
+    /// written file still holds the old version.
+    from: Option<TreeId>,
     anc: Mutex<HashMap<RepoPath, Anc>>,
     added: Mutex<Vec<RepoPath>>,
 }
@@ -106,12 +114,13 @@ fn is_tree(node: &Node) -> bool {
 }
 
 impl<'a> Run<'a> {
-    fn new(inner: &'a Inner, mode: Mode, time: i64) -> Self {
+    fn new(inner: &'a Inner, mode: Mode, time: i64, from: Option<TreeId>) -> Self {
         Self {
             inner,
             ctx: inner.ctx.load(Ordering::SeqCst),
             mode,
             time,
+            from,
             anc: Mutex::new(HashMap::new()),
             added: Mutex::new(Vec::new()),
         }
@@ -131,6 +140,38 @@ impl<'a> Run<'a> {
 
     fn target(&self, path: &RepoPath) -> io::Result<Option<Node>> {
         block(&self.inner.cfg.rt, self.inner.cfg.core.resolve(path)).map_err(vfs)
+    }
+
+    /// Whether the file at `abs` holds the old tree's version of `path`. It is read while open
+    /// with read and delete sharing only, so no writer can open it meanwhile.
+    fn unchanged(&self, path: &RepoPath, abs: &std::path::Path) -> bool {
+        let Some(from) = self.from else {
+            return false;
+        };
+        let old = block(
+            &self.inner.cfg.rt,
+            self.inner.cfg.core.resolve_at(from, path),
+        );
+        let Ok(Some(old)) = old else {
+            return false;
+        };
+        if !matches!(old.kind, Kind::File | Kind::Exec) {
+            return false;
+        }
+        let Ok(file) = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(SHARE_READ_DELETE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(abs)
+        else {
+            return false;
+        };
+        match file.metadata() {
+            Ok(m) if m.is_file() => {
+                crate::win::same::holds(&mut &file, m.len(), &old).unwrap_or(false)
+            }
+            _ => false,
+        }
     }
 
     fn finish((hr, cause): (ffi::Hresult, u32)) -> Out {
@@ -229,7 +270,7 @@ impl<'a> Run<'a> {
             if work != Work::Delete {
                 return Ok(Out::Done);
             }
-            return Ok(self.remove(&rel, &abs, bits));
+            return Ok(self.remove(path, &rel, &abs));
         };
         if is_tree(&node) {
             if on_disk_dir {
@@ -239,7 +280,7 @@ impl<'a> Run<'a> {
                 ));
             }
             // A file on disk where the target has a directory.
-            return Ok(self.remove(&rel, &abs, bits));
+            return Ok(self.remove(path, &rel, &abs));
         }
         if on_disk_dir {
             // A directory on disk where the target has a file: its children were deleted first.
@@ -258,13 +299,25 @@ impl<'a> Run<'a> {
             // A clean placeholder refused for another reason (read-only data): in use.
             return Ok(Out::InUse("update refused".into()));
         }
+        if matches!(out, Out::DirtySkipped) && self.unchanged(path, &abs) {
+            // Written, but the bytes are the old tree's: clean by git's rule.
+            let out = self.replace(&rel, &abs);
+            if matches!(out, Out::Done) {
+                self.note_added(path);
+            }
+            return Ok(out);
+        }
         Ok(out)
     }
 
-    /// Deletes a tracked path the target does not have.
-    fn remove(&self, rel: &[u16], abs: &std::path::Path, _bits: u32) -> Out {
+    /// Deletes a tracked path the target does not have. A written file goes only in FORCE mode,
+    /// or when its bytes are the old tree's version.
+    fn remove(&self, path: &RepoPath, rel: &[u16], abs: &std::path::Path) -> Out {
         let hr = self.delete(rel, self.flags());
         let out = Self::finish(hr);
+        if !self.force() && matches!(out, Out::DirtySkipped) && self.unchanged(path, abs) {
+            return self.replace(rel, abs);
+        }
         if self.force() && matches!(out, Out::InUse(_)) && !is_sharing(hr.0) {
             return self.delete_by_hand(rel, abs, out);
         }
@@ -397,7 +450,7 @@ impl ProjfsProvider {
         let _live = inner.begin().ok_or(VfsError::NotMounted)?;
         let store = self.intent_store();
         engine::switch(store.as_ref(), &inner.cfg.core, &inner.cfg.rt, req, || {
-            Run::new(&inner, req.mode, times.time)
+            Run::new(&inner, req.mode, times.time, Some(req.from_root))
         })
     }
 
@@ -408,8 +461,8 @@ impl ProjfsProvider {
         let inner = self.inner().ok_or(VfsError::NotMounted)?;
         let _live = inner.begin().ok_or(VfsError::NotMounted)?;
         let store = self.intent_store();
-        engine::resume(store.as_ref(), &inner.cfg.core, &inner.cfg.rt, |_| {
-            Run::new(&inner, Mode::Safe, time)
+        engine::resume(store.as_ref(), &inner.cfg.core, &inner.cfg.rt, |from| {
+            Run::new(&inner, Mode::Safe, time, Some(from))
         })
     }
 
@@ -417,7 +470,7 @@ impl ProjfsProvider {
     pub(crate) fn apply_plan(&self, plan: &Plan, times: Switched) -> Result<SwitchOutcome> {
         let inner = self.inner().ok_or(VfsError::NotMounted)?;
         let _live = inner.begin().ok_or(VfsError::NotMounted)?;
-        engine::apply_plan(&Run::new(&inner, Mode::Safe, times.time), plan)
+        engine::apply_plan(&Run::new(&inner, Mode::Safe, times.time, None), plan)
     }
 }
 
@@ -676,6 +729,32 @@ pub(crate) mod tests {
         assert_eq!(rep.dirty_skipped, [p("a.txt")], "{rep:?}");
         assert_eq!(std::fs::read(lab.at("a.txt")).unwrap(), b"mine");
         assert_eq!(std::fs::read(lab.at("z.txt")).unwrap(), b"zulu");
+    }
+
+    #[test]
+    #[ignore = "needs Windows with Client-ProjFS enabled"]
+    fn safe_mode_moves_written_files_that_hold_the_old_bytes() {
+        let Some(lab) = Lab::new(V1) else { return };
+        lab.hydrate(V1);
+        // Written back to the old bytes: clean by git's rule.
+        std::fs::write(lab.at("a.txt"), b"alpha").unwrap();
+        std::fs::write(lab.at("b.txt"), b"bravo").unwrap();
+        // An edit of its own: stays.
+        std::fs::write(lab.at("c.txt"), b"mine").unwrap();
+        let v3: &[(&str, &[u8])] = &[
+            ("a.txt", b"alpha three"),
+            ("c.txt", b"charlie three"),
+            ("d.txt", b"delta"),
+            ("e.txt", b"echo"),
+            ("sub/x.txt", b"xray"),
+            ("src/main.rs", b"fn main() {}"),
+        ];
+        let rep = lab.run(V1, v3, Mode::Safe, &[], T).unwrap();
+        assert_eq!(rep.dirty_skipped, [p("c.txt")], "{rep:?}");
+        assert!(rep.pending.is_empty(), "{rep:?}");
+        assert!(!lab.at("b.txt").exists());
+        assert_eq!(std::fs::read(lab.at("a.txt")).unwrap(), b"alpha three");
+        assert_eq!(std::fs::read(lab.at("c.txt")).unwrap(), b"mine");
     }
 
     #[test]

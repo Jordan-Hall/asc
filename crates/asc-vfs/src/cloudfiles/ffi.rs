@@ -636,23 +636,62 @@ pub fn convert(p: &Path, identity: &[u8], in_sync: bool, on_demand: bool) -> io:
         if on_demand {
             flags |= CF_CONVERT_FLAG_ENABLE_ON_DEMAND_POPULATION.0;
         }
-        // SAFETY: a valid handle; the identity outlives the call.
-        unsafe {
-            CfConvertToPlaceholder(
-                h.0,
-                Some(identity.as_ptr().cast::<c_void>()),
-                identity.len() as u32,
-                CF_CONVERT_FLAGS(flags),
-                None,
-                None,
-            )
-        }
-        .map_err(|e| io_err(&e))
+        convert_open(&h, identity, CF_CONVERT_FLAGS(flags))
     })();
     if cleared {
         set_attributes(p, attrs)?;
     }
     done
+}
+
+/// Turns the plain file open as `h` into a placeholder with `identity`.
+pub fn convert_open(h: &Handle, identity: &[u8], flags: CF_CONVERT_FLAGS) -> io::Result<()> {
+    // SAFETY: a valid handle; the identity outlives the call.
+    unsafe {
+        CfConvertToPlaceholder(
+            h.0,
+            Some(identity.as_ptr().cast::<c_void>()),
+            identity.len() as u32,
+            flags,
+            None,
+            None,
+        )
+    }
+    .map_err(|e| io_err(&e))
+}
+
+/// Marks the placeholder open as `h` in sync: its data is what its identity names.
+pub fn set_in_sync(h: &Handle) -> io::Result<()> {
+    // SAFETY: a valid handle.
+    unsafe {
+        CfSetInSyncState(
+            h.0,
+            CF_IN_SYNC_STATE_IN_SYNC,
+            CF_SET_IN_SYNC_FLAG_NONE,
+            None,
+        )
+    }
+    .map_err(|e| io_err(&e))
+}
+
+/// Deletes the file open as `h` (opened with `DELETE` access) when the handle closes.
+pub fn delete_on_close(h: &Handle) -> io::Result<()> {
+    use windows::Win32::Storage::FileSystem::{
+        FILE_DISPOSITION_INFO, FileDispositionInfo, SetFileInformationByHandle,
+    };
+    let info = FILE_DISPOSITION_INFO {
+        DeleteFile: true.into(),
+    };
+    // SAFETY: a valid handle; the structure outlives the call and its size is passed.
+    unsafe {
+        SetFileInformationByHandle(
+            h.0,
+            FileDispositionInfo,
+            std::ptr::from_ref(&info).cast::<c_void>(),
+            std::mem::size_of::<FILE_DISPOSITION_INFO>() as u32,
+        )
+    }
+    .map_err(|e| io_err(&e))
 }
 
 /// Drops the data of the file open as `h`, keeping the placeholder.

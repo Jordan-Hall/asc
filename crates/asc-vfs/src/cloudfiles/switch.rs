@@ -9,7 +9,11 @@
 //!   the next read hydrates the new version. A write that lands between the probe and the update
 //!   fails the in-sync check (`ERROR_CLOUD_FILE_NOT_IN_SYNC`) and the path counts as dirty.
 //! * A dirty file (not a placeholder, out of sync, or a link the user made) is left alone in SAFE
-//!   and MERGE; FORCE deletes it and puts a placeholder of the target in its place.
+//!   and MERGE; FORCE deletes it and puts a placeholder of the target in its place. Git's rule
+//!   decides what is dirty: a file whose bytes are still the old tree's version (edited and then
+//!   committed, or changed back) is clean. Such a file is held with no sharing while its bytes
+//!   are compared and until it is rewritten (marked in sync, or converted back to a placeholder,
+//!   then moved to the target) or deleted, so no write can land in between.
 //! * A path with nothing on disk is created as a placeholder when its parent directory is listed.
 //!   Below a directory that was never listed nothing is done: the directory's identity moves to
 //!   the target tree, so its listing on demand is the new tree. A tracked path the user deleted
@@ -33,8 +37,8 @@ use asc_wc::intent::Replayed;
 use asc_wc::switch::{Mode, Plan};
 use asc_wc::times::Switched;
 use windows::Win32::Storage::CloudFilters::{
-    CF_UPDATE_FLAG_DEHYDRATE, CF_UPDATE_FLAG_MARK_IN_SYNC, CF_UPDATE_FLAG_VERIFY_IN_SYNC,
-    CF_UPDATE_FLAGS,
+    CF_CONVERT_FLAG_MARK_IN_SYNC, CF_PLACEHOLDER_STATE_PARTIAL, CF_UPDATE_FLAG_DEHYDRATE,
+    CF_UPDATE_FLAG_MARK_IN_SYNC, CF_UPDATE_FLAG_VERIFY_IN_SYNC, CF_UPDATE_FLAGS,
 };
 
 use super::Ident;
@@ -70,8 +74,33 @@ fn is_dirty_file(p: &Probe) -> bool {
     p.is_foreign_reparse() || !p.is_placeholder() || !p.in_sync
 }
 
-/// One directory of the old tree: lower-case child name to the subtree id of a directory child.
-type OldDir = std::sync::Arc<HashMap<Vec<u8>, Option<TreeId>>>;
+/// Whether every byte of the placeholder `p` is on disk (a written placeholder is; one still
+/// being hydrated is not).
+fn data_on_disk(p: &Probe) -> bool {
+    const RECALL_ON_DATA_ACCESS: u32 = 0x40_0000;
+    p.state & CF_PLACEHOLDER_STATE_PARTIAL.0 == 0 && p.attrs & RECALL_ON_DATA_ACCESS == 0
+}
+
+/// One directory of the old tree: lower-case child name to the child, with the subtree id of a
+/// directory child.
+type OldDir = std::sync::Arc<HashMap<Vec<u8>, (Option<TreeId>, Node)>>;
+
+/// `FILE_READ_DATA | FILE_WRITE_DATA | FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES`.
+const ACCESS_REWRITE: u32 = 0x1 | 0x2 | 0x80 | 0x100;
+/// `FILE_READ_DATA | FILE_READ_ATTRIBUTES | DELETE`.
+const ACCESS_DELETE: u32 = 0x1 | 0x80 | 0x1_0000;
+/// `FILE_FLAG_OPEN_REPARSE_POINT`.
+const OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+
+/// A dirty file compared with the old tree.
+enum Held {
+    /// Its bytes are the old tree's version; the file is open with no sharing.
+    Same(ffi::Handle, Node),
+    /// It holds changes of its own (or cannot be compared): it stays dirty.
+    Dirty,
+    /// Another process holds it.
+    Busy(Out),
+}
 
 fn lower(name: &[u8]) -> Vec<u8> {
     name.to_ascii_lowercase()
@@ -125,9 +154,10 @@ impl<'a> Run<'a> {
         }
         let tree = match dir {
             None => Some(from),
-            Some(d) => self
-                .old_names(d.parent().as_ref())?
-                .and_then(|m| m.get(&lower(d.file_name().as_bytes())).copied().flatten()),
+            Some(d) => self.old_names(d.parent().as_ref())?.and_then(|m| {
+                m.get(&lower(d.file_name().as_bytes()))
+                    .and_then(|(t, _)| *t)
+            }),
         };
         let names = match tree {
             None => None,
@@ -144,7 +174,7 @@ impl<'a> Run<'a> {
                         .map(|n| {
                             let sub =
                                 (is_tree(n) && n.id != [0; 32]).then(|| TreeId::from_bytes(n.id));
-                            (lower(n.path.file_name().as_bytes()), sub)
+                            (lower(n.path.file_name().as_bytes()), (sub, n.clone()))
                         })
                         .collect(),
                 ))
@@ -163,6 +193,90 @@ impl<'a> Run<'a> {
         Ok(self
             .old_names(path.parent().as_ref())?
             .is_some_and(|n| n.contains_key(&lower(path.file_name().as_bytes()))))
+    }
+
+    /// The old tree's entry at `path`, when the old tree is known.
+    fn old_node(&self, path: &RepoPath) -> io::Result<Option<Node>> {
+        Ok(self.old_names(path.parent().as_ref())?.and_then(|n| {
+            n.get(&lower(path.file_name().as_bytes()))
+                .map(|(_, node)| node.clone())
+        }))
+    }
+
+    /// Opens the dirty file at `abs` with `access` and no sharing, and compares its bytes with
+    /// the old tree's version of `path`.
+    fn hold_unchanged(&self, path: &RepoPath, abs: &Path, p: &Probe, access: u32) -> Held {
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::os::windows::io::IntoRawHandle;
+        // A link, a directory, a read-only file (its attribute would have to change first) or
+        // a placeholder whose data is not all on disk keeps its state.
+        if p.is_foreign_reparse()
+            || p.is_dir()
+            || p.attrs & ffi::FILE_ATTRIBUTE_READONLY != 0
+            || (p.is_placeholder() && !data_on_disk(p))
+        {
+            return Held::Dirty;
+        }
+        let Ok(Some(old)) = self.old_node(path) else {
+            return Held::Dirty;
+        };
+        if !matches!(old.kind, Kind::File | Kind::Exec) {
+            return Held::Dirty;
+        }
+        let file = match std::fs::OpenOptions::new()
+            .access_mode(access)
+            .share_mode(0)
+            .custom_flags(OPEN_REPARSE_POINT)
+            .open(abs)
+        {
+            Ok(f) => f,
+            Err(e) if ffi::is_in_use(&e) => return Held::Busy(busy(&e)),
+            Err(_) => return Held::Dirty,
+        };
+        let len = match file.metadata() {
+            Ok(m) => m.len(),
+            Err(_) => return Held::Dirty,
+        };
+        match crate::win::same::holds(&mut &file, len, &old) {
+            Ok(true) => Held::Same(
+                ffi::Handle(windows::Win32::Foundation::HANDLE(file.into_raw_handle())),
+                old,
+            ),
+            _ => Held::Dirty,
+        }
+    }
+
+    /// A dirty file in SAFE or MERGE mode whose bytes are the old tree's version moves to `node`
+    /// like a clean placeholder; any other stays as it is.
+    fn rewrite_committed(&self, path: &RepoPath, abs: &Path, p: &Probe, node: &Node) -> Out {
+        let (h, old) = match self.hold_unchanged(path, abs, p, ACCESS_REWRITE) {
+            Held::Same(h, old) => (h, old),
+            Held::Dirty => return Out::DirtySkipped,
+            Held::Busy(out) => return out,
+        };
+        let back_in_sync = if p.is_placeholder() {
+            ffi::set_in_sync(&h)
+        } else {
+            ffi::convert_open(&h, &Ident::of(&old).encode(), CF_CONVERT_FLAG_MARK_IN_SYNC)
+        };
+        let want = Ident::of(node);
+        let meta = ffi::metadata(false, node.size, self.time, node.read_only);
+        let mut flags = CF_UPDATE_FLAG_MARK_IN_SYNC.0;
+        if want != Ident::of(&old) {
+            flags |= CF_UPDATE_FLAG_DEHYDRATE.0;
+        }
+        let moved = back_in_sync.and_then(|()| {
+            ffi::update(
+                &h,
+                Some(&want.encode()),
+                Some(&meta),
+                CF_UPDATE_FLAGS(flags),
+            )
+        });
+        match moved {
+            Ok(()) => Out::Done,
+            Err(e) => busy(&e),
+        }
     }
 
     /// Creates the placeholder of `node` in its parent directory.
@@ -298,7 +412,7 @@ impl<'a> Run<'a> {
             if work != Work::Delete {
                 return Ok(Out::Done);
             }
-            return Ok(self.remove(&abs, &p));
+            return Ok(self.remove(path, &abs, &p));
         };
         if is_tree(&node) {
             if p.is_dir() && !p.is_foreign_reparse() {
@@ -311,7 +425,7 @@ impl<'a> Run<'a> {
                 return Ok(Out::Done);
             }
             // A file where the target has a directory.
-            return self.then_create(self.remove(&abs, &p), &node);
+            return self.then_create(self.remove(path, &abs, &p), &node);
         }
         if p.is_dir() && !p.is_foreign_reparse() {
             // A directory where the target has a file: its children were deleted first.
@@ -326,7 +440,7 @@ impl<'a> Run<'a> {
         }
         if is_dirty_file(&p) {
             if !self.force() {
-                return Ok(Out::DirtySkipped);
+                return Ok(self.rewrite_committed(path, &abs, &p, &node));
             }
             return self.then_create(self.delete_file(&abs, &p), &node);
         }
@@ -402,8 +516,9 @@ impl<'a> Run<'a> {
         }
     }
 
-    /// Deletes a tracked path the target does not have.
-    fn remove(&self, abs: &Path, p: &Probe) -> Out {
+    /// Deletes a tracked path the target does not have. A dirty file goes only in FORCE mode, or
+    /// when its bytes are the old tree's version.
+    fn remove(&self, path: &RepoPath, abs: &Path, p: &Probe) -> Out {
         if p.is_dir() && !p.is_foreign_reparse() {
             return match std::fs::remove_dir(abs) {
                 Ok(()) => Out::Done,
@@ -413,7 +528,14 @@ impl<'a> Run<'a> {
             };
         }
         if is_dirty_file(p) && !self.force() {
-            return Out::DirtySkipped;
+            return match self.hold_unchanged(path, abs, p, ACCESS_DELETE) {
+                Held::Same(h, _) => match ffi::delete_on_close(&h) {
+                    Ok(()) => Out::Done,
+                    Err(e) => busy(&e),
+                },
+                Held::Dirty => Out::DirtySkipped,
+                Held::Busy(out) => out,
+            };
         }
         self.delete_file(abs, p)
     }

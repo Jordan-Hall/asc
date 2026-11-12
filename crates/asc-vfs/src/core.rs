@@ -370,11 +370,17 @@ impl CoreFs {
 
     /// Resolves `path` against the base tree. `None` when it is absent, filtered, or unsafe.
     pub async fn resolve(&self, path: &RepoPath) -> Result<Option<Node>> {
+        self.resolve_at(self.root(), path).await
+    }
+
+    /// Resolves `path` against the tree `root`, with the rules of [`CoreFs::resolve`]: a switch
+    /// reads the tree the work tree was at before it.
+    pub async fn resolve_at(&self, root: TreeId, path: &RepoPath) -> Result<Option<Node>> {
         if !checkout_safe(path) || self.opts.redirections.covers(path) {
             return Ok(None);
         }
         let total = path.components().count();
-        let mut dir = self.load_dir(self.root()).await?;
+        let mut dir = self.load_dir(root).await?;
         let mut read_only = false;
         let mut canon: Vec<u8> = Vec::with_capacity(path.as_bytes().len());
         for (i, comp) in path.components().enumerate() {

@@ -28,6 +28,7 @@ pub mod engine;
 pub mod host;
 pub mod idle;
 pub mod paths;
+pub mod same;
 pub mod select;
 #[cfg(test)]
 pub mod testkit;
