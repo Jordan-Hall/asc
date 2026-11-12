@@ -24,6 +24,8 @@ use crate::core::CoreFs;
 pub mod inodes;
 pub mod merged;
 pub mod overlay;
+#[cfg(test)]
+pub(crate) mod testkit;
 
 pub use merged::{Disk, MergedFs};
 

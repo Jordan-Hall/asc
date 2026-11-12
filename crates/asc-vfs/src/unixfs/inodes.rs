@@ -369,6 +369,54 @@ impl InodeTable {
         Ok(Some(ino))
     }
 
+    /// Makes `ino` live again from its persisted path, for a protocol whose clients keep inode
+    /// numbers without lookups (NFS file handles). Counts one lookup of `ino` when it answers
+    /// `true`; `false` when the number names no path any more, or the path now has another
+    /// number.
+    pub fn revive(&self, ino: u64) -> io::Result<bool> {
+        if ino == ROOT {
+            return Ok(true);
+        }
+        {
+            let mut g = self.lock();
+            if let Some(e) = g.ents.get_mut(&ino)
+                && e.parent != 0
+            {
+                e.lookups += 1;
+                return Ok(true);
+            }
+            if g.ents.contains_key(&ino) {
+                // Unlinked while still remembered: the number names nothing.
+                return Ok(false);
+            }
+        }
+        let Some(path) = self.store.path_of(ino)? else {
+            return Ok(false);
+        };
+        let names: Vec<&[u8]> = path.split(|&b| b == b'/').collect();
+        if names.len() > MAX_TREE_DEPTH || names.iter().any(|n| n.is_empty()) {
+            return Ok(false);
+        }
+        let mut cur = ROOT;
+        let mut held: Vec<u64> = Vec::with_capacity(names.len());
+        for n in &names {
+            match self.lookup(cur, n)? {
+                Some(i) => {
+                    held.push(i);
+                    cur = i;
+                }
+                None => break,
+            }
+        }
+        let found = held.len() == names.len() && cur == ino;
+        // Keep one lookup of the target; the ancestors stay alive through it.
+        let keep = usize::from(found);
+        for &i in held.iter().rev().skip(keep) {
+            self.forget(i, 1);
+        }
+        Ok(found)
+    }
+
     /// Live node count, for tests and statistics.
     pub fn live(&self) -> usize {
         self.lock().ents.len()
@@ -493,5 +541,34 @@ mod tests {
     fn lookup_below_an_unknown_parent_is_none() {
         let t = table(&Arc::new(MemInodes::default()));
         assert_eq!(t.lookup(99, b"x").unwrap(), None);
+    }
+
+    #[test]
+    fn revive_restores_a_forgotten_number_from_its_path() {
+        let store = Arc::new(MemInodes::default());
+        let t = table(&store);
+        let a = t.lookup(ROOT, b"a").unwrap().unwrap();
+        let ax = t.lookup(a, b"x").unwrap().unwrap();
+        t.forget(ax, 1);
+        t.forget(a, 1);
+        // Only the root is live.
+        assert_eq!(t.live(), 1);
+        assert!(t.revive(ROOT).unwrap());
+        // Revived through its persisted path, with one lookup and its parent kept by it.
+        assert!(t.revive(ax).unwrap());
+        assert_eq!(t.path_of(ax).unwrap(), b"a/x");
+        assert_eq!(t.live(), 3);
+        // A live number only counts another lookup.
+        assert!(t.revive(ax).unwrap());
+        t.forget(ax, 2);
+        assert_eq!(t.live(), 1);
+        // A number whose path is gone, or that was never handed out, names nothing.
+        let b = t.lookup(ROOT, b"b").unwrap().unwrap();
+        t.unlink(ROOT, b"b").unwrap();
+        assert!(!t.revive(b).unwrap());
+        t.forget(b, 1);
+        assert!(!t.revive(b).unwrap());
+        assert!(!t.revive(9_999).unwrap());
+        assert_eq!(t.live(), 1);
     }
 }

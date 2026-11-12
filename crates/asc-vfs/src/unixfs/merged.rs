@@ -200,6 +200,7 @@ pub(crate) struct OpenFile {
 }
 
 /// What [`MergedFs::open`] opened.
+#[cfg(all(feature = "fuse", target_os = "linux"))]
 pub(crate) struct Opened {
     pub(crate) fh: u64,
     /// A clean base file: the front end may hand it to the kernel (passthrough) or cache it.
@@ -371,6 +372,7 @@ impl MergedFs {
 
     /// Whether `ino` is a file of the base tree that nobody wrote to: its bytes are the tree's,
     /// so a caller that knows the tree need not read (and fetch) them.
+    #[cfg(all(feature = "fuse", target_os = "linux"))]
     pub(crate) fn projected(&self, ino: u64) -> Res<bool> {
         let Some(p) = self.loc(ino)? else {
             return Ok(false);
@@ -826,6 +828,7 @@ impl MergedFs {
 
     /// Opens a file. `write` and `read` are the access asked for; `trunc` throws the content
     /// away first. `image` names the process, for the hydration policy.
+    #[cfg(all(feature = "fuse", target_os = "linux"))]
     pub(crate) fn open(
         &self,
         image: &str,
@@ -834,6 +837,21 @@ impl MergedFs {
         write: bool,
         trunc: bool,
     ) -> Res<Opened> {
+        let (h, base) = self.open_file(image, ino, read, write, trunc)?;
+        let fh = self.new_handle(h)?;
+        Ok(Opened { fh, base })
+    }
+
+    /// [`Self::open`] without a handle number: the caller keeps the file (the NFS front end,
+    /// whose protocol has no open). Answers whether it is a clean base file.
+    pub(crate) fn open_file(
+        &self,
+        image: &str,
+        ino: u64,
+        read: bool,
+        write: bool,
+        trunc: bool,
+    ) -> Res<(OpenFile, bool)> {
         let p = self.loc(ino)?.ok_or(Errno::ISDIR)?;
         let f = self.view(&p)?.ok_or(Errno::NOENT)?;
         match f.kind() {
@@ -866,11 +884,13 @@ impl MergedFs {
                 .map_err(errno)?;
             self.journal.record(Op::Modified, p.as_bytes());
             self.notify().content(ino);
-            let fh = self.new_handle(OpenFile {
-                file,
-                writable: true,
-            })?;
-            return Ok(Opened { fh, base: false });
+            return Ok((
+                OpenFile {
+                    file,
+                    writable: true,
+                },
+                false,
+            ));
         }
         match &f.src {
             Src::Over(_) => {
@@ -878,29 +898,35 @@ impl MergedFs {
                     .overlay
                     .open_file(&p, true, false, false, false)
                     .map_err(errno)?;
-                let fh = self.new_handle(OpenFile {
-                    file,
-                    writable: false,
-                })?;
-                Ok(Opened { fh, base: false })
+                Ok((
+                    OpenFile {
+                        file,
+                        writable: false,
+                    },
+                    false,
+                ))
             }
             Src::Base(n) => {
                 let file = self.base_file(image, &p, n)?;
-                let fh = self.new_handle(OpenFile {
-                    file,
-                    writable: false,
-                })?;
-                Ok(Opened { fh, base: true })
+                Ok((
+                    OpenFile {
+                        file,
+                        writable: false,
+                    },
+                    true,
+                ))
             }
             Src::Link => Err(Errno::LOOP),
         }
     }
 
+    #[cfg(all(feature = "fuse", target_os = "linux"))]
     pub(crate) fn read(&self, fh: u64, offset: u64, size: u32) -> Res<Vec<u8>> {
         let h = self.handle(fh)?;
         read_at(&h.file, offset, size)
     }
 
+    #[cfg(all(feature = "fuse", target_os = "linux"))]
     pub(crate) fn write(&self, fh: u64, offset: u64, data: &[u8]) -> Res<u32> {
         let h = self.handle(fh)?;
         if !h.writable {
@@ -1266,6 +1292,7 @@ impl MergedFs {
         Ok(Snapshot { entries, parent })
     }
 
+    #[cfg(all(feature = "fuse", target_os = "linux"))]
     pub(crate) fn opendir(&self, ino: u64) -> Res<u64> {
         let snap = self.list(ino)?;
         let mut ds = lock(&self.dirs);
@@ -1277,10 +1304,12 @@ impl MergedFs {
         Ok(fh)
     }
 
+    #[cfg(all(feature = "fuse", target_os = "linux"))]
     pub(crate) fn snapshot(&self, fh: u64) -> Res<Arc<Snapshot>> {
         lock(&self.dirs).get(&fh).cloned().ok_or(Errno::BADF)
     }
 
+    #[cfg(all(feature = "fuse", target_os = "linux"))]
     pub(crate) fn releasedir(&self, fh: u64) {
         lock(&self.dirs).remove(&fh);
     }
@@ -1338,8 +1367,10 @@ impl MergedFs {
         Ok(())
     }
 
-    /// Forgets the entries and inodes that changed behind the kernel's back.
-    fn invalidate(&self, changed: &[RepoPath]) {
+    /// Forgets the entries and inodes that changed behind the kernel's back. A changed path
+    /// whose type is what it was (`before`) keeps its number: its content and attributes are
+    /// dropped from caches, but handles to it (NFS file handles, open FUSE files) stay valid.
+    fn invalidate(&self, changed: &[RepoPath], before: &HashMap<RepoPath, VKind>) {
         let n = self.notify();
         let mut touched: HashSet<u64> = HashSet::new();
         for p in changed {
@@ -1353,8 +1384,16 @@ impl MergedFs {
                 let Some(ino) = self.table.find(&q) else {
                     continue;
                 };
-                let gone = q != *p && !matches!(self.view(&q), Ok(Some(_)));
-                if q == *p || gone {
+                let now = self.view(&q).ok().flatten().map(|f| f.kind());
+                let replaced = if q == *p {
+                    now.is_none() || now != before.get(p).copied()
+                } else {
+                    now.is_none()
+                };
+                if q == *p && !replaced {
+                    n.content(ino);
+                }
+                if replaced {
                     let parent = self.table.parent_of(ino).unwrap_or(ROOT);
                     let name = q.file_name().as_bytes().to_vec();
                     let _ = self.table.unlink(parent, &name);
@@ -1377,6 +1416,14 @@ impl MergedFs {
             return Err(VfsError::Conflicts);
         }
         let mut changed = Vec::with_capacity(plan.updates.len() + plan.deletes.len());
+        // What each changed path was, so a path that keeps its type keeps its number.
+        let before: HashMap<RepoPath, VKind> = plan
+            .updates
+            .iter()
+            .map(|(p, _)| p)
+            .chain(&plan.deletes)
+            .filter_map(|p| Some((p.clone(), self.view(p).ok()??.kind())))
+            .collect();
         {
             let _g = lock(&self.ns);
             for (p, _) in &plan.updates {
@@ -1390,7 +1437,7 @@ impl MergedFs {
                 changed.push(p.clone());
             }
         }
-        self.invalidate(&changed);
+        self.invalidate(&changed, &before);
         Ok((SwitchOutcome::default(), changed))
     }
 
