@@ -256,9 +256,11 @@ async fn a_merge_brings_its_side_branch_into_the_pass() {
     // A side changeset is read once: the next pass has nothing to do.
     let again = f.gc.run_delta_repo(&name(), &on()).await.unwrap();
     assert_eq!((again.changesets, again.side), (0, 0), "{again:?}");
-    // A walk is bounded by `max_changesets`.
+    // The walk draws on the pass budget. With room for two changesets, `n` takes one and the
+    // walk of `merge2` one more; the cursor stays before `merge2`, which the next pass starts
+    // with and finishes (a merge read first is finished as far as the budget goes).
     let tight = DeltaSettings {
-        max_changesets: 1,
+        max_changesets: 2,
         ..on()
     };
     let n = commit(&f.entry, &[m], &[("small", b"x")]).await;
@@ -276,9 +278,29 @@ async fn a_merge_brings_its_side_branch_into_the_pass() {
             .unwrap();
     }
     let r1 = f.gc.run_delta_repo(&name(), &tight).await.unwrap();
-    assert_eq!((r1.changesets, r1.side), (1, 0), "{r1:?}");
+    assert_eq!((r1.changesets, r1.side), (1, 1), "{r1:?}");
+    assert_eq!(f.gc.delta_status(&name()).await.unwrap().backlog, 1);
     let r2 = f.gc.run_delta_repo(&name(), &tight).await.unwrap();
-    assert_eq!((r2.changesets, r2.side), (1, 1), "{r2:?}");
+    assert_eq!((r2.changesets, r2.side), (1, 2), "{r2:?}");
+    assert_eq!(f.gc.delta_status(&name()).await.unwrap().backlog, 0);
+    // A merge whose side history is larger than the whole budget is read as far as it goes.
+    let one = DeltaSettings {
+        max_changesets: 1,
+        ..on()
+    };
+    let u1 = commit(&f.entry, &[merge2], &[("side", &version(80))]).await;
+    let u2 = commit(&f.entry, &[u1], &[("side", &version(90))]).await;
+    let merge3 = commit(&f.entry, &[merge2, u2], &[("side", &version(90))]).await;
+    sqlx::query("INSERT INTO mainline (ns, ref, pos, cs) VALUES ($1, $2, 6, $3)")
+        .bind(f.entry.ns.as_bytes().to_vec())
+        .bind("refs/heads/master")
+        .bind(merge3.as_bytes().to_vec())
+        .execute(f.reg.pool())
+        .await
+        .unwrap();
+    let r3 = f.gc.run_delta_repo(&name(), &one).await.unwrap();
+    assert_eq!((r3.changesets, r3.side), (1, 1), "{r3:?}");
+    assert_eq!(f.gc.delta_status(&name()).await.unwrap().backlog, 0);
 }
 
 #[tokio::test]
