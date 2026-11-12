@@ -517,3 +517,45 @@ fn many_clients_read_at_once() {
     }
     let _ = &nx.store;
 }
+
+#[test]
+fn mount_answers_only_while_the_mount_command_runs() {
+    let nx = Nx::new("");
+    let mut c = nx.client();
+    nx.provider().set_mounts_open(false);
+    assert_eq!(
+        c.mnt("/asc"),
+        Err(13),
+        "a shut MOUNT hands out no root handle"
+    );
+    nx.provider().set_mounts_open(true);
+    assert!(c.mnt("/asc").is_ok());
+}
+
+#[test]
+fn the_socket_table_names_the_owner_of_a_loopback_peer() {
+    let table = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 0100007F:03FF 0100007F:1F90 01 00000000:00000000 00:00000000 00000000     0        0 1 1
+   1: 0100007F:D431 0100007F:1F90 01 00000000:00000000 00:00000000 00000000  1001        0 2 1
+";
+    assert_eq!(super::server::socket_uid(table, 0x03FF, 0x1F90), Some(0));
+    assert_eq!(super::server::socket_uid(table, 0xD431, 0x1F90), Some(1001));
+    assert_eq!(super::server::socket_uid(table, 0xD431, 0x1F91), None);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn only_the_kernel_and_the_owner_may_connect() {
+    use std::os::unix::fs::MetadataExt;
+    let me = std::fs::metadata("/proc/self").unwrap().uid();
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let _c = std::net::TcpStream::connect(l.local_addr().unwrap()).unwrap();
+    let (s, _) = l.accept().unwrap();
+    assert!(super::server::peer_allowed(&s, me));
+    if me != 0 {
+        assert!(
+            !super::server::peer_allowed(&s, me + 1),
+            "a stranger's socket is refused"
+        );
+    }
+}
