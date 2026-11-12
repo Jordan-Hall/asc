@@ -48,7 +48,7 @@ Crate edges (v1.9): the dependency order is asc-core, asc-store, asc-engine, the
 
 **Not built in v1** (each is additive):
 - *Measured v1.x items:* logical dedup across a fork network (§3.3; deviation recorded as §19 decision 6). Segment packing of small objects and per-pack zstd dictionaries are built (docs/design/PACKED-OBJECTS.md).
-- *Gated on measurement:* daemon-side turbo cache tier, a host-level fetch proxy for CI. The path log beyond the mainline index is built as the derived type `pathlog.v1` (§5).
+- *Gated on measurement:* a host-level fetch proxy for CI. The daemon-side turbo cache tier is built: the daemon's turbo front reads a local miss through the work tree's build cache server and uploads in the background when the tier is read-write (docs/designs/build-cache.md §4.3). The path log beyond the mainline index is built as the derived type `pathlog.v1` (§5).
 - *Out of scope:* the asc RPC protocol over SSH and `asc-authenticate` (§25.11.9; git over SSH and git smart-HTTP are in scope, §15.6, §25), SSH user certificates and security-key (`sk-*`) keys on the `asc serve` listener (v1.x, §25.11.1), jj-style first-class conflicts, workspace sync, `node_modules` snapshots, `WatchRefs`, `asc run` task execution, TypeScript import-graph inference, parsing `package-lock.json`/`pnpm-lock.yaml`/`yarn.lock`/`bun.lockb` (they are eco-global files, §12A.2), compatibility with the IDEs' built-in git (ASC's plugins replace it, §24), and real git operating inside an asc workspace.
 
 ---

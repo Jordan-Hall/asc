@@ -309,8 +309,20 @@ opt-in the transport rules ask for).
   with no empty, `.` or `..` path segment. Bodies stream to the store up to the artefact limit of §3.
 - Each front keys entries by its tool name, a kind and the tool's key, so tools never read each other's entries, and
   `asc cache ls --tool <tool>` lists them. A `GET` counts a hit or miss for `asc cache status`.
-- Under the daemon the fronts never queue entries for the server. `asc cache serve` queues what it stores when the
-  server tier is read-write. Neither fetches from the server on a miss; `asc cache warm` fetches ahead of a build.
+- `asc cache serve` queues what it stores when the server tier is read-write, for `asc cache push`, and does not
+  fetch on a miss; `asc cache warm` fetches ahead of a build.
+- Under the daemon the turbo front is a tier in front of the server (`cli/cache/upstream.rs`). Turbo names its team in
+  every request (`?slug=`, or `?teamId=`). `asc cache env` run in a work tree sets `TURBO_TEAM` to the tree's team,
+  `asc-` and the first 16 hex digits of the blake3 of its root, and records the team and root in
+  `<ASC_HOME>/buildcache-teams.json` (mode 0600, at most 256 teams, the oldest dropped first); outside a work tree it
+  stays `asc`. For a request with a recorded team the daemon opens that work tree as a command would, so the tree's
+  configuration decides the server (`asc.buildcache.server`, else `origin`), the credentials (never a prompt) and the
+  mode (`asc.buildcache.remote`). A `GET` or `HEAD` that misses locally fetches the entry from the server first (as
+  `asc cache warm` does: the file-level routes, else the packed artefact, verified before it is stored) and is then
+  answered from the store as a hit. A `PUT` is stored, answered, and then uploaded in the background when the tier is
+  read-write (at most 4 uploads at once; a failure leaves the entry local and shows in `asc cache status`). An
+  unreachable server is a miss. A team whose tree cannot be opened is served locally for 60 seconds before it is
+  tried again; an opened tier is re-read after 10 minutes. The other fronts carry no team and stay local.
 
 The routes:
 
