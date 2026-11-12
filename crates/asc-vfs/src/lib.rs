@@ -1,6 +1,6 @@
 //! asc-vfs: the OS-neutral core of the virtual file system providers (SPEC §10).
 //!
-//! The ProjFS and FUSE backends implement [`core::Provider`] and share [`core::CoreFs`] for path
+//! The ProjFS, Cloud Files, FUSE and NFS backends implement [`core::Provider`] and share [`core::CoreFs`] for path
 //! resolution, content streaming, name filtering, the hydration policy and the counters.
 
 pub mod compose;
@@ -29,3 +29,7 @@ pub mod unixfs;
 /// Linux FUSE backend (SPEC §10.3).
 #[cfg(all(feature = "fuse", target_os = "linux"))]
 pub mod fuse;
+
+/// NFSv3 loopback backend (SPEC §10.4): lazy work trees on macOS through the system NFS client.
+#[cfg(all(feature = "nfs", unix))]
+pub mod nfs;
