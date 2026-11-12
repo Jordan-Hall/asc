@@ -48,7 +48,7 @@ Crate edges (v1.9): the dependency order is asc-core, asc-store, asc-engine, the
 
 **Not built in v1** (each is additive):
 - *Measured v1.x items:* logical dedup across a fork network (§3.3; deviation recorded as §19 decision 6). Segment packing of small objects and per-pack zstd dictionaries are built (docs/design/PACKED-OBJECTS.md).
-- *Gated on measurement:* a path-log table beyond the mainline index (§5.1), daemon-side turbo cache tier, a host-level fetch proxy for CI.
+- *Gated on measurement:* daemon-side turbo cache tier, a host-level fetch proxy for CI. The path log beyond the mainline index is built as the derived type `pathlog.v1` (§5).
 - *Out of scope:* the asc RPC protocol over SSH and `asc-authenticate` (§25.11.9; git over SSH and git smart-HTTP are in scope, §15.6, §25), SSH user certificates and security-key (`sk-*`) keys on the `asc serve` listener (v1.x, §25.11.1), jj-style first-class conflicts, workspace sync, `node_modules` snapshots, `WatchRefs`, `asc run` task execution, TypeScript import-graph inference, parsing `package-lock.json`/`pnpm-lock.yaml`/`yarn.lock`/`bun.lockb` (they are eco-global files, §12A.2), compatibility with the IDEs' built-in git (ASC's plugins replace it, §24), and real git operating inside an asc workspace.
 
 ---
@@ -616,13 +616,14 @@ pub trait DerivedKeyed: Sized + Send + Sync {
 | `blame.v1` (keyed by path) | no | line runs `(start, len, origin ChangesetId, orig_line)` | – |
 | `classify.v1` | no | §8.10 | – |
 | `diffstat.v1` | no | `Vec<(path, added, removed)>` against `parents[0]`; feeds `CommitGraph` stats, visual file history and `Log.with_stats` (§20.4) | – |
+| `pathlog.v1` (keyed by path) | no | the first 64 changesets on the first-parent chain from the changeset (itself included) whose changes touch the path, newest first, and the changeset to resume at; a later tip scans until it meets a memo for the path and splices it in. `Log` with `first_parent`, one path, one start and no other filter is answered from it on any ref; any other shape, or history the engine does not hold, takes the full walk | `d/` only |
 | `tdocs.v1` (keyed by `TreeId`, per namespace) | no (`EAGER = false`; warmed for land tips, PR heads and drafts, §23.5) | roaring bitmap of the doc ordinals of every File/Exec entry in the subtree, plus `dups` counts (§23.2.3) | `d/` only |
 
 - Mergeability (§20.4) is deliberately **not** a keyed derived type: it is the plain SQL table `mergeable`, one overwritten row per open head, so it cannot grow with trunk history.
 
 - Content-keyed memos (`mset`, `parsed`, `pgraph`, `phash`, §12A.5) use `ObjKey::Derived` with the key given in §12A.5, like `blame.v1`.
 - **Code-intelligence objects [audit: codeintel-folded]:** `tdocs.v1` (key `TreeId`) and the per-file objects `tags.v1` and `chunks.v1` (key `blake3(FileId ‖ lang ‖ version)`), plus the immutable index files `ciseg.v1` (tantivy segments), `civec.v1` (vector segments) and `ciidx.v1` (indexed bitmaps) are `ObjKey::Derived` objects under `d/`: evictable, recomputable and per namespace (§23.2.1, §23.2.4). They are never copied across namespaces (§3.3).
-- **Named future types** (each is one impl plus registration, with no client change): `pathlog` (a per-path changeset list for non-land refs), `copies` (copy detection), `pathsearch`.
+- **Named future types** (each is one impl plus registration, with no client change): `copies` (copy detection), `pathsearch`. `pathlog` (a per-path changeset list for non-land refs) is built as `pathlog.v1` above.
 - **Warm-ref rule:** `UpdateRefs`, local commits and imports derive every eager type for new changesets before a ref moves. Readers never wait.
 - On ingest the server also writes the **git map** for every new tree, file and changeset: `(git oid, kind) -> asc id`. Trees and files come from `Entry.git`. Changesets come from `gitcommit`.
 - Adding a type means one `impl Derived` (or `DerivedKeyed`) plus registration. The write path never changes.
