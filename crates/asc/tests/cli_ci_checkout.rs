@@ -61,6 +61,7 @@ fn checkout(
     base: &str,
     event: &str,
     host: &Path,
+    token_var: &str,
 ) -> (Output, Job) {
     let cwd = sb.dir("job");
     let exe_dir = Path::new(support::asc_binary().expect("integration tests only"))
@@ -79,7 +80,9 @@ fn checkout(
     let out = sb
         .asc(&cwd)
         .envs(IDENT)
-        .env("GITHUB_TOKEN", "task-token")
+        .env_remove("GITHUB_TOKEN")
+        .env_remove("ASC_TOKEN")
+        .env(token_var, "task-token")
         .env("GITHUB_EVENT_NAME", event)
         .env("RUNNER_TEMP", &job.runner_temp)
         .env("GITHUB_ENV", &job.env_file)
@@ -123,7 +126,15 @@ fn checkout_materialises_exports_and_persists_the_tier_stack() {
     let head = ok(&sb, &src, &["rev-parse", "HEAD"]).trim().to_owned();
 
     let host = sb.dir("host-cache");
-    let (out, job) = checkout(&sb, &url, &head, "master", "pull_request", &host);
+    let (out, job) = checkout(
+        &sb,
+        &url,
+        &head,
+        "master",
+        "pull_request",
+        &host,
+        "GITHUB_TOKEN",
+    );
     assert!(out.status.success(), "{}", text(&out.stderr));
     let work = sb.tmp.path().join("job").join("work");
     assert_eq!(
@@ -224,12 +235,22 @@ fn push_events_get_the_trusted_cache_mode_and_bad_input_is_refused() {
     ok(&sb, &src, &["push", "-q", "-u", "origin", "master"]);
     let head = ok(&sb, &src, &["rev-parse", "HEAD"]).trim().to_owned();
     let host = sb.dir("host-cache");
-    let (out, job) = checkout(&sb, &url, &head, "master", "push", &host);
+    // The checkout action passes the task token as `ASC_TOKEN`, without `GITHUB_TOKEN`.
+    let (out, job) = checkout(&sb, &url, &head, "master", "push", &host, "ASC_TOKEN");
     assert!(out.status.success(), "{}", text(&out.stderr));
     let env = std::fs::read_to_string(&job.env_file).unwrap();
     assert!(env.contains("TURBO_CACHE=local:rw,remote:rw\n"), "{env}");
+    assert!(env.contains("TURBO_TOKEN=task-token\n"), "{env}");
 
-    let (bad, _) = checkout(&sb, &url, "--upload-pack=x", "master", "push", &host);
+    let (bad, _) = checkout(
+        &sb,
+        &url,
+        "--upload-pack=x",
+        "master",
+        "push",
+        &host,
+        "GITHUB_TOKEN",
+    );
     assert!(!bad.status.success());
     assert!(text(&bad.stderr).contains("--rev is not a usable revision"));
     // As a separate word the dashed value never reaches the plan: the flag table refuses it.
