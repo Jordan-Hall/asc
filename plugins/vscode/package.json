@@ -434,6 +434,34 @@
         "icon": "$(trash)"
       },
       {
+        "command": "asc.tags.create",
+        "title": "Create tag",
+        "category": "ASC",
+        "enablement": "asc.workspace && asc.mutating",
+        "icon": "$(add)"
+      },
+      {
+        "command": "asc.tags.delete",
+        "title": "Delete tag",
+        "category": "ASC",
+        "enablement": "asc.workspace && asc.mutating",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "asc.tags.push",
+        "title": "Push all tags",
+        "category": "ASC",
+        "enablement": "asc.workspace && asc.mutating",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "asc.tags.refresh",
+        "title": "Refresh tags",
+        "category": "ASC",
+        "enablement": "asc.workspace",
+        "icon": "$(refresh)"
+      },
+      {
         "command": "asc.oplog.loadMore",
         "title": "Load more operations",
         "category": "ASC",
@@ -676,6 +704,11 @@
           "when": "asc.workspace"
         },
         {
+          "id": "asc.tags",
+          "name": "Tags",
+          "when": "asc.workspace"
+        },
+        {
           "id": "asc.affected",
           "name": "Affected",
           "when": "asc.workspace"
@@ -788,6 +821,11 @@
           "group": "inline@2"
         },
         {
+          "command": "asc.tags.delete",
+          "when": "view == asc.tags && viewItem == asc.tag",
+          "group": "inline@1"
+        },
+        {
           "command": "asc.affected.run",
           "when": "view == asc.affected && viewItem == asc.affected.target",
           "group": "inline"
@@ -838,6 +876,21 @@
           "command": "asc.worktrees.add",
           "when": "view == asc.worktrees",
           "group": "navigation"
+        },
+        {
+          "command": "asc.tags.create",
+          "when": "view == asc.tags",
+          "group": "navigation@1"
+        },
+        {
+          "command": "asc.tags.push",
+          "when": "view == asc.tags",
+          "group": "navigation@2"
+        },
+        {
+          "command": "asc.tags.refresh",
+          "when": "view == asc.tags",
+          "group": "navigation@3"
         },
         {
           "command": "asc.affected.refresh",
@@ -937,6 +990,10 @@
         },
         {
           "command": "asc.worktrees.remove",
+          "when": "false"
+        },
+        {
+          "command": "asc.tags.delete",
           "when": "false"
         },
         {

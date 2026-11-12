@@ -8,6 +8,7 @@ import {
   OpStatus,
   type StashEntry as WireStash,
   SkipReason,
+  type TagEntry as WireTag,
 } from "@asc/asc-client/cli";
 import { fromBinary } from "@bufbuild/protobuf";
 
@@ -112,5 +113,28 @@ export function stashEntries(r: OpResult | null): StashRow[] {
   return r.detail.value.entries.map((e: WireStash) => ({
     index: e.index,
     message: utf8.decode(e.message),
+  }));
+}
+
+export interface TagRow {
+  name: string;
+  /** Lowercase hex of the commit the tag peels to. */
+  target: string;
+  annotated: boolean;
+  /** First line of the tag message; empty for a lightweight tag. */
+  subject: string;
+}
+
+const hex = (b: Uint8Array): string =>
+  Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+
+/** The tags of a `tag` result (every local tag after the verb ran); anything else gives []. */
+export function tagEntries(r: OpResult | null): TagRow[] {
+  if (r === null || r.detail.case !== "tag") return [];
+  return r.detail.value.tags.map((t: WireTag) => ({
+    name: t.name,
+    target: hex(t.target),
+    annotated: t.annotated,
+    subject: utf8.decode(t.subject),
   }));
 }

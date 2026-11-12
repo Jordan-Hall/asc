@@ -58,6 +58,7 @@ import { AffectedModel, bridgeAffectedApi, registerAffected } from "./views/affe
 import { bridgeHistoryApi, registerFileHistory } from "./views/file-history";
 import { bridgeInboxApi, InboxModel, registerInbox } from "./views/inbox";
 import { cliOpLogApi, registerOpLog } from "./views/oplog";
+import { bridgeTagsApi, registerTags } from "./views/tags";
 import { bridgeViewApi, pump, registerWorktrees, runVerb, wsIdFor } from "./views/worktrees";
 import type { WebviewHost } from "./webview/host";
 import { vscodeWebviews } from "./webview/vscode-adapter";
@@ -370,6 +371,7 @@ export function registerAll(e: FeatureEnv): Disposable {
     registerConflicts(vscode, mgr, roots, log),
     // P29: trees and revision navigation.
     registerWorktrees(vscode, viewApi, roots, log),
+    registerTags(vscode, bridgeTagsApi(mgr, viewApi.watch), roots, log),
     registerOpLog(vscode, viewApi, cliOpLogApi(cli), roots, log),
     registerFileHistory(vscode, historyApi, roots, log),
     registerRevNav(vscode, historyApi, roots, log),
