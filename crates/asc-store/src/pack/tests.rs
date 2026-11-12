@@ -800,3 +800,170 @@ async fn bulk_writes_wait_for_the_namespace_to_have_known_packs_for_the_ttl() {
     assert!(!loose_exists(&e, &more[0].0).await);
     all_readable(&e, &more).await;
 }
+
+// ---------------------------------------------------------------------------- dictionaries
+
+/// Objects shaped like tree records: shared structure that a trained dictionary captures.
+fn record(n: u32) -> (ObjKey, Bytes) {
+    let data = format!(
+        "{{\"kind\":\"tree\",\"entries\":[{{\"name\":\"src/module_{n}.rs\",\"mode\":\"100644\",\"id\":\"{:064x}\"}},{{\"name\":\"tests/case_{n}.rs\",\"mode\":\"100644\",\"id\":\"{:064x}\"}}],\"message\":\"change number {n}\"}}",
+        u64::from(n) * 7919,
+        u64::from(n) * 104_729
+    );
+    (
+        ObjKey::Tree(TreeId::of(data.as_bytes())),
+        encode_stored(data.as_bytes()),
+    )
+}
+
+fn dict_cfg() -> PackConfig {
+    PackConfig {
+        dict: Some(format::DictOpts {
+            size: 4096,
+            min_objects: 64,
+        }),
+        ..cfg()
+    }
+}
+
+async fn read_whole(e: &Env, name: &str) -> Bytes {
+    e.store
+        .get(&Path::from(name))
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap()
+}
+
+/// Every object reads back with the same data, and no read hands out a codec `3` value.
+async fn same_data(e: &Env, items: &[(ObjKey, Bytes)]) {
+    for (k, v) in items {
+        let stored = e.objects.get_stored(k).await.unwrap().unwrap();
+        assert!(
+            crate::codec::check_codec(&stored).is_ok(),
+            "{k} left the pack as codec 3"
+        );
+        let want = crate::codec::decode_stored_capped(v, u64::MAX).unwrap();
+        assert_eq!(
+            crate::codec::decode_stored_capped(&stored, u64::MAX).unwrap(),
+            want
+        );
+        assert_eq!(e.objects.get(k).await.unwrap(), Some(want), "{k}");
+    }
+    let keys: Vec<ObjKey> = items.iter().map(|(k, _)| *k).collect();
+    assert!(e.objects.has_many(&keys).await.unwrap().iter().all(|&b| b));
+}
+
+#[tokio::test]
+async fn the_job_writes_dictionary_packs_that_read_merge_verify_and_reindex() {
+    let e = env_with(Arc::new(MemPackIndex::new()), dict_cfg());
+    let first: Vec<_> = (0..400).map(record).collect();
+    put_loose(&e, &first).await;
+    let rep = e.objects.pack_run(&NoFence, later(), false).await.unwrap();
+    assert_eq!(rep.packed, 400);
+    let files = pack_files(&e).await;
+    assert_eq!(files.len(), 1);
+    let bytes = read_whole(&e, &files[0]).await;
+    assert_eq!(&bytes[..8], format::MAGIC_V2);
+    same_data(&e, &first).await;
+
+    // A second, smaller pack merges with the first; the merged pack trains its own dictionary.
+    let second: Vec<_> = (400..410).map(record).collect();
+    e.objects.put_many(second.clone()).await.unwrap();
+    let cfg = PackConfig {
+        merge_count: 2,
+        merge_below: 64 << 20,
+        ..dict_cfg()
+    };
+    let merged = env_with(e.index.clone(), cfg);
+    let merged = BucketObjects::new(e.store.clone(), Path::from("ns/0001"))
+        .with_packs(merged.objects.pack_layer().unwrap().clone());
+    let rep = merged.pack_run(&NoFence, later(), false).await.unwrap();
+    assert_eq!(rep.merged, 2);
+    let all: Vec<_> = first.iter().chain(&second).cloned().collect();
+    let live: Vec<_> = e
+        .index
+        .packs()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|d| d.info.state == PackState::Live)
+        .collect();
+    assert_eq!(live.len(), 1);
+    let name = format!("ns/0001/pack/{}.pack", live[0].info.id);
+    assert_eq!(&read_whole(&e, &name).await[..8], format::MAGIC_V2);
+    for (k, v) in &all {
+        let got = merged.get(k).await.unwrap().unwrap();
+        assert_eq!(
+            got,
+            crate::codec::decode_stored_capped(v, u64::MAX).unwrap()
+        );
+    }
+
+    let v = merged.pack_verify().await.unwrap();
+    assert!(v.problems.is_empty(), "{:?}", v.problems);
+
+    // Rebuilt from the pack files alone, the index still reads every object.
+    let fresh = env_with(Arc::new(MemPackIndex::new()), dict_cfg());
+    let lost = BucketObjects::new(e.store.clone(), Path::from("ns/0001"))
+        .with_packs(fresh.objects.pack_layer().unwrap().clone());
+    lost.pack_reindex().await.unwrap();
+    for (k, v) in &all {
+        let got = lost.get(k).await.unwrap().unwrap();
+        assert_eq!(
+            got,
+            crate::codec::decode_stored_capped(v, u64::MAX).unwrap()
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_damaged_dictionary_entry_yields_to_the_loose_copy() {
+    let e = env_with(Arc::new(MemPackIndex::new()), dict_cfg());
+    let items: Vec<_> = (0..300).map(record).collect();
+    e.objects.put_many(items.clone()).await.unwrap();
+    let files = pack_files(&e).await;
+    let mut bytes = read_whole(&e, &files[0]).await.to_vec();
+    assert_eq!(&bytes[..8], format::MAGIC_V2);
+    let entries = format::parse(&bytes).unwrap();
+    let hit = entries
+        .iter()
+        .find(|x| bytes[x.offset as usize] == crate::codec::PACK_DICT)
+        .copied()
+        .unwrap();
+    // Break the frame (not the trailer: reads use ranges and never check it).
+    let at = hit.offset as usize + hit.len as usize - 1;
+    bytes[at] ^= 0xff;
+    e.store
+        .put(&Path::from(files[0].as_str()), PutPayload::from(bytes))
+        .await
+        .unwrap();
+    let (k, v) = items.iter().find(|(k, _)| *k == hit.key).unwrap().clone();
+    assert!(e.objects.get(&k).await.is_err() || e.objects.get(&k).await.unwrap().is_none());
+    // A loose copy of the same object is taken instead.
+    let p = Path::from(format!("ns/0001/{}", k.path()));
+    e.store.put(&p, PutPayload::from(v.clone())).await.unwrap();
+    assert_eq!(
+        e.objects.get(&k).await.unwrap(),
+        Some(crate::codec::decode_stored_capped(&v, u64::MAX).unwrap())
+    );
+    let report = e.objects.pack_verify().await.unwrap();
+    assert!(!report.problems.is_empty());
+}
+
+#[tokio::test]
+async fn without_a_dictionary_setting_packs_stay_version_1() {
+    let e = env_with(
+        Arc::new(MemPackIndex::new()),
+        PackConfig {
+            dict: None,
+            ..cfg()
+        },
+    );
+    let items: Vec<_> = (0..300).map(record).collect();
+    e.objects.put_many(items.clone()).await.unwrap();
+    let files = pack_files(&e).await;
+    assert_eq!(&read_whole(&e, &files[0]).await[..8], format::MAGIC);
+    all_readable(&e, &items).await;
+}
