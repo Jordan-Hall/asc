@@ -879,6 +879,15 @@ mod tests {
     }
 
     #[test]
+    fn a_background_warm_names_its_work_tree() {
+        let o = parse(&os(&["--auto", "--quiet", "--in", "/w/repo"])).unwrap();
+        assert_eq!(o.within, Some(std::path::PathBuf::from("/w/repo")));
+        assert!(o.auto && o.quiet);
+        assert!(parse(&os(&["--auto", "--in"])).is_err());
+        assert!(parse(&os(&["--list", "--in", "/w/repo"])).is_err());
+    }
+
+    #[test]
     fn profile_arguments() {
         let o = parse(&os(&["--profile", "vite:app", "--profile=b", "-q"])).unwrap();
         assert_eq!(o.profiles, vec!["vite:app".to_owned(), "b".to_owned()]);
