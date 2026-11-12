@@ -94,11 +94,13 @@ async fn a_repository_reads_the_same_before_and_after_its_objects_are_packed() {
     );
 
     // The namespace now carries the feature, and the index holds the rows.
-    let features: Vec<String> = sqlx::query_scalar("SELECT feature FROM store_features")
-        .fetch_all(reg.pool())
-        .await
-        .unwrap();
-    assert_eq!(features, ["pack1"]);
+    let features: Vec<String> =
+        sqlx::query_scalar("SELECT feature FROM store_features ORDER BY feature")
+            .fetch_all(reg.pool())
+            .await
+            .unwrap();
+    // The dictionary setting is on by default, so version 2 packs may follow.
+    assert_eq!(features, ["pack1", "pack2"]);
     let v = svc.verify(&name()).await.unwrap();
     assert!(v.problems.is_empty(), "{:?}", v.problems);
     assert_eq!(v.objects, rep.packed);
@@ -130,6 +132,42 @@ async fn a_server_with_packing_off_still_reads_packs() {
         .await
         .unwrap();
     assert_eq!(rep.packs_written, 0, "{rep:?}");
+}
+
+#[tokio::test]
+async fn a_writer_without_a_dictionary_records_only_pack1() {
+    let reg = registry().await;
+    assert!(reg.set_pack_config(PackConfig {
+        dict: None,
+        ..cfg()
+    }));
+    let e = repo(&reg).await;
+    commit(&e, &[], &[("a", b"one")]).await;
+    let svc = PackService::new(reg.clone(), Arc::new(PipelineHooks::default()));
+    assert!(svc.run_repo(&name(), later(), false).await.unwrap().packed > 0);
+    let features: Vec<String> = sqlx::query_scalar("SELECT feature FROM store_features")
+        .fetch_all(reg.pool())
+        .await
+        .unwrap();
+    assert_eq!(features, ["pack1"]);
+    // Both are features this build knows, so the namespace opens again.
+    reg.forget(&name());
+    assert!(reg.open(&name()).await.is_ok());
+}
+
+#[tokio::test]
+async fn a_namespace_with_pack2_opens_and_counts_as_packed() {
+    let reg = packed_registry().await;
+    let e = repo(&reg).await;
+    sqlx::query("INSERT INTO store_features (ns, feature, since) VALUES ($1, 'pack2', 1)")
+        .bind(e.ns.as_bytes().to_vec())
+        .execute(reg.pool())
+        .await
+        .unwrap();
+    let (unknown, packed) = crate::pack_sql::store_features(reg.pool(), e.ns)
+        .await
+        .unwrap();
+    assert!(unknown.is_empty() && packed);
 }
 
 #[tokio::test]
