@@ -6,7 +6,7 @@ This page tells you what each one does and what it costs.
 
 | Mode | How unchanged files are kept | Where it works | How to choose it |
 |---|---|---|---|
-| Virtual | Not on disk at all. A file is read from the shared local store the first time a program opens it. | Windows 10 1709 or later with the daemon running (ProjFS when it is installed, otherwise the built-in Cloud Files API) | the default for `asc worktree add` where it works (`asc.worktree.mode auto`) |
+| Virtual | Not on disk at all. A file is read from the shared local store the first time a program opens it. | The daemon running, and: Windows 10 1709 or later (ProjFS when it is installed, otherwise the built-in Cloud Files API); Linux with FUSE (`/dev/fuse`, fuse3) or the NFS client; macOS with the system NFS client (a loopback NFSv3 server, no kernel extension) | the default for `asc worktree add` where it works (`asc.worktree.mode auto`) |
 | Plain, copy | A copy-on-write clone (reflink) of the stored file where the file system can clone, else a plain copy. | everywhere | the default elsewhere; `--mode plain` or `asc.worktree.mode plain` |
 | Plain, link | A symbolic link to one read-only copy per machine, in `<asc home>/shared-blobs/<repo-id>/`. | everywhere symbolic links can be made | `asc config asc.worktree.link symlink` |
 
@@ -35,6 +35,12 @@ Windows can hide a deleted file from a folder listing and from a lookup by its n
 remembers each file and folder you delete or move away while it serves the worktree, and also
 looks for deleted files on disk. Then it writes the other tracked files from the object store. If it stops part way
 (a crash, a full disk), run it again: it goes on from where it stopped.
+
+`asc worktree move` moves a virtual worktree too. It stops serving the worktree, moves the folder
+and serves it again at the new path, so edits, new files, deletions and files that were never
+read move with it. On Windows a Cloud Files folder cannot be renamed while it is registered, so
+asc unregisters it, moves it and registers it again, putting back each file's virtual mark. A
+virtual worktree cannot be deleted with `rm -rf` while it is served: use `asc worktree remove`.
 
 ## Installed dependencies
 

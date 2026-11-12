@@ -1,4 +1,4 @@
-//! The macOS backend (SPEC §10.4): the merged file system served over NFSv3 on a loopback port
+//! The macOS backend (SPEC §10.3b): the merged file system served over NFSv3 on a loopback port
 //! and mounted with the kernel's own NFS client, so nothing has to be installed. The same server
 //! runs on Linux, where it is tested; FUSE is the Linux default.
 //!

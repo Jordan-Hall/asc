@@ -22,7 +22,7 @@ pub mod projfs;
 #[allow(unsafe_code)] // the Cloud Files FFI; every call is confined to this module tree.
 pub mod cloudfiles;
 
-/// The Unix merged file system (SPEC §10.3, §10.4) the FUSE and NFS backends serve.
+/// The Unix merged file system (SPEC §10.3, §10.3b) the FUSE and NFS backends serve.
 #[cfg(all(unix, any(all(feature = "fuse", target_os = "linux"), feature = "nfs")))]
 pub mod unixfs;
 
@@ -30,6 +30,6 @@ pub mod unixfs;
 #[cfg(all(feature = "fuse", target_os = "linux"))]
 pub mod fuse;
 
-/// NFSv3 loopback backend (SPEC §10.4): lazy work trees on macOS through the system NFS client.
+/// NFSv3 loopback backend (SPEC §10.3b): lazy work trees on macOS through the system NFS client.
 #[cfg(all(feature = "nfs", unix))]
 pub mod nfs;

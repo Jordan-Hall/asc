@@ -104,7 +104,7 @@ the hub cannot take the report, the command prints why and exits 1.
 | `daemon` | The daemon is stopped or unreachable. `asc doctor --fix` starts it; `asc daemon` shows more. |
 | `asc-home-space` | Low free space under `$ASC_HOME`. Free space or move `ASC_HOME`. |
 | `virtual-fs` (Windows) | Neither ProjFS nor the Cloud Files API is available (Windows older than 10 1709). With Cloud Files in use, enabling `Client-ProjFS` is optional. |
-| `fuse` (Linux) | FUSE is missing or not usable. Install it, or use `--mode plain`. |
+| `virtual-fs` (Linux, macOS) | Neither FUSE nor an NFS mount helper is usable. Install fuse3 (Linux) or the NFS client (`nfs-common` or `nfs-utils`), or use `--mode plain`. |
 | `long-paths` (Windows) | Long paths are off. Enable `LongPathsEnabled` or use short workspace paths. |
 | `defender`, `dev-drive` | Information about antivirus exclusions and Dev Drive. Excluding `$ASC_HOME` speeds up work. |
 | `autocrlf`, `gitattributes` | A global `core.autocrlf=true`, or attributes asc does not support (line-ending ones too in a virtual workspace). See section 6. |

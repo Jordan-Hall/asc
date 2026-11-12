@@ -118,4 +118,4 @@ crates/asc-sim       hermetic simulation (tests)
 
 See [`docs/STATUS.md`](docs/STATUS.md). In short: the local client, stacks, `asc serve`, the compatibility transports and the release pipeline exist and a standalone staging server runs; IDE plugins are in progress; the Forgejo cutover stages are not done.
 
-Toolchain: Rust 1.95 (edition 2024), git 2.40 or later, and Docker for the S3 and Postgres integration tests. On Windows, the virtual filesystem uses ProjFS when the `Client-ProjFS` optional feature is on and the built-in Cloud Files API otherwise.
+Toolchain: Rust 1.95 (edition 2024), git 2.40 or later, and Docker for the S3 and Postgres integration tests. The virtual filesystem uses ProjFS on Windows when the `Client-ProjFS` optional feature is on and the built-in Cloud Files API otherwise, FUSE on Linux (or a loopback NFSv3 server when FUSE is missing), and the loopback NFSv3 server on macOS.

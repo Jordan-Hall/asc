@@ -106,13 +106,13 @@ How extra checkouts keep unchanged files without a copy each; see [`WORKTREES.md
 | `asc.worktree.cloneDeps` | `true` | `asc worktree add` clones the source worktree's `node_modules` and `.turbo/cache` into the new plain worktree by reflink when the lockfiles and `package.json` files match. Nothing is cloned on a volume that cannot reflink. | `asc config asc.worktree.cloneDeps false` |
 | `asc.gc.sharedGrace` | `1h` | `asc gc` keeps a shared copy younger than this even when no link names it. `0s` removes at once. | `asc config asc.gc.sharedGrace 10m` |
 
-## Virtual file system (Windows)
+## Virtual file system
 
 | Key | Default | Meaning | Example |
 |---|---|---|---|
-| `asc.vfs.backend` | `auto` | Which Windows backend serves new virtual workspaces: `auto` (ProjFS when it is installed, otherwise Cloud Files), `projfs` or `cloudfiles`. A workspace that is already virtual keeps its backend. | `asc config --global asc.vfs.backend cloudfiles` |
-| `asc.vfs.hydrationBudget` | `500MiB` | Clean downloaded files are turned back into placeholders once a workspace holds more than this. | `asc config --global asc.vfs.hydrationBudget 2GiB` |
-| `asc.vfs.denyHydration` | `SearchProtocolHost.exe;SearchIndexer.exe;SearchFilterHost.exe` | Programs whose reads do not download files. A `;` separated list of executable names. | `asc config --global asc.vfs.denyHydration 'SearchIndexer.exe;MsMpEng.exe'` |
+| `asc.vfs.backend` | `auto` | Which backend serves new virtual workspaces. Windows: `auto` (ProjFS when it is installed, otherwise Cloud Files), `projfs` or `cloudfiles`. Linux: `auto` (FUSE when `/dev/fuse` can be opened, otherwise the loopback NFS server), `fuse` or `nfs`. macOS: `auto` or `nfs`. A workspace that is already virtual keeps its backend. | `asc config --global asc.vfs.backend nfs` |
+| `asc.vfs.hydrationBudget` | `500MiB` | Windows only. Clean downloaded files are turned back into placeholders once a workspace holds more than this. On Linux and macOS clean files are served from the local store and never copied, so there is nothing to give back. | `asc config --global asc.vfs.hydrationBudget 2GiB` |
+| `asc.vfs.denyHydration` | `SearchProtocolHost.exe;SearchIndexer.exe;SearchFilterHost.exe` | Windows only. Programs whose reads do not download files. A `;` separated list of executable names. | `asc config --global asc.vfs.denyHydration 'SearchIndexer.exe;MsMpEng.exe'` |
 
 ## MCP (`asc mcp`)
 
