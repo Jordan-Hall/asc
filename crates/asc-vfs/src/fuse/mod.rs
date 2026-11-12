@@ -14,7 +14,7 @@ pub mod fs;
 pub mod passthrough;
 
 pub use crate::unixfs::{JournalSink, TimeSource, inodes, overlay};
-pub use fs::{Config, FuseProvider};
+pub use fs::{Access, Config, FuseProvider};
 
 pub use crate::unixfs::WATCH_NOTE;
 
@@ -99,6 +99,16 @@ pub fn inotify_users(mount: &Path) -> io::Result<Vec<u32>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mount_access_names() {
+        assert_eq!(Access::parse("owner"), Some(Access::Owner));
+        assert_eq!(Access::parse("root"), Some(Access::Root));
+        assert_eq!(Access::parse("all"), Some(Access::Anyone));
+        assert_eq!(Access::parse("true"), None);
+        assert_eq!(Access::parse("ALL"), None);
+        assert_eq!(Access::default(), Access::Owner);
+    }
 
     #[test]
     fn fdinfo_matches_only_inotify_on_the_device() {
@@ -187,7 +197,7 @@ mod fixture {
                 root_time: EPOCH_TIME,
                 gitfile: self.gitdir.clone(),
                 passthrough: true,
-                allow_other: false,
+                access: crate::fuse::Access::Owner,
             }
         }
 

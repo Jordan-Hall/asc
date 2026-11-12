@@ -301,10 +301,10 @@ fn super_options(dir: &Path) -> String {
     let want = dir.canonicalize().unwrap_or_else(|_| dir.to_owned());
     let info = std::fs::read_to_string("/proc/self/mountinfo").unwrap_or_default();
     info.lines()
+        .rev()
         .filter(|l| l.split(' ').nth(4).is_some_and(|m| Path::new(m) == want))
         .filter_map(|l| l.split(" - ").nth(1))
-        .filter_map(|r| r.split(' ').nth(2))
-        .last()
+        .find_map(|r| r.split(' ').nth(2))
         .unwrap_or_default()
         .to_owned()
 }
@@ -344,6 +344,7 @@ fn ci_checkout_virtual_serves_the_job_through_a_mount_other_users_may_read() {
         .env("GITHUB_TOKEN", "task-token")
         .env("RUNNER_TEMP", &runner_temp)
         .args(["ci", "checkout", "--repo", "asc/orbit", "--mode", "virtual"])
+        .args(["--mount-access", "all"])
         .arg(format!("--rev={head}"))
         .args(["--dir", "work", "--server", "https://asc.example"])
         .args(["--remote-url", &url, "--shim-dir"])
@@ -376,7 +377,7 @@ fn ci_checkout_virtual_serves_the_job_through_a_mount_other_users_may_read() {
         "the mount does not let other users in: {opts}"
     );
     assert_eq!(read(&work.join("src").join("app.ts")), "app\n");
-    // The tier stack, with the allow_other switch, persists for a daemon that mounts it again.
+    // The tier stack, with the mount access, persists for a daemon that mounts it again.
     let in_job = |args: &[&str]| {
         let out = sb
             .asc(&work)
@@ -389,6 +390,6 @@ fn ci_checkout_virtual_serves_the_job_through_a_mount_other_users_may_read() {
         text(&out.stdout)
     };
     assert_eq!(in_job(&["rev-parse", "HEAD"]).trim(), head);
-    assert_eq!(in_job(&["config", "asc.vfs.allowOther"]).trim(), "true");
+    assert_eq!(in_job(&["config", "asc.vfs.mountAccess"]).trim(), "all");
     assert_eq!(in_job(&["status", "--porcelain"]), "");
 }
