@@ -600,6 +600,18 @@ impl Deltas<'_> {
         .execute(self.pool)
         .await
         .map_err(|e| sql("delta_bases", e))?;
+        // The plan may have used a value remembered earlier in the pass: a base removed before
+        // the row went in is gone for good, so the full value stays.
+        if !self.entry.objects.has_many(&[base]).await?[0] {
+            sqlx::query("DELETE FROM delta_bases WHERE ns = $1 AND file = $2")
+                .bind(self.entry.ns.as_bytes().to_vec())
+                .bind(id.to_vec())
+                .execute(self.pool)
+                .await
+                .map_err(|e| sql("delta_bases", e))?;
+            rep.skipped += 1;
+            return Ok(());
+        }
         self.entry.objects.store_delta(&planned).await?;
         rep.written += 1;
         match kind {
