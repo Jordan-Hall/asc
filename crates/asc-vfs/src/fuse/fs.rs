@@ -64,6 +64,26 @@ pub struct Config {
     pub passthrough: bool,
 }
 
+impl Config {
+    /// The FUSE configuration over the merged file system's.
+    pub fn over(cfg: unixfs::Config, passthrough: bool) -> Self {
+        Self {
+            core: cfg.core,
+            local: cfg.local,
+            inodes: cfg.inodes,
+            overlay: cfg.overlay,
+            redirect: cfg.redirect,
+            redirections: cfg.redirections,
+            times: cfg.times,
+            journal: cfg.journal,
+            rt: cfg.rt,
+            root_time: cfg.root_time,
+            gitfile: cfg.gitfile,
+            passthrough,
+        }
+    }
+}
+
 fn fe(e: unixfs::Errno) -> Errno {
     Errno::from_i32(e.raw_os_error())
 }
@@ -729,6 +749,15 @@ impl FuseProvider {
             Ok(p) if !p.is_empty() => Some(WATCH_NOTE.to_owned()),
             _ => None,
         }
+    }
+}
+
+impl unixfs::UnixProvider for FuseProvider {
+    fn merged(&self) -> &Arc<MergedFs> {
+        &self.fs
+    }
+    fn backend(&self) -> &'static str {
+        "fuse"
     }
 }
 

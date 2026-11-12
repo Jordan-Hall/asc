@@ -23,6 +23,17 @@ pub mod plugin_api_read;
 pub mod plugin_api_stack;
 pub mod scheduler;
 pub mod service;
+#[cfg(any(
+    all(target_os = "linux", feature = "vfs-fuse"),
+    all(unix, feature = "vfs-nfs")
+))]
+pub mod unix_host;
+#[cfg(any(
+    all(windows, any(feature = "vfs-projfs", feature = "vfs-cloudfiles")),
+    all(target_os = "linux", feature = "vfs-fuse"),
+    all(unix, feature = "vfs-nfs")
+))]
+mod vhost;
 pub mod watch_stack;
 #[cfg(all(windows, any(feature = "vfs-projfs", feature = "vfs-cloudfiles")))]
 pub mod win_host;

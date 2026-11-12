@@ -16,23 +16,18 @@
 //! The provider and engine calls block, so each runs on a blocking thread of the daemon's runtime;
 //! the command layer's futures are not `Send`, so opening the workspace does too.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
-use asc_core::git::blob_oid;
-use asc_core::id::TreeId;
-use asc_core::object::Kind;
 use asc_core::path::RepoPath;
 use asc_rpc::server::wire;
 use asc_state::StateDb;
-use asc_state::state::workspaces::{self, Workspace};
-use asc_store::cachedir::CacheDir;
 use asc_store::objects::Objects;
-use asc_vfs::core::{CoreFs, Options, VfsError};
-use asc_vfs::policy::{DEFAULT_DENY, HydrationPolicy};
+use asc_vfs::core::{CoreFs, Options};
+use asc_vfs::policy::HydrationPolicy;
 use asc_vfs::win::engine::{Request, Store};
 use asc_vfs::win::host::WinProvider;
 use asc_vfs::win::idle::{DEFAULT_BUDGET, IDLE, Policy};
@@ -40,46 +35,20 @@ use asc_vfs::win::select::{self, Backend, Preference};
 use asc_vfs::win::{Config, DbTimes};
 use asc_wc::journal::Journal;
 use asc_wc::redirect::Redirections;
-use asc_wc::switch::{self as plan, Dirty};
+use asc_wc::switch as plan;
 use asc_wc::times::{floor_seconds, record_switch};
-use asc_wc::vstatus::{DiskKind, DiskState, MAX_HASH_BYTES, PathState};
+use asc_wc::vstatus::{DiskState, PathState};
 use async_trait::async_trait;
 use tokio::runtime::Handle;
 
-use super::cloud::prod::open_ctx;
-use super::scheduler::parse_size;
 use super::service::{HostContext, HostError, HostStats, Hosted, VirtualBackend};
-use crate::cli::common::{CliEngine, ObjectStack};
-use crate::cli::restore::root_of;
-use crate::refs_guard::ReadOnlyRefs;
-
-/// Most files and directories one prefetch visits.
-const MAX_PREFETCH: usize = 5_000_000;
+use super::vhost::{self, blocking, failed, open, tree_id, vfs};
+use crate::cli::common::CliEngine;
 
 /// Whether a Windows backend can be loaded on this machine.
 pub fn available() -> bool {
     let can = select::loadable();
     can.projfs || can.cloudfiles
-}
-
-fn failed(e: impl std::fmt::Display) -> HostError {
-    HostError::Failed(e.to_string())
-}
-
-fn vfs(e: VfsError) -> HostError {
-    match e {
-        VfsError::Conflicts => HostError::Precondition("the switch has conflicts".into()),
-        other => failed(other),
-    }
-}
-
-/// Runs a blocking provider or engine call off the async threads.
-async fn blocking<T: Send + 'static>(
-    f: impl FnOnce() -> Result<T, HostError> + Send + 'static,
-) -> Result<T, HostError> {
-    tokio::task::spawn_blocking(f)
-        .await
-        .map_err(|e| HostError::Failed(format!("the provider task failed: {e}")))?
 }
 
 /// The backend the daemon registers on Windows.
@@ -94,69 +63,6 @@ impl VirtualBackend for WinBackend {
             .await
             .map_err(|e| HostError::Failed(format!("the mount task failed: {e}")))?
     }
-}
-
-/// Everything `start` pulls out of the opened workspace; the context itself does not leave it.
-struct Opened {
-    objects: Arc<ObjectStack>,
-    engine: Arc<CliEngine>,
-    root: TreeId,
-    local: Option<CacheDir>,
-    deny: String,
-    budget: u64,
-    backend: Preference,
-    locked: Arc<dyn Fn(&RepoPath) -> bool + Send + Sync>,
-}
-
-async fn open(cx: &HostContext) -> Result<Opened, HostError> {
-    let mount = PathBuf::from(&cx.ws.ws.mount);
-    let ctx = open_ctx(&cx.home, mount).await.map_err(HostError::Failed)?;
-    let ws = ctx.ws().map_err(failed)?;
-    if ws.workspace.ws.id != cx.ws.ws.id {
-        return Err(HostError::Precondition(
-            "the directory belongs to another workspace".into(),
-        ));
-    }
-    let head = ws.head_commit().await.map_err(failed)?;
-    let root = root_of(ws, head).await.map_err(failed)?;
-    let expand = |p: &str| match (p.strip_prefix("~/"), std::env::home_dir()) {
-        (Some(rest), Some(h)) => h.join(rest),
-        _ => PathBuf::from(p),
-    };
-    let cache_root = ctx
-        .config
-        .get("asc.cache.dir")
-        .map(|p| expand(&p))
-        .unwrap_or_else(|| cx.home.cache());
-    let local = CacheDir::open(cache_root, cx.home.tmp()).ok();
-    let refs = Arc::new(ReadOnlyRefs(cx.db.refs()));
-    let engine = Arc::new(CliEngine::new(ws.objects.clone(), refs, ws.repo.key));
-    let check = crate::cli::path_lock::live_check(ws);
-    let locked: Arc<dyn Fn(&RepoPath) -> bool + Send + Sync> =
-        Arc::new(move |p: &RepoPath| check(&String::from_utf8_lossy(p.as_bytes())));
-    Ok(Opened {
-        objects: ws.objects.clone(),
-        engine,
-        root,
-        local,
-        deny: ctx
-            .config
-            .get("asc.vfs.denyHydration")
-            .unwrap_or_else(|| DEFAULT_DENY.to_owned()),
-        budget: ctx
-            .config
-            .get("asc.vfs.hydrationBudget")
-            .and_then(|t| parse_size(&t))
-            .unwrap_or(DEFAULT_BUDGET),
-        backend: ctx
-            .config
-            .get("asc.vfs.backend")
-            .map(|v| v.parse())
-            .transpose()
-            .map_err(HostError::Invalid)?
-            .unwrap_or_default(),
-        locked,
-    })
 }
 
 /// Starts the provider of `backend`; `Err` names why it cannot run here.
@@ -186,7 +92,13 @@ async fn start(cx: HostContext, rt: Handle) -> Result<Arc<dyn Hosted>, HostError
     let opened = open(&cx).await?;
     let backend = {
         let root = root.clone();
-        let pref = opened.backend;
+        let pref: Preference = opened
+            .backend
+            .as_deref()
+            .map(str::parse)
+            .transpose()
+            .map_err(HostError::Invalid)?
+            .unwrap_or_default();
         blocking(move || {
             select::choose(pref, select::found(&root), select::loadable())
                 .map_err(HostError::Precondition)
@@ -245,7 +157,7 @@ async fn start(cx: HostContext, rt: Handle) -> Result<Arc<dyn Hosted>, HostError
         db: cx.db,
         ws: cx.ws.ws.id,
         journal: cx.journal,
-        budget: opened.budget,
+        budget: opened.budget.unwrap_or(DEFAULT_BUDGET),
         pending: AtomicU64::new(0),
     };
     // A switch an earlier daemon did not finish completes now; if it cannot, the periodic retry
@@ -268,97 +180,7 @@ struct WinHost {
     pending: AtomicU64,
 }
 
-fn tree_id(raw: &[u8]) -> Result<TreeId, HostError> {
-    <[u8; 32]>::try_from(raw)
-        .map(TreeId::from_bytes)
-        .map_err(|_| HostError::Invalid("a tree id is 32 bytes".into()))
-}
-
 impl WinHost {
-    async fn row(&self) -> Result<Workspace, HostError> {
-        workspaces::get(&self.db, self.ws)
-            .await
-            .map_err(failed)?
-            .ok_or_else(|| HostError::Precondition("the workspace is gone".into()))
-    }
-
-    /// Whether the file at `path` differs from the outgoing tree's entry, from the disk alone.
-    fn locally_modified(
-        disk: &dyn DiskState,
-        path: &RepoPath,
-        entry: &asc_core::object::Entry,
-    ) -> std::io::Result<bool> {
-        match disk.state(path)? {
-            PathState::Tombstone => Ok(true),
-            PathState::Full => {
-                let Some(stat) = disk.stat(path)? else {
-                    return Ok(true);
-                };
-                if !matches!(stat.kind, DiskKind::File { .. } | DiskKind::Symlink) {
-                    return Ok(true);
-                }
-                if stat.size != entry.size && !matches!(stat.kind, DiskKind::Symlink) {
-                    return Ok(true);
-                }
-                let bytes = disk.read(path, MAX_HASH_BYTES)?;
-                Ok(blob_oid(&bytes) != entry.git)
-            }
-            _ => Ok(false),
-        }
-    }
-
-    /// The local state that can collide with a switch from `from`, for the paths in `candidates`
-    /// (the paths the switch touches and, for a forced switch, the journal's hints).
-    async fn dirty(
-        &self,
-        from: TreeId,
-        touched: &[RepoPath],
-        hinted: &[RepoPath],
-    ) -> Result<(Dirty, BTreeSet<RepoPath>), HostError> {
-        let mut dirty = Dirty::default();
-        let mut hinted_modified = BTreeSet::new();
-        let disk = self.provider_disk();
-        let mut seen_dirs: HashSet<RepoPath> = HashSet::new();
-        for path in touched.iter().chain(hinted) {
-            let tracked = self.engine.lookup(from, path).await.map_err(failed)?;
-            match tracked {
-                Some(entry) if entry.kind != Kind::Dir && entry.kind != Kind::Gitlink => {
-                    let modified =
-                        Self::locally_modified(disk.as_ref(), path, &entry).map_err(failed)?;
-                    if modified {
-                        dirty.modified.insert(path.clone());
-                        if hinted.contains(path) {
-                            hinted_modified.insert(path.clone());
-                        }
-                    }
-                }
-                Some(_) => {}
-                None => {
-                    // An untracked file at the path, or at an ancestor that is a file.
-                    let mut cur = Some(path.clone());
-                    while let Some(p) = cur {
-                        if !seen_dirs.insert(p.clone()) {
-                            break;
-                        }
-                        if let Some(stat) = disk.stat(&p).map_err(failed)?
-                            && matches!(stat.kind, DiskKind::File { .. } | DiskKind::Symlink)
-                            && self
-                                .engine
-                                .lookup(from, &p)
-                                .await
-                                .map_err(failed)?
-                                .is_none()
-                        {
-                            dirty.untracked.insert(p.clone());
-                        }
-                        cur = p.parent();
-                    }
-                }
-            }
-        }
-        Ok((dirty, hinted_modified))
-    }
-
     fn provider_disk(&self) -> Arc<DiskView> {
         Arc::new(DiskView(self.provider.clone()))
     }
@@ -400,21 +222,7 @@ impl DiskState for DiskView {
 #[async_trait]
 impl Hosted for WinHost {
     fn stats(&self) -> HostStats {
-        let s = self.core.stats().snapshot();
-        let name = |p: &RepoPath| String::from_utf8_lossy(p.as_bytes()).into_owned();
-        HostStats {
-            by_path: s
-                .paths
-                .iter()
-                .map(|(p, v)| (name(p), v.hydrations, v.bytes))
-                .collect(),
-            by_process: s
-                .processes
-                .iter()
-                .map(|(k, v)| (k.clone(), v.hydrations, v.bytes))
-                .collect(),
-            bytes_hydrated: s.processes.iter().map(|(_, v)| v.bytes).sum(),
-        }
+        vhost::stats(&self.core)
     }
 
     fn pending(&self) -> u64 {
@@ -440,11 +248,7 @@ impl Hosted for WinHost {
         mode: wire::SwitchMode,
     ) -> Result<Vec<Vec<u8>>, HostError> {
         let (from, to) = (tree_id(from)?, tree_id(to)?);
-        let mode = match mode {
-            wire::SwitchMode::Safe => plan::Mode::Safe,
-            wire::SwitchMode::Merge => plan::Mode::Merge,
-            wire::SwitchMode::Force => plan::Mode::Force,
-        };
+        let mode = vhost::switch_mode(mode);
         let diff = self.engine.leafdiff(from, to, None).await.map_err(failed)?;
         let touched: Vec<RepoPath> = diff.iter().map(|(p, _)| p.clone()).collect();
         let hinted = if mode == plan::Mode::Force {
@@ -452,7 +256,9 @@ impl Hosted for WinHost {
         } else {
             Vec::new()
         };
-        let (dirty, hinted_modified) = self.dirty(from, &touched, &hinted).await?;
+        let disk = self.provider_disk();
+        let (dirty, hinted_modified) =
+            vhost::dirty(&self.engine, disk.as_ref(), from, &touched, &hinted).await?;
         let planned = plan::plan(&diff, &dirty, mode);
         if !planned.conflicts.is_empty() {
             return Ok(planned
@@ -468,7 +274,7 @@ impl Hosted for WinHost {
             extra.extend(hinted_modified);
             extra.extend(dirty.modified.iter().cloned());
         }
-        let row = self.row().await?;
+        let row = vhost::row(&self.db, self.ws).await?;
         let changed: Vec<RepoPath> = planned
             .updates
             .iter()
@@ -508,52 +314,11 @@ impl Hosted for WinHost {
     }
 
     async fn prefetch(&self, paths: &[RepoPath]) -> Result<(u64, u64), HostError> {
-        let (mut files, mut bytes, mut visited) = (0u64, 0u64, 0usize);
-        // `None` is the root.
-        let mut work: Vec<Option<RepoPath>> = if paths.is_empty() {
-            vec![None]
-        } else {
-            paths.iter().cloned().map(Some).collect()
-        };
-        while let Some(path) = work.pop() {
-            visited += 1;
-            if visited > MAX_PREFETCH {
-                return Err(HostError::Invalid(
-                    "the prefetch names too many files".into(),
-                ));
-            }
-            let node = match &path {
-                Some(p) => match self.core.resolve(p).await.map_err(vfs)? {
-                    Some(n) => n,
-                    None => continue,
-                },
-                None => {
-                    let listing = self.core.read_dir(None).await.map_err(vfs)?;
-                    work.extend(
-                        listing
-                            .into_iter()
-                            .flat_map(|l| l.entries)
-                            .map(|n| Some(n.path)),
-                    );
-                    continue;
-                }
-            };
-            if node.is_dir() {
-                if let Some(listing) = self.core.read_dir(path.as_ref()).await.map_err(vfs)? {
-                    work.extend(listing.entries.into_iter().map(|n| Some(n.path)));
-                }
-            } else if let Some(c) = node.content() {
-                let mut stream = self.core.read_content(c).await.map_err(vfs)?;
-                while stream.next().await.map_err(vfs)?.is_some() {}
-                files += 1;
-                bytes += c.size;
-            }
-        }
-        Ok((files, bytes))
+        vhost::prefetch(&self.core, paths).await
     }
 
     async fn retry_pending(&self) -> Result<(), HostError> {
-        let row = self.row().await?;
+        let row = vhost::row(&self.db, self.ws).await?;
         let provider = self.provider.clone();
         let replayed = blocking(move || provider.resume(row.epoch_time).map_err(vfs)).await?;
         self.pending

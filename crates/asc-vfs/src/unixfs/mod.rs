@@ -22,7 +22,7 @@ use asc_wc::redirect::Redirections;
 use asc_wc::times::entry_times_of;
 use tokio::runtime::Handle;
 
-use crate::core::CoreFs;
+use crate::core::{CoreFs, Provider};
 
 pub mod convert;
 pub mod inodes;
@@ -110,6 +110,15 @@ pub struct Config {
     /// The gitdir a read-only `.git` gitfile at the root names, so git and asc find the
     /// workspace inside the mount; `None` serves no `.git`.
     pub gitfile: Option<PathBuf>,
+}
+
+/// A front end over a [`MergedFs`]: the FUSE provider on Linux, the NFS provider on macOS (or on
+/// Linux when asked for). The daemon hosts either through this.
+pub trait UnixProvider: Provider {
+    /// The merged file system the front end serves.
+    fn merged(&self) -> &Arc<MergedFs>;
+    /// The backend's name, for logs and `asc doctor`.
+    fn backend(&self) -> &'static str;
 }
 
 /// What reconcile journaled, for the daemon's metrics.

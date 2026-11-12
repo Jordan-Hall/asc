@@ -25,6 +25,15 @@ pub const WATCH_NOTE: &str =
 /// entry nobody wrote to. Status reads it instead of the file, so a clean file is never fetched.
 pub const PROJECTED_XATTR: &str = "user.asc.projected";
 
+/// Whether this machine can serve a FUSE mount: `/dev/fuse` opens for reading and writing.
+pub fn available() -> bool {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/fuse")
+        .is_ok()
+}
+
 /// Most `/proc` entries the watcher scan looks at.
 const MAX_SCAN_PROCS: usize = 200_000;
 /// Most descriptors the watcher scan examines in total.

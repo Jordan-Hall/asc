@@ -16,3 +16,21 @@ mod client;
 mod tests;
 
 pub use provider::NfsProvider;
+
+/// The NFS mount helpers this system may have; one must exist for a mount to work.
+const MOUNT_HELPERS: &[&str] = if cfg!(target_os = "macos") {
+    &["/sbin/mount_nfs"]
+} else {
+    &[
+        "/sbin/mount.nfs",
+        "/usr/sbin/mount.nfs",
+        "/usr/bin/mount.nfs",
+    ]
+};
+
+/// Whether the kernel's NFS client can mount the server here: its mount helper is installed.
+pub fn available() -> bool {
+    MOUNT_HELPERS
+        .iter()
+        .any(|p| std::path::Path::new(p).is_file())
+}

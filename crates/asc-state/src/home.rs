@@ -197,6 +197,12 @@ impl AscHome {
         self.workspace_dir(ws).join("git")
     }
 
+    /// `redirect/<id>`: where a virtual workspace's redirected names (`node_modules`, build
+    /// output) really live, outside the mount (SPEC §10.3).
+    pub fn redirect_dir(&self, ws: WorkspaceId) -> PathBuf {
+        self.root.join("redirect").join(ws.to_string())
+    }
+
     /// `wt/<id>`: the mount root of a nested worktree (SPEC §9.3).
     pub fn worktree_mount(&self, ws: WorkspaceId) -> PathBuf {
         self.root.join("wt").join(ws.to_string())

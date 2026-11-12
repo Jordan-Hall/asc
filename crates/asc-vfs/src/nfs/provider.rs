@@ -278,6 +278,15 @@ impl NfsProvider {
     }
 }
 
+impl unixfs::UnixProvider for NfsProvider {
+    fn merged(&self) -> &Arc<MergedFs> {
+        &self.fs
+    }
+    fn backend(&self) -> &'static str {
+        "nfs"
+    }
+}
+
 impl Provider for NfsProvider {
     fn mount(&self, root: &Path) -> Result<()> {
         if lock(&self.state).as_ref().is_some_and(|m| m.root.is_some()) {

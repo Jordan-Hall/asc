@@ -55,7 +55,8 @@ pub fn register_virtual_backend() {
 }
 
 /// Whether a backend can host virtual workspaces on this machine: one registered itself, or the
-/// platform's own backend loads (ProjFS or Cloud Files on Windows; probed once, then registered).
+/// platform's own backend loads (ProjFS or Cloud Files on Windows, FUSE or NFS on Unix; probed
+/// once, then registered).
 fn backend_available() -> bool {
     static PROBE: OnceLock<bool> = OnceLock::new();
     if VIRTUAL_BACKEND.load(Ordering::SeqCst) {
@@ -64,6 +65,14 @@ fn backend_available() -> bool {
     *PROBE.get_or_init(|| {
         #[cfg(all(windows, any(feature = "vfs-projfs", feature = "vfs-cloudfiles")))]
         if super::win_host::available() {
+            register_virtual_backend();
+            return true;
+        }
+        #[cfg(any(
+            all(target_os = "linux", feature = "vfs-fuse"),
+            all(unix, feature = "vfs-nfs")
+        ))]
+        if super::unix_host::available() {
             register_virtual_backend();
             return true;
         }
@@ -78,6 +87,13 @@ pub fn platform_backend() -> Option<Arc<dyn VirtualBackend>> {
     if super::win_host::available() {
         return Some(Arc::new(super::win_host::WinBackend));
     }
+    #[cfg(any(
+        all(target_os = "linux", feature = "vfs-fuse"),
+        all(unix, feature = "vfs-nfs")
+    ))]
+    if super::unix_host::available() {
+        return Some(Arc::new(super::unix_host::UnixBackend));
+    }
     None
 }
 
@@ -85,12 +101,26 @@ pub fn platform_backend() -> Option<Arc<dyn VirtualBackend>> {
 pub fn virtual_unavailable() -> String {
     let why = if lifecycle::disabled(&|k| std::env::var_os(k)) {
         "virtual workspaces need the daemon, which ASC_NO_DAEMON turns off"
-    } else if !cfg!(windows) {
-        "virtual workspaces are supported on Windows only"
-    } else if cfg!(any(feature = "vfs-projfs", feature = "vfs-cloudfiles")) {
-        "virtual workspaces need the Windows Projected File System (the Client-ProjFS feature) or the Cloud Files API (Windows 10 1709 or later)"
+    } else if cfg!(windows) {
+        if cfg!(any(feature = "vfs-projfs", feature = "vfs-cloudfiles")) {
+            "virtual workspaces need the Windows Projected File System (the Client-ProjFS feature) or the Cloud Files API (Windows 10 1709 or later)"
+        } else {
+            "this build of asc has no Windows virtual file system support"
+        }
+    } else if cfg!(target_os = "macos") {
+        if cfg!(feature = "vfs-nfs") {
+            "virtual workspaces need the system's NFS client (/sbin/mount_nfs)"
+        } else {
+            "this build of asc has no macOS virtual file system support"
+        }
+    } else if cfg!(target_os = "linux") {
+        if cfg!(any(feature = "vfs-fuse", feature = "vfs-nfs")) {
+            "virtual workspaces need FUSE (/dev/fuse, the fuse3 package) or the NFS client (nfs-common)"
+        } else {
+            "this build of asc has no Linux virtual file system support"
+        }
     } else {
-        "this build of asc has no Windows virtual file system support"
+        "virtual workspaces are supported on Windows, Linux and macOS"
     };
     format!("{why}; use --mode plain")
 }
@@ -133,9 +163,12 @@ pub trait Mounts: Send + Sync {
     /// `list_deleted`, first lists the items the user deleted while it was served, as
     /// `/`-separated root-relative paths; a listing that fails leaves `ws` served.
     async fn unmount(&self, ws: WorkspaceId, list_deleted: bool) -> Result<Vec<String>, SinkError>;
-    /// Turns the stopped virtualization root `root` back into a plain directory, returning the
-    /// items the user deleted while it was virtual as `/`-separated root-relative paths.
-    fn unvirtualize(&self, root: &Path) -> Result<Vec<String>, SinkError>;
+    /// Turns the stopped virtualization root `root` of `ws` back into a plain directory,
+    /// returning the items the user deleted while it was virtual as `/`-separated root-relative
+    /// paths. On Unix the user's edits move from the overlay into `root`.
+    fn unvirtualize(&self, ws: WorkspaceId, root: &Path) -> Result<Vec<String>, SinkError>;
+    /// Drops what served `ws` virtually (the Unix overlay) once conversion has finished.
+    fn forget(&self, ws: WorkspaceId) -> SinkResult;
 }
 
 /// The mounts of the running daemon, reached over IPC.
@@ -183,9 +216,10 @@ impl Mounts for DaemonMounts {
         }
     }
 
-    fn unvirtualize(&self, root: &Path) -> Result<Vec<String>, SinkError> {
+    fn unvirtualize(&self, ws: WorkspaceId, root: &Path) -> Result<Vec<String>, SinkError> {
         #[cfg(all(windows, any(feature = "vfs-projfs", feature = "vfs-cloudfiles")))]
         {
+            let _ = ws;
             use asc_vfs::win::select;
             let done = match select::found(root) {
                 #[cfg(feature = "vfs-cloudfiles")]
@@ -200,12 +234,41 @@ impl Mounts for DaemonMounts {
             .map_err(|e| format!("{}: {e}", root.display()))?;
             Ok(done.deleted)
         }
-        #[cfg(not(all(windows, any(feature = "vfs-projfs", feature = "vfs-cloudfiles"))))]
+        #[cfg(any(
+            all(target_os = "linux", feature = "vfs-fuse"),
+            all(unix, feature = "vfs-nfs")
+        ))]
+        {
+            let overlay = AscHome::locate()?.workspace_dir(ws).join("overlay");
+            let done = asc_vfs::unixfs::unvirtualize(&overlay, root)
+                .map_err(|e| format!("{}: {e}", root.display()))?;
+            Ok(done.deleted)
+        }
+        #[cfg(not(any(
+            all(windows, any(feature = "vfs-projfs", feature = "vfs-cloudfiles")),
+            all(target_os = "linux", feature = "vfs-fuse"),
+            all(unix, feature = "vfs-nfs")
+        )))]
         {
             // No virtual backend on this build: the root was never virtualized.
-            let _ = root;
+            let _ = (ws, root);
             Ok(Vec::new())
         }
+    }
+
+    fn forget(&self, ws: WorkspaceId) -> SinkResult {
+        remove_overlay(&AscHome::locate()?, ws)
+    }
+}
+
+/// Removes `wc/<ws>/overlay` (what a Unix mount kept of the user's changes), if there is one.
+fn remove_overlay(home: &AscHome, ws: WorkspaceId) -> SinkResult {
+    let overlay = home.workspace_dir(ws).join("overlay");
+    match fs::symlink_metadata(&overlay) {
+        Ok(m) if m.is_dir() => Ok(fs::remove_dir_all(&overlay)?),
+        Ok(_) => Err(format!("{} is not a directory", overlay.display()).into()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.into()),
     }
 }
 
@@ -276,7 +339,7 @@ pub(crate) async fn convert(
     let mut deleted = mounts.unmount(ws.ws.id, true).await?;
     let root = PathBuf::from(&ws.ws.mount);
     // Nothing under the root may be opened before it is plain again.
-    deleted.extend(mounts.unvirtualize(&root)?);
+    deleted.extend(mounts.unvirtualize(ws.ws.id, &root)?);
     deleted.sort();
     deleted.dedup();
     let deleted = deleted
@@ -296,7 +359,8 @@ pub(crate) async fn convert(
     workspaces::set_mode(&opened.db, ws.ws.id, Mode::Plain)
         .await
         .map_err(|e| e.to_string())?;
-    Ok(())
+    // Every edit now lives in the work tree.
+    mounts.forget(ws.ws.id)
 }
 
 fn text(e: CliError) -> SinkError {
@@ -412,7 +476,8 @@ mod tests {
     #[derive(Default)]
     struct Recording {
         unmounted: Mutex<Vec<(WorkspaceId, bool)>>,
-        unvirtualized: Mutex<Vec<PathBuf>>,
+        unvirtualized: Mutex<Vec<(WorkspaceId, PathBuf)>>,
+        forgotten: Mutex<Vec<WorkspaceId>>,
         served: Vec<String>,
         deleted: Vec<String>,
     }
@@ -434,13 +499,20 @@ mod tests {
                 Vec::new()
             })
         }
-        fn unvirtualize(&self, root: &Path) -> Result<Vec<String>, SinkError> {
+        fn unvirtualize(&self, ws: WorkspaceId, root: &Path) -> Result<Vec<String>, SinkError> {
             assert!(
                 !self.unmounted.lock().unwrap().is_empty(),
                 "the root is unvirtualized only once the provider has stopped"
             );
-            self.unvirtualized.lock().unwrap().push(root.to_path_buf());
+            self.unvirtualized
+                .lock()
+                .unwrap()
+                .push((ws, root.to_path_buf()));
             Ok(self.deleted.clone())
+        }
+        fn forget(&self, ws: WorkspaceId) -> SinkResult {
+            self.forgotten.lock().unwrap().push(ws);
+            Ok(())
         }
     }
 
@@ -526,7 +598,12 @@ mod tests {
         );
         assert_eq!(
             *mounts.unvirtualized.lock().unwrap(),
-            [PathBuf::from(&ws.ws.mount)]
+            [(f.ws, PathBuf::from(&ws.ws.mount))]
+        );
+        assert_eq!(
+            *mounts.forgotten.lock().unwrap(),
+            [f.ws],
+            "the overlay goes once the work tree holds every edit"
         );
         let ws = workspaces::get(&f.db, f.ws).await.unwrap().unwrap();
         assert_eq!(ws.ws.mode, Mode::Plain);
