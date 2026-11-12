@@ -11,6 +11,11 @@ modified file pairs of a real history (each new version against the previous ver
 gave a 95.7% saving when the new version is stored as a zstd frame compressed with the old version as a
 dictionary, against storing it as its own zstd frame.
 
+Directory trees and large-file chunks repeat the same way: a commit that edits one file rewrites
+every tree on the path to it, each a near-copy of the old tree, and an edit to a large file changes a
+few of its chunks. On one public history imported for the benchmark, git's packs hold all 26,512
+trees in 2.5 MB and the large-file versions in 50 MB, where whole values took 28 MB and 130 MB.
+
 Non-goals: changing object identity, the wire format, verification or what a client sees. A delta is a
 storage detail below `Objects`, like a pack.
 
@@ -19,11 +24,13 @@ storage detail below `Objects`, like a pack.
 Codec `2` is added to the stored value (`codec u8 ‖ data`, SPEC §3.1):
 
 ```
-2 ‖ base FileId (32 bytes) ‖ zstd frame (content size set), compressed with the base's data as a raw dictionary
+2 ‖ base id (32 bytes) ‖ zstd frame (content size set), compressed with the base's data as a raw dictionary
 ```
 
-- Only the server writes codec `2`, and only to loose `File` objects (never packed, never chunked: files
-  above the 4 MiB chunk threshold are left alone).
+- Only the server writes codec `2`, and only to loose `File`, `Tree` and `Chunk` objects (never packed).
+  The base is always an object of the delta's own kind: a file's base is a file, a tree's a tree and a
+  chunk's a chunk. The id in the value is read under the delta's kind, so it can never name an object
+  of another kind. A chunk list, a changeset or any other kind is never a delta.
 - A delta is written only when it is under half of the stored value it replaces.
 - A chain (a delta whose base is a delta) has at most 8 links (`MAX_DELTA_DEPTH`). The pass refuses a
   base whose chain is already 8 deep, and refuses a base whose chain contains the file (a cycle).
@@ -31,7 +38,7 @@ Codec `2` is added to the stored value (`codec u8 ‖ data`, SPEC §3.1):
   reads the base (from a pack first, then loose, recursively), decodes the frame within the decode cap,
   verifies the result against the key and returns it as a codec `0` or `1` value. `get`, `get_stored`,
   `get_range` and every caller above them see only full values. Wire `check_codec` still refuses `2`.
-- A missing or damaged base reads as `CodecError::BadBase(base)`, which `put` treats as damage: a put of
+- A missing or damaged base reads as `CodecError::BadBase(base key)`, which `put` treats as damage: a put of
   the same file (a re-push, a fetch from a peer) overwrites the delta with the full value.
 
 ## The pass
@@ -42,13 +49,23 @@ while a delta is being written.
 
 1. For each land branch, read `mainline` rows after the branch's `delta_cursor` (at most
    `max_changesets` per pass).
-2. For each `Change::Write` of a changeset that is not a symlink and has
-   `min_size ≤ size ≤ 4 MiB`, the base is the entry at the same path, or at `copy_from` when the change
-   records a copy, in the first parent's tree. A base that is not a file, is above 4 MiB, equals the
-   new file, or is listed in `gc_purge` is skipped.
-3. `plan_delta` builds the delta without writing. When it saves half, the pass upserts the
-   `delta_bases (ns, file, base)` row first and then overwrites the loose value.
-4. When a mainline changeset is a merge, the pass walks back from its other parents and treats each
+2. For each `Change::Write` of a changeset that is not a symlink and has `size ≥ min_size`, the base
+   is the entry at the same path, or at `copy_from` when the change records a copy, in the first
+   parent's tree. A base that is not a file, equals the new file, or is listed in `gc_purge` is
+   skipped.
+   - When both versions are at most 4 MiB, the new file takes the old file as its base.
+   - When both are above 4 MiB (chunked), the pass reads both chunk lists. A chunk both lists share
+     needs nothing. Each other new chunk takes as its base the next old chunk that the new version
+     dropped, counting from the last chunk both share: content-defined boundaries line up again after
+     an edit, so the chunk an edit replaced is the one at the same place.
+   - When one is chunked and the other is not, nothing is paired.
+3. Trees: when the changeset's root differs from the parent's, the new root takes the old root as its
+   base. Every directory above a changed path takes the tree the same directory had in the parent,
+   when both are directories and differ.
+4. `plan_delta` builds the delta without writing. When it saves half, the pass upserts the
+   `delta_bases (ns, file, base, kind)` row first and then overwrites the loose value. The chain rule
+   bounds read cost: a root tree that changes in every commit is stored whole every ninth commit.
+5. When a mainline changeset is a merge, the pass walks back from its other parents and treats each
    changeset it meets the same way (each against its own first parent), stopping at changesets on the
    branch's mainline. Side changesets count against the same `max_changesets` budget as mainline ones
    and are read once per pass. When the budget runs out inside a walk, the cursor stays before that
@@ -56,16 +73,16 @@ while a delta is being written.
    far as the whole budget goes and then passed, so one huge merge cannot stall the pass. A version
    written on a side branch therefore gets a base on that branch even when the merge only adds the
    file.
-5. The cursor moves to the last row read.
+6. The cursor moves to the last row read.
 
 ## Keeping bases alive
 
 - **GC.** `DeltaRoots` (a `GcRootSource`) returns every recorded base as a strict root, and is
-  re-queried in the fenced re-mark, so a base is never swept while a delta names it. When a delta file
-  is swept, the sweep observer deletes its `delta_bases` row; the base is then an ordinary object and
+  re-queried in the fenced re-mark, so a base is never swept while a delta names it. When a delta file,
+  tree or chunk is swept, the sweep observer deletes its `delta_bases` row; the base is then an ordinary object and
   goes at a later collection when nothing else reaches it.
-- **Purge.** Before a collection that is not a dry run, `release_purged` finds every delta whose base
-  is in `gc_purge`, rewrites it as a full value and drops its row, so the purge can delete the base.
+- **Purge.** Before a collection that is not a dry run, `release_purged` finds every delta (of any
+  kind) whose base is in `gc_purge`, rewrites it as a full value and drops its row, so the purge can delete the base.
 - **Packs.** The pack job reads raw loose values and skips deltas, so deltas stay loose. Bases may be
   packed; reads look in packs first.
 - **Forks.** A fork copies raw objects into a new namespace that has no `delta_bases` rows. After each
@@ -87,8 +104,9 @@ max_changesets = 5000  # per repository per pass; 1 to 1000000
 ## Operation
 
 - `asc serve admin delta run --repo R | --all` runs one pass now, whether or not `enabled` is set, and
-  prints mainline changesets read, side-branch changesets read, candidates, deltas written, files without gain, skipped files and stored bytes
-  before and after.
+  prints mainline changesets read, side-branch changesets read, candidates, deltas written (and how
+  many of them are trees and chunks), objects without gain, skipped objects and stored bytes before
+  and after.
 - `asc serve admin delta status --repo R | --all` prints the number of deltas, the distinct bases they
   name and the mainline changesets not yet read.
 - `asc serve admin delta expand --repo R | --all` rewrites every delta in full and drops its row, under
@@ -98,18 +116,23 @@ max_changesets = 5000  # per repository per pass; 1 to 1000000
 
 ## Schema
 
-Migration `0611_delta_bases` (PostgreSQL and SQLite):
+Migrations `0611_delta_bases` and `0612_delta_kinds` (PostgreSQL and SQLite):
 
-- `delta_bases (ns, file, base, PRIMARY KEY (ns, file))` with index `delta_bases_by_base (ns, base)`.
+- `delta_bases (ns, file, base, kind, PRIMARY KEY (ns, file))` with index
+  `delta_bases_by_base (ns, base)`. `kind` is 0 for a file, 1 for a tree and 2 for a chunk; rows from
+  before `0612` are files. Ids of different kinds never collide (each kind hashes under its own
+  blake3 key), so `file` stays the key whatever the kind.
 - `delta_cursor (ns, ref, pos, PRIMARY KEY (ns, ref))`.
 
 ## Tests
 
 - `asc-store/src/codec.rs`: encode and decode, unrelated bases give no delta, the decode cap.
 - `asc-store/src/delta.rs`: reads return the full value, a missing base is damage that a put repairs,
-  chains stop at cycles and at the depth limit, the pack job leaves deltas loose.
+  chains stop at cycles and at the depth limit, the pack job leaves deltas loose, a chunk takes only a
+  chunk as its base and keys keep their kind.
 - `asc-serve/src/delta_tests.rs`: the pass (copies, cursor, size bounds, batch limit, merged side
-  branches), GC keeps a base
+  branches), a changed directory stored as a tree delta whose base is a GC root and which the
+  rollback expands, chunk pairing, row kinds, GC keeps a base
   until its last delta is swept, a purged base expands its dependents and takes no new ones, the admin
   command and the rollback.
 - `asc-serve/src/admin.rs`: a fork holds full values where the source holds deltas.
