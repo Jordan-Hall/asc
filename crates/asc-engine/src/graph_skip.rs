@@ -229,7 +229,9 @@ mod tests {
 
     #[tokio::test]
     async fn linear_chain_reads_log_n_changesets() {
-        const N: usize = 100_000;
+        // The read bound is the same at any length; 20,000 outgrows the skip cache
+        // (`SKIP_CACHE_ITEMS`) and stays quick in a debug build.
+        const N: usize = 20_000;
         let e = engine();
         let (b, first) = Builder::new(&e).await;
         let mut ids = vec![first];
@@ -242,7 +244,7 @@ mod tests {
 
         let src = SkipSource::new(&e);
         let g = Graph::with_jump(src.clone(), src.index());
-        for &i in &[0usize, 1, 5_000, 77_777, 99_990, N - 2] {
+        for &i in &[0usize, 1, 5_000, 15_555, 19_990, N - 2] {
             let a = ids[i];
             let before = g.reads();
             let ga = g.node(a).await.unwrap().generation;
@@ -256,7 +258,7 @@ mod tests {
         }
         // A negative answer is cheap too: the generation check rejects it outright.
         let before = g.reads();
-        assert!(!g.is_ancestor(tip, ids[50_000]).await.unwrap());
+        assert!(!g.is_ancestor(tip, ids[10_000]).await.unwrap());
         assert!(g.reads() - before <= 4);
     }
 
