@@ -679,9 +679,7 @@ pub fn delete_on_close(h: &Handle) -> io::Result<()> {
     use windows::Win32::Storage::FileSystem::{
         FILE_DISPOSITION_INFO, FileDispositionInfo, SetFileInformationByHandle,
     };
-    let info = FILE_DISPOSITION_INFO {
-        DeleteFile: true,
-    };
+    let info = FILE_DISPOSITION_INFO { DeleteFile: true };
     // SAFETY: a valid handle; the structure outlives the call and its size is passed.
     unsafe {
         SetFileInformationByHandle(
