@@ -30,22 +30,35 @@ disk, because the cost there is a request per object (not measured here).
 ## Delta storage (dash)
 
 `import_bench ... delta` imports as `batched`, then stores what the server's delta pass would
-(docs/design/DELTA-STORAGE.md): each modified file against its previous version at the same path, each
-new chunk of a file over 4 MiB against the old version's chunk at the same place, and each changed tree
-(roots and subdirectories) against the same directory's old tree, whenever the delta is under half the
+(docs/design/DELTA-STORAGE.md) over every branch: each modified or renamed file against its previous
+version, each new file against up to four files of the same extension and similar size in its
+directory, each new chunk of a file over 4 MiB against the old version's chunk at the same place, and
+each changed tree (roots and subdirectories) against the same directory's old tree. Where an object has
+several candidate bases the smallest delta is kept, and a delta is stored only when it is under half the
 stored value. Same source and machine as above; bytes per object kind.
 
 | store | files (`f`) | chunks (`k`) | trees (`t`) | total |
 |---|---|---|---|---|
 | no deltas (`batched`) | 441 MB | 130 MB | 28.2 MB | 605 MB |
-| file deltas, zstd level 3 | 359 MB | 130 MB | 28.2 MB | 523 MB |
-| file deltas, zstd level 9 | 299 MB | 130 MB | 28.2 MB | 463 MB |
-| file, chunk and tree deltas, level 9 (current) | 299 MB | 113 MB | 7.9 MB | 426 MB |
+| file deltas, zstd level 3, first-parent pairs | 359 MB | 130 MB | 28.2 MB | 523 MB |
+| file deltas, zstd level 9, first-parent pairs | 299 MB | 130 MB | 28.2 MB | 463 MB |
+| file, chunk and tree deltas, level 9, first-parent pairs | 299 MB | 113 MB | 7.9 MB | 426 MB |
+| all branches, renames and new-file candidates (current) | 113.6 MB | 65.1 MB | 7.9 MB | 192.6 MB |
 
-Deltas written: 4,948 of 7,905 file pairs, 59 of 124 chunk pairs and 17,786 of 25,964 tree pairs. The
-pass took 44 s for files, 5 s for chunks and 189 s for trees. A sample of every 50th object reads back
-(deltas resolved) in 2.1 s. The git bare repository is 162 MB; git packs its trees in 2.5 MB and its
-large-file versions in 50 MB.
+The git bare repository packs the same history in 161 MB (`size-pack` 165,242 KiB); git packs its trees
+in 2.5 MB and its large-file versions in 50 MB. Most of the earlier gap was the bench pairing only
+first-parent history (8,289 of the 22,704 file edits), not the delta format.
+
+Deltas written: 19,172 of 23,501 file candidates, 254 of 489 chunk pairs and 17,786 of 25,964 tree
+pairs. Planning (reads, decode, encode) took 43 s for files and 84 s for trees; storing took 74 s and
+70 s, bound by one file write per delta (4–5 ms each on Windows). One cache of decoded values (64 MiB)
+and delta links is shared by the plans of a pass, so a base that an earlier plan read or wrote is not
+read again. A sample of every 50th object reads back (deltas resolved) in 2.1 s.
+
+Tried and rejected, against the first-parent run (426 MB): falling back to a shallower base when the best one's chain is
+full (432.8 MB, worse: shallow bases are older and less alike), a chain depth of 16 instead of 8
+(413.9 MB, −2.7%, and older readers refuse the deeper chains) and storing deltas up to 75% of the value
+instead of 50% (422.8 MB, within noise).
 
 Choosing the delta level: over all 22,704 same-path pairs of every commit, the deltas stored 129 MB at
 level 3, 56 MB at 6, 24.6 MB at 9, 23.7 MB at 12 and 21.6 MB at 19, with encode times of 5.8 s, 9.9 s,

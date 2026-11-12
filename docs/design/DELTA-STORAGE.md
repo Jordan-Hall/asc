@@ -49,11 +49,15 @@ while a delta is being written.
 
 1. For each land branch, read `mainline` rows after the branch's `delta_cursor` (at most
    `max_changesets` per pass).
-2. For each `Change::Write` of a changeset that is not a symlink and has `size ≥ min_size`, the base
-   is the entry at the same path, or at `copy_from` when the change records a copy, in the first
-   parent's tree. A base that is not a file, equals the new file, or is listed in `gc_purge` is
-   skipped.
-   - When both versions are at most 4 MiB, the new file takes the old file as its base.
+2. For each `Change::Write` of a changeset that is not a symlink and has `size ≥ min_size`, the
+   candidate bases are the entries at the same path, or at `copy_from` when the change records a copy,
+   in every parent's tree (a merge has several). A file equal to one of them needs nothing. A
+   candidate that is not a file or is listed in `gc_purge` is skipped.
+   - When the new version is at most 4 MiB, every candidate of at most 4 MiB is planned and the
+     smallest delta is kept, as git's window search does.
+   - A new file (no candidate in any parent) is planned against up to four files (`MAX_SIBLINGS`) of
+     the first parent's same directory with the same extension and a size between half and double
+     its own, nearest sizes first.
    - When both are above 4 MiB (chunked), the pass reads both chunk lists. A chunk both lists share
      needs nothing. Each other new chunk takes as its base the next old chunk that the new version
      dropped, counting from the last chunk both share: content-defined boundaries line up again after
@@ -62,9 +66,16 @@ while a delta is being written.
 3. Trees: when the changeset's root differs from the parent's, the new root takes the old root as its
    base. Every directory above a changed path takes the tree the same directory had in the parent,
    when both are directories and differ.
-4. `plan_delta` builds the delta without writing. When it saves half, the pass upserts the
-   `delta_bases (ns, file, base, kind)` row first and then overwrites the loose value. The chain rule
-   bounds read cost: a root tree that changes in every commit is stored whole every ninth commit.
+4. `plan_best` builds the deltas without writing. When the best saves half, the pass upserts the
+   `delta_bases (ns, file, base, kind)` row first, checks that the base still exists (a purge between
+   the plan and the row would otherwise strand the delta; the row is deleted and the file stays full),
+   and then overwrites the loose value. The chain rule bounds read cost: a root tree that changes in
+   every commit is stored whole every ninth commit.
+   - One `PlanCache` serves the whole pass: decoded values (verified against their keys, 64 MiB,
+     oldest dropped first) and each key's delta link. Chains are rebuilt from the links on every
+     plan, so a value that became a delta later in the pass lengthens every chain through it, and a
+     link that the stored value contradicts makes the chain unreadable (the base is refused) rather
+     than wrong.
 5. When a mainline changeset is a merge, the pass walks back from its other parents and treats each
    changeset it meets the same way (each against its own first parent), stopping at changesets on the
    branch's mainline. Side changesets count against the same `max_changesets` budget as mainline ones
