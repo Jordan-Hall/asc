@@ -248,6 +248,11 @@ impl Inner {
             total += meta.len();
             files.push((meta.modified()?, meta.len(), path));
         }
+        // Whole packs a bucket keeps here (`pack/<id>.pack`) count as one file each.
+        for (at, len, path) in crate::pack::cache::list(&self.root)? {
+            total += len;
+            files.push((at, len, path));
+        }
         if total <= max_bytes {
             return Ok(0);
         }
@@ -622,6 +627,26 @@ pub(crate) mod tests {
         let present = c.has_many(&keys).await.unwrap();
         assert_eq!(present[..6], [false; 6]);
         assert_eq!(present[6..], [true; 4]);
+    }
+
+    #[tokio::test]
+    async fn eviction_counts_a_cached_pack_as_one_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let c = open_in(tmp.path(), "cache");
+        let data = vec![7u8; 100];
+        let key = file_key(&data);
+        c.put(&key, encode_stored(&data)).await.unwrap();
+        let root = c.inner.root.clone();
+        let packs = root.join(crate::pack::cache::DIR);
+        fs::create_dir_all(&packs).unwrap();
+        let pack = packs.join("00112233445566778899aabbccddeeff.pack");
+        fs::write(&pack, vec![0u8; 300]).unwrap();
+        let old = FileTime::from_system_time(SystemTime::now() - Duration::from_secs(1000));
+        filetime::set_file_mtime(&pack, old).unwrap();
+        // 400 bytes held, limit 350: the older pack goes first, the object stays.
+        assert_eq!(c.evict_to(350).await.unwrap(), 300);
+        assert!(!pack.exists());
+        assert_eq!(c.has_many(&[key]).await.unwrap(), [true]);
     }
 
     #[tokio::test]

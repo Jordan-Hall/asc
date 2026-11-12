@@ -202,6 +202,14 @@ impl BucketObjects {
         self.with_packs(layer)
     }
 
+    /// Keeps whole packs in `cache`: the first read of an object of a pack no larger than the
+    /// cache's limit fetches the pack, later reads of that pack are local.
+    #[must_use]
+    pub fn with_pack_cache(mut self, cache: Arc<super::PackCache>) -> Self {
+        self.pack_cache = Some(cache);
+        self
+    }
+
     /// The pack layer, when this store has one.
     pub fn pack_layer(&self) -> Option<&Arc<PackLayer>> {
         self.packs.as_ref()
@@ -225,15 +233,22 @@ impl BucketObjects {
             return Ok(Some(d.clone()));
         }
         let path = self.pack_path(id);
-        let head = self
-            .store
-            .get_range(&path, 0..format::HEADER_LEN as u64)
-            .await?;
+        let head = match self.cached_range(id, 0, format::HEADER_LEN as u64).await {
+            Some(b) => b,
+            None => {
+                self.store
+                    .get_range(&path, 0..format::HEADER_LEN as u64)
+                    .await?
+            }
+        };
         let Ok((2, n)) = format::header(&head) else {
             return Ok(None);
         };
         let start = format::HEADER_LEN as u64;
-        let raw = self.store.get_range(&path, start..start + n as u64).await?;
+        let raw = match self.cached_range(id, start, n as u64).await {
+            Some(b) => b,
+            None => self.store.get_range(&path, start..start + n as u64).await?,
+        };
         if raw.len() != n {
             return Ok(None);
         }
@@ -270,6 +285,9 @@ impl BucketObjects {
     /// Reads the bytes a row names. A pack that is missing or shorter than the row says counts
     /// as no copy: the caller falls back to the loose object.
     pub(crate) async fn read_loc(&self, loc: &PackLoc) -> Result<Option<Bytes>> {
+        if let Some(b) = self.read_loc_cached(loc).await? {
+            return self.unpack_entry(loc.pack, b).await.map(Some);
+        }
         let path = self.pack_path(loc.pack);
         let range = loc.offset..loc.offset.saturating_add(loc.len);
         match self.store.get_range(&path, range).await {
@@ -295,6 +313,66 @@ impl BucketObjects {
                 }
             }
         }
+    }
+
+    /// `[offset, offset + len)` of pack `id` from the local pack cache, if it holds the pack. A
+    /// cache that cannot be read is a miss: the bucket still has the pack.
+    async fn cached_range(&self, id: PackId, offset: u64, len: u64) -> Option<Bytes> {
+        let c = self.pack_cache.clone()?;
+        let read = tokio::task::spawn_blocking(move || c.read(id, offset, len)).await;
+        match read {
+            Ok(Ok(b)) => b,
+            Ok(Err(e)) => {
+                tracing::debug!(pack = %id, error = %e, "pack cache read failed");
+                None
+            }
+            Err(_) => None,
+        }
+    }
+
+    /// The bytes a row names through the local pack cache: from the cached pack, or after
+    /// fetching the whole pack when it is small enough. `None` sends the caller to a range read.
+    async fn read_loc_cached(&self, loc: &PackLoc) -> Result<Option<Bytes>> {
+        let Some(c) = self.pack_cache.clone() else {
+            return Ok(None);
+        };
+        if let Some(b) = self.cached_range(loc.pack, loc.offset, loc.len).await {
+            return Ok(Some(b));
+        }
+        if c.fetch_max() == 0 || c.known_too_big(loc.pack) {
+            return Ok(None);
+        }
+        let path = self.pack_path(loc.pack);
+        let size = match self.store.head(&path).await {
+            Ok(m) => m.size,
+            // Missing or unreachable: the range read reports it as it always has.
+            Err(_) => return Ok(None),
+        };
+        if !c.wants(size) {
+            c.note_too_big(loc.pack);
+            return Ok(None);
+        }
+        let whole = match self.store.get(&path).await {
+            Ok(r) => r.bytes().await?,
+            Err(_) => return Ok(None),
+        };
+        let range = usize::try_from(loc.offset)
+            .ok()
+            .zip(usize::try_from(loc.offset.saturating_add(loc.len)).ok())
+            .filter(|&(_, end)| end <= whole.len().saturating_sub(format::TRAILER_LEN));
+        let id = loc.pack;
+        let keep = whole.clone();
+        let stored = tokio::task::spawn_blocking(move || c.store(id, &keep)).await;
+        match stored {
+            Ok(Ok(true)) => {}
+            Ok(Ok(false)) => {
+                tracing::warn!(pack = %id, "fetched pack does not check out; reading by range");
+                return Ok(None);
+            }
+            Ok(Err(e)) => tracing::debug!(pack = %id, error = %e, "pack cache write failed"),
+            Err(_) => {}
+        }
+        Ok(range.map(|(s, e)| whole.slice(s..e)))
     }
 
     /// The packed stored bytes of `key`, if packs hold it and are readable.

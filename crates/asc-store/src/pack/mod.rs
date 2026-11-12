@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub mod bucket_index;
+pub mod cache;
 pub mod format;
 pub mod index;
 pub mod job;
@@ -21,6 +22,7 @@ pub mod layer;
 mod tests;
 
 pub use bucket_index::BucketPackIndex;
+pub use cache::PackCache;
 pub use format::{PackEntry, PackId};
 pub use index::{MemPackIndex, PackDetail, PackIndex, PackInfo, PackLoc, PackState};
 pub use layer::PackLayer;

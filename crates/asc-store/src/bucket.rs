@@ -33,6 +33,8 @@ pub struct BucketObjects {
     pub(crate) root: Path,
     /// Packs of small objects, when this namespace uses them.
     pub(crate) packs: Option<Arc<PackLayer>>,
+    /// Whole packs kept on local disk, when a client cache fronts this bucket.
+    pub(crate) pack_cache: Option<Arc<crate::pack::PackCache>>,
 }
 
 impl BucketObjects {
@@ -42,6 +44,7 @@ impl BucketObjects {
             store,
             root,
             packs: None,
+            pack_cache: None,
         }
     }
 
