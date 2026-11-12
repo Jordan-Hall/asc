@@ -1,4 +1,4 @@
-//! `asc ci checkout --repo R --rev <head> --base <base> --dir . [--mode plain] [--sparse d]`
+//! `asc ci checkout --repo R --rev <head> --base <base> --dir . [--mode plain|virtual] [--sparse d]`
 //! (SPEC §12.3). The validated plan, cache mode, exports and the tier stack come from
 //! [`asc_ci::checkout`]. This file drives the steps through the `asc` binary itself, with
 //! `ASC_HOME`, `ASC_TOKEN` and the host cache set for the children: clone (which unpacks a seed
@@ -152,6 +152,34 @@ impl Runner<'_> {
     }
 }
 
+/// Virtual mode's checks before the mount (SPEC §12.3 "Virtual CI"). A runner that is not root
+/// needs `user_allow_other` in `/etc/fuse.conf`, or no container could read the mount: that is
+/// an error. A parent mount that is not shared is a warning: containers started before the
+/// checkout (service containers) do not see a mount made afterwards.
+#[cfg(target_os = "linux")]
+fn virtual_preflight(parent: &Path, quiet: bool) -> Result<()> {
+    use asc_ci::mounts;
+    let read = |p: &str| std::fs::read_to_string(p).unwrap_or_default();
+    let root = mounts::effective_uid(&read("/proc/self/status")) == Some(0);
+    if !root && !mounts::user_allow_other(&read("/etc/fuse.conf")) {
+        return Err(CliError::Fatal(
+            "ci checkout: --mode virtual needs `user_allow_other` in /etc/fuse.conf on a runner \
+             that is not root, so the job's containers can read the mount"
+                .into(),
+        ));
+    }
+    let real = std::fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
+    if !quiet && mounts::shared_propagation(&read("/proc/self/mountinfo"), &real) == Some(false) {
+        eprintln!(
+            "asc ci checkout: {} is not on a shared mount; containers started before this step \
+             will not see the work tree (mount --bind X X && mount --make-rshared X, and \
+             bind-propagation=rshared for the container)",
+            real.display()
+        );
+    }
+    Ok(())
+}
+
 pub async fn run(ctx: &Ctx, rest: &[OsString]) -> Result<ExitCode> {
     let a = Args::try_parse_from(
         std::iter::once(OsString::from("ci checkout")).chain(rest.iter().cloned()),
@@ -215,8 +243,19 @@ pub async fn run(ctx: &Ctx, rest: &[OsString]) -> Result<ExitCode> {
         (None, true) => String::new(),
         (_, false) => "none".to_owned(),
     };
+    // `Plan::new` refuses virtual mode off Linux.
+    #[cfg(target_os = "linux")]
+    if plan.virtual_mode {
+        virtual_preflight(&parent, a.quiet)?;
+    }
     let dir_s = dir.display().to_string();
     let mut clone: Vec<&str> = vec!["clone", "-q"];
+    // Virtual: the daemon (started by the clone, with the job's `ASC_HOME` and the tier stack
+    // in its environment) serves the work tree; the job's later steps and containers read it
+    // through the mount, and only the files they open are fetched.
+    if plan.virtual_mode {
+        clone.extend(["--mode", "virtual"]);
+    }
     if !seed.is_empty() {
         clone.extend(["--seed", seed.as_str()]);
     }

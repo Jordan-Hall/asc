@@ -131,13 +131,25 @@ impl VirtualBackend for UnixBackend {
 }
 
 /// Opens the provider of `kind` over `cfg`; `Err` names why it cannot run here.
-fn provider(kind: Kind, cfg: unixfs::Config) -> Result<Arc<dyn UnixProvider>, HostError> {
+fn provider(
+    kind: Kind,
+    cfg: unixfs::Config,
+    // NFS mounts are reachable by every user the file modes allow; only FUSE needs the option.
+    #[cfg_attr(
+        not(all(target_os = "linux", feature = "vfs-fuse")),
+        allow(unused_variables)
+    )]
+    allow_other: bool,
+) -> Result<Arc<dyn UnixProvider>, HostError> {
     let unavailable = |e: &dyn std::fmt::Display| HostError::Precondition(e.to_string());
     match kind {
         #[cfg(all(target_os = "linux", feature = "vfs-fuse"))]
-        Kind::Fuse => asc_vfs::fuse::FuseProvider::new(asc_vfs::fuse::Config::over(cfg, true))
-            .map(|p| Arc::new(p) as Arc<dyn UnixProvider>)
-            .map_err(|e| unavailable(&e)),
+        Kind::Fuse => asc_vfs::fuse::FuseProvider::new(asc_vfs::fuse::Config {
+            allow_other,
+            ..asc_vfs::fuse::Config::over(cfg, true)
+        })
+        .map(|p| Arc::new(p) as Arc<dyn UnixProvider>)
+        .map_err(|e| unavailable(&e)),
         #[cfg(feature = "vfs-nfs")]
         Kind::Nfs => asc_vfs::nfs::NfsProvider::new(cfg)
             .map(|p| Arc::new(p) as Arc<dyn UnixProvider>)
@@ -169,7 +181,8 @@ async fn start(cx: HostContext, rt: Handle) -> Result<Arc<dyn Hosted>, HostError
             Ok(diff) => (b, Some(diff)),
             Err(e) => {
                 eprintln!(
-                    "asc daemon: the tree {b} the overlay was projected over cannot be read                      ({e}); serving HEAD"
+                    "asc daemon: the tree {b} the overlay was projected over cannot be read \
+                     ({e}); serving HEAD"
                 );
                 (opened.root, None)
             }
@@ -208,10 +221,11 @@ async fn start(cx: HostContext, rt: Handle) -> Result<Arc<dyn Hosted>, HostError
         root_time: floor_seconds(SystemTime::now()),
         gitfile: Some(cx.home.gitdir(cx.ws.ws.id)),
     };
+    let allow_other = opened.allow_other;
     let provider = {
         let root = root.clone();
         blocking(move || {
-            let p = provider(kind, cfg)?;
+            let p = provider(kind, cfg, allow_other)?;
             p.mount(&root).map_err(vfs)?;
             Ok(p)
         })
@@ -235,7 +249,8 @@ async fn start(cx: HostContext, rt: Handle) -> Result<Arc<dyn Hosted>, HostError
         Some(diff) => {
             let (kept, dropped) = host.move_base(opened.root, diff).await?;
             eprintln!(
-                "asc daemon: HEAD moved while stopped; the projected tree follows it ({kept} kept,                  {dropped} dropped)"
+                "asc daemon: HEAD moved while stopped; the projected tree follows it ({kept} kept, \
+                 {dropped} dropped)"
             );
         }
         None => {

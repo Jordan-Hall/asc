@@ -187,6 +187,7 @@ mod fixture {
                 root_time: EPOCH_TIME,
                 gitfile: self.gitdir.clone(),
                 passthrough: true,
+                allow_other: false,
             }
         }
 

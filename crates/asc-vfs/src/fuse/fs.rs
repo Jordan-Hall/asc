@@ -62,6 +62,9 @@ pub struct Config {
     pub gitfile: Option<PathBuf>,
     /// Try kernel passthrough for clean files.
     pub passthrough: bool,
+    /// Mount with `allow_other`, so other users (a CI job's container) can reach the files.
+    /// Without root it needs `user_allow_other` in `/etc/fuse.conf`.
+    pub allow_other: bool,
 }
 
 impl Config {
@@ -80,6 +83,7 @@ impl Config {
             root_time: cfg.root_time,
             gitfile: cfg.gitfile,
             passthrough,
+            allow_other: false,
         }
     }
 }
@@ -680,6 +684,7 @@ pub struct FuseProvider {
     fs: Arc<MergedFs>,
     kernel: Arc<Kernel>,
     want_pt: bool,
+    allow_other: bool,
     backing: Backing,
     session: Mutex<Option<fuser::BackgroundSession>>,
     mount: Mutex<Option<PathBuf>>,
@@ -690,6 +695,7 @@ impl FuseProvider {
     /// Opens the overlay and the inode table; nothing is mounted yet.
     pub fn new(cfg: Config) -> io::Result<Self> {
         let want_pt = cfg.passthrough;
+        let allow_other = cfg.allow_other;
         let fs = Arc::new(MergedFs::new(unixfs::Config {
             core: cfg.core,
             local: cfg.local,
@@ -710,6 +716,7 @@ impl FuseProvider {
             fs,
             kernel,
             want_pt,
+            allow_other,
             backing: Arc::new(Mutex::new(HashMap::new())),
             session: Mutex::new(None),
             mount: Mutex::new(None),
@@ -787,6 +794,9 @@ impl Provider for FuseProvider {
             MountOption::NoSuid,
             MountOption::NoAtime,
         ];
+        if self.allow_other {
+            cfg.acl = fuser::SessionACL::All;
+        }
         cfg.n_threads = Some(
             std::thread::available_parallelism()
                 .map_or(2, std::num::NonZero::get)

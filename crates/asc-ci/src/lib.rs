@@ -7,6 +7,7 @@ pub mod changed;
 pub mod checkout;
 pub mod env;
 pub mod insights;
+pub mod mounts;
 pub mod rules;
 pub mod sandbox;
 pub mod stack_base;

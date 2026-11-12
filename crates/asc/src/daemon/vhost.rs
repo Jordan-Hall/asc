@@ -77,6 +77,8 @@ pub(super) struct Opened {
     pub budget: Option<u64>,
     /// `asc.vfs.backend`, unparsed: each platform knows its own names.
     pub backend: Option<String>,
+    /// `asc.vfs.allowOther`: other users (a CI job's container) may reach the mount.
+    pub allow_other: bool,
     pub locked: Arc<dyn Fn(&RepoPath) -> bool + Send + Sync>,
 }
 
@@ -120,6 +122,7 @@ pub(super) async fn open(cx: &HostContext) -> Result<Opened, HostError> {
             .get("asc.vfs.hydrationBudget")
             .and_then(|t| parse_size(&t)),
         backend: ctx.config.get("asc.vfs.backend"),
+        allow_other: ctx.config.bool("asc.vfs.allowOther").unwrap_or(false),
         locked,
     })
 }
