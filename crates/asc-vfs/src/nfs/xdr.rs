@@ -74,7 +74,11 @@ impl<'a> Reader<'a> {
 
     /// An optional value: a bool, then the value when it is `true`.
     pub fn option<T>(&mut self, f: impl FnOnce(&mut Self) -> XResult<T>) -> XResult<Option<T>> {
-        if self.bool()? { f(self).map(Some) } else { Ok(None) }
+        if self.bool()? {
+            f(self).map(Some)
+        } else {
+            Ok(None)
+        }
     }
 }
 

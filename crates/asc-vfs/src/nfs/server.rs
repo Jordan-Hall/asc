@@ -471,11 +471,9 @@ impl Shared {
         match (call.prog, call.vers) {
             (NFS_PROG, 3) => self.nfs(call),
             (MOUNT_PROG, 3) => Some(self.mount(call)),
-            (NFS_PROG | MOUNT_PROG, _) => Some(rpc::accepted(
-                call.xid,
-                Accept::ProgMismatch(3, 3),
-                &[],
-            )),
+            (NFS_PROG | MOUNT_PROG, _) => {
+                Some(rpc::accepted(call.xid, Accept::ProgMismatch(3, 3), &[]))
+            }
             _ => Some(rpc::accepted(call.xid, Accept::ProgUnavail, &[])),
         }
     }
@@ -647,7 +645,11 @@ impl Shared {
             ok |= READ;
         }
         if a.perm & 0o100 != 0 {
-            ok |= if a.kind == VKind::Dir { LOOKUP } else { EXECUTE };
+            ok |= if a.kind == VKind::Dir {
+                LOOKUP
+            } else {
+                EXECUTE
+            };
         }
         if writable {
             ok |= MODIFY | EXTEND | DELETE;
@@ -689,7 +691,10 @@ impl Shared {
         let _count = r.u32()?;
         let stable = r.u32()?;
         let data = r.opaque(WTMAX as usize)?;
-        if offset.checked_add(data.len() as u64).is_none_or(|e| e > i64::MAX as u64) {
+        if offset
+            .checked_add(data.len() as u64)
+            .is_none_or(|e| e > i64::MAX as u64)
+        {
             return Err(Fail::Stat(stat::FBIG));
         }
         let f = self.file(ino, true)?;
@@ -726,7 +731,10 @@ impl Shared {
             2 => {
                 let v = r.fixed(8)?;
                 let t = |b: &[u8]| {
-                    UNIX_EPOCH + Duration::from_secs(u64::from(u32::from_be_bytes([b[0], b[1], b[2], b[3]])))
+                    UNIX_EPOCH
+                        + Duration::from_secs(u64::from(u32::from_be_bytes([
+                            b[0], b[1], b[2], b[3],
+                        ])))
                 };
                 (Sattr::default(), Some((t(&v[..4]), t(&v[4..]))))
             }
@@ -749,9 +757,8 @@ impl Shared {
                 }
                 (0, _) if a.kind == VKind::File => {
                     if s.any_but_mode() || s.mode.is_some() {
-                        self.fs.setattr(
-                            a.ino, s.mode, s.uid, s.gid, s.size, s.atime, s.mtime, None,
-                        )?
+                        self.fs
+                            .setattr(a.ino, s.mode, s.uid, s.gid, s.size, s.atime, s.mtime, None)?
                     } else {
                         a
                     }
@@ -1037,7 +1044,10 @@ impl Shared {
                 w.bool(false);
             }
             5 => {
-                w.bool(true).opaque(EXPORT.as_bytes()).bool(false).bool(false);
+                w.bool(true)
+                    .opaque(EXPORT.as_bytes())
+                    .bool(false)
+                    .bool(false);
             }
             _ => return rpc::accepted(xid, Accept::ProcUnavail, &[]),
         }
@@ -1060,7 +1070,11 @@ pub struct Server {
 
 impl Server {
     /// Listens on `127.0.0.1` at an ephemeral port.
-    pub fn start(fs: Arc<MergedFs>, files: Arc<Mutex<Files>>, cfg: ServerConfig) -> io::Result<Self> {
+    pub fn start(
+        fs: Arc<MergedFs>,
+        files: Arc<Mutex<Files>>,
+        cfg: ServerConfig,
+    ) -> io::Result<Self> {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
         let addr = listener.local_addr()?;
         let boot = SystemTime::now()
@@ -1094,8 +1108,13 @@ impl Server {
             );
         }
         {
-            let (sh, stop, conns, readers, tx) =
-                (shared.clone(), stop.clone(), conns.clone(), readers.clone(), tx.clone());
+            let (sh, stop, conns, readers, tx) = (
+                shared.clone(),
+                stop.clone(),
+                conns.clone(),
+                readers.clone(),
+                tx.clone(),
+            );
             threads.push(
                 std::thread::Builder::new()
                     .name("asc-nfs-accept".to_owned())
@@ -1191,7 +1210,9 @@ fn accept(
             return;
         }
         let Ok(stream) = stream else { continue };
-        let Ok(peer) = stream.peer_addr() else { continue };
+        let Ok(peer) = stream.peer_addr() else {
+            continue;
+        };
         if !peer.ip().is_loopback()
             || (sh.cfg.require_resvport && peer.port() >= 1024)
             || lock(conns).len() >= MAX_CONNS

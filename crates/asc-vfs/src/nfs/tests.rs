@@ -16,14 +16,14 @@ use asc_wc::switch::Plan;
 use asc_wc::times::Switched;
 use asc_wc::vstatus::PathState;
 
+use super::NfsProvider;
 use super::client::Client;
 use super::server::{MOUNT_PROG, NFS_PROG, stat};
-use super::NfsProvider;
 use crate::core::{CoreFs, Options, Provider};
 use crate::policy::HydrationPolicy;
+use crate::unixfs::Config;
 use crate::unixfs::inodes::MemInodes;
 use crate::unixfs::testkit::*;
-use crate::unixfs::Config;
 
 const NF3REG: u32 = 1;
 const NF3DIR: u32 = 2;
@@ -233,7 +233,10 @@ fn writes_creates_renames_and_removes_land_in_the_overlay() {
     let (new, na) = c.create(&src, "new.txt", 1, 0o640, [0; 8]).unwrap();
     assert_eq!((na.kind, na.mode & 0o777, na.uid), (NF3REG, 0o640, nx.uid));
     c.write(&new, 0, b"fresh\n", 1).unwrap();
-    assert_eq!(c.create(&src, "new.txt", 1, 0o640, [0; 8]), Err(stat::EXIST));
+    assert_eq!(
+        c.create(&src, "new.txt", 1, 0o640, [0; 8]),
+        Err(stat::EXIST)
+    );
     // Unchecked over an existing file keeps its data.
     c.create(&src, "new.txt", 0, 0o600, [0; 8]).unwrap();
     assert_eq!(c.read(&new, 0, 100).unwrap().0, b"fresh\n");
@@ -281,7 +284,10 @@ fn writes_creates_renames_and_removes_land_in_the_overlay() {
     assert!(c.create(&root, "a/b", 1, 0o600, [0; 8]).is_err());
     assert!(c.create(&root, "..", 1, 0o600, [0; 8]).is_err());
     let long = "x".repeat(300);
-    assert_eq!(c.create(&root, &long, 1, 0o600, [0; 8]), Err(stat::NAMETOOLONG));
+    assert_eq!(
+        c.create(&root, &long, 1, 0o600, [0; 8]),
+        Err(stat::NAMETOOLONG)
+    );
 }
 
 #[test]
@@ -293,7 +299,10 @@ fn exclusive_create_answers_a_retransmit_and_refuses_a_rival() {
     let (fh, _) = c.create(&root, "lock", 2, 0, verf).unwrap();
     let (again, _) = c.create(&root, "lock", 2, 0, verf).unwrap();
     assert_eq!(fh, again);
-    assert_eq!(c.create(&root, "lock", 2, 0, *b"another!"), Err(stat::EXIST));
+    assert_eq!(
+        c.create(&root, "lock", 2, 0, *b"another!"),
+        Err(stat::EXIST)
+    );
     // The client then sets the real attributes.
     let a = c.setattr(&fh, Some(0o644), None, None).unwrap().unwrap();
     assert_eq!(a.mode & 0o777, 0o644);
@@ -377,7 +386,8 @@ fn listings_page_by_cookie_and_refuse_stale_cookies() {
     let cookie = page.last().unwrap().2;
     assert!(c.readdir_page(&root, cookie, verf, 4096, false).is_ok());
     assert_eq!(
-        c.readdir_page(&root, cookie, verf ^ 0x55, 4096, false).map(|_| ()),
+        c.readdir_page(&root, cookie, verf ^ 0x55, 4096, false)
+            .map(|_| ()),
         Err(stat::BAD_COOKIE)
     );
     assert_eq!(

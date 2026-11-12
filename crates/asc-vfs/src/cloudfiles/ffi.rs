@@ -668,7 +668,10 @@ mod tests {
         let mut buf = vec![0u16; 1024];
         // SAFETY: `w` is NUL terminated; the buffer is writable for its whole length.
         let n = unsafe {
-            windows::Win32::Storage::FileSystem::GetShortPathNameW(PCWSTR(w.as_ptr()), Some(&mut buf))
+            windows::Win32::Storage::FileSystem::GetShortPathNameW(
+                PCWSTR(w.as_ptr()),
+                Some(&mut buf),
+            )
         } as usize;
         (n > 0 && n < buf.len()).then(|| String::from_utf16_lossy(&buf[..n]))
     }
@@ -689,7 +692,10 @@ mod tests {
         assert_eq!(long_form(r"Q:\surely\absent"), None);
         // A volume without 8.3 names has nothing to expand.
         if let Some(s) = short(&long).filter(|s| s.contains('~')) {
-            assert_eq!(long_form(&s).map(|l| l.to_lowercase()), Some(long.to_lowercase()));
+            assert_eq!(
+                long_form(&s).map(|l| l.to_lowercase()),
+                Some(long.to_lowercase())
+            );
             let tail = format!(r"{s}\new.txt");
             assert_eq!(
                 long_form(&tail).map(|l| l.to_lowercase()),

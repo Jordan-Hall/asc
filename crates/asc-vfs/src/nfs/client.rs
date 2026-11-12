@@ -99,7 +99,9 @@ impl Client {
 
     /// An NFS call; answers the reply after the status, or the status.
     pub fn nfs(&mut self, proc_: u32, args: &Writer) -> (u32, Vec<u8>) {
-        let body = self.call(NFS_PROG, 3, proc_, args.bytes()).expect("accepted");
+        let body = self
+            .call(NFS_PROG, 3, proc_, args.bytes())
+            .expect("accepted");
         let mut r = Reader::new(&body);
         let st = r.u32().unwrap();
         (st, r.fixed(r.remaining()).unwrap().to_vec())
@@ -154,7 +156,13 @@ impl Client {
     }
 
     /// SETATTR of the mode and size, with an optional ctime guard.
-    pub fn setattr(&mut self, fh: &[u8], mode: Option<u32>, size: Option<u64>, guard: Option<(u32, u32)>) -> Res<Option<Fattr>> {
+    pub fn setattr(
+        &mut self,
+        fh: &[u8],
+        mode: Option<u32>,
+        size: Option<u64>,
+        guard: Option<(u32, u32)>,
+    ) -> Res<Option<Fattr>> {
         let mut w = Self::fh_args(fh);
         match mode {
             Some(m) => w.bool(true).u32(m),
@@ -221,7 +229,13 @@ impl Client {
         })
     }
 
-    pub fn write(&mut self, fh: &[u8], offset: u64, data: &[u8], stable: u32) -> Res<(u32, u32, Vec<u8>)> {
+    pub fn write(
+        &mut self,
+        fh: &[u8],
+        offset: u64,
+        data: &[u8],
+        stable: u32,
+    ) -> Res<(u32, u32, Vec<u8>)> {
         let mut w = Self::fh_args(fh);
         w.u64(offset)
             .u32(u32::try_from(data.len()).unwrap())
@@ -244,26 +258,50 @@ impl Client {
     }
 
     /// CREATE: `how` 0 unchecked, 1 guarded (both with `mode`), 2 exclusive with `verf`.
-    pub fn create(&mut self, dir: &[u8], name: &str, how: u32, mode: u32, verf: [u8; 8]) -> Res<(Fh, Fattr)> {
+    pub fn create(
+        &mut self,
+        dir: &[u8],
+        name: &str,
+        how: u32,
+        mode: u32,
+        verf: [u8; 8],
+    ) -> Res<(Fh, Fattr)> {
         let mut w = Self::dirop(dir, name);
         w.u32(how);
         if how == 2 {
             w.fixed(&verf);
         } else {
-            w.bool(true).u32(mode).bool(false).bool(false).bool(false).u32(0).u32(0);
+            w.bool(true)
+                .u32(mode)
+                .bool(false)
+                .bool(false)
+                .bool(false)
+                .u32(0)
+                .u32(0);
         }
         self.ok(8, &w, Self::made)
     }
 
     pub fn mkdir(&mut self, dir: &[u8], name: &str) -> Res<(Fh, Fattr)> {
         let mut w = Self::dirop(dir, name);
-        w.bool(true).u32(0o750).bool(false).bool(false).bool(false).u32(0).u32(0);
+        w.bool(true)
+            .u32(0o750)
+            .bool(false)
+            .bool(false)
+            .bool(false)
+            .u32(0)
+            .u32(0);
         self.ok(9, &w, Self::made)
     }
 
     pub fn symlink(&mut self, dir: &[u8], name: &str, target: &str) -> Res<(Fh, Fattr)> {
         let mut w = Self::dirop(dir, name);
-        w.bool(false).bool(false).bool(false).bool(false).u32(0).u32(0);
+        w.bool(false)
+            .bool(false)
+            .bool(false)
+            .bool(false)
+            .u32(0)
+            .u32(0);
         w.opaque(target.as_bytes());
         self.ok(10, &w, Self::made)
     }

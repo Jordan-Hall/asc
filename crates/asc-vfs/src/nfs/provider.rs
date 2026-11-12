@@ -2,11 +2,11 @@
 //! client (SPEC §10.4). macOS ships that client in the kernel, so no extension is installed.
 
 use std::collections::BTreeSet;
+use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::fs;
 use std::io;
 use std::net::SocketAddr;
-use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -205,7 +205,10 @@ impl NfsProvider {
                 cur = q.parent();
             }
         }
-        let mut targets: Vec<PathBuf> = seen.iter().map(|p| root.join(OsStr::from_bytes(p.as_bytes()))).collect();
+        let mut targets: Vec<PathBuf> = seen
+            .iter()
+            .map(|p| root.join(OsStr::from_bytes(p.as_bytes())))
+            .collect();
         targets.push(root.to_path_buf());
         for t in targets {
             if let Ok(m) = fs::symlink_metadata(&t)
@@ -315,7 +318,16 @@ mod tests {
         let (prog, args) = mount_command(true, 4321, Path::new("/w"));
         assert_eq!(prog, "/sbin/mount_nfs");
         let opts = args[1].to_str().unwrap();
-        for o in ["vers=3", "tcp", "port=4321", "mountport=4321", "soft", "nonegnamecache", "locallocks", "actimeo=1"] {
+        for o in [
+            "vers=3",
+            "tcp",
+            "port=4321",
+            "mountport=4321",
+            "soft",
+            "nonegnamecache",
+            "locallocks",
+            "actimeo=1",
+        ] {
             assert!(opts.split(',').any(|x| x == o), "{o} in {opts}");
         }
         assert_eq!(args[2], "127.0.0.1:/asc");
@@ -329,7 +341,13 @@ mod tests {
 
     #[test]
     fn tags_differ_per_work_tree_and_are_stable() {
-        assert_eq!(tag_of(Path::new("/a/overlay")), tag_of(Path::new("/a/overlay")));
-        assert_ne!(tag_of(Path::new("/a/overlay")), tag_of(Path::new("/b/overlay")));
+        assert_eq!(
+            tag_of(Path::new("/a/overlay")),
+            tag_of(Path::new("/a/overlay"))
+        );
+        assert_ne!(
+            tag_of(Path::new("/a/overlay")),
+            tag_of(Path::new("/b/overlay"))
+        );
     }
 }

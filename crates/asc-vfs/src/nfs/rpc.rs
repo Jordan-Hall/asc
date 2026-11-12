@@ -231,7 +231,14 @@ pub fn write_record(w: &mut impl Write, msg: &[u8]) -> io::Result<()> {
 
 /// Encodes a call, for the test client.
 #[cfg(test)]
-pub fn call(xid: u32, prog: u32, vers: u32, proc_: u32, cred: Option<(u32, u32)>, args: &[u8]) -> Vec<u8> {
+pub fn call(
+    xid: u32,
+    prog: u32,
+    vers: u32,
+    proc_: u32,
+    cred: Option<(u32, u32)>,
+    args: &[u8],
+) -> Vec<u8> {
     let mut w = Writer::new();
     w.u32(xid).u32(CALL).u32(2).u32(prog).u32(vers).u32(proc_);
     match cred {
@@ -288,7 +295,14 @@ mod tests {
         let msg = call(9, 100_003, 3, 1, Some((501, 20)), &[0, 0, 0, 7]);
         let mut c = parse_call(&msg).unwrap();
         assert_eq!((c.xid, c.prog, c.vers, c.proc_), (9, 100_003, 3, 1));
-        assert_eq!(c.cred, Cred { flavor: AUTH_SYS, uid: 501, gid: 20 });
+        assert_eq!(
+            c.cred,
+            Cred {
+                flavor: AUTH_SYS,
+                uid: 501,
+                gid: 20
+            }
+        );
         assert_eq!(c.args.u32(), Ok(7));
         let (xid, body) = parse_reply(&accepted(9, Accept::Success, &[1, 2, 3, 4])).unwrap();
         assert_eq!((xid, body), (9, Ok(vec![1, 2, 3, 4])));
@@ -305,7 +319,9 @@ mod tests {
         // RPC version 3.
         let mut msg = call(1, 100_003, 3, 0, None, &[]);
         msg[11] = 3;
-        let Err(Bad::Reply(r)) = parse_call(&msg) else { panic!() };
+        let Err(Bad::Reply(r)) = parse_call(&msg) else {
+            panic!()
+        };
         assert_eq!(parse_reply(&r).unwrap().1, Err((MSG_DENIED, 2)));
         // An AUTH_SYS body with 17 groups.
         let mut c = Writer::new();
@@ -314,12 +330,23 @@ mod tests {
             c.u32(1);
         }
         let mut w = Writer::new();
-        w.u32(2).u32(CALL).u32(2).u32(100_003).u32(3).u32(0).u32(AUTH_SYS).opaque(c.bytes());
+        w.u32(2)
+            .u32(CALL)
+            .u32(2)
+            .u32(100_003)
+            .u32(3)
+            .u32(0)
+            .u32(AUTH_SYS)
+            .opaque(c.bytes());
         w.u32(0).u32(0);
-        let Err(Bad::Reply(r)) = parse_call(w.bytes()) else { panic!() };
+        let Err(Bad::Reply(r)) = parse_call(w.bytes()) else {
+            panic!()
+        };
         assert_eq!(parse_reply(&r).unwrap().1, Err((MSG_DENIED, 101)));
         // A header cut short, and a record without even a transaction id.
-        let Err(Bad::Reply(r)) = parse_call(&msg[..10]) else { panic!() };
+        let Err(Bad::Reply(r)) = parse_call(&msg[..10]) else {
+            panic!()
+        };
         assert_eq!(parse_reply(&r).unwrap().1, Err((MSG_ACCEPTED, 4)));
         assert_eq!(parse_call(&[0, 0]).err(), Some(Bad::Drop));
     }
