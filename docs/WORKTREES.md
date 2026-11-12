@@ -6,7 +6,7 @@ This page tells you what each one does and what it costs.
 
 | Mode | How unchanged files are kept | Where it works | How to choose it |
 |---|---|---|---|
-| Virtual | Not on disk at all. A file is read from the shared local store the first time a program opens it. | The daemon running, and: Windows 10 1709 or later (ProjFS when it is installed, otherwise the built-in Cloud Files API); Linux with FUSE (`/dev/fuse`, fuse3) or the NFS client; macOS with the system NFS client (a loopback NFSv3 server, no kernel extension) | the default for `asc worktree add` where it works (`asc.worktree.mode auto`) |
+| Virtual | Not on disk at all. A file is read from the shared local store the first time a program opens it. | The daemon running, and: Windows 10 1709 or later (ProjFS when it is installed, otherwise the built-in Cloud Files API); Linux with FUSE (`/dev/fuse`, fuse3) or the NFS client; macOS with the asc FSKit module (`AscFS.app`, macOS 26 and later) or else the system NFS client (a loopback NFSv3 server, no kernel extension) | the default for `asc worktree add` where it works (`asc.worktree.mode auto`) |
 | Plain, copy | A copy-on-write clone (reflink) of the stored file where the file system can clone, else a plain copy. | everywhere | the default elsewhere; `--mode plain` or `asc.worktree.mode plain` |
 | Plain, link | A symbolic link to one read-only copy per machine, in `<asc home>/shared-blobs/<repo-id>/`. | everywhere symbolic links can be made | `asc config asc.worktree.link symlink` |
 
@@ -146,3 +146,25 @@ asc gc                # shared: removed 3 unlinked files (12.0 KiB); 840 linked
   in copy mode.
 * **Archives and copies.** `tar`, `zip` and `cp` without `-L` store the links, not the files.
   Use `asc archive` to make an archive of a revision.
+
+## macOS: the FSKit backend
+
+On macOS 26 and later, virtual worktrees can be served by the asc FSKit module instead of the
+loopback NFS mount. The module is a file system extension carried by `AscFS.app`. It needs no
+network port, does not cache file attributes for a second after a switch, and does not leave
+`.nfsXXXX` files behind.
+
+1. Build and sign `AscFS.app` with `macos/fskit/scripts/build-app.sh --team TEAMID --sign ...`
+   (see [design/FSKIT.md](design/FSKIT.md)), or install a signed copy.
+2. Copy it to `/Applications` and open it once.
+3. Enable "asc" under System Settings > General > Login Items & Extensions > File System
+   Extensions.
+4. Run `asc doctor`. The `fskit` check says `ok` when the module can be used.
+
+`asc.vfs.backend auto` then picks FSKit for new virtual worktrees, and NFS when the module is
+missing. `asc config --global asc.vfs.backend nfs` keeps NFS. A worktree that is already mounted
+keeps its backend until the daemon mounts it again.
+
+If a mount fails with "could not mount the FSKit work tree", check that the extension is enabled,
+and that `~/Library/Group Containers` holds exactly one directory ending in `.dev.asc.fskit`. Set
+`ASC_FSKIT_GROUP_DIR` to the group directory when the module was signed with another group.
