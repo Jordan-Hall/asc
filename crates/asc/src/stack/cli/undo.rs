@@ -760,7 +760,8 @@ pub(crate) async fn run_plan(
     };
     if saved.is_none() && !force && unsaved_work(ctx, ws).await? {
         return Err(CliError::Fatal(format!(
-            "asc: {verb}: the working copy has changes that cannot be saved first;              commit or stash them, or use -f to discard them"
+            "asc: {verb}: the working copy has changes that cannot be saved first; \
+             commit or stash them, or use -f to discard them"
         )));
     }
     let head_before = cur_head;

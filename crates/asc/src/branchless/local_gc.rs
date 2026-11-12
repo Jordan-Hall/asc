@@ -379,7 +379,8 @@ pub async fn ensure_restorable(objects: &dyn Objects, ids: &[ChangesetId]) -> Re
     match gone.first() {
         None => Ok(()),
         Some(first) => Err(CliError::Fatal(format!(
-            "objects expired: {first} was hidden for longer than asc.draft.hiddenDays and its              objects were removed ({} missing)",
+            "objects expired: {first} was hidden for longer than asc.draft.hiddenDays and its \
+             objects were removed ({} missing)",
             gone.len()
         ))),
     }
