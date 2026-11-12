@@ -33,3 +33,7 @@ pub mod fuse;
 /// NFSv3 loopback backend (SPEC §10.3b): lazy work trees on macOS through the system NFS client.
 #[cfg(all(feature = "nfs", unix))]
 pub mod nfs;
+
+/// The macOS FSKit backend: the merged file system served to the asc FSKit module.
+#[cfg(all(feature = "fskit", unix))]
+pub mod fskit;

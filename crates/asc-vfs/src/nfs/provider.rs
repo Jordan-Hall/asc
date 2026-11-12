@@ -37,9 +37,15 @@ const TAG_FILE: &str = "nfs-handle-tag";
 /// by the owner alone and kept across restarts, so handles a client holds stay valid and nobody
 /// else can make one.
 pub(crate) fn handle_tag(dir: &Path) -> io::Result<u64> {
+    secret(dir, TAG_FILE)
+}
+
+/// A nonzero random `u64` in the owner-only file `dir/file`, made on first use and kept across
+/// restarts; a file others can read, or one too short, is replaced.
+pub(crate) fn secret(dir: &Path, file: &str) -> io::Result<u64> {
     use std::io::{Read, Write};
     use std::os::unix::fs::OpenOptionsExt;
-    let p = dir.join(TAG_FILE);
+    let p = dir.join(file);
     let nofollow = rustix::fs::OFlags::NOFOLLOW.bits() as i32;
     match fs::OpenOptions::new()
         .read(true)
@@ -121,7 +127,7 @@ pub(crate) fn unmount_commands(macos: bool, root: &Path) -> Vec<(&'static str, V
 }
 
 /// Runs `prog args`, then `sudo -n prog args` (which never prompts). Answers the last error.
-fn run_privileged(prog: &str, args: &[OsString]) -> std::result::Result<(), String> {
+pub(crate) fn run_privileged(prog: &str, args: &[OsString]) -> std::result::Result<(), String> {
     let first = Command::new(prog).args(args).output();
     match &first {
         Ok(o) if o.status.success() => return Ok(()),
@@ -252,7 +258,7 @@ impl NfsProvider {
 
     /// Refreshes the client's cached attributes of `paths` and their directories: a same-mode
     /// `chmod` through the mount makes the client fetch them now, not after its timeout.
-    fn poke(root: &Path, paths: &[RepoPath]) {
+    pub(crate) fn poke(root: &Path, paths: &[RepoPath]) {
         let mut seen: BTreeSet<RepoPath> = BTreeSet::new();
         for p in paths {
             let mut cur = Some(p.clone());
@@ -294,7 +300,7 @@ impl unixfs::UnixProvider for NfsProvider {
 /// Whether a process may be watching the mount at `root`. macOS cannot say who listens to
 /// FSEvents, and FSEvents never reports what the server changes, so a mounted workspace always
 /// counts as watched there. Linux asks `/proc` for inotify watches on the mount.
-pub(super) fn watched(root: &Path) -> bool {
+pub(crate) fn watched(root: &Path) -> bool {
     #[cfg(target_os = "macos")]
     {
         let _ = root;

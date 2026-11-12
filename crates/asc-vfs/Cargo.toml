@@ -29,12 +29,14 @@ projfs = ["dep:asc-state", "dep:libloading", "dep:tokio"]
 cloudfiles = ["dep:asc-state", "dep:tokio", "dep:windows"]
 fuse = ["dep:fuser", "dep:asc-state", "dep:tokio", "dep:rustix"]
 nfs = ["dep:asc-state", "dep:tokio", "dep:rustix"]
+# The macOS FSKit front end (SPEC §10.3b); reuses the NFS wire codec and is tested on Linux.
+fskit = ["nfs"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 fuser = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
-rustix = { workspace = true, optional = true }
+rustix = { workspace = true, optional = true, features = ["process", "net"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, optional = true, features = ["Win32_Storage_CloudFilters", "Wdk_Storage_FileSystem", "Win32_Storage_FileSystem", "Win32_System_CorrelationVector", "Win32_System_IO", "Win32_System_Threading", "Win32_Foundation", "Win32_Security"] }
