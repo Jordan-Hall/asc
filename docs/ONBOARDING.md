@@ -103,7 +103,7 @@ the hub cannot take the report, the command prints why and exits 1.
 | `git@cmd`, `git@powershell`, `git@git-bash`, `git@machine+user PATH`, `git@turbo (this environment)` | `git` resolves to something other than the shim there. Put the shim directory first (section 2). |
 | `daemon` | The daemon is stopped or unreachable. `asc doctor --fix` starts it; `asc daemon` shows more. |
 | `asc-home-space` | Low free space under `$ASC_HOME`. Free space or move `ASC_HOME`. |
-| `projfs` (Windows) | `Client-ProjFS` is off. Enable the Windows feature and reboot. |
+| `virtual-fs` (Windows) | Neither ProjFS nor the Cloud Files API is available (Windows older than 10 1709). With Cloud Files in use, enabling `Client-ProjFS` is optional. |
 | `fuse` (Linux) | FUSE is missing or not usable. Install it, or use `--mode plain`. |
 | `long-paths` (Windows) | Long paths are off. Enable `LongPathsEnabled` or use short workspace paths. |
 | `defender`, `dev-drive` | Information about antivirus exclusions and Dev Drive. Excluding `$ASC_HOME` speeds up work. |

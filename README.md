@@ -13,7 +13,7 @@
 
 - **Changesets.** Bonsai-style changesets and trees are content-addressed with BLAKE3 and stored as immutable objects. Importing an existing repository keeps its history and its commit ids.
 - **Storage anywhere.** The same engine runs over an S3-compatible bucket (S3, MinIO, R2, Garage, Ceph), local disk, or an `asc serve` server. It also works fully local-only, with no server.
-- **Lazy working copies.** `asc clone`, `asc switch` and `asc worktree add` download metadata only. File contents are fetched the first time something reads them: ProjFS on Windows, FUSE on Linux, reflink copies elsewhere. All worktrees on a machine share one object cache.
+- **Lazy working copies.** `asc clone`, `asc switch` and `asc worktree add` download metadata only. File contents are fetched the first time something reads them: ProjFS or the built-in Cloud Files API on Windows, FUSE on Linux, reflink copies elsewhere. All worktrees on a machine share one object cache.
 - **One command line, `asc`.** `asc clone`, `asc status`, `asc commit`, `asc switch`, `asc log`, `asc push` and the rest cover the daily loop, with familiar flags and stable exit codes for scripts, hooks and agents such as Claude Code. Every hook, alias and editor that asc starts finds asc first on `PATH`. The default branch is `master`. ASC's VS Code and JetBrains plugins use asc's API.
 - **Built-in project graph and `asc affected`.** asc detects Rust (Cargo), Python (uv, pyproject, requirements), .NET (sln, csproj) and Bun/Node workspaces itself, as derived data per changeset, and computes affected projects (lockfile-aware, with per-project input hashes) locally or on the server. Output formats include JSON, a turbo filter, an nx project list and an Actions matrix.
 - **API-first CI, Scion-style efficiency.** Diffs, merge bases, logs, blame and `Affected` run on the server. A CI plan job needs one RPC and no checkout. Fetches are want-only and resumable, clients keep a bounded history window and ask the server for older history, every cache tier speaks the same RPCs (`asc serve --role cache`), seed snapshots warm cold machines, and a benchmark gate holds asc faster than git. Turbo hashes a virtual checkout without reading any files, and the turbo remote cache, Actions caches and artifacts live in the same object store. ASC's Actions fork (`asc/actions`) makes CI use asc with no workflow edits.
@@ -42,7 +42,7 @@ $env:ASC_DOWNLOAD_BASE_URL = 'https://downloads.example.org/asc'
 - **Editors.** `asc-vscode-<ver>.vsix` and `asc-jetbrains-<ver>.zip` are attached to each release.
 - **Update:** `asc self-update` (also `asc upgrade`; signature-checked, side by side, same source variable). It updates installs made by `install.sh`, `install.ps1` or the MSI; for Homebrew, Scoop or winget installs use that tool.
 - **Version:** `asc --version` prints the version and the commit it was built from.
-- **From source:** Rust 1.95, `cargo build --release -p asc`. Default features are `serve`, `vfs-projfs`, `vfs-fuse`, `git-compat`, `git-ssh` and `http3`.
+- **From source:** Rust 1.95, `cargo build --release -p asc`. Default features are `serve`, `vfs-projfs`, `vfs-cloudfiles`, `vfs-fuse`, `git-compat`, `git-ssh` and `http3`.
 
 Run `asc doctor` afterwards. Step by step: [`docs/GETTING-STARTED.md`](docs/GETTING-STARTED.md).
 
@@ -105,7 +105,7 @@ crates/asc-state     $ASC_HOME, state.db, staging
 crates/asc-git       RealGit, synthetic .git for turbo, import/export, git compatibility views
 crates/asc-rpc       gRPC protocol (proto/asc/v1), server/client, retries and limits, h2 and h3
 crates/asc-wc        workspaces, status, switch, plain mode, worktrees
-crates/asc-vfs       ProjFS and FUSE providers, submodule composition
+crates/asc-vfs       ProjFS, Cloud Files and FUSE providers, submodule composition
 crates/asc-serve     asc serve: refs, land, smart HTTP, SSH, indexes, cache role, Projects, turbo cache
 crates/asc-ci        asc ci checkout/affected/changed/warm/cache/artifact
 crates/asc-codeintel code intelligence: doc model, chunking, secret scanner
@@ -118,4 +118,4 @@ crates/asc-sim       hermetic simulation (tests)
 
 See [`docs/STATUS.md`](docs/STATUS.md). In short: the local client, stacks, `asc serve`, the compatibility transports and the release pipeline exist and a standalone staging server runs; IDE plugins are in progress; the Forgejo cutover stages are not done.
 
-Toolchain: Rust 1.95 (edition 2024), git 2.40 or later, and Docker for the S3 and Postgres integration tests. On Windows, the virtual filesystem needs the `Client-ProjFS` optional feature.
+Toolchain: Rust 1.95 (edition 2024), git 2.40 or later, and Docker for the S3 and Postgres integration tests. On Windows, the virtual filesystem uses ProjFS when the `Client-ProjFS` optional feature is on and the built-in Cloud Files API otherwise.

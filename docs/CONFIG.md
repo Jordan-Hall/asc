@@ -110,6 +110,7 @@ How extra checkouts keep unchanged files without a copy each; see [`WORKTREES.md
 
 | Key | Default | Meaning | Example |
 |---|---|---|---|
+| `asc.vfs.backend` | `auto` | Which Windows backend serves new virtual workspaces: `auto` (ProjFS when it is installed, otherwise Cloud Files), `projfs` or `cloudfiles`. A workspace that is already virtual keeps its backend. | `asc config --global asc.vfs.backend cloudfiles` |
 | `asc.vfs.hydrationBudget` | `500MiB` | Clean downloaded files are turned back into placeholders once a workspace holds more than this. | `asc config --global asc.vfs.hydrationBudget 2GiB` |
 | `asc.vfs.denyHydration` | `SearchProtocolHost.exe;SearchIndexer.exe;SearchFilterHost.exe` | Programs whose reads do not download files. A `;` separated list of executable names. | `asc config --global asc.vfs.denyHydration 'SearchIndexer.exe;MsMpEng.exe'` |
 

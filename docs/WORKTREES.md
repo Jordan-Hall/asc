@@ -6,7 +6,7 @@ This page tells you what each one does and what it costs.
 
 | Mode | How unchanged files are kept | Where it works | How to choose it |
 |---|---|---|---|
-| Virtual | Not on disk at all. A file is read from the shared local store the first time a program opens it. | Windows with ProjFS and the daemon running | the default for `asc worktree add` where it works (`asc.worktree.mode auto`) |
+| Virtual | Not on disk at all. A file is read from the shared local store the first time a program opens it. | Windows 10 1709 or later with the daemon running (ProjFS when it is installed, otherwise the built-in Cloud Files API) | the default for `asc worktree add` where it works (`asc.worktree.mode auto`) |
 | Plain, copy | A copy-on-write clone (reflink) of the stored file where the file system can clone, else a plain copy. | everywhere | the default elsewhere; `--mode plain` or `asc.worktree.mode plain` |
 | Plain, link | A symbolic link to one read-only copy per machine, in `<asc home>/shared-blobs/<repo-id>/`. | everywhere symbolic links can be made | `asc config asc.worktree.link symlink` |
 
