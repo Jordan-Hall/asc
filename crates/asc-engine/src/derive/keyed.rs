@@ -34,7 +34,7 @@ pub trait DerivedKeyed: Sized + Send + Sync {
 }
 
 /// Memo key: `blake3(cs ‖ encode(key))`.
-fn memo_key<D: DerivedKeyed>(cs: ChangesetId, key: &D::Key) -> ObjKey {
+pub(crate) fn memo_key<D: DerivedKeyed>(cs: ChangesetId, key: &D::Key) -> ObjKey {
     let mut h = blake3::Hasher::new();
     h.update(cs.as_bytes());
     h.update(&D::encode_key(key));

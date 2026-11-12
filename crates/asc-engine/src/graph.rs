@@ -337,6 +337,26 @@ impl LogCursor {
         out
     }
 
+    /// A cursor that resumes a walk at `id` alone, as a walk started there would.
+    pub fn at(id: ChangesetId) -> Self {
+        Self {
+            frontier: vec![Pending {
+                id,
+                excluded: false,
+                path: None,
+            }],
+            skip_left: 0,
+        }
+    }
+
+    /// The one changeset this cursor resumes at, when it is that simple (see [`Self::at`]).
+    pub fn single(&self) -> Option<ChangesetId> {
+        match self.frontier.as_slice() {
+            [p] if !p.excluded && p.path.is_none() && self.skip_left == 0 => Some(p.id),
+            _ => None,
+        }
+    }
+
     /// Parses [`to_bytes`](Self::to_bytes) output; `None` when it is malformed.
     pub fn from_bytes(mut b: &[u8]) -> Option<Self> {
         fn take<'a>(b: &mut &'a [u8], n: usize) -> Option<&'a [u8]> {
@@ -812,7 +832,7 @@ impl<S: GraphSource, J: JumpIndex> Graph<S, J> {
 }
 
 /// True when a change at `key` affects `path` (equal, inside it, or a file replacing a parent).
-fn touches(key: &RepoPath, path: &RepoPath) -> bool {
+pub(crate) fn touches(key: &RepoPath, path: &RepoPath) -> bool {
     key == path || key.starts_with_dir(path) || path.starts_with_dir(key)
 }
 
