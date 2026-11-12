@@ -40,6 +40,7 @@ struct Nx {
     rt: tokio::runtime::Runtime,
     addr: SocketAddr,
     uid: u32,
+    gitdir: Option<std::path::PathBuf>,
 }
 
 fn rp(s: &str) -> RepoPath {
@@ -78,6 +79,7 @@ impl Nx {
             rt,
             addr: "127.0.0.1:0".parse().unwrap(),
             uid,
+            gitdir: None,
         };
         nx.serve();
         nx
@@ -98,7 +100,7 @@ impl Nx {
             journal: self.journal.clone(),
             rt: self.rt.handle().clone(),
             root_time: EPOCH_TIME,
-            gitfile: None,
+            gitfile: self.gitdir.clone(),
         }
     }
 
@@ -560,4 +562,53 @@ fn only_the_kernel_and_the_owner_may_connect() {
             "a stranger's socket is refused"
         );
     }
+}
+
+#[test]
+fn the_root_serves_a_read_only_gitfile_naming_the_gitdir() {
+    let mut nx = Nx::new("");
+    nx.gitdir = Some("/home/u/.asc/wc/7/git".into());
+    nx.restart();
+    let mut c = nx.client();
+    let root = c.root();
+    for plus in [false, true] {
+        assert_eq!(
+            sorted(c.list(&root, 4096, plus).unwrap()),
+            [".", "..", ".git", "README", "link", "run.sh", "src"],
+            "plus {plus}"
+        );
+    }
+    let (g, a) = c.lookup(&root, ".git").unwrap();
+    assert_eq!((a.kind, a.mode & 0o777), (NF3REG, 0o444));
+    let want = b"gitdir: /home/u/.asc/wc/7/git\n";
+    assert_eq!(a.size, want.len() as u64);
+    assert_eq!(c.read(&g, 0, 4096).unwrap().0, want);
+    assert_eq!(c.getattr(&g).unwrap().size, want.len() as u64);
+    assert_eq!(
+        c.access(&g, 0x3f).unwrap() & 0x0c,
+        0,
+        "neither modify nor extend"
+    );
+
+    // Nothing writes, replaces, removes or renames it.
+    assert_eq!(c.write(&g, 0, b"x", 2).map(|_| ()), Err(stat::ACCES));
+    assert!(c.setattr(&g, Some(0o644), None, None).is_err());
+    assert_eq!(c.remove(&root, ".git"), Err(stat::ACCES));
+    assert_eq!(c.rename(&root, ".git", &root, "moved"), Err(stat::ACCES));
+    assert_eq!(c.rename(&root, "README", &root, ".git"), Err(stat::ACCES));
+    assert!(c.create(&root, ".git", 0, 0o644, [0; 8]).is_err());
+    assert!(c.mkdir(&root, ".git").is_err());
+    assert_eq!(c.read(&g, 0, 4096).unwrap().0, want, "still intact");
+
+    // Only the root has one.
+    let (src, _) = c.lookup(&root, "src").unwrap();
+    assert!(c.lookup(&src, ".git").is_err());
+}
+
+#[test]
+fn without_a_gitdir_there_is_no_gitfile() {
+    let nx = Nx::new("");
+    let mut c = nx.client();
+    let root = c.root();
+    assert!(c.lookup(&root, ".git").is_err());
 }

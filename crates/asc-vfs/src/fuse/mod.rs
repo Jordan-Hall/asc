@@ -151,6 +151,7 @@ mod fixture {
         pub(super) deny: String,
         pub(super) tmp: tempfile::TempDir,
         pub(super) rt: tokio::runtime::Runtime,
+        pub(super) gitdir: Option<std::path::PathBuf>,
     }
 
     impl Fx {
@@ -178,7 +179,7 @@ mod fixture {
                 journal: self.journal.clone(),
                 rt: self.rt.handle().clone(),
                 root_time: EPOCH_TIME,
-                gitfile: None,
+                gitfile: self.gitdir.clone(),
                 passthrough: true,
             }
         }
@@ -251,6 +252,7 @@ mod fixture {
             deny: deny.to_owned(),
             tmp: tempfile::tempdir().unwrap(),
             rt,
+            gitdir: None,
         };
         fx.warm();
         fx.start().then_some(fx)
@@ -318,6 +320,35 @@ mod mounted {
         // Listing and `stat` do not hydrate anything.
         assert_eq!(fx.core.stats().snapshot().total_hydrations, 0);
         assert_eq!(fx.provider().overlay_bytes().unwrap(), 0);
+    }
+
+    #[test]
+    #[ignore = "needs /dev/fuse"]
+    fn the_root_serves_a_read_only_gitfile() {
+        let Some(mut fx) = mount("") else { return };
+        fx.gitdir = Some("/home/u/.asc/wc/7/git".into());
+        assert!(fx.remount());
+        let root = fx.root();
+        let g = root.join(".git");
+        assert_eq!(names(&root), [".git", "README", "link", "run.sh", "src"]);
+        assert_eq!(
+            std::fs::read(&g).unwrap(),
+            b"gitdir: /home/u/.asc/wc/7/git\n"
+        );
+        let m = std::fs::symlink_metadata(&g).unwrap();
+        assert!(m.is_file());
+        assert_eq!(m.mode() & 0o777, 0o444);
+        assert!(std::fs::OpenOptions::new().write(true).open(&g).is_err());
+        assert!(std::fs::remove_file(&g).is_err());
+        assert!(std::fs::rename(&g, root.join("moved")).is_err());
+        assert!(std::fs::rename(root.join("README"), &g).is_err());
+        assert!(std::fs::set_permissions(&g, std::fs::Permissions::from_mode(0o644)).is_err());
+        assert!(!root.join("src/.git").exists());
+        assert_eq!(
+            fx.provider().overlay_bytes().unwrap(),
+            0,
+            "nothing landed in the overlay"
+        );
     }
 
     #[test]
