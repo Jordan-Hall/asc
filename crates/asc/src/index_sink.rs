@@ -7,12 +7,14 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use asc_core::git::blob_oid;
-use asc_core::id::ChangesetId;
+use asc_core::id::{ChangesetId, TreeId};
 use asc_core::object::{Entry, Kind};
 use asc_core::path::{Name, RepoPath, checkout_safe, windows_valid};
 use asc_git::index::{FileStat, IndexFile, PlainStat, StatSource, StatTime};
 use asc_git::projection::Projection;
 use asc_git::projection::index_export::{self, Basis, ExportOptions, TurboIndex};
+use asc_rpc::ipc::{WorkspaceClient, connect};
+use asc_rpc::server::wire;
 use asc_state::state::stage::{self, StageSet};
 use asc_state::state::workspaces::{self, Mode};
 use asc_state::{AscHome, WorkspaceId};
@@ -23,6 +25,7 @@ use async_trait::async_trait;
 use crate::cli::common::{Admitted, CliEngine, WsCtx};
 use crate::cli::config::{ConfigSnapshot, LocalConfig};
 use crate::cli::safe_dir::owned_by_current_user;
+use crate::daemon::lifecycle::{self, Config, Probe};
 use crate::env::GitEnv;
 use crate::ext::{SinkResult, SyntheticIndexSink};
 
@@ -148,6 +151,7 @@ async fn sync(
     paths: &[RepoPath],
 ) -> SinkResult {
     let gitdir: PathBuf = ws.home.gitdir(ws.workspace.ws.id);
+    let moved = head.is_some();
     let head = match head {
         Some(h) => h,
         None => ws.head_commit().await?,
@@ -156,6 +160,9 @@ async fn sync(
         Some(c) => ws.engine.get_changeset(c).await?.root,
         None => CliEngine::empty_tree_id(),
     };
+    if moved {
+        follow_head(ws, root).await;
+    }
     let plain = ws.workspace.ws.mode == Mode::Plain;
     let has_turbo = ws
         .engine
@@ -204,6 +211,46 @@ async fn sync(
     };
     index_export::store(&gitdir, &index, root, &rows)?;
     Ok(())
+}
+
+/// A virtual workspace's mount projects a tree (SPEC §10.3): after HEAD moves, the daemon moves
+/// it to HEAD's `root` without changing a file, so the overlay keeps only what differs from HEAD.
+/// Best effort: a daemon that is not running serves no mount, and catches up when it mounts.
+async fn follow_head(ws: &WsCtx, root: TreeId) {
+    if ws.workspace.ws.mode != Mode::Virtual {
+        return;
+    }
+    let Ok(cfg) = Config::for_home(&ws.home) else {
+        return;
+    };
+    if lifecycle::disabled(&|k: &str| std::env::var_os(k))
+        || !matches!(lifecycle::probe(&cfg).await, Probe::Up(_))
+    {
+        return;
+    }
+    let mut client = WorkspaceClient::new(connect(&cfg.endpoint));
+    let asked = client
+        .retarget(wire::RetargetRequest {
+            ws_id: ws.workspace.ws.id.to_string(),
+            to_root: bytes::Bytes::copy_from_slice(root.as_bytes()),
+        })
+        .await;
+    if let Some(w) = follow_warning(asked.map(|r| r.into_inner())) {
+        eprintln!("{w}");
+    }
+}
+
+/// What the user hears about a `Retarget` answer: nothing when it moved or the workspace is not
+/// mounted (the next mount catches up).
+fn follow_warning(asked: Result<wire::RetargetResponse, tonic::Status>) -> Option<String> {
+    match asked {
+        Ok(_) => None,
+        Err(s) if s.code() == tonic::Code::FailedPrecondition => None,
+        Err(s) => Some(format!(
+            "warning: the virtual file system did not follow HEAD ({}); it catches up when the              daemon next mounts the workspace",
+            s.message()
+        )),
+    }
 }
 
 #[async_trait]
