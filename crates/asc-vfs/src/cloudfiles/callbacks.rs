@@ -105,7 +105,14 @@ unsafe fn arc_of(info: &CF_CALLBACK_INFO) -> Option<Arc<Inner>> {
 fn path_of(sh: &Inner, info: &CF_CALLBACK_INFO) -> Option<Option<RepoPath>> {
     // SAFETY: NUL terminated or null, valid for the callback.
     let s = unsafe { ffi::from_wide(info.NormalizedPath) }?;
-    sh.repo_path(&s)
+    sh.repo_path(&s).or_else(|| {
+        // The filter names the path as the opener spelled it, 8.3 short names included
+        // (`RUNNER~1`); the root is held in its long form.
+        if !s.contains('~') {
+            return None;
+        }
+        sh.repo_path(&ffi::long_form(&sh.on_drive(&s))?)
+    })
 }
 
 /// The image of the process that caused the callback.

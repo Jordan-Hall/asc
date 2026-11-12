@@ -15,7 +15,7 @@ use windows::Win32::Storage::FileSystem::{
     FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAGS_AND_ATTRIBUTES,
     FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_MODE, FILE_SHARE_READ, FILE_SHARE_WRITE,
     FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FileAttributeTagInfo, GetFileInformationByHandleEx,
-    OPEN_EXISTING, SetFileAttributesW,
+    GetLongPathNameW, OPEN_EXISTING, SetFileAttributesW,
 };
 use windows::core::{GUID, PCWSTR};
 
@@ -100,6 +100,43 @@ pub fn plain(p: &Path) -> std::path::PathBuf {
     match s.strip_prefix(r"\\?\") {
         Some(rest) if !rest.starts_with("UNC") => std::path::PathBuf::from(rest),
         _ => p.to_path_buf(),
+    }
+}
+
+/// `path` with its 8.3 short names expanded, for the longest leading part that exists (the rest,
+/// such as the target of a rename, is kept as given). `None` when no part of it exists.
+pub fn long_form(path: &str) -> Option<String> {
+    let mut head = path.trim_end_matches('\\');
+    let mut tail = String::new();
+    loop {
+        if let Some(long) = long_path(head) {
+            return Some(long + &tail);
+        }
+        let cut = head.rfind('\\')?;
+        tail.insert_str(0, &head[cut..]);
+        head = &head[..cut];
+        if head.len() <= 2 {
+            return None;
+        }
+    }
+}
+
+fn long_path(path: &str) -> Option<String> {
+    let w = to_wide(path);
+    let mut buf = vec![0u16; 1024];
+    loop {
+        // SAFETY: `w` is NUL terminated; the buffer is writable for its whole length.
+        let n = unsafe { GetLongPathNameW(PCWSTR(w.as_ptr()), Some(&mut buf)) } as usize;
+        if n == 0 {
+            return None;
+        }
+        if n < buf.len() {
+            return Some(String::from_utf16_lossy(&buf[..n]));
+        }
+        if n > 1 << 16 {
+            return None;
+        }
+        buf.resize(n + 1, 0);
     }
 }
 
@@ -195,6 +232,41 @@ pub fn open(p: &Path, access: u32, share: FILE_SHARE_MODE) -> io::Result<Handle>
     .map_err(|e| io_err(&e))
 }
 
+/// Shows this thread the placeholders as they are on disk while it lives. Without it the filter
+/// hides them from a process that is not the connected provider, so after a disconnect a
+/// placeholder reads as a plain file.
+pub struct Expose(i8);
+
+/// `PHCM_EXPOSE_PLACEHOLDERS`.
+const PHCM_EXPOSE: i8 = 2;
+
+impl Expose {
+    pub fn new() -> Self {
+        // SAFETY: sets a per-thread flag; a negative answer is an error and changes nothing.
+        let prev = unsafe {
+            windows::Wdk::Storage::FileSystem::RtlSetThreadPlaceholderCompatibilityMode(PHCM_EXPOSE)
+        };
+        Self(prev)
+    }
+}
+
+impl Default for Expose {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for Expose {
+    fn drop(&mut self) {
+        if self.0 >= 0 && self.0 != PHCM_EXPOSE {
+            // SAFETY: restores the flag this guard replaced.
+            unsafe {
+                windows::Wdk::Storage::FileSystem::RtlSetThreadPlaceholderCompatibilityMode(self.0);
+            }
+        }
+    }
+}
+
 /// Read attributes only: the probe, which never hydrates.
 pub fn open_probe(p: &Path) -> io::Result<Handle> {
     open(p, FILE_READ_ATTRIBUTES.0, SHARE_ALL)
@@ -259,6 +331,7 @@ impl Probe {
 
 /// Reads the state of `p`. `NotFound` when nothing is there on disk.
 pub fn probe(p: &Path) -> io::Result<Probe> {
+    let _expose = Expose::new();
     let h = open_probe(p)?;
     let mut tag = FILE_ATTRIBUTE_TAG_INFO::default();
     // SAFETY: a valid handle and an out buffer of the class's size.
@@ -588,6 +661,42 @@ pub fn status(code: NTSTATUS) -> NTSTATUS {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The 8.3 form of an existing path, where the volume makes them.
+    fn short(p: &str) -> Option<String> {
+        let w = to_wide(p);
+        let mut buf = vec![0u16; 1024];
+        // SAFETY: `w` is NUL terminated; the buffer is writable for its whole length.
+        let n = unsafe {
+            windows::Win32::Storage::FileSystem::GetShortPathNameW(PCWSTR(w.as_ptr()), Some(&mut buf))
+        } as usize;
+        (n > 0 && n < buf.len()).then(|| String::from_utf16_lossy(&buf[..n]))
+    }
+
+    #[test]
+    fn long_form_expands_short_names_and_keeps_a_missing_tail() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("a directory with a long name");
+        std::fs::create_dir(&dir).unwrap();
+        // The temporary directory may itself be spelled with short names.
+        let long = plain(&std::fs::canonicalize(&dir).unwrap())
+            .to_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(long_form(&long).as_deref(), Some(&long[..]));
+        let gone = format!(r"{long}\not there\x.txt");
+        assert_eq!(long_form(&gone), Some(gone.clone()));
+        assert_eq!(long_form(r"Q:\surely\absent"), None);
+        // A volume without 8.3 names has nothing to expand.
+        if let Some(s) = short(&long).filter(|s| s.contains('~')) {
+            assert_eq!(long_form(&s).map(|l| l.to_lowercase()), Some(long.to_lowercase()));
+            let tail = format!(r"{s}\new.txt");
+            assert_eq!(
+                long_form(&tail).map(|l| l.to_lowercase()),
+                Some(format!(r"{long}\new.txt").to_lowercase())
+            );
+        }
+    }
 
     #[test]
     fn filetime_is_the_windows_epoch_in_100ns() {

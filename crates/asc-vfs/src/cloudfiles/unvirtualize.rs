@@ -54,6 +54,8 @@ fn populated(p: &Path) -> io::Result<()> {
 /// Unvirtualizes the root at the absolute `root`; see the module comment. A root that is not (or
 /// no longer) a sync root is walked the same way and comes out unchanged.
 pub fn unvirtualize(root: &Path) -> io::Result<Unvirtualized> {
+    // After the provider disconnects, the filter hides placeholders unless the thread asks.
+    let _expose = ffi::Expose::new();
     let top = verbatim(root);
     let mut out = Unvirtualized::default();
     // Directories are reverted after their children, deepest first.

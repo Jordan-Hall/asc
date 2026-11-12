@@ -128,6 +128,16 @@ impl Inner {
             .is_some_and(|l| l.content_path(id).is_some())
     }
 
+    /// A volume-relative path the filter names, on the root's drive (`d:\work`); a path that
+    /// already names a drive or carries the verbatim prefix is kept.
+    pub fn on_drive(&self, s: &str) -> String {
+        if s.starts_with('\\') && !s.starts_with(r"\\") {
+            format!("{}{s}", self.drive)
+        } else {
+            s.to_owned()
+        }
+    }
+
     /// The root-relative path of a path the filter names (volume-relative, with or without a
     /// drive or the verbatim prefix). `Some(None)` is the root; `None` is outside the root or not
     /// a valid repository path.
