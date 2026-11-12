@@ -650,23 +650,30 @@ impl Store {
         Ok(r.rows_affected() == 1)
     }
 
-    pub async fn request_cancel(&self, id: u64) -> Result<(), sqlx::Error> {
+    /// Flags an active run to stop. The reason rides in `error` until the run ends, so the server
+    /// that drives the run (this one or another) ends it with that reason.
+    pub async fn request_cancel(&self, id: u64, reason: &str) -> Result<(), sqlx::Error> {
         sqlx::query(
-            "UPDATE workflow_runs SET cancel_requested = 1 WHERE id = $1 AND state IN (1, 2, 3)",
+            "UPDATE workflow_runs SET cancel_requested = 1, error = $2 WHERE id = $1 AND state IN (1, 2, 3)",
         )
         .bind(i(id))
+        .bind(reason.to_owned())
         .execute(&self.pool)
         .await?;
         Ok(())
     }
 
-    pub async fn cancel_requested(&self, id: u64) -> Result<bool, sqlx::Error> {
-        let v: Option<i64> =
-            sqlx::query_scalar("SELECT cancel_requested FROM workflow_runs WHERE id = $1")
-                .bind(i(id))
-                .fetch_optional(&self.pool)
-                .await?;
-        Ok(v.is_some_and(|v| v != 0))
+    /// The reason given with a cancel request, or None when the run was not asked to stop.
+    pub async fn cancel_requested(&self, id: u64) -> Result<Option<String>, sqlx::Error> {
+        let row = sqlx::query("SELECT cancel_requested, error FROM workflow_runs WHERE id = $1")
+            .bind(i(id))
+            .fetch_optional(&self.pool)
+            .await?;
+        let Some(row) = row else { return Ok(None) };
+        if row.try_get::<i64, _>("cancel_requested")? == 0 {
+            return Ok(None);
+        }
+        Ok(Some(row.try_get::<String, _>("error")?))
     }
 
     /// Deletes finished runs older than `before`, with their steps and events.

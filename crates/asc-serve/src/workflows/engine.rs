@@ -371,7 +371,7 @@ impl WorkflowsHub {
                 Some(StopWhy::Cancelled(reason.clone()));
             live.stop.cancel();
         }
-        self.store.request_cancel(id).await.map_err(sql)?;
+        self.store.request_cancel(id, &reason).await.map_err(sql)?;
         let _ = by;
         for _ in 0..40 {
             let now = self
@@ -473,15 +473,15 @@ impl WorkflowsHub {
             }
             if !live.stop.is_cancelled() {
                 match self.store.cancel_requested(id).await {
-                    Ok(true) => {
-                        *live
-                            .why
+                    Ok(Some(reason)) => {
+                        // A reason set in this process first (cancel_run) is kept.
+                        live.why
                             .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                            Some(StopWhy::Cancelled("cancelled".into()));
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .get_or_insert(StopWhy::Cancelled(reason));
                         live.stop.cancel();
                     }
-                    Ok(false) => {}
+                    Ok(None) => {}
                     Err(e) => return sql_end(&e),
                 }
             }
@@ -513,6 +513,9 @@ impl WorkflowsHub {
                     Some(StopWhy::Deadline) => {
                         let _ = self.store.cancel_open_steps(id).await;
                         Ended::Done(RunState::Failed, "the workflow ran past max_runtime_seconds of its budget (BUDGET_EXCEEDED runtime)".into())
+                    }
+                    Some(StopWhy::Cancelled(r)) if r.is_empty() => {
+                        Ended::Done(RunState::Cancelled, "cancelled".into())
                     }
                     Some(StopWhy::Cancelled(r)) => {
                         Ended::Done(RunState::Cancelled, format!("cancelled: {r}"))
