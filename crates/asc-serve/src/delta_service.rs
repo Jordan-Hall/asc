@@ -688,6 +688,52 @@ pub async fn status(pool: &AnyPool, entry: &RepoEntry) -> Result<DeltaStatus, Gc
 mod tests {
     use super::*;
 
+    fn list(ids: &[&[u8]]) -> ChunkList {
+        ChunkList {
+            size: ids.len() as u64,
+            chunks: ids.iter().map(|b| (ChunkId::of(b), 1)).collect(),
+        }
+    }
+
+    #[test]
+    fn new_chunks_pair_with_the_dropped_chunks_between_shared_ones() {
+        let id = |b: &[u8]| ChunkId::of(b);
+        // `b` and `d` were edited into `B` and `D`; `x` was inserted after `e`.
+        let old = list(&[b"a", b"b", b"c", b"d", b"e"]);
+        let new = list(&[b"a", b"B", b"c", b"D", b"e", b"x"]);
+        assert_eq!(
+            pair_chunks(&new, &old),
+            vec![(id(b"B"), id(b"b")), (id(b"D"), id(b"d"))]
+        );
+        // Two edits in one gap take the dropped chunks in order; a shared chunk that moved back
+        // does not send the cursor back.
+        let old = list(&[b"a", b"b", b"c", b"d"]);
+        let new = list(&[b"d", b"P", b"Q", b"a"]);
+        assert_eq!(pair_chunks(&new, &old), Vec::new());
+        let new = list(&[b"a", b"P", b"Q", b"d"]);
+        assert_eq!(
+            pair_chunks(&new, &old),
+            vec![(id(b"P"), id(b"b")), (id(b"Q"), id(b"c"))]
+        );
+        assert_eq!(pair_chunks(&old, &old), Vec::new());
+    }
+
+    #[test]
+    fn rows_name_keys_of_their_own_kind() {
+        let id = [3u8; 32];
+        for (k, key) in [
+            (0, ObjKey::File(FileId::from_bytes(id))),
+            (1, ObjKey::Tree(TreeId::from_bytes(id))),
+            (2, ObjKey::Chunk(ChunkId::from_bytes(id))),
+        ] {
+            assert_eq!(row_kind(&key), Some(k));
+            assert_eq!(row_key(k, &id).unwrap(), key);
+        }
+        assert!(row_key(3, &id).is_err());
+        assert!(row_key(0, &id[..31]).is_err());
+        assert_eq!(row_kind(&ObjKey::ChunkList(FileId::from_bytes(id))), None);
+    }
+
     #[test]
     fn the_defaults_are_valid_and_nonsense_is_refused() {
         DeltaSettings::default().check().unwrap();

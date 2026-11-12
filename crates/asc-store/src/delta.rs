@@ -289,6 +289,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_chunk_takes_a_chunk_as_its_base_and_never_another_kind() {
+        let b = BucketObjects::memory();
+        let (v1, v2) = (version(usize::MAX), version(30));
+        let put_chunk = async |data: &[u8]| {
+            let key = ObjKey::Chunk(asc_core::id::ChunkId::of(data));
+            b.put(&key, encode_stored(data)).await.unwrap();
+            key
+        };
+        let base = put_chunk(&v1).await;
+        let chunk = put_chunk(&v2).await;
+        // A file with the base chunk's bytes still is not a base for a chunk, nor the reverse.
+        let file = put(&b, &v1).await;
+        assert_eq!(
+            b.plan_delta(chunk, file).await.unwrap().unwrap_err(),
+            Skip::BadBase
+        );
+        assert_eq!(
+            b.plan_delta(file, base).await.unwrap().unwrap_err(),
+            Skip::BadBase
+        );
+        // Kinds that are never deltas are refused whatever the base.
+        let list = ObjKey::ChunkList(FileId::of(b"l"));
+        assert_eq!(
+            b.plan_delta(list, base).await.unwrap().unwrap_err(),
+            Skip::NotLoose
+        );
+        let p = b.plan_delta(chunk, base).await.unwrap().unwrap();
+        b.store_delta(&p).await.unwrap();
+        assert_eq!(b.delta_base_of(chunk).await.unwrap(), Some(base));
+        assert_eq!(b.get(&chunk).await.unwrap().unwrap(), v2);
+        // A missing chunk base names the chunk key in the error.
+        b.delete(&base).await.unwrap();
+        assert!(matches!(
+            b.get(&chunk).await,
+            Err(Error::Codec(_, crate::codec::CodecError::BadBase(k))) if *k == base
+        ));
+    }
+
+    #[test]
+    fn delta_keys_keep_their_kind() {
+        let id = [7u8; 32];
+        for key in [
+            ObjKey::File(FileId::from_bytes(id)),
+            ObjKey::Tree(asc_core::id::TreeId::from_bytes(id)),
+            ObjKey::Chunk(asc_core::id::ChunkId::from_bytes(id)),
+        ] {
+            assert_eq!(key.delta_id(), Some(id));
+            let base = key.delta_base_key([9; 32]).unwrap();
+            assert_eq!(base.class(), key.class());
+            assert_eq!(base.delta_id(), Some([9; 32]));
+        }
+        let list = ObjKey::ChunkList(FileId::from_bytes(id));
+        assert_eq!(list.delta_id(), None);
+        assert_eq!(list.delta_base_key(id), None);
+    }
+
+    #[tokio::test]
     async fn the_pack_job_leaves_deltas_loose_and_their_bases_may_be_packed() {
         let cfg = crate::pack::PackConfig {
             enabled: true,

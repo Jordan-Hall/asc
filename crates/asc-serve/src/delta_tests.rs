@@ -114,7 +114,7 @@ impl Fx {
 
     async fn rows(&self) -> Vec<(FileId, FileId)> {
         let rows: Vec<(Vec<u8>, Vec<u8>)> =
-            sqlx::query_as("SELECT file, base FROM delta_bases ORDER BY file")
+            sqlx::query_as("SELECT file, base FROM delta_bases WHERE kind = 0 ORDER BY file")
                 .fetch_all(self.reg.pool())
                 .await
                 .unwrap();
@@ -527,4 +527,65 @@ async fn the_admin_command_runs_and_reports() {
     );
     let again = cli.delta(&DeltaCmd::Run, &[], true).await.unwrap();
     assert!(again.text.contains("read 0 changeset(s)"), "{}", again.text);
+}
+
+/// The tree of directory `dir` (one component) in changeset `cs`.
+async fn dir_tree(e: &RepoEntry, cs: ChangesetId, dir: &str) -> asc_core::id::TreeId {
+    use asc_core::codec::decode_envelope;
+    use asc_core::object::Tree;
+    use asc_core::path::Name;
+    let root = e.backend.engine().get_changeset(cs).await.unwrap().root;
+    let b = e.objects.get(&ObjKey::Tree(root)).await.unwrap().unwrap();
+    let t: Tree = decode_envelope(&b).unwrap();
+    asc_core::id::TreeId::from_bytes(t.get(&Name::new(dir.as_bytes()).unwrap()).unwrap().id)
+}
+
+#[tokio::test]
+async fn a_changed_directory_is_stored_as_a_tree_delta_and_its_base_is_a_root() {
+    let reg = registry().await;
+    let e = repo(&reg).await;
+    // A wide directory: its tree is a few KiB, and one edit changes one entry.
+    let names: Vec<String> = (0..300).map(|i| format!("src/module_{i:04}.rs")).collect();
+    let files: Vec<(&str, &[u8])> = names.iter().map(|n| (n.as_str(), n.as_bytes())).collect();
+    let a = commit(&e, &[], &files).await;
+    let b = commit(&e, &[a], &[("src/module_0007.rs", b"edited")]).await;
+    let ns = e.ns.as_bytes().to_vec();
+    for (pos, cs) in [a, b].into_iter().enumerate() {
+        sqlx::query("INSERT INTO mainline (ns, ref, pos, cs) VALUES ($1, $2, $3, $4)")
+            .bind(ns.clone())
+            .bind("refs/heads/master")
+            .bind(pos as i64)
+            .bind(cs.as_bytes().to_vec())
+            .execute(reg.pool())
+            .await
+            .unwrap();
+    }
+    let (old, new) = (dir_tree(&e, a, "src").await, dir_tree(&e, b, "src").await);
+    let new_key = ObjKey::Tree(new);
+    let want = e.objects.get(&new_key).await.unwrap().unwrap();
+
+    let rep = delta_service::pass(reg.pool(), &e, &on()).await.unwrap();
+    assert_eq!((rep.trees, rep.chunks, rep.files()), (1, 0, 0), "{rep:?}");
+    assert!(rep.bytes_after * 10 < rep.bytes_before, "{rep:?}");
+    assert_eq!(
+        e.objects.delta_base_of(new_key).await.unwrap(),
+        Some(ObjKey::Tree(old))
+    );
+    assert_eq!(e.objects.get(&new_key).await.unwrap().unwrap(), want);
+    let kind: i16 = sqlx::query_scalar("SELECT kind FROM delta_bases WHERE file = $1")
+        .bind(new.as_bytes().to_vec())
+        .fetch_one(reg.pool())
+        .await
+        .unwrap();
+    assert_eq!(kind, 1);
+    let roots = delta_service::DeltaRoots {
+        pool: reg.pool().clone(),
+        ns: ns.clone(),
+    };
+    assert_eq!(roots.roots(&ns).await.unwrap(), vec![ObjKey::Tree(old)]);
+    // The rollback rewrites tree deltas in full too.
+    assert_eq!(delta_service::expand_all(reg.pool(), &e).await.unwrap(), 1);
+    assert_eq!(e.objects.delta_base_of(new_key).await.unwrap(), None);
+    assert_eq!(e.objects.get(&new_key).await.unwrap().unwrap(), want);
+    assert!(roots.roots(&ns).await.unwrap().is_empty());
 }
