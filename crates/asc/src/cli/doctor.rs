@@ -2075,4 +2075,23 @@ mod tests {
         assert!(none.hint.unwrap().contains("Client-ProjFS"));
     }
 
+    #[test]
+    fn unix_virtual_fs_prefers_fuse_and_falls_back_to_nfs() {
+        let both = unix_virtual_fs(Some(true), Some(true));
+        assert_eq!((both.level, both.name.as_str()), (Level::Ok, "virtual-fs"));
+        assert!(both.detail.starts_with("virtual workspaces use FUSE"));
+        let nfs = unix_virtual_fs(Some(false), Some(true));
+        assert_eq!(nfs.level, Level::Ok);
+        assert!(nfs.detail.contains("NFS"));
+        let mac = unix_virtual_fs(None, Some(true));
+        assert!(mac.detail.contains("NFS"));
+        let none = unix_virtual_fs(Some(false), Some(false));
+        assert_eq!(none.level, Level::Warn);
+        assert!(none.hint.unwrap().contains("fuse3"));
+        let helper = unix_virtual_fs(None, Some(false));
+        assert_eq!(helper.level, Level::Warn);
+        assert!(helper.detail.contains("mount helper"));
+        let build = unix_virtual_fs(None, None);
+        assert!(build.hint.unwrap().contains("vfs-nfs"));
+    }
 }
