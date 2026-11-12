@@ -649,3 +649,148 @@ fn reconcile_replays_the_overlay_into_the_journal() {
     // `src` is in the base tree: a directory that only holds edits journals nothing itself.
     assert_eq!(r.examined, 2 + 5);
 }
+
+fn switched_paths() -> Vec<RepoPath> {
+    ["src/a.txt", "src/b.txt", "src/c.txt", "src/sub/deep.txt"]
+        .map(rp)
+        .to_vec()
+}
+
+fn overlay_entries(nx: &Nx) -> Vec<String> {
+    let o = crate::unixfs::overlay::Overlay::peek(&nx.tmp.path().join("overlay")).unwrap();
+    sorted(
+        o.entries()
+            .unwrap()
+            .into_iter()
+            .map(|(p, _)| String::from_utf8_lossy(p.as_bytes()).into_owned())
+            .collect(),
+    )
+}
+
+#[test]
+fn a_retarget_moves_the_base_and_keeps_what_the_mount_shows() {
+    // `reset --soft`: HEAD moves, the files stay as they were.
+    let nx = Nx::new("");
+    let mut c = nx.client();
+    let (src, _) = c.walk("src").unwrap();
+    let (a, a_before) = c.walk("src/a.txt").unwrap();
+
+    let r = nx
+        .provider()
+        .merged()
+        .retarget(nx.tree2, &switched_paths())
+        .unwrap();
+
+    assert_eq!(nx.core.root(), nx.tree2);
+    assert_eq!(
+        crate::unixfs::load_base(&nx.tmp.path().join("overlay")),
+        Some(nx.tree2)
+    );
+    assert_eq!((r.kept, r.dropped), (4, 0));
+    assert_eq!(c.getattr(&a).unwrap().fileid, a_before.fileid);
+    assert_eq!(c.read(&a, 0, 100).unwrap().0, b"alpha\n");
+    let (b, _) = c.walk("src/b.txt").unwrap();
+    assert_eq!(c.read(&b, 0, 100).unwrap().0, b"beta\n");
+    let (deep, _) = c.walk("src/sub/deep.txt").unwrap();
+    assert_eq!(c.read(&deep, 0, 100).unwrap().0, b"deep\n");
+    assert_eq!(
+        sorted(c.list(&src, 4096, true).unwrap()),
+        [".", "..", "a.txt", "b.txt", "sub"]
+    );
+    let mut ops = nx.journal.ops();
+    ops.sort_by(|x, y| x.1.cmp(&y.1));
+    assert_eq!(
+        ops,
+        vec![
+            (Op::Modified, "src/a.txt".to_owned()),
+            (Op::Modified, "src/b.txt".to_owned()),
+            (Op::Deleted, "src/c.txt".to_owned()),
+            (Op::Modified, "src/sub/deep.txt".to_owned()),
+        ]
+    );
+    // Moving back drops every copy again: the overlay is empty.
+    let back = nx
+        .provider()
+        .merged()
+        .retarget(nx.rt.block_on(build(&nx.store)).0, &switched_paths())
+        .unwrap();
+    assert_eq!((back.kept, back.dropped), (0, 4));
+    assert!(overlay_entries(&nx).is_empty(), "{:?}", overlay_entries(&nx));
+    assert!(nx.provider().merged().whiteouts().unwrap().is_empty());
+    assert_eq!(c.read(&a, 0, 100).unwrap().0, b"alpha\n");
+}
+
+#[test]
+fn a_retarget_after_a_commit_empties_the_overlay() {
+    // The user wrote the second tree through the mount and committed it.
+    let nx = Nx::new("");
+    let mut c = nx.client();
+    let (src, _) = c.walk("src").unwrap();
+    let (a, _) = c.walk("src/a.txt").unwrap();
+    c.write(&a, 0, b"alpha two, longer\n", 2).unwrap();
+    let (deep, _) = c.walk("src/sub/deep.txt").unwrap();
+    c.write(&deep, 0, b"deep two\n", 2).unwrap();
+    c.remove(&src, "b.txt").unwrap();
+    let (new, _) = c.create(&src, "c.txt", 1, 0o644, [0; 8]).unwrap();
+    c.write(&new, 0, b"gamma\n", 2).unwrap();
+    // A file the commit left out stays in the overlay.
+    let (extra, _) = c.create(&src, "notes.txt", 1, 0o644, [0; 8]).unwrap();
+    c.write(&extra, 0, b"mine\n", 2).unwrap();
+    assert_eq!(
+        overlay_entries(&nx),
+        [
+            "src",
+            "src/a.txt",
+            "src/c.txt",
+            "src/notes.txt",
+            "src/sub",
+            "src/sub/deep.txt"
+        ]
+    );
+    let before = nx.journal.ops().len();
+
+    let r = nx
+        .provider()
+        .merged()
+        .retarget(nx.tree2, &switched_paths())
+        .unwrap();
+
+    assert_eq!((r.kept, r.dropped), (0, 4));
+    assert_eq!(overlay_entries(&nx), ["src", "src/notes.txt"]);
+    assert!(nx.provider().merged().whiteouts().unwrap().is_empty());
+    assert_eq!(nx.journal.ops().len(), before, "nothing differs from HEAD anew");
+    assert_eq!(c.read(&a, 0, 100).unwrap().0, b"alpha two, longer\n");
+    assert_eq!(c.read(&deep, 0, 100).unwrap().0, b"deep two\n");
+    assert_eq!(
+        sorted(c.list(&src, 4096, true).unwrap()),
+        [".", "..", "a.txt", "c.txt", "notes.txt", "sub"]
+    );
+    assert_eq!(nx.state("src/a.txt"), PathState::Virtual);
+}
+
+#[test]
+fn a_retarget_keeps_a_file_whose_mode_differs() {
+    let nx = Nx::new("");
+    let mut c = nx.client();
+    let (a, _) = c.walk("src/a.txt").unwrap();
+    c.write(&a, 0, b"alpha two, longer\n", 2).unwrap();
+    c.setattr(&a, Some(0o755), None, None).unwrap();
+    let r = nx
+        .provider()
+        .merged()
+        .retarget(nx.tree2, &switched_paths())
+        .unwrap();
+    assert_eq!(r.dropped, 0);
+    assert!(overlay_entries(&nx).contains(&"src/a.txt".to_owned()));
+}
+
+#[test]
+fn the_base_tree_persists_beside_the_overlay() {
+    let tmp = tempfile::tempdir().unwrap();
+    assert_eq!(crate::unixfs::load_base(tmp.path()), None);
+    let id = TreeId::from_bytes([7; 32]);
+    crate::unixfs::save_base(tmp.path(), id).unwrap();
+    assert_eq!(crate::unixfs::load_base(tmp.path()), Some(id));
+    std::fs::write(tmp.path().join("base"), "not a tree\n").unwrap();
+    assert_eq!(crate::unixfs::load_base(tmp.path()), None);
+}
