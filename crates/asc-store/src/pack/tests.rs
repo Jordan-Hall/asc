@@ -1032,7 +1032,11 @@ fn derived(n: u32) -> (ObjKey, Bytes) {
     let data = format!("blame of file {n}: lines 1-{n} by change {n}");
     (
         ObjKey::Derived {
-            name: if n.is_multiple_of(2) { "blame" } else { "pathsearch" },
+            name: if n.is_multiple_of(2) {
+                "blame"
+            } else {
+                "pathsearch"
+            },
             version: 2,
             id,
         },
