@@ -615,6 +615,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_full_chain_sends_the_next_version_to_an_older_one() {
+        let b = BucketObjects::memory();
+        let n = 3 * MAX_DELTA_DEPTH as usize;
+        let mut ids = Vec::new();
+        for i in 0..n {
+            ids.push(put(&b, &version(i)).await);
+        }
+        let mut cache = PlanCache::default();
+        // Each version against the one before: none past the first is stored whole.
+        for w in ids.windows(2) {
+            let p = b
+                .plan_best(w[1], &[w[0]], &mut cache)
+                .await
+                .unwrap()
+                .unwrap();
+            b.store_delta(&p).await.unwrap();
+        }
+        let max = MAX_DELTA_DEPTH as usize;
+        // Version `max` cannot go on `max - 1` (that chain is full): it goes one lower.
+        assert_eq!(b.delta_base_of(ids[max]).await.unwrap(), Some(ids[max - 2]));
+        for (i, id) in ids.iter().enumerate() {
+            assert_eq!(b.get(id).await.unwrap().unwrap(), version(i), "version {i}");
+            let mut depth = 0;
+            let mut at = *id;
+            while let Some(next) = b.delta_base_of(at).await.unwrap() {
+                at = next;
+                depth += 1;
+            }
+            assert!(depth < max, "version {i} is {depth} deep");
+            assert_eq!(at, ids[0], "version {i}");
+        }
+    }
+
+    #[tokio::test]
     async fn a_remembered_base_is_not_read_again() {
         let b = BucketObjects::memory();
         let base = put(&b, &version(usize::MAX)).await;
