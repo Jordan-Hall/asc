@@ -48,7 +48,11 @@ while a delta is being written.
    new file, or is listed in `gc_purge` is skipped.
 3. `plan_delta` builds the delta without writing. When it saves half, the pass upserts the
    `delta_bases (ns, file, base)` row first and then overwrites the loose value.
-4. The cursor moves to the last row read.
+4. When a mainline changeset is a merge, the pass walks back from its other parents and treats each
+   changeset it meets the same way (each against its own first parent), stopping at changesets on the
+   branch's mainline. One merge's walk reads at most `max_changesets` changesets. A version written on
+   a side branch therefore gets a base on that branch even when the merge only adds the file.
+5. The cursor moves to the last row read.
 
 ## Keeping bases alive
 
@@ -79,7 +83,7 @@ max_changesets = 5000  # per repository per pass; 1 to 1000000
 ## Operation
 
 - `asc serve admin delta run --repo R | --all` runs one pass now, whether or not `enabled` is set, and
-  prints changesets read, candidates, deltas written, files without gain, skipped files and stored bytes
+  prints mainline changesets read, side-branch changesets read, candidates, deltas written, files without gain, skipped files and stored bytes
   before and after.
 - `asc serve admin delta status --repo R | --all` prints the number of deltas, the distinct bases they
   name and the mainline changesets not yet read.
@@ -100,7 +104,8 @@ Migration `0611_delta_bases` (PostgreSQL and SQLite):
 - `asc-store/src/codec.rs`: encode and decode, unrelated bases give no delta, the decode cap.
 - `asc-store/src/delta.rs`: reads return the full value, a missing base is damage that a put repairs,
   chains stop at cycles and at the depth limit, the pack job leaves deltas loose.
-- `asc-serve/src/delta_tests.rs`: the pass (copies, cursor, size bounds, batch limit), GC keeps a base
+- `asc-serve/src/delta_tests.rs`: the pass (copies, cursor, size bounds, batch limit, merged side
+  branches), GC keeps a base
   until its last delta is swept, a purged base expands its dependents and takes no new ones, the admin
   command and the rollback.
 - `asc-serve/src/admin.rs`: a fork holds full values where the source holds deltas.
