@@ -23,6 +23,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use asc_core::id::{FileHasher, TreeId};
 use asc_core::object::Kind;
 use asc_core::path::{MAX_TREE_DEPTH, Name, RepoPath, checkout_safe};
 use asc_store::cachedir::CacheDir;
@@ -36,7 +37,8 @@ use tokio::runtime::Handle;
 use super::inodes::{GITFILE, InodeTable, ROOT};
 use super::overlay::{MAX_CHILDREN, Overlay};
 use super::{
-    Attr, Config, Errno, JournalSink, NoNotify, Notify, Reconciled, TimeSource, VKind, block,
+    Attr, Config, Errno, JournalSink, NoNotify, Notify, Reconciled, Retargeted, TimeSource, VKind,
+    block,
 };
 use crate::core::{CoreFs, DehydrateOutcome, Node, Result, SwitchOutcome, VfsError};
 use crate::policy::Decision;
@@ -1559,6 +1561,182 @@ impl MergedFs {
         }
         self.invalidate(&changed, &before);
         Ok((SwitchOutcome::default(), changed))
+    }
+
+    /// Moves the base tree to `to` without changing anything the mount shows: HEAD moved (a
+    /// commit, `reset --soft`, a checkout written through the mount) and the tree the files are
+    /// projected from follows it. `diff` is every leaf path that differs between the current
+    /// base and `to`.
+    ///
+    /// A path the base showed and `to` changes is copied into the overlay (or hidden, when `to`
+    /// adds it) so it keeps what it showed, and is journaled as a local change. An overlay entry
+    /// that now equals `to`, and a deletion marker of a path `to` no longer has, are dropped, so
+    /// the overlay holds only what differs from HEAD. The new base is recorded beside the overlay
+    /// ([`super::load_base`]).
+    pub fn retarget(&self, to: TreeId, diff: &[RepoPath]) -> Result<Retargeted> {
+        let io = |e: Errno| VfsError::Io(io_of(e));
+        let before: HashMap<RepoPath, VKind> = diff
+            .iter()
+            .filter_map(|p| Some((p.clone(), self.view(p).ok()??.kind())))
+            .collect();
+        let mut out = Retargeted::default();
+        {
+            let _g = lock(&self.ns);
+            for p in diff {
+                self.keep_view(p, &mut out).map_err(io)?;
+            }
+            // Recorded before anything is dropped: a restart then mounts the tree the overlay
+            // is now relative to.
+            let from = self.core.root();
+            self.core.set_root(to);
+            if let Err(e) = super::save_base(self.overlay.dir(), to) {
+                self.core.set_root(from);
+                return Err(VfsError::Io(e));
+            }
+            for p in diff {
+                self.drop_equal(p, &mut out).map_err(io)?;
+            }
+        }
+        self.invalidate(diff, &before);
+        Ok(out)
+    }
+
+    /// Phase one of [`Self::retarget`], on the old base: makes `p` show what it shows now after
+    /// the base moves. The caller holds `ns`.
+    fn keep_view(&self, p: &RepoPath, out: &mut Retargeted) -> Res<()> {
+        if self.is_redirect_node(p) || self.reds.covers(p) || self.whites.hides(p) {
+            return Ok(());
+        }
+        // An overlay entry at `p`, or a file standing in for a directory above it, already
+        // decides what `p` shows.
+        let mut cur = Some(p.clone());
+        while let Some(c) = cur {
+            if let Some(m) = self.overlay.meta(&c).map_err(errno)?
+                && (c == *p || !m.is_dir())
+            {
+                return Ok(());
+            }
+            cur = c.parent();
+        }
+        match self.blk(self.core.resolve(p)).map_err(vfs_errno)? {
+            Some(n) if matches!(n.kind, Kind::File | Kind::Exec | Kind::Symlink) => {
+                self.copy_up_locked(p, &n)?;
+                self.journal.record(Op::Modified, p.as_bytes());
+                out.kept += 1;
+            }
+            Some(_) => {
+                // A directory (or submodule) here stays a directory over whatever comes.
+                self.overlay.make_dir(p, 0o755).map_err(errno)?;
+                out.kept += 1;
+            }
+            None => {
+                // The new tree adds `p`: hide the highest ancestor it adds with it, so no new
+                // empty directory appears either.
+                let mut top = p.clone();
+                while let Some(a) = top.parent() {
+                    if self.blk(self.core.resolve(&a)).map_err(vfs_errno)?.is_some() {
+                        break;
+                    }
+                    top = a;
+                }
+                if !self.whites.hides(&top) {
+                    self.overlay.set_white(&top).map_err(errno)?;
+                    self.whites.insert(&top);
+                    self.journal.record(Op::Deleted, top.as_bytes());
+                    out.kept += 1;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Phase two of [`Self::retarget`], on the new base: drops what the overlay holds at `p`
+    /// (and the deletion markers above it) when the new base shows the same. The caller holds
+    /// `ns`.
+    fn drop_equal(&self, p: &RepoPath, out: &mut Retargeted) -> Res<()> {
+        // Markers of paths the new base does not have hide nothing.
+        let mut cur = Some(p.clone());
+        while let Some(c) = cur {
+            if self.whites.is_white(&c)
+                && self.blk(self.core.resolve(&c)).map_err(vfs_errno)?.is_none()
+            {
+                self.overlay.clear_white(&c).map_err(errno)?;
+                self.whites.remove(&c);
+                out.dropped += 1;
+            }
+            cur = c.parent();
+        }
+        if self.whites.hides(p) {
+            return Ok(());
+        }
+        let Some(m) = self.overlay.meta(p).map_err(errno)? else {
+            return Ok(());
+        };
+        let Some(n) = self.blk(self.core.resolve(p)).map_err(vfs_errno)? else {
+            return Ok(());
+        };
+        if !self.same_as_base(p, &m, &n)? {
+            return Ok(());
+        }
+        self.overlay.remove_file(p).map_err(errno)?;
+        out.dropped += 1;
+        // Overlay directories left empty go too when the base has the directory.
+        let mut anc = p.parent();
+        while let Some(a) = anc {
+            let is_base_dir = self
+                .blk(self.core.resolve(&a))
+                .map_err(vfs_errno)?
+                .is_some_and(|n| n.kind == Kind::Dir);
+            if !is_base_dir
+                || self.whites.is_white(&a)
+                || !self.overlay.children(Some(&a)).map_err(errno)?.is_empty()
+            {
+                break;
+            }
+            self.overlay.remove_dir(&a).map_err(errno)?;
+            anc = a.parent();
+        }
+        Ok(())
+    }
+
+    /// Whether the overlay file or symlink at `p` (`m`) holds exactly the base entry `n`.
+    fn same_as_base(&self, p: &RepoPath, m: &fs::Metadata, n: &Node) -> Res<bool> {
+        let ft = m.file_type();
+        let Some(c) = n.content() else {
+            return Ok(false);
+        };
+        if ft.is_symlink() {
+            if n.kind != Kind::Symlink {
+                return Ok(false);
+            }
+            let target = self.overlay.read_link(p).map_err(errno)?;
+            let s = self.blk(self.core.read_content(c)).map_err(vfs_errno)?;
+            let want = self.blk(s.read_all(MAX_LINK as u64)).map_err(vfs_errno)?;
+            return Ok(target.as_os_str().as_bytes() == want.as_slice());
+        }
+        let exec = m.permissions().mode() & 0o111 != 0;
+        let kind_ok = match n.kind {
+            Kind::File => ft.is_file() && !exec,
+            Kind::Exec => ft.is_file() && exec,
+            _ => false,
+        };
+        if !kind_ok || m.len() != c.size {
+            return Ok(false);
+        }
+        let mut f = self
+            .overlay
+            .open_file(p, true, false, false, false)
+            .map_err(errno)?;
+        let mut h = FileHasher::new();
+        let mut buf = vec![0u8; 1 << 16];
+        loop {
+            let r = io::Read::read(&mut f, &mut buf).map_err(errno)?;
+            if r == 0 {
+                break;
+            }
+            h.update(&buf[..r]);
+        }
+        Ok(h.finalize() == c.id)
     }
 
     /// Journals every change the overlay holds, for a reader whose hints were lost (the daemon

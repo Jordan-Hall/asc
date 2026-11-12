@@ -1,4 +1,4 @@
-//! The Unix merged file system (SPEC §10.3, §10.4) that the Linux FUSE backend and the macOS NFS
+//! The Unix merged file system (SPEC §10.3, §10.3b) that the Linux FUSE backend and the macOS NFS
 //! backend both serve: [`inodes`] is the persisted inode table, [`overlay`] holds what the user
 //! changed, and [`merged`] answers every file system operation over the base tree and the
 //! overlay, with exact journaling. The front ends only translate their protocol to it.
@@ -9,10 +9,11 @@
 
 use std::future::Future;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+use asc_core::id::TreeId;
 use asc_core::path::RepoPath;
 use asc_state::StateDb;
 use asc_state::state::workspaces::Workspace;
@@ -129,6 +130,36 @@ pub struct Reconciled {
     pub modified: u64,
     pub created: u64,
     pub deleted: u64,
+}
+
+/// What [`MergedFs::retarget`] did.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Retargeted {
+    /// Paths copied into the overlay or hidden so they keep what they showed.
+    pub kept: u64,
+    /// Overlay entries and deletion markers dropped because the new base shows the same.
+    pub dropped: u64,
+}
+
+/// The file in the overlay directory naming the tree the mount projects (hex).
+const BASE_FILE: &str = "base";
+
+/// The tree the overlay at `dir` was last projected over; `None` when none was saved or the
+/// file does not hold a tree id.
+pub fn load_base(dir: &Path) -> Option<TreeId> {
+    let s = std::fs::read_to_string(dir.join(BASE_FILE)).ok()?;
+    s.trim().parse().ok()
+}
+
+/// Records `root` as the tree the overlay at `dir` is projected over (atomically: a crash
+/// leaves the old or the new id).
+pub fn save_base(dir: &Path, root: TreeId) -> io::Result<()> {
+    use std::io::Write;
+    let tmp = dir.join(format!("{BASE_FILE}.tmp"));
+    let mut f = std::fs::File::create(&tmp)?;
+    writeln!(f, "{root}")?;
+    f.sync_all()?;
+    std::fs::rename(&tmp, dir.join(BASE_FILE))
 }
 
 /// What a path is, as `stat` shows it.
