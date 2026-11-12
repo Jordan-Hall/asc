@@ -288,6 +288,7 @@ impl WsCtx {
         let spec = RemoteSpec {
             kind: repo.repo.remote_kind,
             url: repo.repo.remote_url.clone(),
+            pack_cache: Some(pack_cache_spec(&home, config)?),
         };
         crate::remote::server::bind(config.file(), &db);
         let remote = match spec.kind {
@@ -933,6 +934,27 @@ pub(crate) fn expand_home(p: &str) -> PathBuf {
 }
 
 /// The shared object cache: `asc.cache.dir`, else the home's `cache/`.
+/// The remote tier's pack cache: in the writable object cache, with the fetch limit from
+/// `asc.cache.packFetchMax` (a size; `0` turns whole-pack fetches off).
+pub(crate) fn pack_cache_spec(
+    home: &AscHome,
+    config: &ConfigSnapshot,
+) -> Result<ext::PackCacheSpec> {
+    let fetch_max = match config.get("asc.cache.packFetchMax") {
+        None => asc_store::pack::cache::DEFAULT_FETCH_MAX,
+        Some(t) if t.trim() == "0" => 0,
+        Some(t) => crate::daemon::scheduler::parse_size(&t).ok_or_else(|| {
+            CliError::Fatal(format!(
+                "fatal: bad numeric config value '{t}' for 'asc.cache.packFetchMax'"
+            ))
+        })?,
+    };
+    Ok(ext::PackCacheSpec {
+        root: cache_root(home, config),
+        fetch_max,
+    })
+}
+
 pub(crate) fn cache_root(home: &AscHome, config: &ConfigSnapshot) -> PathBuf {
     config
         .get("asc.cache.dir")

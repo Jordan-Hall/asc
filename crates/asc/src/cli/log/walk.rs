@@ -35,6 +35,7 @@ impl Hist {
         let spec = RemoteSpec {
             kind: ws.repo.repo.remote_kind,
             url: ws.repo.repo.remote_url.clone(),
+            pack_cache: None,
         };
         Self(ext::history_selector().select(&spec).map(|(h, _)| h))
     }

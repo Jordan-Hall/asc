@@ -221,6 +221,18 @@ pub trait OpSink: Send + Sync {
 pub struct RemoteSpec {
     pub kind: RemoteKind,
     pub url: Option<String>,
+    /// Where a remote whose objects are packed keeps whole packs locally; `None` reads packs
+    /// by range only.
+    pub pack_cache: Option<PackCacheSpec>,
+}
+
+/// The local pack cache of the remote tier (docs/design/PACKED-OBJECTS.md, "Tiered store and
+/// cache"): packs go under `<root>/pack`, and a pack of at most `fetch_max` bytes is fetched
+/// whole on its first read (`asc.cache.packFetchMax`; 0 turns whole fetches off).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PackCacheSpec {
+    pub root: std::path::PathBuf,
+    pub fetch_max: u64,
 }
 
 /// The remote tier of the object stack (SPEC §3.5), by remote kind.
@@ -349,7 +361,8 @@ mod tests {
             history_selector()
                 .select(&RemoteSpec {
                     kind: RemoteKind::LocalOnly,
-                    url: None
+                    url: None,
+                    pack_cache: None,
                 })
                 .is_none()
         );
@@ -374,7 +387,11 @@ mod tests {
     #[test]
     fn remote_registry_is_keyed_by_kind() {
         register_remote_objects(RemoteKind::Bucket, Arc::new(Fixed));
-        let spec = |kind| RemoteSpec { kind, url: None };
+        let spec = |kind| RemoteSpec {
+            kind,
+            url: None,
+            pack_cache: None,
+        };
         assert!(remote_objects(&spec(RemoteKind::Bucket)).is_some());
         assert!(remote_objects(&spec(RemoteKind::LocalOnly)).is_none());
     }
