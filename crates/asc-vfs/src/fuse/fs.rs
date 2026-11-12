@@ -58,6 +58,8 @@ pub struct Config {
     pub rt: Handle,
     /// The time, in Unix seconds, the root directory reports.
     pub root_time: i64,
+    /// The gitdir the root's read-only `.git` gitfile names (see [`unixfs::Config::gitfile`]).
+    pub gitfile: Option<PathBuf>,
     /// Try kernel passthrough for clean files.
     pub passthrough: bool,
 }
@@ -477,7 +479,10 @@ impl fuser::Filesystem for FuseFs {
                 (b".", _) => (ino.0, FileType::Directory),
                 (b"..", _) => (snap.parent, FileType::Directory),
                 (_, Some(f)) => (self.fs.ino_for_listing(ino.0, name), file_type(f.kind())),
-                _ => continue,
+                (_, None) => match self.fs.gitfile_entry(ino.0, name) {
+                    Some(a) => (a.ino, FileType::RegularFile),
+                    None => continue,
+                },
             };
             if reply.add(INodeNo(eino), next, kind, OsStr::from_bytes(name)) {
                 break;
@@ -531,7 +536,13 @@ impl fuser::Filesystem for FuseFs {
                         break;
                     }
                 }
-                _ => {}
+                (_, None) => {
+                    if let Some(a) = self.fs.gitfile_entry(ino.0, name)
+                        && reply.add(INodeNo(a.ino), next, os, &a.ttl, &fattr(&a), Generation(0))
+                    {
+                        break;
+                    }
+                }
             }
         }
         reply.ok();
@@ -670,6 +681,7 @@ impl FuseProvider {
             journal: cfg.journal,
             rt: cfg.rt,
             root_time: cfg.root_time,
+            gitfile: cfg.gitfile,
         })?);
         let kernel = Arc::new(Kernel::default());
         fs.set_notify(kernel.clone());

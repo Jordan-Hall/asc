@@ -375,7 +375,7 @@ impl Overlay {
 }
 
 /// `O_NOFOLLOW`: opening a symlink at the last component fails instead of following it.
-fn libc_nofollow() -> i32 {
+pub(crate) fn libc_nofollow() -> i32 {
     rustix::fs::OFlags::NOFOLLOW.bits() as i32
 }
 

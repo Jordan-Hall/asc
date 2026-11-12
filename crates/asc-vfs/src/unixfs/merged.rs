@@ -32,7 +32,7 @@ use asc_wc::switch::Plan;
 use asc_wc::vstatus::{DirEntry, DiskKind, DiskStat, DiskState, PathState};
 use tokio::runtime::Handle;
 
-use super::inodes::{InodeTable, ROOT};
+use super::inodes::{GITFILE, InodeTable, ROOT};
 use super::overlay::{MAX_CHILDREN, Overlay};
 use super::{Attr, Config, Errno, JournalSink, NoNotify, Notify, TimeSource, VKind, block};
 use crate::core::{CoreFs, DehydrateOutcome, Node, Result, SwitchOutcome, VfsError};
@@ -234,6 +234,40 @@ pub struct MergedFs {
     pub(crate) dirs: Mutex<HashMap<u64, Arc<Snapshot>>>,
     next_fh: AtomicU64,
     notify: RwLock<Arc<dyn Notify>>,
+    gitfile: Option<GitFile>,
+}
+
+/// The synthetic `.git` gitfile: its bytes, and the private copy reads are served from.
+struct GitFile {
+    bytes: Vec<u8>,
+    copy: PathBuf,
+}
+
+/// The gitfile's name at the root.
+const DOT_GIT: &[u8] = b".git";
+
+impl GitFile {
+    /// Writes `gitdir: <target>` to `dir/gitfile` (atomically) for reads to open.
+    fn write(dir: &Path, target: &Path) -> io::Result<Self> {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut bytes = b"gitdir: ".to_vec();
+        bytes.extend_from_slice(target.as_os_str().as_bytes());
+        bytes.push(b'\n');
+        let copy = dir.join("gitfile");
+        let tmp = dir.join("gitfile.tmp");
+        let _ = fs::remove_file(&tmp);
+        let mut f = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o400)
+            .custom_flags(super::overlay::libc_nofollow())
+            .open(&tmp)?;
+        f.write_all(&bytes)?;
+        f.sync_all()?;
+        fs::rename(&tmp, &copy)?;
+        Ok(Self { bytes, copy })
+    }
 }
 
 pub(crate) fn join(dir: Option<&RepoPath>, name: &Name) -> RepoPath {
@@ -250,6 +284,10 @@ impl MergedFs {
         fs::create_dir_all(&cfg.redirect)?;
         let meta = fs::metadata(overlay.root())?;
         let whites = Whites::load(&overlay)?;
+        let gitfile = match &cfg.gitfile {
+            Some(t) => Some(GitFile::write(overlay.dir(), t)?),
+            None => None,
+        };
         Ok(Self {
             core: cfg.core,
             local: cfg.local,
@@ -269,6 +307,7 @@ impl MergedFs {
             dirs: Mutex::new(HashMap::new()),
             next_fh: AtomicU64::new(1),
             notify: RwLock::new(Arc::new(NoNotify)),
+            gitfile,
         })
     }
 
@@ -329,10 +368,14 @@ impl MergedFs {
 
     // ----- paths and the merged view -----
 
-    /// The path of a live inode: `None` is the root.
+    /// The path of a live inode: `None` is the root. The gitfile has no path and refuses
+    /// every operation that needs one.
     pub(crate) fn loc(&self, ino: u64) -> Res<Option<RepoPath>> {
         if ino == ROOT {
             return Ok(None);
+        }
+        if ino == GITFILE {
+            return Err(Errno::ACCESS);
         }
         let b = self.table.path_of(ino).ok_or(Errno::STALE)?;
         RepoPath::new(b).map(Some).map_err(|_| Errno::INVAL)
@@ -351,6 +394,10 @@ impl MergedFs {
         if name.len() > MAX_NAME {
             return Err(Errno::NAMETOOLONG);
         }
+        if self.is_gitfile(parent, name) {
+            // The gitfile is read-only: nothing creates, removes or renames it.
+            return Err(Errno::ACCESS);
+        }
         let pp = self.loc(parent)?;
         let n = Name::new(name.to_vec()).map_err(|_| Errno::INVAL)?;
         if let Some(p) = &pp
@@ -360,6 +407,42 @@ impl MergedFs {
         }
         let p = join(pp.as_ref(), &n);
         Ok((pp, p))
+    }
+
+    /// Whether `name` in `parent` is the synthetic gitfile.
+    pub(crate) fn is_gitfile(&self, parent: u64, name: &[u8]) -> bool {
+        self.gitfile.is_some() && parent == ROOT && name == DOT_GIT
+    }
+
+    /// The gitfile's attributes.
+    pub(crate) fn gitfile_attr(&self) -> Res<Attr> {
+        let g = self.gitfile.as_ref().ok_or(Errno::STALE)?;
+        let t = sys_time(self.root_time, 0);
+        let size = g.bytes.len() as u64;
+        Ok(Attr {
+            ino: GITFILE,
+            size,
+            blocks: size.div_ceil(512),
+            atime: t,
+            mtime: t,
+            ctime: t,
+            kind: VKind::File,
+            perm: 0o444,
+            nlink: 1,
+            uid: self.uid,
+            gid: self.gid,
+            blksize: BLKSIZE,
+            ttl: TTL_BASE,
+        })
+    }
+
+    /// The gitfile's entry in a listing of `dir`: `None` for any other name.
+    pub(crate) fn gitfile_entry(&self, dir: u64, name: &[u8]) -> Option<Attr> {
+        if self.is_gitfile(dir, name) {
+            self.gitfile_attr().ok()
+        } else {
+            None
+        }
     }
 
     fn is_redirect_node(&self, p: &RepoPath) -> bool {
@@ -794,6 +877,9 @@ impl MergedFs {
 
     /// The attributes of `name` in `parent`, counting one kernel lookup of it.
     pub(crate) fn lookup(&self, parent: u64, name: &[u8]) -> Res<Attr> {
+        if self.is_gitfile(parent, name) {
+            return self.gitfile_attr();
+        }
         let (_, p) = self.child(parent, name)?;
         let f = self.view(&p)?.ok_or(Errno::NOENT)?;
         if matches!(f.src, Src::Link) {
@@ -808,6 +894,9 @@ impl MergedFs {
     }
 
     pub(crate) fn getattr(&self, ino: u64, fh: Option<u64>) -> Res<Attr> {
+        if ino == GITFILE {
+            return self.gitfile_attr();
+        }
         if let Some(fh) = fh
             && let Ok(h) = self.handle(fh)
             && h.writable
@@ -857,6 +946,25 @@ impl MergedFs {
         write: bool,
         trunc: bool,
     ) -> Res<(OpenFile, bool)> {
+        if ino == GITFILE {
+            let g = self.gitfile.as_ref().ok_or(Errno::STALE)?;
+            if write || trunc {
+                return Err(Errno::ACCESS);
+            }
+            use std::os::unix::fs::OpenOptionsExt;
+            let file = fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(super::overlay::libc_nofollow())
+                .open(&g.copy)
+                .map_err(errno)?;
+            return Ok((
+                OpenFile {
+                    file,
+                    writable: false,
+                },
+                false,
+            ));
+        }
         let p = self.loc(ino)?.ok_or(Errno::ISDIR)?;
         let f = self.view(&p)?.ok_or(Errno::NOENT)?;
         match f.kind() {
@@ -1289,6 +1397,10 @@ impl MergedFs {
         let parent = self.table.parent_of(ino).unwrap_or(ROOT);
         let mut entries: Vec<(Vec<u8>, Option<Found>)> =
             vec![(b".".to_vec(), None), (b"..".to_vec(), None)];
+        if dir.is_none() && self.gitfile.is_some() {
+            // The gitfile has no `Found`: front ends ask `gitfile_entry` for it.
+            entries.push((DOT_GIT.to_vec(), None));
+        }
         entries.extend(
             self.merged(dir.as_ref(), MAX_CHILDREN)?
                 .into_iter()

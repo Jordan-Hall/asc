@@ -21,6 +21,8 @@ use super::block;
 
 /// The root directory's inode number.
 pub const ROOT: u64 = 1;
+/// The synthetic `.git` gitfile at the root: never allocated, never a row.
+pub const GITFILE: u64 = MARK_BASE - 1;
 /// Inode numbers reserved per persisted high-water mark.
 const BLOCK: u64 = 1024;
 /// Rows with an inode at or above this are high-water marks, not paths.

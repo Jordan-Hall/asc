@@ -20,7 +20,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::rpc::{self, Accept, AuthStat, Bad, Call};
 use super::xdr::{Garbage, Reader, Writer, XResult};
-use crate::unixfs::inodes::ROOT;
+use crate::unixfs::inodes::{GITFILE, ROOT};
 use crate::unixfs::merged::{MAX_LINK, MAX_NAME, OpenFile, Snapshot, read_at};
 use crate::unixfs::{Attr, Errno, MergedFs, Notify, VKind};
 
@@ -315,7 +315,10 @@ impl Shared {
         }
         word.copy_from_slice(&b[..8]);
         let ino = u64::from_be_bytes(word);
-        if ino == ROOT || self.fs.table.path_of(ino).is_some() {
+        if ino == ROOT
+            || (ino == GITFILE && self.fs.gitfile_attr().is_ok())
+            || self.fs.table.path_of(ino).is_some()
+        {
             return Ok(ino);
         }
         match self.fs.table.revive(ino) {
@@ -330,7 +333,7 @@ impl Shared {
 
     /// Keeps the one lookup of `ino` just counted, or drops it when one is already kept.
     fn hold(&self, ino: u64) {
-        if ino == ROOT {
+        if ino == ROOT || ino == GITFILE {
             self.fs.table.forget(ino, 1);
             return;
         }
@@ -433,7 +436,8 @@ impl Shared {
     }
 
     fn read_only(&self, ino: u64) -> bool {
-        matches!(self.fs.loc(ino), Ok(Some(p)) if matches!(self.fs.view(&p), Ok(Some(f)) if f.read_only()))
+        ino == GITFILE
+            || matches!(self.fs.loc(ino), Ok(Some(p)) if matches!(self.fs.view(&p), Ok(Some(f)) if f.read_only()))
     }
 
     // ----- open files -----
@@ -909,6 +913,13 @@ impl Shared {
             let (ino, attr) = match name.as_slice() {
                 b"." => (dir, Some(da)),
                 b".." => (snap.parent, self.getattr(snap.parent)),
+                _ if found.is_none() => match self.fs.gitfile_entry(dir, name) {
+                    Some(a) => (a.ino, Some(a)),
+                    None => {
+                        i += 1;
+                        continue;
+                    }
+                },
                 _ if plus => match self.fs.table.lookup(dir, name) {
                     Ok(Some(ino)) => {
                         self.hold(ino);

@@ -88,6 +88,9 @@ pub struct Config {
     pub rt: Handle,
     /// The time, in Unix seconds, the root directory reports.
     pub root_time: i64,
+    /// The gitdir a read-only `.git` gitfile at the root names, so git and asc find the
+    /// workspace inside the mount; `None` serves no `.git`.
+    pub gitfile: Option<PathBuf>,
 }
 
 /// What a path is, as `stat` shows it.

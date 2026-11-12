@@ -98,6 +98,7 @@ impl Nx {
             journal: self.journal.clone(),
             rt: self.rt.handle().clone(),
             root_time: EPOCH_TIME,
+            gitfile: None,
         }
     }
 
