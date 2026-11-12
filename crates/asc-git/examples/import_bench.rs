@@ -113,12 +113,6 @@ fn tips(git_dir: &Path) -> Vec<Tip> {
         .collect()
 }
 
-/// `(old blob, new blob)` for every modified file in the history, oldest commit first, against the
-/// first parent (the server's pass takes the same path in the first parent's tree).
-fn modified_pairs(git_dir: &Path) -> Vec<(GitOid, GitOid)> {
-    pairs_with(git_dir, &["--first-parent", "--no-renames"])
-}
-
 /// `(old, new)` blob pairs from `git log --raw` with `extra` options: `M` entries, and `R` entries
 /// when rename detection is on.
 fn pairs_with(git_dir: &Path, extra: &[&str]) -> Vec<(GitOid, GitOid)> {
@@ -222,10 +216,11 @@ async fn explore(objects: &BucketObjects, map: &Map, git_dir: &Path) {
     }
 }
 
-/// Stores what the server's delta pass would: each modified file as a delta against its previous
-/// version at the same path, each new chunk of a large file against the old version's chunk at the
-/// same place, and each changed tree (roots and subdirectories) against the same directory's old
-/// tree, when that saves half. Prints one line per kind.
+/// Stores what the server's delta pass would, on every branch: each modified or renamed file as a
+/// delta against its previous version (a new file against similar files beside it), each new chunk
+/// of a large file against the old version's chunk at the same place, and each changed tree (roots
+/// and subdirectories) against the same directory's old tree, when that saves half. Prints one line
+/// per kind.
 async fn delta_pass(objects: &BucketObjects, map: &Map, git_dir: &Path) {
     use asc_core::codec::decode_envelope;
     use asc_core::id::{FileId, TreeId};
@@ -242,7 +237,8 @@ async fn delta_pass(objects: &BucketObjects, map: &Map, git_dir: &Path) {
     };
     let mut files = Vec::new();
     let mut chunks = Vec::new();
-    for (old, new) in &modified_pairs(git_dir) {
+    // Every non-merge commit against its parent, side branches included, renames as copies.
+    for (old, new) in &pairs_with(git_dir, &["-M"]) {
         let (Some(b), Some(f)) = (id(old, 1), id(new, 1)) else {
             continue;
         };
@@ -305,7 +301,7 @@ async fn delta_pass(objects: &BucketObjects, map: &Map, git_dir: &Path) {
     }
 }
 
-/// Each file a first-parent commit adds, with the bases the server's pass tries for it: files of
+/// Each file a commit adds, with the bases the server's pass tries for it: files of
 /// the parent's same directory with the same extension and a size within half to double, nearest
 /// sizes first, at most four.
 fn new_file_candidates(git_dir: &Path) -> Vec<(GitOid, Vec<GitOid>)> {
@@ -331,7 +327,6 @@ fn new_file_candidates(git_dir: &Path) -> Vec<(GitOid, Vec<GitOid>)> {
         "log",
         "--all",
         "--reverse",
-        "--first-parent",
         "--no-renames",
         "--raw",
         "--no-abbrev",
