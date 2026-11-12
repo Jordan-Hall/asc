@@ -68,9 +68,7 @@ final class AscVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperatio
     private func refreshStats() {
         Task {
             if let s = try? await client.statfs() {
-                lock.lock()
-                stats = s
-                lock.unlock()
+                lock.withLock { stats = s }
             }
         }
     }

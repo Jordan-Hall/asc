@@ -218,9 +218,8 @@ final class ClientTests: XCTestCase {
         } catch let e as WireError {
             XCTAssertEqual(e.posix, ENOSYS)
         }
-        daemon.lock.lock()
-        XCTAssertEqual(daemon.seen.first, Op.hello.rawValue)
-        daemon.lock.unlock()
+        let first = daemon.lock.withLock { daemon.seen.first }
+        XCTAssertEqual(first, Op.hello.rawValue)
 
         c.shutdown()
         do {

@@ -104,9 +104,7 @@ final class AscFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations {
                     throw error
                 }
                 let volume = AscVolume(id: id, client: client, hello: hello)
-                self.lock.lock()
-                self.volumes[id] = volume
-                self.lock.unlock()
+                self.lock.withLock { self.volumes[id] = volume }
                 self.containerStatus = .ready
                 replyHandler(volume, nil)
             } catch {

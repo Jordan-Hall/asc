@@ -145,31 +145,29 @@ public final class Client: @unchecked Sendable {
 
     /// Sends `op` with `args` and answers the result bytes, throwing the daemon's errno.
     public func call(_ op: Op, _ args: (inout XDRWriter) -> Void = { _ in }) async throws -> XDRReader {
-        var w = XDRWriter()
-        lock.lock()
-        guard !closed else {
-            lock.unlock()
-            throw WireError.disconnected
+        let w = XDRWriter()
+        let xid: UInt32 = try lock.withLock {
+            guard !closed else { throw WireError.disconnected }
+            let x = nextXid
+            nextXid = nextXid == UInt32.max ? 1 : nextXid + 1
+            return x
         }
-        let xid = nextXid
-        nextXid = nextXid == UInt32.max ? 1 : nextXid + 1
-        lock.unlock()
         w.u32(xid).u32(op.rawValue)
-        args(&w)
+        var arg = w
+        args(&arg)
         let frame = try Frame.encode(w.bytes)
         let reply: Data = try await withCheckedThrowingContinuation { c in
-            lock.lock()
-            if closed {
-                lock.unlock()
+            let added: Bool = lock.withLock {
+                if closed { return false }
+                pending[xid] = c
+                return true
+            }
+            guard added else {
                 c.resume(throwing: WireError.disconnected)
                 return
             }
-            pending[xid] = c
-            lock.unlock()
             if !writeAll(frame) {
-                lock.lock()
-                let mine = pending.removeValue(forKey: xid)
-                lock.unlock()
+                let mine = lock.withLock { pending.removeValue(forKey: xid) }
                 mine?.resume(throwing: WireError.disconnected)
             }
         }

@@ -158,30 +158,31 @@ public struct Hello: Equatable, Sendable {
     public var maxIO: UInt32
 }
 
-/// Builds XDR.
-public struct XDRWriter: Sendable {
+/// Builds XDR. A class, so calls chain (`w.u64(ino).u32(mode)`): each returns the same writer.
+/// One writer belongs to one call; it is not shared between threads.
+public final class XDRWriter: @unchecked Sendable {
     public private(set) var bytes = Data()
     public init() {}
 
     @discardableResult
-    public mutating func u32(_ v: UInt32) -> Self {
+    public func u32(_ v: UInt32) -> XDRWriter {
         var be = v.bigEndian
         withUnsafeBytes(of: &be) { bytes.append(contentsOf: $0) }
         return self
     }
 
     @discardableResult
-    public mutating func u64(_ v: UInt64) -> Self {
-        u32(UInt32(truncatingIfNeeded: v >> 32))
+    public func u64(_ v: UInt64) -> XDRWriter {
+        _ = u32(UInt32(truncatingIfNeeded: v >> 32))
         return u32(UInt32(truncatingIfNeeded: v))
     }
 
     @discardableResult
-    public mutating func bool(_ v: Bool) -> Self { u32(v ? 1 : 0) }
+    public func bool(_ v: Bool) -> XDRWriter { u32(v ? 1 : 0) }
 
     @discardableResult
-    public mutating func opaque(_ d: Data) -> Self {
-        u32(UInt32(d.count))
+    public func opaque(_ d: Data) -> XDRWriter {
+        _ = u32(UInt32(d.count))
         bytes.append(d)
         let pad = (4 - d.count % 4) % 4
         if pad > 0 { bytes.append(contentsOf: [UInt8](repeating: 0, count: pad)) }
@@ -189,8 +190,8 @@ public struct XDRWriter: Sendable {
     }
 
     @discardableResult
-    public mutating func time(_ t: WireTime) -> Self {
-        u64(UInt64(bitPattern: t.seconds))
+    public func time(_ t: WireTime) -> XDRWriter {
+        _ = u64(UInt64(bitPattern: t.seconds))
         return u32(t.nanoseconds)
     }
 }
