@@ -99,8 +99,9 @@ async fn a_repository_reads_the_same_before_and_after_its_objects_are_packed() {
             .fetch_all(reg.pool())
             .await
             .unwrap();
-    // The dictionary setting is on by default, so version 2 packs may follow.
-    assert_eq!(features, ["pack1", "pack2"]);
+    // The dictionary and derived settings are on by default, so version 2 packs and packed
+    // derived values may follow.
+    assert_eq!(features, ["pack-derived", "pack1", "pack2"]);
     let v = svc.verify(&name()).await.unwrap();
     assert!(v.problems.is_empty(), "{:?}", v.problems);
     assert_eq!(v.objects, rep.packed);
@@ -135,10 +136,11 @@ async fn a_server_with_packing_off_still_reads_packs() {
 }
 
 #[tokio::test]
-async fn a_writer_without_a_dictionary_records_only_pack1() {
+async fn a_writer_without_a_dictionary_or_derived_values_records_only_pack1() {
     let reg = registry().await;
     assert!(reg.set_pack_config(PackConfig {
         dict: None,
+        derived: false,
         ..cfg()
     }));
     let e = repo(&reg).await;
@@ -168,6 +170,42 @@ async fn a_namespace_with_pack2_opens_and_counts_as_packed() {
         .await
         .unwrap();
     assert!(unknown.is_empty() && packed);
+}
+
+#[tokio::test]
+async fn derived_values_are_packed_and_read_back_through_a_fresh_entry() {
+    let reg = packed_registry().await;
+    let e = repo(&reg).await;
+    commit(&e, &[], &[("a", b"one")]).await;
+    let keys: Vec<(ObjKey, bytes::Bytes)> = (0..6u8)
+        .map(|i| {
+            let k = ObjKey::Derived {
+                name: "blame",
+                version: 1,
+                id: [i; 32],
+            };
+            (k, asc_store::codec::encode_stored(&[i; 40]))
+        })
+        .collect();
+    for (k, v) in &keys {
+        e.objects.put(k, v.clone()).await.unwrap();
+    }
+    let svc = PackService::new(reg.clone(), Arc::new(PipelineHooks::default()));
+    let rep = svc.run_repo(&name(), later(), false).await.unwrap();
+    assert!(rep.packed >= keys.len() as u64, "{rep:?}");
+
+    reg.forget(&name());
+    let e2 = reg.open(&name()).await.unwrap();
+    for (k, v) in &keys {
+        assert_eq!(e2.objects.get_stored(k).await.unwrap().as_ref(), Some(v));
+    }
+    let features: Vec<String> = sqlx::query_scalar("SELECT feature FROM store_features")
+        .fetch_all(reg.pool())
+        .await
+        .unwrap();
+    assert!(features.iter().any(|f| f == "pack-derived"), "{features:?}");
+    let v = svc.verify(&name()).await.unwrap();
+    assert!(v.problems.is_empty(), "{:?}", v.problems);
 }
 
 #[tokio::test]

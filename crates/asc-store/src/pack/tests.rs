@@ -473,7 +473,7 @@ impl PackIndex for DiesBeforeCommit {
     async fn packs(&self) -> Result<Vec<PackDetail>> {
         self.inner.packs().await
     }
-    async fn rows_of(&self, i: PackId) -> Result<Vec<PackEntry>> {
+    async fn rows_of(&self, i: PackId) -> Result<Vec<super::index::PackRow>> {
         self.inner.rows_of(i).await
     }
     async fn remove(&self, i: PackId) -> Result<()> {
@@ -1022,4 +1022,174 @@ async fn without_a_dictionary_setting_packs_stay_version_1() {
     let files = pack_files(&e).await;
     assert_eq!(&read_whole(&e, &files[0]).await[..8], format::MAGIC);
     all_readable(&e, &items).await;
+}
+
+// ---------------------------------------------------------------------- derived values
+
+fn derived(n: u32) -> (ObjKey, Bytes) {
+    let mut id = [0u8; 32];
+    id[..4].copy_from_slice(&n.to_le_bytes());
+    let data = format!("blame of file {n}: lines 1-{n} by change {n}");
+    (
+        ObjKey::Derived {
+            name: if n % 2 == 0 { "blame" } else { "pathsearch" },
+            version: 2,
+            id,
+        },
+        encode_stored(data.as_bytes()),
+    )
+}
+
+/// How many entries of each pack file are derived values, and how many are not.
+async fn kinds_per_pack(e: &Env) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    for f in pack_files(&e).await {
+        if !f.ends_with(".pack") {
+            continue;
+        }
+        let entries = format::parse(&read_whole(e, &f).await).unwrap();
+        let d = entries
+            .iter()
+            .filter(|x| x.key.class() == KeyClass::Derived)
+            .count();
+        out.push((d, entries.len() - d));
+    }
+    out
+}
+
+#[tokio::test]
+async fn derived_values_pack_apart_and_survive_merge_compaction_verify_and_reindex() {
+    let e = env();
+    let files = many(0..10);
+    let ds: Vec<_> = (0..10).map(derived).collect();
+    put_loose(&e, &files).await;
+    put_loose(&e, &ds).await;
+    let rep = e.objects.pack_run(&NoFence, later(), false).await.unwrap();
+    assert_eq!(rep.packed, 20);
+    // Derived values get packs of their own: a build that cannot read them loses only them.
+    let kinds = kinds_per_pack(&e).await;
+    assert_eq!(kinds.len(), 2, "{kinds:?}");
+    assert!(kinds.iter().all(|&(d, o)| d == 0 || o == 0), "{kinds:?}");
+    for (k, _) in ds.iter().chain(&files) {
+        assert!(!loose_exists(&e, k).await, "{k} is still loose");
+    }
+    all_readable(&e, &ds).await;
+    all_readable(&e, &files).await;
+
+    // A bulk write splits the same way.
+    let more_files = many(100..106);
+    let more_ds: Vec<_> = (100..106).map(derived).collect();
+    e.objects
+        .put_many(more_files.iter().chain(&more_ds).cloned().collect())
+        .await
+        .unwrap();
+    let kinds = kinds_per_pack(&e).await;
+    assert_eq!(kinds.len(), 4, "{kinds:?}");
+    assert!(kinds.iter().all(|&(d, o)| d == 0 || o == 0), "{kinds:?}");
+    all_readable(&e, &more_ds).await;
+
+    // Listing walks keys that invert from the index; derived ones are not listed.
+    let listed: Vec<(ObjKey, SystemTime)> = e
+        .objects
+        .list(KeyPrefix::all())
+        .try_collect()
+        .await
+        .unwrap();
+    assert!(!listed.is_empty());
+    assert!(listed.iter().all(|(k, _)| k.class() != KeyClass::Derived));
+
+    // Deleting most of a derived pack compacts it; merging keeps every survivor.
+    for (k, _) in &ds[..8] {
+        e.objects.delete(k).await.unwrap();
+    }
+    let rep = e.objects.pack_run(&NoFence, later(), false).await.unwrap();
+    assert!(rep.compacted + rep.merged > 0, "{rep:?}");
+    for (k, _) in &ds[..8] {
+        assert_eq!(e.objects.get(k).await.unwrap(), None);
+    }
+    let live: Vec<_> = ds[8..].iter().chain(&more_ds).cloned().collect();
+    all_readable(&e, &live).await;
+    let v = e.objects.pack_verify().await.unwrap();
+    assert!(v.problems.is_empty(), "{:?}", v.problems);
+
+    // Rebuilt from the pack files alone, the index reads derived values too.
+    let fresh = env_with(Arc::new(MemPackIndex::new()), cfg());
+    let lost = BucketObjects::new(e.store.clone(), Path::from("ns/0001"))
+        .with_packs(fresh.objects.pack_layer().unwrap().clone());
+    lost.pack_reindex().await.unwrap();
+    for (k, v) in live.iter().chain(&files) {
+        assert_eq!(lost.get_stored(k).await.unwrap().as_ref(), Some(v), "{k}");
+    }
+}
+
+#[tokio::test]
+async fn with_derived_off_derived_values_stay_loose() {
+    let e = env_with(
+        Arc::new(MemPackIndex::new()),
+        PackConfig {
+            derived: false,
+            ..cfg()
+        },
+    );
+    let ds: Vec<_> = (0..10).map(derived).collect();
+    put_loose(&e, &ds).await;
+    e.objects
+        .put_many((10..20).map(derived).collect())
+        .await
+        .unwrap();
+    let rep = e.objects.pack_run(&NoFence, later(), true).await.unwrap();
+    assert_eq!(rep.packed, 0);
+    assert!(kinds_per_pack(&e).await.is_empty());
+    for (k, _) in &ds {
+        assert!(loose_exists(&e, k).await);
+    }
+    all_readable(&e, &ds).await;
+}
+
+#[tokio::test]
+async fn a_bucket_manifest_records_features_and_refuses_unknown_ones() {
+    let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+    let root = Path::from("ns/0001");
+    let index =
+        Arc::new(BucketPackIndex::new(store.clone(), root.clone()).with_features(cfg().features()));
+    let objects = BucketObjects::new(store.clone(), root.clone())
+        .with_packs(Arc::new(PackLayer::new(index.clone(), cfg())));
+    let ds: Vec<_> = (0..10).map(derived).collect();
+    objects.put_many(ds.clone()).await.unwrap();
+    assert_eq!(
+        index.features().await.unwrap(),
+        vec!["pack-derived", "pack2"]
+    );
+    // A writer without the feature keeps what is recorded.
+    let plain = Arc::new(BucketPackIndex::new(store.clone(), root.clone()));
+    BucketObjects::new(store.clone(), root.clone())
+        .with_packs(Arc::new(PackLayer::new(plain.clone(), cfg())))
+        .put_many(many(0..10))
+        .await
+        .unwrap();
+    assert_eq!(
+        plain.features().await.unwrap(),
+        vec!["pack-derived", "pack2"]
+    );
+
+    // A feature from a newer build stops this one from reading the namespace.
+    let path = Path::from("ns/0001/pack/MANIFEST");
+    let body = store.get(&path).await.unwrap().bytes().await.unwrap();
+    let mut m: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    m["features"]
+        .as_array_mut()
+        .unwrap()
+        .push("pack-future".into());
+    store
+        .put(&path, PutPayload::from(serde_json::to_vec(&m).unwrap()))
+        .await
+        .unwrap();
+    let reader = BucketObjects::new(store.clone(), root.clone()).with_packs(Arc::new(
+        PackLayer::new(Arc::new(BucketPackIndex::new(store, root)), cfg()),
+    ));
+    let err = reader.get(&ds[0].0).await.unwrap_err().to_string();
+    assert!(
+        err.contains("pack-future") && err.contains("upgrade asc"),
+        "{err}"
+    );
 }
