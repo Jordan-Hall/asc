@@ -9,7 +9,8 @@ the same answer, so a plugin without a daemon, and every test, can use the CLI i
 
 - **Authorisation.** Only the current user can connect. An RPC acts only on a workspace the daemon has
   mounted (`Mount` checks that the workspace is registered in `state.db` and that its root is a directory
-  of the user reached through no link). A request for another workspace is `FAILED_PRECONDITION`. The
+  of the user reached through no link other than a system link, one that root owns in a directory
+  only root can write, such as macOS's `/var` and `/tmp`). A request for another workspace is `FAILED_PRECONDITION`. The
   root is checked again before each query runs.
 - **Bounds.** Text (revision, ref, author) is at most 1,024 bytes, without NUL or line breaks, and a
   revision never starts with `-`. At most 10,000 paths per request and 16 KiB of path text for `Status`,
