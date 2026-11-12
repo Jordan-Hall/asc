@@ -21,10 +21,10 @@ use asc_core::id::{ChangesetId, FileId, GitOid, RefTarget, TreeId};
 use asc_core::object::{Change, Entry, Kind};
 use asc_core::path::{RefName, RepoPath};
 use asc_engine::graph::{EngineSource, Graph, LogQuery};
-use asc_rpc::ipc::{WorkspaceClient, connect};
-use asc_rpc::server::wire;
 use asc_git::index::{FileStat, StatSource};
 use asc_git::projection::Head;
+use asc_rpc::ipc::{WorkspaceClient, connect};
+use asc_rpc::server::wire;
 use asc_state::state::git_map;
 use asc_state::state::stage::{self, Leaf, StageRow, StageSet};
 use asc_state::state::workspaces;
@@ -802,7 +802,10 @@ async fn write_safe(
 /// them (SPEC §10.2 item 8): changed placeholders are rewritten from metadata, nothing is
 /// downloaded and nothing is copied into the overlay. `None` when the daemon cannot take the
 /// move (the workspace is plain, the daemon is disabled or not running, or it does not serve the
-/// workspace from `from`); the caller then writes the files itself. `Some` holds the paths in
+/// workspace from `from`); the caller then writes the files itself. Only the Unix backends take
+/// it: every write reaches their merged file system, so they know exactly what is local. A Cloud
+/// Files placeholder that was written and committed is no longer in sync, and the Windows
+/// provider leaves such a file alone, so on Windows the CLI writes the files. `Some` holds the paths in
 /// conflict, empty when the files moved.
 async fn daemon_switch(
     ws: &WsCtx,
@@ -810,7 +813,7 @@ async fn daemon_switch(
     to: TreeId,
     mode: wire::SwitchMode,
 ) -> Result<Option<Vec<RepoPath>>> {
-    if ws.workspace.ws.mode != workspaces::Mode::Virtual {
+    if !cfg!(unix) || ws.workspace.ws.mode != workspaces::Mode::Virtual {
         return Ok(None);
     }
     let Ok(cfg) = Config::for_home(&ws.home) else {
@@ -874,24 +877,46 @@ fn staged_paths(rows: &[StageRow]) -> Result<Vec<RepoPath>> {
     Ok(out)
 }
 
-/// Every path a forced move to `target` rewrites: where the index and the target differ, every
-/// modified or deleted tracked file, and every conflicted path.
-async fn force_paths(ctx: &Ctx, index: TreeId, target: TreeId) -> Result<Vec<RepoPath>> {
+/// A forced move of the work tree from HEAD's tree to `target` (`switch -f`, `reset --hard`).
+/// Answers the paths still to write from `target` over the real index: every path the move
+/// rewrites, or, when the daemon moved the files of a virtual workspace, only the paths that were
+/// local before the move (modified, deleted, conflicted or staged). Those are found from status
+/// before the daemon moves anything, so they never depend on the daemon's journal.
+pub(crate) async fn forced_move(
+    ctx: &Ctx,
+    head_root: TreeId,
+    index_root: TreeId,
+    target_root: TreeId,
+) -> Result<Vec<RepoPath>> {
     let ws = ctx.ws()?;
-    let mut paths: std::collections::BTreeSet<RepoPath> = ws
-        .engine
-        .leafdiff(index, target, None)
-        .await?
-        .into_iter()
-        .map(|(p, _)| p)
-        .collect();
+    let mut paths = local_paths(ctx).await?;
+    match daemon_switch(ws, head_root, target_root, wire::SwitchMode::Force).await? {
+        Some(_) => {
+            let rows = stage::overlay(&ws.db, ws.workspace.ws.id, StageSet::Default).await?;
+            paths.extend(staged_paths(&rows)?);
+        }
+        None => paths.extend(
+            ws.engine
+                .leafdiff(index_root, target_root, None)
+                .await?
+                .into_iter()
+                .map(|(p, _)| p),
+        ),
+    }
+    Ok(paths.into_iter().collect())
+}
+
+/// Every modified or deleted tracked file and every conflicted path.
+async fn local_paths(ctx: &Ctx) -> Result<std::collections::BTreeSet<RepoPath>> {
+    let ws = ctx.ws()?;
     let parts = WcParts::new(ctx, ws, ws.projection.git_dir().join("index"))?;
     let st = status::compute(&parts.wc(&ws.engine), &ws.db, &ws.workspace)
         .await
         .map_err(fatal)?;
-    paths.extend(st.unstaged.into_iter().map(|c| c.path));
+    let mut paths: std::collections::BTreeSet<RepoPath> =
+        st.unstaged.into_iter().map(|c| c.path).collect();
     paths.extend(st.unmerged);
-    Ok(paths.into_iter().collect())
+    Ok(paths)
 }
 
 /// The rows that make the index hold the whole current index tree over an empty HEAD (the
@@ -1362,10 +1387,7 @@ pub(crate) async fn perform(ctx: &Ctx, m: Move) -> Result<ExitCode> {
         StagingAfterMove::Set(rows_over_empty(ws, index_root, &rows).await?)
     } else if m.opts.force {
         ext::op_sink().snapshot_wc();
-        let paths = match daemon_switch(ws, head_root, target_root, wire::SwitchMode::Force).await? {
-            Some(_) => staged_paths(&rows)?,
-            None => force_paths(ctx, index_root, target_root).await?,
-        };
+        let paths = forced_move(ctx, head_root, index_root, target_root).await?;
         sync_worktree(ctx, target_root, &paths, true).await?;
         StagingAfterMove::Set(Vec::new())
     } else if old_commit == target {

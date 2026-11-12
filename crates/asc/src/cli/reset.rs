@@ -5,13 +5,12 @@
 //! the index equal the new HEAD, and `--hard` also rewrites the working tree. With paths it
 //! only resets those index entries to the tree (mixed).
 
-use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fs;
 use std::process::ExitCode;
 
 use asc_core::id::{ChangesetId, RefTarget};
-use asc_core::path::{RefName, RepoPath};
+use asc_core::path::RefName;
 use asc_git::projection::Head;
 use asc_state::state::stage::{self, StageSet};
 use asc_state::state::workspaces;
@@ -173,30 +172,6 @@ async fn print_unstaged(ctx: &Ctx) -> Result<()> {
     Ok(())
 }
 
-/// The paths a hard reset to `target` must rewrite: every path the index and the target differ
-/// at, every modified or deleted tracked file, and every conflicted path.
-async fn hard_paths(
-    ctx: &Ctx,
-    index: asc_core::id::TreeId,
-    target: asc_core::id::TreeId,
-) -> Result<Vec<RepoPath>> {
-    let ws = ctx.ws()?;
-    let mut paths: BTreeSet<RepoPath> = ws
-        .engine
-        .leafdiff(index, target, None)
-        .await?
-        .into_iter()
-        .map(|(p, _)| p)
-        .collect();
-    let parts = WcParts::new(ctx, ws, ws.projection.git_dir().join("index"))?;
-    let st = status::compute(&parts.wc(&ws.engine), &ws.db, &ws.workspace)
-        .await
-        .map_err(|e| CliError::Fatal(e.to_string()))?;
-    paths.extend(st.unstaged.into_iter().map(|c| c.path));
-    paths.extend(st.unmerged);
-    Ok(paths.into_iter().collect())
-}
-
 /// Moves HEAD (its branch, or the detached HEAD) to `target`.
 async fn move_head(
     ctx: &Ctx,
@@ -301,7 +276,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     if kind == Kind::Hard {
         ext::op_sink().snapshot_wc();
         let (index, _) = index_tree(ws, head_root).await?;
-        let paths = hard_paths(ctx, index, target_root).await?;
+        let paths = super::switch::forced_move(ctx, head_root, index, target_root).await?;
         sync_worktree(ctx, target_root, &paths, true).await?;
     }
     write_orig_head(ws).await?;
