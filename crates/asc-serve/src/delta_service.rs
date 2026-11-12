@@ -270,7 +270,9 @@ pub async fn pass(
         .await
         .map_err(|e| sql("mainline", e))?;
     let mut budget = s.max_changesets as u64;
-    for r in refs {
+    // Side-branch changesets already read this pass, over every merge and ref.
+    let mut seen = HashSet::new();
+    'refs: for r in refs {
         let mut at: i64 =
             sqlx::query_scalar("SELECT pos FROM delta_cursor WHERE ns = $1 AND ref = $2")
                 .bind(ns.clone())
@@ -302,13 +304,28 @@ pub async fn pass(
                     .try_into()
                     .map_err(|_| sql("mainline", "a changeset id is not 32 bytes"))?;
                 let cs = ChangesetId::from_bytes(cs);
+                // The first changeset of a pass has the whole budget; a merge whose side history
+                // is larger than that is read as far as the budget goes and then passed.
+                let fresh = budget == s.max_changesets as u64;
                 let parents = one_changeset(pool, entry, s, cs, &purged, &mut rep).await?;
                 if parents.len() > 1 {
                     let merged = parents[1..].to_vec();
-                    side_branches(pool, entry, s, &r, merged, &purged, &mut rep).await?;
+                    let walk = Walk {
+                        pool,
+                        entry,
+                        s,
+                        r: &r,
+                        purged: &purged,
+                    };
+                    let done = walk.run(merged, &mut seen, &mut budget, &mut rep).await?;
+                    if !done && !fresh {
+                        // The cursor stays before the merge; the next pass starts with it.
+                        set_cursor(pool, &ns, &r, at).await?;
+                        break 'refs;
+                    }
                 }
                 rep.changesets += 1;
-                budget -= 1;
+                budget = budget.saturating_sub(1);
                 at = pos;
             }
             set_cursor(pool, &ns, &r, at).await?;
@@ -331,45 +348,55 @@ async fn set_cursor(pool: &AnyPool, ns: &[u8], r: &str, pos: i64) -> Result<(), 
     Ok(())
 }
 
-/// The changesets a merge brought in: walked from its other parents back to `ref`'s mainline,
-/// each against its own first parent, so a version written on a side branch gets a base too. At
-/// most `max_changesets` per merge; the walk never leaves the repository's own objects.
-async fn side_branches(
-    pool: &AnyPool,
-    entry: &RepoEntry,
-    s: &DeltaSettings,
-    r: &str,
-    merged: Vec<ChangesetId>,
-    purged: &HashSet<ObjKey>,
-    rep: &mut DeltaReport,
-) -> Result<(), GcError> {
-    let ns = entry.ns.as_bytes().to_vec();
-    let mut seen = HashSet::new();
-    let mut todo = merged;
-    let mut left = s.max_changesets;
-    while let Some(id) = todo.pop() {
-        if left == 0 {
-            break;
+/// The walk of the changesets a merge brought in: from its other parents back to `r`'s mainline,
+/// each against its own first parent, so a version written on a side branch gets a base too.
+struct Walk<'a> {
+    pool: &'a AnyPool,
+    entry: &'a RepoEntry,
+    s: &'a DeltaSettings,
+    r: &'a str,
+    purged: &'a HashSet<ObjKey>,
+}
+
+impl Walk<'_> {
+    /// Reads side changesets while `budget` lasts, each at most once per pass (`seen`). `true`
+    /// when the walk reached the mainline everywhere, `false` when the budget ran out first.
+    async fn run(
+        &self,
+        merged: Vec<ChangesetId>,
+        seen: &mut HashSet<ChangesetId>,
+        budget: &mut u64,
+        rep: &mut DeltaReport,
+    ) -> Result<bool, GcError> {
+        let (pool, entry) = (self.pool, self.entry);
+        let ns = entry.ns.as_bytes().to_vec();
+        let mut todo = merged;
+        while let Some(id) = todo.pop() {
+            if seen.contains(&id) {
+                continue;
+            }
+            if *budget == 0 {
+                return Ok(false);
+            }
+            seen.insert(id);
+            let on_mainline: Option<i64> = sqlx::query_scalar(
+                "SELECT pos FROM mainline WHERE ns = $1 AND ref = $2 AND cs = $3",
+            )
+            .bind(ns.clone())
+            .bind(self.r.to_owned())
+            .bind(id.as_bytes().to_vec())
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| sql("mainline", e))?;
+            if on_mainline.is_some() {
+                continue;
+            }
+            *budget -= 1;
+            rep.side += 1;
+            todo.extend(one_changeset(pool, entry, self.s, id, self.purged, rep).await?);
         }
-        if !seen.insert(id) {
-            continue;
-        }
-        let on_mainline: Option<i64> =
-            sqlx::query_scalar("SELECT pos FROM mainline WHERE ns = $1 AND ref = $2 AND cs = $3")
-                .bind(ns.clone())
-                .bind(r.to_owned())
-                .bind(id.as_bytes().to_vec())
-                .fetch_optional(pool)
-                .await
-                .map_err(|e| sql("mainline", e))?;
-        if on_mainline.is_some() {
-            continue;
-        }
-        left -= 1;
-        rep.side += 1;
-        todo.extend(one_changeset(pool, entry, s, id, purged, rep).await?);
+        Ok(true)
     }
-    Ok(())
 }
 
 /// Stores the files `id` writes as deltas against its first parent's tree. Returns its parents
