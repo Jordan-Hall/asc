@@ -23,8 +23,8 @@ refs. A pack is a storage detail below `Objects`.
 
 Only objects whose stored value (`codec || data`) is at most `pack.max_object` bytes, default 64 KiB,
 and only classes `File`, `Tree`, `Changeset`, `Tag`, `GitTreeOverride`, `ChangeMeta`, `ChunkList`.
-`Chunk` objects are 64 KiB to 1 MiB and stay loose; `Derived` values are recomputable, small, many and
-rewritten, and stay loose (they may get their own pack kind later). Anything larger stays loose.
+`Chunk` objects are 64 KiB to 1 MiB and stay loose. `Derived` values were left out of this first design; they
+are now packed in packs of their own ("As built"). Anything larger stays loose.
 
 ## The pack file
 
@@ -222,8 +222,7 @@ Independent of packs and built before them:
 
 ## Open questions for the implementer
 
-- Whether `Derived` values deserve a pack kind (they dominate object counts in a repository with code
-  intelligence on).
+- Whether `Derived` values deserve a pack kind: answered yes ("As built").
 - The right `pack.max_object` for S3: bigger packs mean fewer requests but larger ranged reads for a
   lone object; measure with the 163 MB repository.
 - Whether the index in SQL becomes the bottleneck for very large repositories (hundreds of millions of
@@ -284,10 +283,27 @@ Differences from the design above, and why:
   Code: `crates/asc-store/src/pack/cache.rs`, `pack/layer.rs` (`read_loc_cached`), `cachedir.rs`;
   `crates/asc/src/cli/common.rs` (`pack_cache_spec`). Tests: `pack/cache.rs`, `pack/tests.rs`,
   `crates/asc/tests/cli_pack_cache.rs`.
-- **Not done:** a packed form for `Derived` values.
+- **Derived values are packed** (with `[pack] derived`, on by default), answering the open question above:
+  with code intelligence on they dominate object counts, and in buckets they are write-once (a loose put is
+  `PutMode::Create`), so a pack never holds a stale copy. Their key (a name and a version beside the id) does not
+  fit the index's `(class, 32-byte id)`, so a derived entry's id is `blake3::derive_key("asc derived pack id v1",
+  len(name) u64 LE ‖ name ‖ version u32 LE ‖ id)`, and its body starts with the key itself:
+  `u8 name_len ‖ name ‖ u32 version LE ‖ id[32]`, then the stored value. The entry header's length covers both;
+  the index offset and length point at the stored value only, so reads are unchanged. `parse` checks that the
+  prefix hashes to the entry's id. A name must be 1 to 255 bytes with no `/`, or the value stays loose. Index rows
+  cannot be turned back into a derived key, so `rows_of` returns raw rows (`PackRow`) and the job maps them through
+  the pack file's own entries; `list` (GC) leaves derived rows out, which only means GC never ages them. The job
+  and bulk writes put derived values in packs of their own, so a build that cannot read them loses only values it
+  can compute again; merges may mix them. A writer records the store feature `pack-derived` (in `store_features`,
+  and in the bucket manifest's new `features` list, which a reader checks against the features it knows and
+  refuses with "upgrade asc" when it does not). Rollback: `derived = false`; packed derived values stay readable.
+  Code: `crates/asc-store/src/key.rs` (`derived_pack_id`, `derived_prefix`), `pack/format.rs`, `pack/job.rs`,
+  `pack/layer.rs`, `pack/bucket_index.rs` (manifest features). Tests: `key.rs`, `pack/format.rs`,
+  `pack/tests.rs` (`derived_values_*`, `with_derived_off_*`, `a_bucket_manifest_records_features_*`),
+  `crates/asc-serve/src/pack_tests.rs`.
 
 Operation: `[pack] enabled = true` turns on the job (every `repack_interval`) and the direct bulk packing;
 `asc serve admin pack run|status|verify|reindex --repo R | --all` do it by hand. Settings for dictionaries: `dictionary` (bool, default true), `dictionary_size` (1 KiB to 1 MiB, default 16 KiB),
-`dictionary_min_objects` (default 128). Rollback: set `enabled = false`;
+`dictionary_min_objects` (default 128); `derived` (bool, default true) packs derived values. Rollback: set `enabled = false`;
 packs stay readable, nothing new is packed, and `pack run` still deletes retired packs.
 
