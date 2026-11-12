@@ -264,8 +264,11 @@ impl Registry {
             .entry(ns)
             .or_insert_with(|| {
                 let index = Arc::new(crate::pack_sql::SqlPackIndex::new(self.pool.clone(), ns));
-                let gate = Arc::new(crate::pack_sql::SqlPackGate::new(self.pool.clone(), ns));
                 let cfg = self.pack.get().cloned().unwrap_or_default();
+                let gate = Arc::new(
+                    crate::pack_sql::SqlPackGate::new(self.pool.clone(), ns)
+                        .with_dictionary(cfg.dict.is_some()),
+                );
                 Arc::new(asc_store::pack::PackLayer::new(index, cfg).with_gate(gate))
             })
             .clone()

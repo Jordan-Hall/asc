@@ -450,16 +450,31 @@ impl PackIndex for SqlPackIndex {
 pub struct SqlPackGate {
     pool: AnyPool,
     ns: Ns,
+    dictionary: bool,
 }
 
 /// Store features this build understands. A namespace that lists another is refused at open.
-pub const KNOWN_FEATURES: &[&str] = &[FEATURE_PACK1];
+pub const KNOWN_FEATURES: &[&str] = &[FEATURE_PACK1, FEATURE_PACK2];
 /// Set when a namespace first receives a pack file.
 pub const FEATURE_PACK1: &str = "pack1";
+/// Set with [`FEATURE_PACK1`] when the writer may make version 2 packs (with a dictionary), which
+/// builds that know only version 1 cannot read.
+pub const FEATURE_PACK2: &str = "pack2";
 
 impl SqlPackGate {
     pub fn new(pool: AnyPool, ns: Ns) -> Self {
-        Self { pool, ns }
+        Self {
+            pool,
+            ns,
+            dictionary: false,
+        }
+    }
+
+    /// Records [`FEATURE_PACK2`] as well, for a writer with a dictionary setting.
+    #[must_use]
+    pub fn with_dictionary(mut self, on: bool) -> Self {
+        self.dictionary = on;
+        self
     }
 }
 
@@ -469,16 +484,22 @@ impl asc_store::pack::layer::PackWriteGate for SqlPackGate {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
-        sqlx::query(
-            "INSERT INTO store_features (ns, feature, since) VALUES ($1, $2, $3) \
-             ON CONFLICT (ns, feature) DO NOTHING",
-        )
-        .bind(self.ns.as_bytes().to_vec())
-        .bind(FEATURE_PACK1)
-        .bind(now)
-        .execute(&self.pool)
-        .await
-        .map_err(sql)?;
+        let features: &[&str] = if self.dictionary {
+            &[FEATURE_PACK1, FEATURE_PACK2]
+        } else {
+            &[FEATURE_PACK1]
+        };
+        for f in features {
+            sqlx::query(
+                "INSERT INTO store_features (ns, feature, since) VALUES ($1, $2, $3) \n                 ON CONFLICT (ns, feature) DO NOTHING",
+            )
+            .bind(self.ns.as_bytes().to_vec())
+            .bind(*f)
+            .bind(now)
+            .execute(&self.pool)
+            .await
+            .map_err(sql)?;
+        }
         Ok(())
     }
 }
@@ -496,7 +517,7 @@ pub async fn store_features(
     let mut packed = false;
     for r in rows {
         let f: String = r.try_get("feature")?;
-        packed |= f == FEATURE_PACK1;
+        packed |= f == FEATURE_PACK1 || f == FEATURE_PACK2;
         if !KNOWN_FEATURES.contains(&f.as_str()) {
             out.push(f);
         }
