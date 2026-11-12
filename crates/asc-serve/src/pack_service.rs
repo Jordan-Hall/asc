@@ -63,6 +63,10 @@ pub struct PackSettings {
     pub dictionary_size: ByteSize,
     /// A pack of fewer objects than this gets no dictionary.
     pub dictionary_min_objects: usize,
+    /// Packs derived values (memoized computations such as blame and path lists) too, in packs
+    /// of their own. Records the `pack-derived` store feature: builds that cannot read those
+    /// entries refuse the namespace.
+    pub derived: bool,
 }
 
 impl Default for PackSettings {
@@ -85,6 +89,7 @@ impl Default for PackSettings {
             dictionary: true,
             dictionary_size: ByteSize(DictOpts::default().size as u64),
             dictionary_min_objects: DictOpts::default().min_objects,
+            derived: true,
         }
     }
 }
@@ -147,6 +152,7 @@ impl PackSettings {
                 size: self.dictionary_size.0 as usize,
                 min_objects: self.dictionary_min_objects,
             }),
+            derived: self.derived,
         })
     }
 }
@@ -404,6 +410,9 @@ mod tests {
         assert_eq!(c.dict, Some(DictOpts::default()));
         let off: PackSettings = toml::from_str("dictionary = false").unwrap();
         assert_eq!(off.to_config().unwrap().dict, None);
+        assert!(c.derived);
+        let kept: PackSettings = toml::from_str("derived = false").unwrap();
+        assert!(!kept.to_config().unwrap().derived);
         let p = ImportSettings::default().to_policy().unwrap();
         assert_eq!(p.batch_commits, 500);
         assert_eq!(p.batch_bytes, 128 << 20);

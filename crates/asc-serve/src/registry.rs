@@ -267,7 +267,8 @@ impl Registry {
                 let cfg = self.pack.get().cloned().unwrap_or_default();
                 let gate = Arc::new(
                     crate::pack_sql::SqlPackGate::new(self.pool.clone(), ns)
-                        .with_dictionary(cfg.dict.is_some()),
+                        .with_dictionary(cfg.dict.is_some())
+                        .with_derived(cfg.enabled && cfg.derived),
                 );
                 Arc::new(asc_store::pack::PackLayer::new(index, cfg).with_gate(gate))
             })

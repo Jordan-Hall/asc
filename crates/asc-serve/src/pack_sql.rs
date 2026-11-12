@@ -8,6 +8,7 @@
 use asc_store::key::{KeyClass, ObjKey};
 use asc_store::objects::{Error, Result};
 use asc_store::pack::format::ENTRY_HEADER_LEN;
+use asc_store::pack::index::PackRow;
 use asc_store::pack::{PackDetail, PackEntry, PackId, PackIndex, PackInfo, PackLoc, PackState};
 use async_trait::async_trait;
 use sqlx::any::AnyRow;
@@ -38,19 +39,19 @@ fn pack_id(b: Vec<u8>) -> Result<PackId> {
         .map_err(|_| Error::Index("a pack id is not 16 bytes".into()))
 }
 
-fn entry_of(row: &AnyRow) -> Result<PackEntry> {
+fn row_of(row: &AnyRow) -> Result<PackRow> {
     let class: i64 = row.try_get("class").map_err(sql)?;
     let id: Vec<u8> = row.try_get("id").map_err(sql)?;
     let off: i64 = row.try_get("off").map_err(sql)?;
     let len: i64 = row.try_get("len").map_err(sql)?;
-    let key = u8::try_from(class)
+    let (code, id) = u8::try_from(class)
         .ok()
-        .and_then(KeyClass::from_code)
+        .filter(|&c| KeyClass::from_code(c).is_some_and(KeyClass::packable))
         .zip(<[u8; 32]>::try_from(id.as_slice()).ok())
-        .and_then(|(c, id)| ObjKey::from_pack(c, id))
         .ok_or_else(|| Error::Index("pack_objects holds a key that cannot be".into()))?;
-    Ok(PackEntry {
-        key,
+    Ok(PackRow {
+        code,
+        id,
         offset: u64::try_from(off).map_err(|_| Error::Index("negative offset".into()))?,
         len: u32::try_from(len).map_err(|_| Error::Index("bad length".into()))?,
     })
@@ -321,7 +322,7 @@ impl PackIndex for SqlPackIndex {
             .collect()
     }
 
-    async fn rows_of(&self, id: PackId) -> Result<Vec<PackEntry>> {
+    async fn rows_of(&self, id: PackId) -> Result<Vec<PackRow>> {
         let rows = sqlx::query(
             "SELECT class, id, off, len FROM pack_objects WHERE ns = $1 AND pack = $2 \
              ORDER BY class, id",
@@ -331,7 +332,7 @@ impl PackIndex for SqlPackIndex {
         .fetch_all(&self.pool)
         .await
         .map_err(sql)?;
-        rows.iter().map(entry_of).collect()
+        rows.iter().map(row_of).collect()
     }
 
     async fn remove(&self, id: PackId) -> Result<()> {
@@ -386,12 +387,17 @@ impl PackIndex for SqlPackIndex {
             .fetch_all(&self.pool)
             .await
             .map_err(sql)?;
-        rows.iter()
-            .map(|row| {
-                let created: i64 = row.try_get("created").map_err(sql)?;
-                Ok((entry_of(row)?.key, created))
-            })
-            .collect()
+        // A derived value's row holds a hash, not its key, so it is not listed (`PackIndex::list`).
+        let mut out = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let created: i64 = row.try_get("created").map_err(sql)?;
+            let r = row_of(row)?;
+            if let Some(key) = KeyClass::from_code(r.code).and_then(|c| ObjKey::from_pack(c, r.id))
+            {
+                out.push((key, created));
+            }
+        }
+        Ok(out)
     }
 
     async fn rebuild(&self, packs: &[(PackInfo, Vec<PackEntry>)]) -> Result<()> {
@@ -451,15 +457,19 @@ pub struct SqlPackGate {
     pool: AnyPool,
     ns: Ns,
     dictionary: bool,
+    derived: bool,
 }
 
 /// Store features this build understands. A namespace that lists another is refused at open.
-pub const KNOWN_FEATURES: &[&str] = &[FEATURE_PACK1, FEATURE_PACK2];
+pub const KNOWN_FEATURES: &[&str] = &[FEATURE_PACK1, FEATURE_PACK2, FEATURE_PACK_DERIVED];
 /// Set when a namespace first receives a pack file.
 pub const FEATURE_PACK1: &str = "pack1";
 /// Set with [`FEATURE_PACK1`] when the writer may make version 2 packs (with a dictionary), which
 /// builds that know only version 1 cannot read.
 pub const FEATURE_PACK2: &str = "pack2";
+/// Set with [`FEATURE_PACK1`] when the writer packs derived values, whose entries builds without
+/// them cannot read.
+pub const FEATURE_PACK_DERIVED: &str = asc_store::pack::FEATURE_DERIVED;
 
 impl SqlPackGate {
     pub fn new(pool: AnyPool, ns: Ns) -> Self {
@@ -467,7 +477,15 @@ impl SqlPackGate {
             pool,
             ns,
             dictionary: false,
+            derived: false,
         }
+    }
+
+    /// Records [`FEATURE_PACK_DERIVED`] as well, for a writer that packs derived values.
+    #[must_use]
+    pub fn with_derived(mut self, on: bool) -> Self {
+        self.derived = on;
+        self
     }
 
     /// Records [`FEATURE_PACK2`] as well, for a writer with a dictionary setting.
@@ -484,12 +502,14 @@ impl asc_store::pack::layer::PackWriteGate for SqlPackGate {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
-        let features: &[&str] = if self.dictionary {
-            &[FEATURE_PACK1, FEATURE_PACK2]
-        } else {
-            &[FEATURE_PACK1]
-        };
-        for f in features {
+        let mut features = vec![FEATURE_PACK1];
+        if self.dictionary {
+            features.push(FEATURE_PACK2);
+        }
+        if self.derived {
+            features.push(FEATURE_PACK_DERIVED);
+        }
+        for f in &features {
             sqlx::query(
                 "INSERT INTO store_features (ns, feature, since) VALUES ($1, $2, $3) \n                 ON CONFLICT (ns, feature) DO NOTHING",
             )
@@ -517,7 +537,7 @@ pub async fn store_features(
     let mut packed = false;
     for r in rows {
         let f: String = r.try_get("feature")?;
-        packed |= f == FEATURE_PACK1 || f == FEATURE_PACK2;
+        packed |= f == FEATURE_PACK1 || f == FEATURE_PACK2 || f == FEATURE_PACK_DERIVED;
         if !KNOWN_FEATURES.contains(&f.as_str()) {
             out.push(f);
         }
