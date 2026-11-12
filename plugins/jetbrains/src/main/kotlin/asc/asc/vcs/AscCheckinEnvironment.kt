@@ -21,24 +21,37 @@ import java.nio.file.Paths
 import kotlinx.coroutines.flow.toList
 
 /** The result of one `Bridge.Run`: the exit code and the child's stderr lines (shown to the user, never logged). */
-data class RunOutcome(val exit: Int, val stderr: List<String>) {
+data class RunOutcome(
+    val exit: Int,
+    val stderr: List<String>,
+    /** The encoded `asc.v1.OpResult` the verb printed, or null when it printed none. */
+    val opResult: ByteArray? = null,
+) {
     val ok: Boolean get() = exit == 0
 
     fun message(): String = stderr.lastOrNull { it.isNotBlank() } ?: "asc exited with status $exit"
+
+    override fun equals(other: Any?): Boolean =
+        other is RunOutcome && exit == other.exit && stderr == other.stderr &&
+            (opResult?.contentEquals(other.opResult) ?: (other.opResult == null))
+
+    override fun hashCode(): Int = 31 * (31 * exit + stderr.hashCode()) + (opResult?.contentHashCode() ?: 0)
 
     companion object {
         /** Fold the event stream. A stream that ends with no `exit` event counts as a failure. */
         fun fold(events: List<RunEvent>): RunOutcome {
             var exit = -1
             val lines = ArrayList<String>()
+            var result: ByteArray? = null
             for (e in events) {
                 when (e.eventCase) {
                     RunEvent.EventCase.STDERR_LINE -> lines.add(e.stderrLine)
+                    RunEvent.EventCase.OP_RESULT -> result = e.opResult.toByteArray()
                     RunEvent.EventCase.EXIT -> exit = e.exit
                     else -> {}
                 }
             }
-            return RunOutcome(exit, lines)
+            return RunOutcome(exit, lines, result)
         }
     }
 }
@@ -47,17 +60,20 @@ data class RunOutcome(val exit: Int, val stderr: List<String>) {
 object CheckinPlan {
     /** Args for `create`. `--no-branch` is explicit so the branchless setting cannot matter. Null for a blank message. */
     fun createArgs(message: String): List<String>? =
-        if (message.isBlank()) null else listOf("-m", message, "--no-branch", "--end-of-options")
+        if (message.isBlank()) null else listOf("-m=$message", "--no-branch")
 
     /** Args for `modify`, which folds the staged changes into the current change; a blank message keeps the old one. */
     fun amendArgs(message: String): List<String> =
-        if (message.isBlank()) listOf("--end-of-options") else listOf("-m", message, "--end-of-options")
+        if (message.isBlank()) emptyList() else listOf("-m=$message")
 
-    fun submitArgs(): List<String> = listOf("--end-of-options")
+    fun submitArgs(): List<String> = emptyList()
 
-    /** Args for `restore --staged --worktree`; `--end-of-options` and `--` stop a path being read as a flag. */
+    /**
+     * Args for `restore --staged --worktree`. The bridge refuses `--` and puts `--end-of-options` before the
+     * paths itself, but it reads any argument that starts with '-' as a flag, so such a path goes as `./-name`.
+     */
     fun rollbackArgs(paths: List<String>): List<String>? =
-        if (paths.isEmpty()) null else listOf("--staged", "--worktree", "--end-of-options", "--") + paths
+        if (paths.isEmpty()) null else listOf("--staged", "--worktree") + paths.map { if (it.startsWith("-")) "./$it" else it }
 
     /** The root-relative, forward-slash path of [abs], or null when it lies outside [root] or is the root. */
     fun relative(root: Path, abs: Path): String? {

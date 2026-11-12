@@ -10,18 +10,18 @@ import org.junit.Test
 
 class CheckinTest {
     @Test fun createArgsCarryTheMessageAndNoBranch() {
-        assertEquals(listOf("-m", "fix x", "--no-branch", "--end-of-options"), CheckinPlan.createArgs("fix x"))
+        assertEquals(listOf("-m=fix x", "--no-branch"), CheckinPlan.createArgs("fix x"))
         assertNull(CheckinPlan.createArgs("   "))
     }
 
     @Test fun amendKeepsTheOldMessageWhenBlank() {
-        assertEquals(listOf("--end-of-options"), CheckinPlan.amendArgs(""))
-        assertEquals(listOf("-m", "new", "--end-of-options"), CheckinPlan.amendArgs("new"))
+        assertEquals(emptyList<String>(), CheckinPlan.amendArgs(""))
+        assertEquals(listOf("-m=new"), CheckinPlan.amendArgs("new"))
     }
 
-    @Test fun rollbackStopsOptionParsingBeforePaths() {
+    @Test fun aRollbackPathThatLooksLikeAFlagIsSentAsARelativePath() {
         assertEquals(
-            listOf("--staged", "--worktree", "--end-of-options", "--", "-rf", "a/b.txt"),
+            listOf("--staged", "--worktree", "./-rf", "a/b.txt"),
             CheckinPlan.rollbackArgs(listOf("-rf", "a/b.txt")),
         )
         assertNull(CheckinPlan.rollbackArgs(emptyList()))
