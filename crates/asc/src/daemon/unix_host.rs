@@ -409,3 +409,37 @@ impl Hosted for UnixHost {
         blocking(move || provider.unmount().map_err(vfs)).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auto_takes_the_first_backend_that_loads() {
+        assert_eq!(choose(None, &[Kind::Fuse, Kind::Nfs]).unwrap(), Kind::Fuse);
+        assert_eq!(choose(Some("auto"), &[Kind::Nfs]).unwrap(), Kind::Nfs);
+        assert!(matches!(choose(None, &[]), Err(HostError::Precondition(_))));
+    }
+
+    #[test]
+    fn a_named_backend_must_load() {
+        assert_eq!(
+            choose(Some("nfs"), &[Kind::Fuse, Kind::Nfs]).unwrap(),
+            Kind::Nfs
+        );
+        assert!(matches!(
+            choose(Some("fuse"), &[Kind::Nfs]),
+            Err(HostError::Precondition(m)) if m.contains("/dev/fuse")
+        ));
+    }
+
+    #[test]
+    fn windows_names_are_refused_here() {
+        for v in ["projfs", "cloudfiles", "FUSE"] {
+            assert!(matches!(
+                choose(Some(v), &[Kind::Fuse]),
+                Err(HostError::Invalid(m)) if m.contains("auto, fuse or nfs")
+            ));
+        }
+    }
+}
