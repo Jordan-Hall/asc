@@ -204,6 +204,11 @@ expression: tools_list_json(ctx)
             ]
           },
           {
+            "required": [
+              "tag"
+            ]
+          },
+          {
             "not": {
               "anyOf": [
                 {
@@ -264,6 +269,11 @@ expression: tools_list_json(ctx)
                 {
                   "required": [
                     "push"
+                  ]
+                },
+                {
+                  "required": [
+                    "tag"
                   ]
                 }
               ]
@@ -344,6 +354,9 @@ expression: tools_list_json(ctx)
             "$ref": "#/$defs/OpStatus"
           },
           "switch": {
+            "type": "object"
+          },
+          "tag": {
             "type": "object"
           },
           "version": {
@@ -469,6 +482,11 @@ expression: tools_list_json(ctx)
             ]
           },
           {
+            "required": [
+              "tag"
+            ]
+          },
+          {
             "not": {
               "anyOf": [
                 {
@@ -529,6 +547,11 @@ expression: tools_list_json(ctx)
                 {
                   "required": [
                     "push"
+                  ]
+                },
+                {
+                  "required": [
+                    "tag"
                   ]
                 }
               ]
@@ -609,6 +632,9 @@ expression: tools_list_json(ctx)
             "$ref": "#/$defs/OpStatus"
           },
           "switch": {
+            "type": "object"
+          },
+          "tag": {
             "type": "object"
           },
           "version": {
@@ -728,6 +754,11 @@ expression: tools_list_json(ctx)
             ]
           },
           {
+            "required": [
+              "tag"
+            ]
+          },
+          {
             "not": {
               "anyOf": [
                 {
@@ -788,6 +819,11 @@ expression: tools_list_json(ctx)
                 {
                   "required": [
                     "push"
+                  ]
+                },
+                {
+                  "required": [
+                    "tag"
                   ]
                 }
               ]
@@ -868,6 +904,9 @@ expression: tools_list_json(ctx)
             "$ref": "#/$defs/OpStatus"
           },
           "switch": {
+            "type": "object"
+          },
+          "tag": {
             "type": "object"
           },
           "version": {
@@ -996,6 +1035,11 @@ expression: tools_list_json(ctx)
             ]
           },
           {
+            "required": [
+              "tag"
+            ]
+          },
+          {
             "not": {
               "anyOf": [
                 {
@@ -1056,6 +1100,11 @@ expression: tools_list_json(ctx)
                 {
                   "required": [
                     "push"
+                  ]
+                },
+                {
+                  "required": [
+                    "tag"
                   ]
                 }
               ]
@@ -1136,6 +1185,9 @@ expression: tools_list_json(ctx)
             "$ref": "#/$defs/OpStatus"
           },
           "switch": {
+            "type": "object"
+          },
+          "tag": {
             "type": "object"
           },
           "version": {
@@ -1258,6 +1310,11 @@ expression: tools_list_json(ctx)
             ]
           },
           {
+            "required": [
+              "tag"
+            ]
+          },
+          {
             "not": {
               "anyOf": [
                 {
@@ -1318,6 +1375,11 @@ expression: tools_list_json(ctx)
                 {
                   "required": [
                     "push"
+                  ]
+                },
+                {
+                  "required": [
+                    "tag"
                   ]
                 }
               ]
@@ -1398,6 +1460,9 @@ expression: tools_list_json(ctx)
             "$ref": "#/$defs/OpStatus"
           },
           "switch": {
+            "type": "object"
+          },
+          "tag": {
             "type": "object"
           },
           "version": {
@@ -1520,6 +1585,11 @@ expression: tools_list_json(ctx)
             ]
           },
           {
+            "required": [
+              "tag"
+            ]
+          },
+          {
             "not": {
               "anyOf": [
                 {
@@ -1580,6 +1650,11 @@ expression: tools_list_json(ctx)
                 {
                   "required": [
                     "push"
+                  ]
+                },
+                {
+                  "required": [
+                    "tag"
                   ]
                 }
               ]
@@ -1660,6 +1735,9 @@ expression: tools_list_json(ctx)
             "$ref": "#/$defs/OpStatus"
           },
           "switch": {
+            "type": "object"
+          },
+          "tag": {
             "type": "object"
           },
           "version": {
@@ -1786,6 +1864,11 @@ expression: tools_list_json(ctx)
             ]
           },
           {
+            "required": [
+              "tag"
+            ]
+          },
+          {
             "not": {
               "anyOf": [
                 {
@@ -1846,6 +1929,11 @@ expression: tools_list_json(ctx)
                 {
                   "required": [
                     "push"
+                  ]
+                },
+                {
+                  "required": [
+                    "tag"
                   ]
                 }
               ]
@@ -1926,6 +2014,9 @@ expression: tools_list_json(ctx)
             "$ref": "#/$defs/OpStatus"
           },
           "switch": {
+            "type": "object"
+          },
+          "tag": {
             "type": "object"
           },
           "version": {
@@ -2052,6 +2143,11 @@ expression: tools_list_json(ctx)
             ]
           },
           {
+            "required": [
+              "tag"
+            ]
+          },
+          {
             "not": {
               "anyOf": [
                 {
@@ -2112,6 +2208,11 @@ expression: tools_list_json(ctx)
                 {
                   "required": [
                     "push"
+                  ]
+                },
+                {
+                  "required": [
+                    "tag"
                   ]
                 }
               ]
@@ -2192,6 +2293,9 @@ expression: tools_list_json(ctx)
             "$ref": "#/$defs/OpStatus"
           },
           "switch": {
+            "type": "object"
+          },
+          "tag": {
             "type": "object"
           },
           "version": {
@@ -2324,6 +2428,11 @@ expression: tools_list_json(ctx)
             ]
           },
           {
+            "required": [
+              "tag"
+            ]
+          },
+          {
             "not": {
               "anyOf": [
                 {
@@ -2384,6 +2493,11 @@ expression: tools_list_json(ctx)
                 {
                   "required": [
                     "push"
+                  ]
+                },
+                {
+                  "required": [
+                    "tag"
                   ]
                 }
               ]
@@ -2464,6 +2578,9 @@ expression: tools_list_json(ctx)
             "$ref": "#/$defs/OpStatus"
           },
           "switch": {
+            "type": "object"
+          },
+          "tag": {
             "type": "object"
           },
           "version": {
@@ -2587,6 +2704,11 @@ expression: tools_list_json(ctx)
             ]
           },
           {
+            "required": [
+              "tag"
+            ]
+          },
+          {
             "not": {
               "anyOf": [
                 {
@@ -2647,6 +2769,11 @@ expression: tools_list_json(ctx)
                 {
                   "required": [
                     "push"
+                  ]
+                },
+                {
+                  "required": [
+                    "tag"
                   ]
                 }
               ]
@@ -2727,6 +2854,9 @@ expression: tools_list_json(ctx)
             "$ref": "#/$defs/OpStatus"
           },
           "switch": {
+            "type": "object"
+          },
+          "tag": {
             "type": "object"
           },
           "version": {
@@ -2861,6 +2991,11 @@ expression: tools_list_json(ctx)
             ]
           },
           {
+            "required": [
+              "tag"
+            ]
+          },
+          {
             "not": {
               "anyOf": [
                 {
@@ -2921,6 +3056,11 @@ expression: tools_list_json(ctx)
                 {
                   "required": [
                     "push"
+                  ]
+                },
+                {
+                  "required": [
+                    "tag"
                   ]
                 }
               ]
@@ -3001,6 +3141,9 @@ expression: tools_list_json(ctx)
             "$ref": "#/$defs/OpStatus"
           },
           "switch": {
+            "type": "object"
+          },
+          "tag": {
             "type": "object"
           },
           "version": {
