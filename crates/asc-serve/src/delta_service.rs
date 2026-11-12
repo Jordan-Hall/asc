@@ -16,7 +16,7 @@ use asc_core::codec::decode_envelope;
 use asc_core::id::{ChangesetId, ChunkId, FileId, TreeId};
 use asc_core::object::{Change, Changeset, ChunkList, Entry, Kind, Tree};
 use asc_core::path::{Name, RepoPath};
-use asc_store::delta::{Skip, pair_chunks};
+use asc_store::delta::{PlanCache, Skip, pair_chunks};
 use asc_store::gc::{GcError, GcRootSource};
 use asc_store::key::ObjKey;
 use asc_store::objects::Objects;
@@ -307,6 +307,8 @@ pub async fn pass(
     let mut budget = s.max_changesets as u64;
     // Side-branch changesets already read this pass, over every merge and ref.
     let mut seen = HashSet::new();
+    // Values and chains read this pass: the parent's tree or file is often the next plan's base.
+    let mut cache = PlanCache::default();
     'refs: for r in refs {
         let mut at: i64 =
             sqlx::query_scalar("SELECT pos FROM delta_cursor WHERE ns = $1 AND ref = $2")
@@ -342,7 +344,8 @@ pub async fn pass(
                 // The first changeset of a pass has the whole budget; a merge whose side history
                 // is larger than that is read as far as the budget goes and then passed.
                 let fresh = budget == s.max_changesets as u64;
-                let parents = one_changeset(pool, entry, s, cs, &purged, &mut rep).await?;
+                let parents =
+                    one_changeset(pool, entry, s, cs, &purged, &mut rep, &mut cache).await?;
                 if parents.len() > 1 {
                     let merged = parents[1..].to_vec();
                     let walk = Walk {
@@ -352,7 +355,9 @@ pub async fn pass(
                         r: &r,
                         purged: &purged,
                     };
-                    let done = walk.run(merged, &mut seen, &mut budget, &mut rep).await?;
+                    let done = walk
+                        .run(merged, &mut seen, &mut budget, &mut rep, &mut cache)
+                        .await?;
                     if !done && !fresh {
                         // The cursor stays before the merge; the next pass starts with it.
                         set_cursor(pool, &ns, &r, at).await?;
@@ -402,6 +407,7 @@ impl Walk<'_> {
         seen: &mut HashSet<ChangesetId>,
         budget: &mut u64,
         rep: &mut DeltaReport,
+        cache: &mut PlanCache,
     ) -> Result<bool, GcError> {
         let (pool, entry) = (self.pool, self.entry);
         let ns = entry.ns.as_bytes().to_vec();
@@ -428,7 +434,7 @@ impl Walk<'_> {
             }
             *budget -= 1;
             rep.side += 1;
-            todo.extend(one_changeset(pool, entry, self.s, id, self.purged, rep).await?);
+            todo.extend(one_changeset(pool, entry, self.s, id, self.purged, rep, cache).await?);
         }
         Ok(true)
     }
@@ -445,6 +451,7 @@ async fn one_changeset(
     id: ChangesetId,
     purged: &HashSet<ObjKey>,
     rep: &mut DeltaReport,
+    cache: &mut PlanCache,
 ) -> Result<Vec<ChangesetId>, GcError> {
     let Some(cs) = changeset(entry, id).await? else {
         return Ok(Vec::new());
@@ -460,6 +467,7 @@ async fn one_changeset(
         entry,
         purged,
         rep,
+        cache,
     };
     // Every directory above a changed path changed too; the root is handled on its own.
     let mut dirs: HashSet<RepoPath> = HashSet::new();
@@ -526,6 +534,7 @@ struct Deltas<'a> {
     entry: &'a RepoEntry,
     purged: &'a HashSet<ObjKey>,
     rep: &'a mut DeltaReport,
+    cache: &'a mut PlanCache,
 }
 
 impl Deltas<'_> {
@@ -563,7 +572,12 @@ impl Deltas<'_> {
         };
         let rep = &mut *self.rep;
         rep.candidates += 1;
-        let planned = match self.entry.objects.plan_delta(key, base).await? {
+        let planned = match self
+            .entry
+            .objects
+            .plan_delta_cached(key, base, self.cache)
+            .await?
+        {
             Ok(p) => p,
             Err(Skip::NoGain) => {
                 rep.no_gain += 1;

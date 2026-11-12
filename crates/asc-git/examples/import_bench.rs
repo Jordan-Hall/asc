@@ -273,8 +273,10 @@ async fn delta_pass(objects: &BucketObjects, map: &Map, git_dir: &Path) {
     for (kind, pairs) in [("file", files), ("chunk", chunks), ("tree", trees)] {
         let t = Instant::now();
         let (mut written, mut saved) = (0u64, 0u64);
+        let mut cache = asc_store::delta::PlanCache::default();
         for (key, base) in &pairs {
-            if let Ok(p) = objects.plan_delta(*key, *base).await.expect("plan") {
+            let planned = objects.plan_delta_cached(*key, *base, &mut cache).await;
+            if let Ok(p) = planned.expect("plan") {
                 objects.store_delta(&p).await.expect("store");
                 written += 1;
                 saved += p.was.saturating_sub(p.stored.len() as u64);

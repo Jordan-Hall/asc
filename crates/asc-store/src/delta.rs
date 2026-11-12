@@ -4,7 +4,7 @@
 //! deltas, and only to loose objects; reads resolve them in [`BucketObjects`], so the wire never
 //! carries one.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use asc_core::id::ChunkId;
 use asc_core::object::ChunkList;
@@ -12,9 +12,9 @@ use bytes::Bytes;
 use object_store::{ObjectStoreExt, PutPayload};
 
 use crate::bucket::BucketObjects;
-use crate::codec::{MAX_DELTA_DEPTH, delta_base, encode_delta};
+use crate::codec::{MAX_DELTA_DEPTH, decode_delta, delta_base, encode_delta};
 use crate::key::ObjKey;
-use crate::objects::{Objects, Result, decode_verified};
+use crate::objects::{Objects, Result, decode_verified, max_decoded, verify};
 
 /// Why [`BucketObjects::plan_delta`] left an object alone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,10 +40,75 @@ pub struct Planned {
     pub was: u64,
 }
 
+/// Decoded values and delta chains remembered across the plans of one pass, so a base that an
+/// earlier plan read or wrote costs no reads. Values are verified against their keys and never
+/// change; a chain only grows when the pass itself writes a delta, so a remembered chain is never
+/// shorter than the stored one (a put that repairs a delta only shortens it). Bounded by bytes.
+pub struct PlanCache {
+    map: HashMap<ObjKey, (Bytes, Vec<ObjKey>)>,
+    order: VecDeque<ObjKey>,
+    bytes: usize,
+    cap: usize,
+}
+
+impl PlanCache {
+    /// A cache holding at most `cap` bytes of decoded values.
+    pub fn new(cap: usize) -> Self {
+        Self {
+            map: HashMap::new(),
+            order: VecDeque::new(),
+            bytes: 0,
+            cap,
+        }
+    }
+
+    fn get(&self, key: &ObjKey) -> Option<(Bytes, Vec<ObjKey>)> {
+        self.map.get(key).cloned()
+    }
+
+    fn put(&mut self, key: ObjKey, data: Bytes, chain: Vec<ObjKey>) {
+        if data.len() > self.cap {
+            return;
+        }
+        self.bytes += data.len();
+        if let Some((old, _)) = self.map.insert(key, (data, chain)) {
+            self.bytes -= old.len();
+        } else {
+            self.order.push_back(key);
+        }
+        while self.bytes > self.cap {
+            let Some(k) = self.order.pop_front() else {
+                break;
+            };
+            if let Some((d, _)) = self.map.remove(&k) {
+                self.bytes -= d.len();
+            }
+        }
+    }
+}
+
+impl Default for PlanCache {
+    /// 64 MiB.
+    fn default() -> Self {
+        Self::new(64 << 20)
+    }
+}
+
 impl BucketObjects {
     /// Builds a delta of `key` against `base`, an object of the same kind, without writing
     /// anything.
     pub async fn plan_delta(&self, key: ObjKey, base: ObjKey) -> Result<Result<Planned, Skip>> {
+        self.plan_delta_cached(key, base, &mut PlanCache::new(0))
+            .await
+    }
+
+    /// [`Self::plan_delta`] with values and chains remembered in `cache` across calls.
+    pub async fn plan_delta_cached(
+        &self,
+        key: ObjKey,
+        base: ObjKey,
+        cache: &mut PlanCache,
+    ) -> Result<Result<Planned, Skip>> {
         let Some(base_id) = base.delta_id() else {
             return Ok(Err(Skip::BadBase));
         };
@@ -59,46 +124,89 @@ impl BucketObjects {
         if delta_base(&raw).is_some() {
             return Ok(Err(Skip::AlreadyDelta));
         }
-        // Walk the base's chain: it must not contain `key` (a cycle no read could resolve)
-        // and must leave room for one more link under the read limit.
-        let mut at = base;
-        let mut depth = 1u8;
-        loop {
-            if at == key || depth >= MAX_DELTA_DEPTH {
-                return Ok(Err(Skip::BadBase));
-            }
-            match self.get_loose_raw(&at).await?.and_then(|b| delta_base(&b)) {
-                Some(next) => {
-                    at = key
-                        .delta_base_key(next)
-                        .ok_or(crate::objects::Error::Codec(
-                            at,
-                            crate::codec::CodecError::DeltaKind,
-                        ))?;
-                    depth += 1;
-                }
-                // A full value, packed (packs never hold deltas) or missing: `get` tells which.
-                None => break,
-            }
-        }
-        let base_data = match self.get(&base).await {
-            Ok(Some(d)) => d,
-            Ok(None)
-            | Err(crate::objects::Error::Codec(..) | crate::objects::Error::Corrupt(_)) => {
-                return Ok(Err(Skip::BadBase));
-            }
-            Err(e) => return Err(e),
+        let Some((base_data, base_chain)) = self.base_state(base, cache).await? else {
+            return Ok(Err(Skip::BadBase));
         };
+        // The new chain must not contain `key` (a cycle no read could resolve) and must stay
+        // under the read limit.
+        let mut chain = Vec::with_capacity(base_chain.len() + 1);
+        chain.push(base);
+        chain.extend(base_chain);
+        if chain.contains(&key) || chain.len() >= MAX_DELTA_DEPTH as usize {
+            return Ok(Err(Skip::BadBase));
+        }
         let data = decode_verified(&key, &raw)?;
         let Some(stored) = encode_delta(&base_id, &base_data, &data, raw.len()) else {
+            cache.put(key, data, Vec::new());
             return Ok(Err(Skip::NoGain));
         };
+        // Remembered as a delta even if the caller does not store it: a longer chain than the
+        // stored one only makes later plans more careful.
+        cache.put(key, data, chain);
         Ok(Ok(Planned {
             key,
             base,
             stored,
             was: raw.len() as u64,
         }))
+    }
+
+    /// The verified bytes of `base` and the keys of its delta chain (empty for a full value),
+    /// or `None` when it is missing, damaged or deeper than reads allow. Each link is read once
+    /// and decoded from the bottom up; every value met is remembered.
+    async fn base_state(
+        &self,
+        base: ObjKey,
+        cache: &mut PlanCache,
+    ) -> Result<Option<(Bytes, Vec<ObjKey>)>> {
+        let mut links = Vec::new();
+        let mut at = base;
+        let (mut data, mut chain) = loop {
+            if let Some(hit) = cache.get(&at) {
+                break hit;
+            }
+            if links.len() >= MAX_DELTA_DEPTH as usize {
+                return Ok(None);
+            }
+            match self.get_loose_raw(&at).await? {
+                Some(raw) if delta_base(&raw).is_some() => {
+                    let next = delta_base(&raw).and_then(|b| at.delta_base_key(b));
+                    let Some(next) = next else {
+                        return Ok(None);
+                    };
+                    links.push((at, raw));
+                    at = next;
+                }
+                // A full value, packed (packs never hold deltas) or missing: `get` tells which.
+                _ => match self.get(&at).await {
+                    Ok(Some(d)) => {
+                        cache.put(at, d.clone(), Vec::new());
+                        break (d, Vec::new());
+                    }
+                    Ok(None)
+                    | Err(crate::objects::Error::Codec(..) | crate::objects::Error::Corrupt(_)) => {
+                        return Ok(None);
+                    }
+                    Err(e) => return Err(e),
+                },
+            }
+        };
+        for (k, raw) in links.into_iter().rev() {
+            let Ok(d) = decode_delta(&raw, &data, max_decoded(k.class())) else {
+                return Ok(None);
+            };
+            if verify(&k, &d).is_err() {
+                return Ok(None);
+            }
+            chain.insert(0, at);
+            if chain.len() > MAX_DELTA_DEPTH as usize {
+                return Ok(None);
+            }
+            at = k;
+            data = d;
+            cache.put(k, data.clone(), chain.clone());
+        }
+        Ok(Some((data, chain)))
     }
 
     /// Replaces the loose copy of `p.key` with the planned delta. The caller records the base
