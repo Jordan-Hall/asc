@@ -266,10 +266,25 @@ async fn an_import_into_a_pack_enabled_store_writes_packs_and_stores_the_same_ob
     let report = import(&repo, &packed, 3).await.unwrap();
     assert_eq!(report.commits, 10);
 
-    // Every object is there with the same bytes, whether it sits in a pack or loose.
-    assert_eq!(
-        dump_store(&*packed.store).await,
-        dump_store(&*plain.store).await
+    // Every object is there with the same bytes, whether it sits in a pack or loose. A packed
+    // derived value is readable but not listed (its index row holds a hash, not the key), so
+    // the keys come from the plain store and are read from the packed one.
+    let want = dump_store(&*plain.store).await;
+    let keys: Vec<ObjKey> = futures::TryStreamExt::try_collect(futures::StreamExt::map(
+        plain.store.list(KeyPrefix::all()),
+        |r| r.map(|(k, _)| k),
+    ))
+    .await
+    .unwrap();
+    assert_eq!(keys.len(), want.len());
+    for key in keys {
+        let got = packed.store.get_stored(&key).await.unwrap();
+        assert_eq!(got.as_ref(), want.get(&key.path()), "{}", key.path());
+    }
+    let listed = dump_store(&*packed.store).await;
+    assert!(
+        listed.iter().all(|(k, v)| want.get(k) == Some(v)),
+        "a listed packed object differs"
     );
     assert_eq!(packed.map.inner.dump(), plain.map.inner.dump());
     let status = store.pack_status().await.unwrap();
