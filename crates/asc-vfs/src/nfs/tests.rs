@@ -612,3 +612,40 @@ fn without_a_gitdir_there_is_no_gitfile() {
     let root = c.root();
     assert!(c.lookup(&root, ".git").is_err());
 }
+
+#[test]
+fn reconcile_replays_the_overlay_into_the_journal() {
+    let nx = Nx::new("");
+    let mut c = nx.client();
+    let root = c.root();
+    let (src, _) = c.lookup(&root, "src").unwrap();
+    let (a, _) = c.lookup(&src, "a.txt").unwrap();
+    c.write(&a, 0, b"ALPHA", 0).unwrap();
+    let (new, _) = c.create(&src, "new.txt", 1, 0o640, [0; 8]).unwrap();
+    c.write(&new, 0, b"fresh\n", 1).unwrap();
+    c.mkdir(&root, "made").unwrap();
+    c.remove(&root, "README").unwrap();
+    // A deleted name written again is a new entry, not a deletion.
+    c.remove(&src, "b.txt").unwrap();
+    c.create(&src, "b.txt", 1, 0o600, [0; 8]).unwrap();
+    let before = nx.journal.ops().len();
+
+    let r = nx.provider().merged().reconcile().unwrap();
+
+    let ops: Vec<_> = nx.journal.ops().split_off(before);
+    let mut got: Vec<(Op, String)> = ops;
+    got.sort_by(|x, y| x.1.cmp(&y.1));
+    assert_eq!(
+        got,
+        vec![
+            (Op::Deleted, "README".to_owned()),
+            (Op::Created, "made".to_owned()),
+            (Op::Modified, "src/a.txt".to_owned()),
+            (Op::Created, "src/b.txt".to_owned()),
+            (Op::Created, "src/new.txt".to_owned()),
+        ]
+    );
+    assert_eq!((r.deleted, r.created, r.modified), (1, 3, 1));
+    // `src` is in the base tree: a directory that only holds edits journals nothing itself.
+    assert_eq!(r.examined, 2 + 5);
+}
