@@ -118,6 +118,19 @@ impl Stats {
     }
 
     /// Everything, paths and processes by descending hydration count.
+    /// The paths last hydrated at or after `since`, in path order (at most [`MAX_PATHS`]).
+    pub fn read_since(&self, since: SystemTime) -> Vec<RepoPath> {
+        let i = self.lock();
+        let mut v: Vec<RepoPath> = i
+            .paths
+            .iter()
+            .filter(|(_, s)| s.last_read.is_some_and(|t| t >= since))
+            .map(|(p, _)| p.clone())
+            .collect();
+        v.sort();
+        v
+    }
+
     pub fn snapshot(&self) -> Snapshot {
         let i = self.lock();
         let mut paths: Vec<_> = i.paths.iter().map(|(k, v)| (k.clone(), *v)).collect();
@@ -155,5 +168,28 @@ mod tests {
         }
         // `rg.exe` holds one slot.
         assert_eq!(s.snapshot().dropped_processes, 6);
+    }
+
+    #[test]
+    fn read_since_lists_the_paths_read_after_a_time() {
+        let s = Stats::new();
+        let t = SystemTime::UNIX_EPOCH + Duration::from_secs(10);
+        let (a, b, c) = (
+            RepoPath::new("a").unwrap(),
+            RepoPath::new("b").unwrap(),
+            RepoPath::new("c").unwrap(),
+        );
+        s.record_hydration(&c, "x", 1, t + Duration::from_secs(5));
+        s.record_hydration(&a, "x", 1, t);
+        s.record_hydration(&b, "x", 1, t + Duration::from_secs(2));
+        assert_eq!(s.read_since(t + Duration::from_secs(2)), vec![b, c.clone()]);
+        assert_eq!(
+            s.read_since(t + Duration::from_secs(6)),
+            Vec::<RepoPath>::new()
+        );
+        assert_eq!(s.read_since(t).len(), 3);
+        // A later read of an old path brings it back in.
+        s.record_hydration(&a, "x", 1, t + Duration::from_secs(9));
+        assert_eq!(s.read_since(t + Duration::from_secs(6)), vec![a]);
     }
 }

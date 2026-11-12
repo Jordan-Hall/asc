@@ -352,6 +352,10 @@ impl Hosted for UnixHost {
         vhost::stats(&self.core)
     }
 
+    fn read_since(&self, since: std::time::SystemTime) -> Vec<RepoPath> {
+        self.core.stats().read_since(since)
+    }
+
     async fn dehydrate(&self, paths: &[RepoPath]) -> Result<(u64, u64), HostError> {
         let provider = self.provider.clone();
         let paths = if paths.is_empty() {

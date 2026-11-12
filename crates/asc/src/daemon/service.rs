@@ -46,6 +46,8 @@ const MAX_PATHSPECS: usize = 10_000;
 pub const MAX_MOUNTS: usize = 256;
 /// Most hydration rows in a `Stats` answer, per list.
 const MAX_STATS_ROWS: usize = 1_000;
+/// Most paths one `read_since` answer lists (a learned prefetch profile's bound).
+const MAX_READ_SINCE: usize = 50_000;
 /// Longest accepted tree id (`from_root`, `to_root`).
 const MAX_ROOT: usize = 64;
 
@@ -92,6 +94,10 @@ fn plain(what: &str) -> HostError {
 pub trait Hosted: Send + Sync {
     fn stats(&self) -> HostStats {
         HostStats::default()
+    }
+    /// Paths hydrated at or after `since` (`asc prefetch --record`); a plain host hydrates none.
+    fn read_since(&self, _since: std::time::SystemTime) -> Vec<RepoPath> {
+        Vec::new()
     }
     /// Paths a switch left pending (held open).
     fn pending(&self) -> u64 {
@@ -1044,11 +1050,27 @@ impl WorkspaceRpc for Service {
                 .map(|(key, (count, bytes))| wire::HydrationCount { key, count, bytes })
                 .collect()
         };
+        let mut read_since = Vec::new();
+        if r.read_since_ms > 0 {
+            let since = std::time::UNIX_EPOCH + std::time::Duration::from_millis(r.read_since_ms);
+            let mut all: Vec<RepoPath> = wanted
+                .iter()
+                .flat_map(|m| m.hosted.read_since(since))
+                .collect();
+            all.sort();
+            all.dedup();
+            all.truncate(MAX_READ_SINCE);
+            read_since = all
+                .into_iter()
+                .map(|p| p.as_bytes().to_vec().into())
+                .collect();
+        }
         Ok(Response::new(wire::StatsResponse {
             by_path: rows(paths),
             by_process: rows(procs),
             bytes_hydrated,
             journal_size,
+            read_since,
         }))
     }
 
@@ -1177,6 +1199,15 @@ mod tests {
                 by_process: vec![("tsserver.exe".into(), 7, 70)],
                 bytes_hydrated: 70,
             }
+        }
+        fn read_since(&self, since: std::time::SystemTime) -> Vec<RepoPath> {
+            // `src/a.rs` was read at 1 s, `src/b.rs` at 5 s.
+            let at = |s| std::time::UNIX_EPOCH + std::time::Duration::from_secs(s);
+            [("src/a.rs", 1), ("src/b.rs", 5)]
+                .into_iter()
+                .filter(|(_, t)| at(*t) >= since)
+                .map(|(p, _)| RepoPath::new(p).unwrap())
+                .collect()
         }
         async fn dehydrate(&self, paths: &[RepoPath]) -> Result<(u64, u64), HostError> {
             self.dehydrated.fetch_add(1, Ordering::SeqCst);
@@ -1394,7 +1425,10 @@ mod tests {
             .await;
         assert_eq!(code(r), tonic::Code::FailedPrecondition);
         let r = svc
-            .stats(Request::new(wire::StatsRequest { ws_id: id.clone() }))
+            .stats(Request::new(wire::StatsRequest {
+                ws_id: id.clone(),
+                read_since_ms: 0,
+            }))
             .await;
         assert_eq!(code(r), tonic::Code::FailedPrecondition);
 
@@ -1439,7 +1473,10 @@ mod tests {
         .unwrap();
         assert!(f.state.mounts.is_empty());
         let r = svc
-            .stats(Request::new(wire::StatsRequest { ws_id: id }))
+            .stats(Request::new(wire::StatsRequest {
+                ws_id: id,
+                read_since_ms: 0,
+            }))
             .await;
         assert_eq!(code(r), tonic::Code::FailedPrecondition);
     }
@@ -1577,16 +1614,37 @@ mod tests {
         assert_eq!(f.state.metrics.provider_errors("prefetch"), 1);
 
         let stats = svc
-            .stats(Request::new(wire::StatsRequest { ws_id: id.clone() }))
+            .stats(Request::new(wire::StatsRequest {
+                ws_id: id.clone(),
+                read_since_ms: 0,
+            }))
             .await
             .unwrap()
             .into_inner();
         assert_eq!(stats.bytes_hydrated, 70);
         assert_eq!(stats.by_path[0].key, "src/b.rs", "busiest first");
         assert_eq!(stats.by_process[0].count, 7);
+        assert!(stats.read_since.is_empty(), "only listed when asked");
+        let since = svc
+            .stats(Request::new(wire::StatsRequest {
+                ws_id: id.clone(),
+                read_since_ms: 3_000,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(
+            since
+                .read_since
+                .iter()
+                .map(|b| b.to_vec())
+                .collect::<Vec<_>>(),
+            vec![b"src/b.rs".to_vec()]
+        );
         let all = svc
             .stats(Request::new(wire::StatsRequest {
                 ws_id: String::new(),
+                read_since_ms: 0,
             }))
             .await
             .unwrap()

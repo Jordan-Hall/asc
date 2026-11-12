@@ -1570,6 +1570,8 @@ pub(crate) async fn perform(ctx: &Ctx, m: Move) -> Result<ExitCode> {
         }
     }
 
+    super::prefetch::after_switch(ctx, ws).await;
+
     // `post-checkout`: its exit status is the command's.
     let old_git = match old_commit {
         Some(c) => ws.engine.git_commit_of(c).await.map_err(fatal)?,

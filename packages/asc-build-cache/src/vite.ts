@@ -12,6 +12,7 @@ import {
   type Build,
   digest,
   enabled,
+  learn,
   note,
   restore,
   save,
@@ -41,6 +42,7 @@ export function ascBuildCache(opts: AscBuildCacheOptions = {}): Plugin {
   let failed = false;
   let wrote = false;
   let hit = false;
+  const read = new Set<string>();
   return {
     name: "asc-build-cache",
     apply: "build",
@@ -105,6 +107,11 @@ export function ascBuildCache(opts: AscBuildCacheOptions = {}): Plugin {
       if (err) {
         failed = true;
       }
+      if (build && !hit) {
+        for (const id of this.getModuleIds()) {
+          read.add(id);
+        }
+      }
     },
     writeBundle() {
       wrote = true;
@@ -113,6 +120,7 @@ export function ascBuildCache(opts: AscBuildCacheOptions = {}): Plugin {
     closeBundle() {
       if (build && key && !hit && wrote && !failed) {
         save(build, opts, key);
+        learn(build, opts, read);
       }
     },
   };

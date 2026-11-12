@@ -103,6 +103,7 @@ impl Daemon {
         client
             .stats(wire::StatsRequest {
                 ws_id: ws_id.to_owned(),
+                read_since_ms: 0,
             })
             .await
             .ok()

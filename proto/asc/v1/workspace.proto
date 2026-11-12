@@ -95,10 +95,12 @@ message DehydrateRequest { string ws_id = 1; repeated bytes pathspec = 2 [(asc.v
 message DehydrateResponse { uint64 files = 1; uint64 bytes_freed = 2; }
 message PrefetchRequest { string ws_id = 1; repeated bytes pathspec = 2 [(asc.v1.json) = JSON_KIND_PATH]; }
 message PrefetchResponse { uint64 files = 1; uint64 bytes_fetched = 2; }
-message StatsRequest { string ws_id = 1; }
+// `read_since_ms` (unix ms) also lists in `read_since` the paths hydrated at or after it, for
+// `asc prefetch --record` (SPEC 10.2 item 5b).
+message StatsRequest { string ws_id = 1; uint64 read_since_ms = 2; }
 message HydrationCount { string key = 1; uint64 count = 2; uint64 bytes = 3; }
 message StatsResponse { repeated HydrationCount by_path = 1; repeated HydrationCount by_process = 2;
-  uint64 bytes_hydrated = 3; uint64 journal_size = 4; }
+  uint64 bytes_hydrated = 3; uint64 journal_size = 4; repeated bytes read_since = 5 [(asc.v1.json) = JSON_KIND_PATH]; }
 message ShutdownRequest {}
 message ShutdownResponse {}
 

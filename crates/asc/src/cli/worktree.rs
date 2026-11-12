@@ -644,6 +644,9 @@ pub(crate) async fn add(ctx: &Ctx, o: AddOpts) -> Result<Added> {
     if !o.quiet {
         println!("HEAD is now at {}", commit_line(ctx, ws, commit).await?);
     }
+    if let Ok(new_ws) = new_ctx.ws() {
+        super::prefetch::after_clone(&new_ctx, new_ws).await;
+    }
     let runner = Runner::for_ctx(&new_ctx).await?;
     let hook = Hook::PostCheckout {
         old: null_oid(),

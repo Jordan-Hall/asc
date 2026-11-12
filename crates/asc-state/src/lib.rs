@@ -4,6 +4,7 @@ pub mod changes;
 pub mod drafts;
 pub mod home;
 pub mod oplog;
+pub mod prefetch;
 pub mod shared_blob;
 pub mod state;
 

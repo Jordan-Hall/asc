@@ -755,6 +755,7 @@ async fn build(
         .map_err(fatal)?;
 
     attribute_warning(&fresh, ws, &paths);
+    super::prefetch::after_clone(&fresh, ws).await;
 
     let mut code = 0u8;
     if !o.no_checkout {

@@ -142,8 +142,13 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
                     home,
                     metrics_listen: listen,
                     backend: daemon::workspace_factory::platform_backend(),
+                    hooks: scheduler::Hooks {
+                        prefetch: Some(std::sync::Arc::new(scheduler::ExePrefetcher {
+                            asc_exe: settings.asc_exe.clone(),
+                        })),
+                        ..Default::default()
+                    },
                     settings,
-                    hooks: scheduler::Hooks::default(),
                     extra_jobs,
                 },
                 async {

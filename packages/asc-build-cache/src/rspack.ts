@@ -12,6 +12,7 @@ import {
   type Build,
   digest,
   enabled,
+  learn,
   note,
   restore,
   save,
@@ -36,7 +37,15 @@ export interface CompilerLike {
     watchRun: {
       tapAsync(name: string, fn: (c: unknown, done: (err?: Error) => void) => void): void;
     };
-    done: { tap(name: string, fn: (stats: { hasErrors(): boolean }) => void): void };
+    done: {
+      tap(
+        name: string,
+        fn: (stats: {
+          hasErrors(): boolean;
+          compilation?: { fileDependencies?: Iterable<string> };
+        }) => void,
+      ): void;
+    };
   };
 }
 
@@ -170,6 +179,7 @@ export class AscBuildCachePlugin {
       if (!watched && !stored && !stats.hasErrors()) {
         stored = true;
         save(build, opts, got.key);
+        learn(build, opts, stats.compilation?.fileDependencies ?? []);
       }
     });
   }

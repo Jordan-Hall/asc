@@ -23,6 +23,9 @@ export interface AscBuildCacheOptions {
   remote?: boolean;
   /** Turn the plugin off (default: on unless `ASC_BUILD_CACHE=0`). */
   enabled?: boolean;
+  /** Send the files a built miss read to `asc prefetch --learn`, so a later switch or clone warms
+   *  them (default: on unless `ASC_PREFETCH_LEARN=0`). */
+  learn?: boolean;
 }
 
 export interface Build {
@@ -73,12 +76,13 @@ function ascBin(opts: AscBuildCacheOptions): string {
   return opts.asc ?? process.env.ASC_BIN ?? "asc";
 }
 
-function asc(opts: AscBuildCacheOptions, cwd: string, args: string[]) {
+function asc(opts: AscBuildCacheOptions, cwd: string, args: string[], input?: string) {
   return spawnSync(ascBin(opts), args, {
     cwd,
     encoding: "utf8",
     windowsHide: true,
     maxBuffer: 1 << 20,
+    ...(input === undefined ? {} : { input }),
   });
 }
 
@@ -341,5 +345,49 @@ export function save(build: Build, opts: AscBuildCacheOptions, key: string): voi
 export function note(tool: string, key: string): void {
   if (process.env.ASC_BUILD_CACHE_QUIET !== "1") {
     process.stdout.write(`asc build cache: ${tool} hit ${key.slice(0, 12)}, outputs restored\n`);
+  }
+}
+
+/** The prefetch profile a build learns into: `<tool>:<project>`, without spaces. */
+export function profileName(build: Build, opts: AscBuildCacheOptions): string {
+  return `${build.tool}:${projectName(build.root, opts)}`.replace(/\s+/g, "-").slice(0, 200);
+}
+
+/** The files among `ids` a profile can hold: absolute paths inside the work tree `top`, outside
+ *  `node_modules`, without a query; NUL separated, as `asc prefetch --learn` reads them. */
+export function learnInput(ids: Iterable<string>, top: string): string {
+  const out = new Set<string>();
+  for (const raw of ids) {
+    if (raw.startsWith("\0")) {
+      continue;
+    }
+    const id = raw.split("?")[0] ?? "";
+    if (!isAbsolute(id) || !inside(top, id) || id.split(/[\\/]/).includes("node_modules")) {
+      continue;
+    }
+    out.add(id);
+  }
+  return [...out].join("\0");
+}
+
+/** Teaches the build's profile the files it read (SPEC §10.2 item 5b). Best effort: a failure
+ *  is one line on stderr and never fails the build. */
+export function learn(build: Build, opts: AscBuildCacheOptions, ids: Iterable<string>): void {
+  if (!(opts.learn ?? process.env.ASC_PREFETCH_LEARN !== "0")) {
+    return;
+  }
+  const top = workTree(build.root);
+  if (!top) {
+    return;
+  }
+  const input = learnInput(ids, top);
+  if (!input) {
+    return;
+  }
+  const r = asc(opts, build.root, ["prefetch", "--learn", profileName(build, opts), "--replace", "-q"], input);
+  if (r.error || r.status !== 0) {
+    process.stderr.write(
+      `asc build cache: the read files were not learned: ${(r.error?.message ?? r.stderr ?? "").trim()}\n`,
+    );
   }
 }

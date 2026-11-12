@@ -225,6 +225,10 @@ impl Hosted for WinHost {
         vhost::stats(&self.core)
     }
 
+    fn read_since(&self, since: std::time::SystemTime) -> Vec<RepoPath> {
+        self.core.stats().read_since(since)
+    }
+
     fn pending(&self) -> u64 {
         self.pending.load(Ordering::SeqCst)
     }

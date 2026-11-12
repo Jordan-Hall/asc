@@ -599,6 +599,50 @@ fn has_files(root: &Path) -> bool {
     false
 }
 
+/// The production [`Prefetcher`] (SPEC §10.2 item 5a): runs `asc prefetch --auto --quiet` in the
+/// freshly mounted work tree, which warms the `.asc/prefetch` globs and the learned profiles of
+/// HEAD into the machine cache. Bounded by [`PREFETCH_TIMEOUT`].
+pub struct ExePrefetcher {
+    pub asc_exe: PathBuf,
+}
+
+/// Longest one background prefetch may run.
+const PREFETCH_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
+#[async_trait]
+impl Prefetcher for ExePrefetcher {
+    async fn prefetch(&self, ws: &Workspace) -> Result<String, String> {
+        let dir = PathBuf::from(&ws.ws.mount);
+        let mut cmd = tokio::process::Command::new(&self.asc_exe);
+        cmd.args(["prefetch", "--auto", "--quiet"])
+            .current_dir(&dir)
+            // The child reads through the object stack, not the mount, and must not call back
+            // into this daemon or take its repository from the daemon's environment.
+            .env("ASC_NO_DAEMON", "1")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_COMMON_DIR")
+            .env_remove("GIT_INDEX_FILE")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let out = tokio::time::timeout(PREFETCH_TIMEOUT, cmd.output())
+            .await
+            .map_err(|_| format!("prefetch ran over {} s", PREFETCH_TIMEOUT.as_secs()))?
+            .map_err(|e| format!("cannot run prefetch: {e}"))?;
+        if out.status.success() {
+            Ok(format!("prefetched {}", dir.display()))
+        } else {
+            let text = String::from_utf8_lossy(&out.stderr);
+            Err(format!(
+                "prefetch failed: {}",
+                text.trim().chars().take(300).collect::<String>()
+            ))
+        }
+    }
+}
+
 /// Ephemeral worktree expiry (`worktree add --ephemeral --ttl`): once a worktree is past its
 /// time, `asc worktree prune` in a sibling worktree of the same repository removes it when it is
 /// clean and unlocked (a dirty one stays), and the daemon then stops hosting what is gone.
@@ -1212,6 +1256,17 @@ mod tests {
             prefetcher: None,
         };
         none.run().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_exe_prefetcher_reports_a_missing_binary() {
+        let f = fixture(None).await;
+        let ws = f.workspace(Mode::Plain, None).await;
+        let p = ExePrefetcher {
+            asc_exe: f.dir.path().join("missing-asc"),
+        };
+        let err = p.prefetch(&ws).await.unwrap_err();
+        assert!(err.starts_with("cannot run prefetch"), "{err}");
     }
 
     struct Release(Result<String, String>, Arc<AtomicU32>);
