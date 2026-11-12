@@ -657,28 +657,61 @@ async fn check_windows(home: &AscHome) -> Vec<Check> {
     v
 }
 
-#[cfg(target_os = "linux")]
-async fn check_fuse() -> Vec<Check> {
-    let node = Path::new("/dev/fuse").exists();
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    let tool = path_dirs(&path).into_iter().any(|d| {
-        ["fusermount3", "fusermount"]
-            .iter()
-            .any(|n| d.join(n).is_file())
-    });
-    vec![if node && tool {
-        Check::ok("fuse", "/dev/fuse and fusermount are available")
-    } else {
-        Check::warn(
-            "fuse",
-            format!(
-                "/dev/fuse {}, fusermount {}",
-                if node { "present" } else { "missing" },
-                if tool { "present" } else { "missing" }
-            ),
+/// The backends a Unix virtual workspace can use (`asc.vfs.backend`); `None` is a backend this
+/// build or system does not offer. FUSE comes first where both work, as `auto` picks it.
+#[cfg(any(unix, test))]
+fn unix_virtual_fs(fuse: Option<bool>, nfs: Option<bool>) -> Check {
+    const FUSE_HINT: &str = "install fuse3 and allow your user to open /dev/fuse";
+    const NFS_HINT: &str = "install the NFS client (nfs-common or nfs-utils)";
+    match (fuse, nfs) {
+        (Some(true), Some(true)) => Check::ok(
+            "virtual-fs",
+            "virtual workspaces use FUSE; the NFS loopback is available too",
+        ),
+        (Some(true), _) => Check::ok("virtual-fs", "virtual workspaces use FUSE"),
+        (_, Some(true)) => Check::ok(
+            "virtual-fs",
+            "virtual workspaces use the loopback NFS server and the kernel's NFS client",
+        ),
+        (Some(false), Some(false)) => Check::warn(
+            "virtual-fs",
+            "neither FUSE nor an NFS mount helper is available",
         )
-        .hint("virtual workspaces need FUSE: install fuse3 and allow your user to use it")
-    }]
+        .hint(format!(
+            "virtual workspaces need one: {FUSE_HINT}, or {NFS_HINT}"
+        )),
+        (Some(false), None) => Check::warn("virtual-fs", "FUSE is not available")
+            .hint(format!("virtual workspaces need it: {FUSE_HINT}")),
+        (None, Some(false)) => Check::warn("virtual-fs", "the NFS mount helper is missing")
+            .hint("virtual workspaces mount through the system NFS client; reinstall it"),
+        (None, None) => Check::warn(
+            "virtual-fs",
+            "this build has no virtual workspace backend for this system",
+        )
+        .hint("use plain workspaces, or a build with the vfs-fuse or vfs-nfs feature"),
+    }
+}
+
+#[cfg(unix)]
+async fn check_unix_vfs() -> Vec<Check> {
+    #[cfg(all(target_os = "linux", feature = "vfs-fuse"))]
+    let fuse = {
+        let node = asc_vfs::fuse::available();
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let tool = path_dirs(&path).into_iter().any(|d| {
+            ["fusermount3", "fusermount"]
+                .iter()
+                .any(|n| d.join(n).is_file())
+        });
+        Some(node && tool)
+    };
+    #[cfg(not(all(target_os = "linux", feature = "vfs-fuse")))]
+    let fuse = None;
+    #[cfg(feature = "vfs-nfs")]
+    let nfs = Some(asc_vfs::nfs::available());
+    #[cfg(not(feature = "vfs-nfs"))]
+    let nfs = None;
+    vec![unix_virtual_fs(fuse, nfs)]
 }
 
 /// Where each surface finds `git` (SPEC §11.4).
@@ -1481,9 +1514,9 @@ async fn gather(ctx: &Ctx, home: &AscHome, store: Option<&str>) -> Vec<Check> {
     let mut out = Vec::new();
     #[cfg(windows)]
     let platform = check_windows(home);
-    #[cfg(target_os = "linux")]
-    let platform = check_fuse();
-    #[cfg(not(any(windows, target_os = "linux")))]
+    #[cfg(unix)]
+    let platform = check_unix_vfs();
+    #[cfg(not(any(windows, unix)))]
     let platform = async { Vec::new() };
     let store_check = async {
         match store {
@@ -2041,4 +2074,5 @@ mod tests {
         assert_eq!(none.level, Level::Warn);
         assert!(none.hint.unwrap().contains("Client-ProjFS"));
     }
+
 }
