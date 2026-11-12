@@ -24,6 +24,7 @@ pub mod generation;
 pub mod gitcommit;
 pub mod keyed;
 pub mod pathlog;
+pub mod pathsearch;
 pub mod sink;
 pub mod skip;
 #[cfg(test)]
