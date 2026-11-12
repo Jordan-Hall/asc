@@ -18,6 +18,7 @@ use async_trait::async_trait;
 
 use crate::{Engine, commit, tree};
 
+pub mod copies;
 pub mod diffstat;
 pub mod generation;
 pub mod gitcommit;

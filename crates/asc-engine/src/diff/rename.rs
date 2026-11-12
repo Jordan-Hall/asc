@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 
 use asc_core::object::Kind;
+use asc_core::path::RepoPath;
 
 use super::{ContentSource, Result, Status, TreeChange, is_gitlink_or_link};
 use crate::diff::line::is_binary;
@@ -52,6 +53,80 @@ pub async fn detect(
     src: &dyn ContentSource,
     opts: &RenameOptions,
 ) -> Result<Vec<TreeChange>> {
+    let pairs = match_pairs(&changes, src, opts).await?;
+    if pairs.is_empty() {
+        return Ok(changes);
+    }
+    Ok(assemble(changes, &pairs))
+}
+
+/// One matched source and destination, by path, with git's raw score (at most 60 000).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Pair {
+    pub src: RepoPath,
+    pub dst: RepoPath,
+    pub score: u64,
+}
+
+/// The pairs [`detect`] would make of `changes`, by path, so they can be stored and applied later
+/// with [`apply_pairs`].
+pub async fn find_pairs(
+    changes: &[TreeChange],
+    src: &dyn ContentSource,
+    opts: &RenameOptions,
+) -> Result<Vec<Pair>> {
+    Ok(match_pairs(changes, src, opts)
+        .await?
+        .into_iter()
+        .map(|(d, a, score)| Pair {
+            src: changes[d].path.clone(),
+            dst: changes[a].path.clone(),
+            score,
+        })
+        .collect())
+}
+
+/// What [`detect`] returns for `changes` when [`find_pairs`] gave `pairs` for the same changes.
+/// `Err` gives `changes` back when a pair does not fit them (a source that is not deleted or
+/// modified, a destination that is not added or is paired twice, a score out of range).
+pub fn apply_pairs(
+    changes: Vec<TreeChange>,
+    pairs: &[Pair],
+) -> std::result::Result<Vec<TreeChange>, Vec<TreeChange>> {
+    if pairs.is_empty() {
+        return Ok(changes);
+    }
+    let at: HashMap<&RepoPath, usize> = changes
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (&c.path, i))
+        .collect();
+    let mut idx = Vec::with_capacity(pairs.len());
+    let mut dst_used = vec![false; changes.len()];
+    for p in pairs {
+        let (Some(&d), Some(&a)) = (at.get(&p.src), at.get(&p.dst)) else {
+            return Err(changes);
+        };
+        let src_ok = match changes[d].status {
+            Status::Deleted => true,
+            Status::Modified => changes[d].old.is_some(),
+            _ => false,
+        };
+        if !src_ok || changes[a].status != Status::Added || dst_used[a] || p.score > MAX_SCORE {
+            return Err(changes);
+        }
+        dst_used[a] = true;
+        idx.push((d, a, p.score));
+    }
+    Ok(assemble(changes, &idx))
+}
+
+/// The matched `(source index, addition index, score)` triples of `changes`.
+async fn match_pairs(
+    changes: &[TreeChange],
+    src: &dyn ContentSource,
+    opts: &RenameOptions,
+) -> Result<Vec<(usize, usize, u64)>> {
     let mut deleted: Vec<usize> = Vec::new();
     let mut modified: Vec<usize> = Vec::new();
     let mut added: Vec<usize> = Vec::new();
@@ -64,7 +139,7 @@ pub async fn detect(
         }
     }
     if (deleted.is_empty() && modified.is_empty()) || added.is_empty() {
-        return Ok(changes);
+        return Ok(Vec::new());
     }
     // Sources in git's order: deleted files, then (with copies) modified files.
     let sources: Vec<usize> = deleted.iter().chain(&modified).copied().collect();
@@ -151,7 +226,7 @@ pub async fn detect(
         }
     }
 
-    Ok(assemble(changes, &pairs))
+    Ok(pairs)
 }
 
 fn inexact_candidate(c: &TreeChange, opts: &RenameOptions) -> bool {
