@@ -615,6 +615,46 @@ pub fn disable_on_demand(p: &Path) -> io::Result<()> {
     update(&h, None, None, CF_UPDATE_FLAG_DISABLE_ON_DEMAND_POPULATION)
 }
 
+/// Turns the plain file or directory at `p` into a placeholder with `identity`, marked in sync
+/// when `in_sync`; a directory with `on_demand` lists the children it lacks on demand. A
+/// read-only file keeps its attribute.
+pub fn convert(p: &Path, identity: &[u8], in_sync: bool, on_demand: bool) -> io::Result<()> {
+    let attrs = std::fs::symlink_metadata(p)
+        .map(|m| std::os::windows::fs::MetadataExt::file_attributes(&m))
+        .unwrap_or(0);
+    let cleared = clear_read_only(p, attrs)?;
+    let done = (|| {
+        let h = open(
+            p,
+            FILE_WRITE_DATA.0 | FILE_READ_ATTRIBUTES.0 | FILE_WRITE_ATTRIBUTES.0,
+            SHARE_ALL,
+        )?;
+        let mut flags = CF_CONVERT_FLAG_NONE.0;
+        if in_sync {
+            flags |= CF_CONVERT_FLAG_MARK_IN_SYNC.0;
+        }
+        if on_demand {
+            flags |= CF_CONVERT_FLAG_ENABLE_ON_DEMAND_POPULATION.0;
+        }
+        // SAFETY: a valid handle; the identity outlives the call.
+        unsafe {
+            CfConvertToPlaceholder(
+                h.0,
+                Some(identity.as_ptr().cast::<c_void>()),
+                identity.len() as u32,
+                CF_CONVERT_FLAGS(flags),
+                None,
+                None,
+            )
+        }
+        .map_err(|e| io_err(&e))
+    })();
+    if cleared {
+        set_attributes(p, attrs)?;
+    }
+    done
+}
+
 /// Drops the data of the file open as `h`, keeping the placeholder.
 pub fn dehydrate(h: &Handle) -> io::Result<()> {
     // SAFETY: a valid handle.

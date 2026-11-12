@@ -28,6 +28,7 @@ pub mod callbacks;
 pub mod ffi;
 pub mod populate;
 pub mod provider;
+pub mod relocate;
 pub mod switch;
 pub mod unvirtualize;
 pub mod walk;
@@ -35,6 +36,7 @@ pub mod watch;
 
 pub use ffi::ProviderUnavailable;
 pub use provider::{CloudFilesProvider, Config};
+pub use relocate::relocate;
 pub use unvirtualize::unvirtualize;
 
 pub use crate::win::{DbTimes, JournalSink, TimeSource, Unvirtualized};
