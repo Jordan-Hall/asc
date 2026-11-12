@@ -528,8 +528,9 @@ fn mount_answers_only_while_the_mount_command_runs() {
         Err(13),
         "a shut MOUNT hands out no root handle"
     );
-    nx.provider().set_mounts_open(true);
-    assert!(c.mnt("/asc").is_ok());
+    nx.provider().allow_one_mount();
+    assert!(c.mnt("/asc").is_ok(), "the permit lets one MOUNT through");
+    assert_eq!(c.mnt("/asc"), Err(13), "and only one");
 }
 
 #[test]
