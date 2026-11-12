@@ -171,6 +171,7 @@ makes sense. `asc undo` reverses the last operation; `asc op log` lists them.
 | `change-id` | Prints the change id of a revision. `--short` prints 12 letters. | `asc change-id --short HEAD` |
 | `share` | Saves a snapshot of the stack and prints its id. | `asc share -m "before the refactor"` |
 | `continue`, `abort` | Continues or abandons an interrupted operation. | `asc continue -a` |
+| `files` | Finds files in a revision by a few letters of their path (fuzzy, best first); reads the local `pathsearch` memo, not the tree. | `asc files mainrs --rev main -n 10` |
 | `landed` | Whether a change has landed on the server's default branch. | `asc landed HEAD --json` |
 | `stack info` | One change and its relatives. | `asc stack info HEAD` |
 | `stack parent`, `children` | The parent or children of a change. | `asc stack children HEAD` |
