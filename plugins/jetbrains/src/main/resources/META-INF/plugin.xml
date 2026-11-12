@@ -58,6 +58,7 @@
       <action id="asc.asc.StashPop" class="asc.asc.ui.AscStashPopAction" text="Pop Stash"/>
       <action id="asc.asc.StashApply" class="asc.asc.ui.AscStashApplyAction" text="Apply Stash"/>
       <action id="asc.asc.StashDrop" class="asc.asc.ui.AscStashDropAction" text="Drop Stash"/>
+      <action id="asc.asc.ListStashes" class="asc.asc.ui.AscListStashesAction" text="Show Stashes"/>
       <separator/>
       <action id="asc.asc.ConfigureAgents" class="asc.asc.ui.AscConfigureAgentsAction" text="Configure Agents"/>
       <separator/>

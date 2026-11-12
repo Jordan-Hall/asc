@@ -107,7 +107,7 @@ object TagPlan {
 }
 
 /** Runs one verb on a background task and reports the outcome; [then] gets the outcome on success. */
-private fun runInBackground(
+internal fun runInBackground(
     project: Project,
     title: String,
     root: Path,
