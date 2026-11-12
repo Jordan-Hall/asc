@@ -43,6 +43,8 @@ enum class StackVerb(val verb: String, val title: String, val flags: List<String
     FETCH("fetch", "Fetch"),
     PULL("pull", "Pull"),
     PUSH("push", "Push", question = "Push the current branch to its remote?"),
+    PUSH_TAGS("push", "Push All Tags", listOf("--tags"), question = "Push every local tag to the remote?"),
+    SHARE("share", "Share the Current Change"),
     STASH_PUSH("stash push", "Stash Changes"),
     STASH_PUSH_UNTRACKED("stash push", "Stash Changes Including Untracked", listOf("-u")),
     STASH_POP("stash pop", "Pop Stash"),
@@ -52,17 +54,18 @@ enum class StackVerb(val verb: String, val title: String, val flags: List<String
 
 /** Pure argv planning for the actions; no platform types. */
 object ActionPlan {
-    private const val END = "--end-of-options"
-
     private val allowlist by lazy { GeneratedAllowlist.parse() }
 
-    /** Args of a verb run directly. */
-    fun args(v: StackVerb): List<String> = v.flags + END
+    /**
+     * Args of a verb run directly. The bridge refuses `--`, `--end-of-options` and a flag whose value is a
+     * separate argument; it adds `--end-of-options` before the positionals itself.
+     */
+    fun args(v: StackVerb): List<String> = v.flags
 
     /** `absorb -n` shows what would move; `absorb -f` applies it after the person confirms. */
-    fun absorbPreview(): List<String> = listOf("-n", END)
+    fun absorbPreview(): List<String> = listOf("-n")
 
-    fun absorbApply(): List<String> = listOf("-f", END)
+    fun absorbApply(): List<String> = listOf("-f")
 
     /** The allowlist decides which verbs ask first (`confirm: modal`); a verb it does not list is never run. */
     fun needsConfirm(v: StackVerb): Boolean =
@@ -195,6 +198,8 @@ class AscAbortAction : AscStackAction(StackVerb.ABORT)
 class AscFetchAction : AscStackAction(StackVerb.FETCH)
 class AscPullAction : AscStackAction(StackVerb.PULL)
 class AscPushAction : AscStackAction(StackVerb.PUSH)
+class AscPushTagsAction : AscStackAction(StackVerb.PUSH_TAGS)
+class AscShareAction : AscStackAction(StackVerb.SHARE)
 class AscStashPushAction : AscStackAction(StackVerb.STASH_PUSH)
 class AscStashPushUntrackedAction : AscStackAction(StackVerb.STASH_PUSH_UNTRACKED)
 class AscStashPopAction : AscStackAction(StackVerb.STASH_POP)

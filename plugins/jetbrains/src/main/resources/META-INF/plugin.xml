@@ -45,6 +45,13 @@
       <action id="asc.asc.Fetch" class="asc.asc.ui.AscFetchAction" text="Fetch"/>
       <action id="asc.asc.Pull" class="asc.asc.ui.AscPullAction" text="Pull"/>
       <action id="asc.asc.Push" class="asc.asc.ui.AscPushAction" text="Push"/>
+      <action id="asc.asc.Share" class="asc.asc.ui.AscShareAction" text="Share the Current Change"/>
+      <action id="asc.asc.StackGetWorktree" class="asc.asc.ui.AscStackGetWorktreeAction" text="Get a Stack into a Worktree..."/>
+      <separator/>
+      <action id="asc.asc.ListTags" class="asc.asc.ui.AscListTagsAction" text="Show Tags"/>
+      <action id="asc.asc.CreateTag" class="asc.asc.ui.AscCreateTagAction" text="Create Tag..."/>
+      <action id="asc.asc.DeleteTag" class="asc.asc.ui.AscDeleteTagAction" text="Delete Tag..."/>
+      <action id="asc.asc.PushTags" class="asc.asc.ui.AscPushTagsAction" text="Push All Tags"/>
       <separator/>
       <action id="asc.asc.StashPush" class="asc.asc.ui.AscStashPushAction" text="Stash Changes"/>
       <action id="asc.asc.StashPushUntracked" class="asc.asc.ui.AscStashPushUntrackedAction" text="Stash Changes Including Untracked"/>
