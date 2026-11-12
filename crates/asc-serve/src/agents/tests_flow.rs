@@ -1993,18 +1993,30 @@ async fn a_run_that_ends_with_changes_queues_one_finished_effect_for_the_forge()
     let row = w.wait(run.id).await;
     assert_eq!(row.state, RunState::Succeeded, "{row:?}");
     assert_eq!(row.changes.len(), 1);
-    let rows = sqlx::query("SELECT effects FROM outbox WHERE repo_id = $1 ORDER BY id")
-        .bind(w.entry.key.0)
-        .fetch_all(&w.pool)
-        .await
-        .unwrap();
-    let all: Vec<serde_json::Value> = rows
-        .iter()
-        .map(|r| {
-            let raw: Vec<u8> = sqlx::Row::try_get(r, "effects").unwrap();
-            serde_json::from_slice(&raw).unwrap()
-        })
-        .collect();
+    // The run's state is written before its effects are queued, so wait for the last of them.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let all: Vec<serde_json::Value> = loop {
+        let rows = sqlx::query("SELECT effects FROM outbox WHERE repo_id = $1 ORDER BY id")
+            .bind(w.entry.key.0)
+            .fetch_all(&w.pool)
+            .await
+            .unwrap();
+        let all: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|r| {
+                let raw: Vec<u8> = sqlx::Row::try_get(r, "effects").unwrap();
+                serde_json::from_slice(&raw).unwrap()
+            })
+            .collect();
+        if all
+            .iter()
+            .any(|d| d["effects"] == json!(["agent_run_finished"]))
+            || std::time::Instant::now() >= deadline
+        {
+            break all;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    };
     let docs: Vec<&serde_json::Value> = all
         .iter()
         .filter(|d| d["effects"] == json!(["agent_run_finished"]))
