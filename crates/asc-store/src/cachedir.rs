@@ -637,7 +637,7 @@ pub(crate) mod tests {
         let key = file_key(&data);
         c.put(&key, encode_stored(&data)).await.unwrap();
         let root = c.inner.root.clone();
-        let packs = root.join(crate::pack::cache::DIR);
+        let packs = root.join(crate::pack::cache::DIR).join("0123");
         fs::create_dir_all(&packs).unwrap();
         let pack = packs.join("00112233445566778899aabbccddeeff.pack");
         fs::write(&pack, vec![0u8; 300]).unwrap();

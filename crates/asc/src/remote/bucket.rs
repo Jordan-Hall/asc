@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use asc_state::state::repos::RemoteKind;
 use asc_store::bucket::BucketObjects;
-use asc_store::pack::PackCache;
 use asc_store::objects::Objects;
+use asc_store::pack::PackCache;
 use bytes::Bytes;
 use object_store::path::Path;
 use object_store::{ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload};
@@ -28,7 +28,11 @@ impl RemoteObjectsSelector for BucketSelector {
         }
         let mut objects = BucketObjects::from_url(spec.url.as_deref()?).ok()?;
         if let Some(c) = &spec.pack_cache {
-            objects = objects.with_pack_cache(Arc::new(PackCache::new(&c.root, c.fetch_max)));
+            objects = objects.with_pack_cache(Arc::new(PackCache::new(
+                &c.root,
+                spec.url.as_deref()?,
+                c.fetch_max,
+            )));
         }
         Some(Arc::new(objects))
     }

@@ -38,11 +38,14 @@ pub struct PackCache {
 }
 
 impl PackCache {
-    /// Packs under `<cache_root>/pack`, fetched whole up to `fetch_max` bytes. `fetch_max == 0`
-    /// turns whole-pack fetching off (cached packs are still read).
-    pub fn new(cache_root: &Path, fetch_max: u64) -> Self {
+    /// Packs of the bucket named `source` (its URL) under `<cache_root>/pack/<scope>`, fetched
+    /// whole up to `fetch_max` bytes. `fetch_max == 0` turns whole-pack fetching off (cached packs
+    /// are still read). Pack ids are random, not content hashes, so each bucket gets its own
+    /// directory: a pack of one bucket is never served for another that reuses its id.
+    pub fn new(cache_root: &Path, source: &str, fetch_max: u64) -> Self {
+        let scope = blake3::hash(source.as_bytes()).to_hex();
         Self {
-            dir: cache_root.join(DIR),
+            dir: cache_root.join(DIR).join(&scope.as_str()[..32]),
             fetch_max,
             too_big: Mutex::new(Vec::new()),
         }
@@ -149,15 +152,28 @@ impl PackCache {
     }
 }
 
-/// The packs under `<cache_root>/pack`: `(mtime, len, path)` of each, for eviction.
+/// The packs under `<cache_root>/pack/<scope>/`: `(mtime, len, path)` of each, for eviction.
 pub fn list(cache_root: &Path) -> io::Result<Vec<(SystemTime, u64, PathBuf)>> {
-    let rd = match fs::read_dir(cache_root.join(DIR)) {
-        Ok(rd) => rd,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(e),
-    };
     let mut out = Vec::new();
-    for entry in rd {
+    for scope in read_dir_or_empty(&cache_root.join(DIR))? {
+        let scope = scope?;
+        if scope.file_type().is_ok_and(|t| t.is_dir()) {
+            list_scope(&scope.path(), &mut out)?;
+        }
+    }
+    Ok(out)
+}
+
+fn read_dir_or_empty(dir: &Path) -> io::Result<Box<dyn Iterator<Item = io::Result<fs::DirEntry>>>> {
+    match fs::read_dir(dir) {
+        Ok(rd) => Ok(Box::new(rd)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Box::new(std::iter::empty())),
+        Err(e) => Err(e),
+    }
+}
+
+fn list_scope(dir: &Path, out: &mut Vec<(SystemTime, u64, PathBuf)>) -> io::Result<()> {
+    for entry in read_dir_or_empty(dir)? {
         let entry = entry?;
         let path = entry.path();
         let is_pack = path
@@ -174,7 +190,7 @@ pub fn list(cache_root: &Path) -> io::Result<Vec<(SystemTime, u64, PathBuf)>> {
             Err(e) => return Err(e),
         }
     }
-    Ok(out)
+    Ok(())
 }
 
 fn touch_if_old(path: &Path, meta: &fs::Metadata) {
@@ -217,7 +233,7 @@ mod tests {
     #[test]
     fn a_stored_pack_reads_back_by_range_and_a_bad_one_is_refused() {
         let tmp = tempfile::tempdir().unwrap();
-        let c = PackCache::new(tmp.path(), DEFAULT_FETCH_MAX);
+        let c = PackCache::new(tmp.path(), "memory:///a", DEFAULT_FETCH_MAX);
         let p = pack();
         assert_eq!(c.read(p.id, 0, 4).unwrap(), None);
         assert!(c.store(p.id, &p.bytes).unwrap());
@@ -240,7 +256,7 @@ mod tests {
     #[test]
     fn the_listing_holds_packs_only_and_the_limit_decides_whole_fetches() {
         let tmp = tempfile::tempdir().unwrap();
-        let c = PackCache::new(tmp.path(), 1000);
+        let c = PackCache::new(tmp.path(), "memory:///a", 1000);
         let p = pack();
         c.store(p.id, &p.bytes).unwrap();
         fs::write(c.dir().join(".x.tmp"), b"t").unwrap();
@@ -251,8 +267,13 @@ mod tests {
         assert!(c.wants(1000));
         assert!(!c.wants(1001));
         assert!(!c.wants(0));
-        assert!(!PackCache::new(tmp.path(), 0).wants(1));
+        assert!(!PackCache::new(tmp.path(), "memory:///a", 0).wants(1));
         assert!(list(&tmp.path().join("none")).unwrap().is_empty());
+
+        // Another bucket does not see this bucket's pack under the same id.
+        let other = PackCache::new(tmp.path(), "memory:///b", 1000);
+        assert_ne!(other.dir(), c.dir());
+        assert_eq!(other.read(p.id, 0, 4).unwrap(), None);
 
         let id = PackId::random();
         assert!(!c.known_too_big(id));

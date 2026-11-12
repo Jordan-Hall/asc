@@ -144,6 +144,7 @@ async fn a_small_pack_is_fetched_whole_once_and_then_read_from_the_local_cache()
     let mut e = env();
     let cache = Arc::new(super::PackCache::new(
         tmp.path(),
+        "memory:///ns",
         super::cache::DEFAULT_FETCH_MAX,
     ));
     e.objects = e.objects.with_pack_cache(cache.clone());
@@ -172,7 +173,7 @@ async fn a_small_pack_is_fetched_whole_once_and_then_read_from_the_local_cache()
 async fn a_pack_over_the_fetch_limit_is_read_by_range_and_not_cached() {
     let tmp = tempfile::tempdir().unwrap();
     let mut e = env();
-    let cache = Arc::new(super::PackCache::new(tmp.path(), 64));
+    let cache = Arc::new(super::PackCache::new(tmp.path(), "memory:///ns", 64));
     e.objects = e.objects.with_pack_cache(cache.clone());
     let packed = many(0..20);
     e.objects.put_many(packed.clone()).await.unwrap();
@@ -182,9 +183,11 @@ async fn a_pack_over_the_fetch_limit_is_read_by_range_and_not_cached() {
     // A limit of zero turns whole fetches off.
     let tmp2 = tempfile::tempdir().unwrap();
     let mut e2 = env();
-    e2.objects = e2
-        .objects
-        .with_pack_cache(Arc::new(super::PackCache::new(tmp2.path(), 0)));
+    e2.objects = e2.objects.with_pack_cache(Arc::new(super::PackCache::new(
+        tmp2.path(),
+        "memory:///ns",
+        0,
+    )));
     let packed = many(30..50);
     e2.objects.put_many(packed.clone()).await.unwrap();
     all_readable(&e2, &packed).await;
