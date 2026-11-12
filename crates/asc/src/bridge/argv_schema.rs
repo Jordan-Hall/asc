@@ -153,6 +153,9 @@ pub const VERBS: &[Verb] = &[
     v("stash apply", &[], "", ""),
     v("stash list", &[], "", ""),
     v("stash drop", &[], "", "modal"),
+    v("tag", &[("-m", "str:1024")], "str:255 rev?", ""),
+    v("tag --delete", &[], "str:255", "modal"),
+    v("tag --list", &[], "", ""),
     v("fetch", &[("--prune", "bool")], "", ""),
     v(
         "pull",
@@ -160,7 +163,7 @@ pub const VERBS: &[Verb] = &[
         "",
         "",
     ),
-    v("push", &[("-u", "bool")], "", "modal"),
+    v("push", &[("-u", "bool"), ("--tags", "bool")], "", "modal"),
 ];
 
 /// Why a call was refused. The text is safe to show to the host: it names the rule, and never
@@ -591,6 +594,22 @@ mod tests {
         );
         let two = build("stack get", &args(&["main"]), &scope(&r, None)).unwrap();
         assert_eq!(two, ["stack", "get", "--json", "--end-of-options", "main"]);
+        assert_eq!(
+            build("tag", &args(&["-m=rel", "v1", "HEAD"]), &scope(&r, None)).unwrap(),
+            [
+                "tag",
+                "--json",
+                "--message=rel",
+                "--end-of-options",
+                "v1",
+                "HEAD"
+            ]
+        );
+        assert_eq!(
+            build("tag --delete", &args(&["v1"]), &scope(&r, None)).unwrap(),
+            ["tag", "--delete", "--json", "--end-of-options", "v1"]
+        );
+        assert!(build("tag --delete", &[], &scope(&r, None)).is_err());
         assert_eq!(
             build("sync", &[], &scope(&r, None)).unwrap(),
             ["sync", "--json"]

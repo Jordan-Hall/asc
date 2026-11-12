@@ -1,5 +1,5 @@
 //! `--json` forms of `restore`, `switch`, `cherry-pick`, `revert`, `clone`, `worktree
-//! add|remove|list`, `stash`, `fetch`, `pull` and `push` (SPEC §11.2, §24.8.2 A8, PLAN P45).
+//! add|remove|list`, `stash`, `tag`, `fetch`, `pull` and `push` (SPEC §11.2, §24.8.2 A8, PLAN P45).
 //!
 //! Each verb keeps its one implementation. With `--json`, [`run`] runs that same command as a
 //! child of this binary (stdout captured, stderr passed through), compares the refs, `HEAD` and
@@ -41,8 +41,8 @@ pub fn wants(argv: &[OsString]) -> bool {
         return false;
     }
     match verb {
-        "restore" | "switch" | "cherry-pick" | "revert" | "clone" | "stash" | "fetch" | "pull"
-        | "push" => true,
+        "restore" | "switch" | "cherry-pick" | "revert" | "clone" | "stash" | "tag" | "fetch"
+        | "pull" | "push" => true,
         "worktree" => matches!(
             argv.get(1).and_then(|a| a.to_str()),
             Some("add" | "remove" | "list")
@@ -437,6 +437,7 @@ async fn run_here(ctx: &Ctx, argv: Vec<OsString>) -> Result<ExitCode> {
         "clone" => ok_only(&ran, clone(&target, rest, &after)),
         "worktree" => Box::pin(worktree(ctx, &sub, rest, &ran)).await?,
         "stash" => ok_only(&ran, Box::pin(stash(&dir, &sub, &before, &after)).await),
+        "tag" => ok_only(&ran, Box::pin(tag(&dir, rest, &before, &after)).await),
         "fetch" => ok_only(&ran, Box::pin(fetch(&dir, rest, &before, &after)).await),
         "pull" => ok_only(&ran, Box::pin(pull(&dir, rest, &before, &after)).await),
         "push" => Box::pin(push(&dir, rest, &ran, &before, &after)).await,
@@ -787,6 +788,102 @@ async fn stash(dir: &Path, sub: &str, before: &Snap, after: &Snap) -> Res {
         "stash",
         json!({ "action": action, "entries": stash_entries(dir).await }),
     )
+}
+
+// ---------------------------------------------------------------------------- tag
+
+/// The tag verb's action: `-d` deletes, `-l` or no operand lists, anything else creates.
+fn tag_action(rest: &[OsString]) -> &'static str {
+    let s = scan(
+        rest,
+        &['m', 'F', 'u'],
+        &[
+            "message",
+            "file",
+            "local-user",
+            "sort",
+            "format",
+            "contains",
+            "no-contains",
+            "merged",
+            "no-merged",
+            "points-at",
+            "cleanup",
+        ],
+    );
+    if s.has(&["-d", "--delete"]) {
+        "delete"
+    } else if s.has(&["-l", "--list"]) || s.words.is_empty() {
+        "list"
+    } else {
+        "create"
+    }
+}
+
+/// Every local tag by name: what it peels to, whether it is annotated and its subject.
+async fn tag_entries(dir: &Path) -> (Vec<Value>, bool) {
+    let Some(t) = probe(
+        dir,
+        &[
+            "for-each-ref",
+            "--sort=refname",
+            "--format=%(refname)%09%(objecttype)%09%(objectname)%09%(*objectname)%09%(contents:subject)",
+            "refs/tags/",
+        ],
+    )
+    .await
+    else {
+        return (Vec::new(), false);
+    };
+    let mut out = Vec::new();
+    for line in t.lines() {
+        if out.len() == MAX_ITEMS {
+            return (out, true);
+        }
+        let mut f = line.splitn(5, '\t');
+        let (Some(name), Some(kind), Some(oid), peeled, subject) =
+            (f.next(), f.next(), f.next(), f.next(), f.next())
+        else {
+            continue;
+        };
+        let Some(name) = name.strip_prefix("refs/tags/") else {
+            continue;
+        };
+        let annotated = kind == "tag";
+        let target = match peeled {
+            Some(p) if annotated && is_hex_oid(p) => p,
+            _ => oid,
+        };
+        out.push(json!({
+            "name": name,
+            "target": target.to_ascii_lowercase(),
+            "annotated": annotated,
+            "subject": if annotated { subject.unwrap_or("") } else { "" },
+        }));
+    }
+    (out, false)
+}
+
+async fn tag(dir: &Path, rest: &[OsString], before: &Snap, after: &Snap) -> Res {
+    let action = tag_action(rest);
+    let moved = |s: &Snap| {
+        s.refs
+            .iter()
+            .filter(|(k, _)| k.starts_with("refs/tags/"))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect::<Vec<_>>()
+    };
+    let status = match action {
+        "list" => "ok",
+        _ => status_of(moved(before) != moved(after)),
+    };
+    let (tags, cut) = tag_entries(dir).await;
+    let mut res = Res::new(status, "tag", json!({ "action": action, "tags": tags }));
+    if cut {
+        res.hints
+            .push(format!("more than {MAX_ITEMS} tags; the list is cut"));
+    }
+    res
 }
 
 // ---------------------------------------------------------------------------- fetch, pull, push

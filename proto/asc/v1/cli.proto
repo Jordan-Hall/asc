@@ -97,6 +97,7 @@ message OpResult {
     FetchDetail fetch = 29;
     PullDetail pull = 30;
     PushDetail push = 31;
+    TagDetail tag = 32;
   }
 }
 
@@ -172,6 +173,18 @@ message StashEntry {
 message StashDetail {
   string action = 1;                                          // push, pop, apply, drop, list
   repeated StashEntry entries = 2;
+}
+
+message TagEntry {
+  string name = 1;                                            // without refs/tags/
+  bytes target = 2 [(asc.v1.json) = JSON_KIND_HEX];           // the commit the tag peels to
+  bool annotated = 3;
+  bytes subject = 4 [(asc.v1.json) = JSON_KIND_TEXT];         // first line of the tag message; empty when lightweight
+}
+
+message TagDetail {
+  string action = 1;                                          // create, delete, list
+  repeated TagEntry tags = 2;                                 // every local tag after the verb ran, by name
 }
 
 message FetchedRef {

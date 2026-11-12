@@ -489,6 +489,17 @@
       "stash drop": {
         "confirm": "modal"
       },
+      "tag": {
+        "flags": {
+          "-m": "str:1024"
+        },
+        "pos": "str:255 rev?"
+      },
+      "tag --delete": {
+        "pos": "str:255",
+        "confirm": "modal"
+      },
+      "tag --list": {},
       "fetch": {
         "flags": {
           "--prune": "bool"
@@ -502,7 +513,8 @@
       },
       "push": {
         "flags": {
-          "-u": "bool"
+          "-u": "bool",
+          "--tags": "bool"
         },
         "confirm": "modal"
       }
