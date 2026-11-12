@@ -617,13 +617,14 @@ pub trait DerivedKeyed: Sized + Send + Sync {
 | `classify.v1` | no | §8.10 | – |
 | `diffstat.v1` | no | `Vec<(path, added, removed)>` against `parents[0]`; feeds `CommitGraph` stats, visual file history and `Log.with_stats` (§20.4) | – |
 | `pathlog.v1` (keyed by path) | no | the first 64 changesets on the first-parent chain from the changeset (itself included) whose changes touch the path, newest first, and the changeset to resume at; a later tip scans until it meets a memo for the path and splices it in. `Log` with `first_parent`, one path, one start and no other filter is answered from it on any ref; any other shape, or history the engine does not hold, takes the full walk | `d/` only |
+| `copies.v1` (keyed by the first parent's tree, the changeset's tree and the rename settings) | no | the rename and copy pairs (source path, destination path, git score) that §4.3 detection finds between the two trees, in detection order. `log`, `show`, `format-patch` and `bisect` diffs without a pathspec list the tree changes and apply the pairs, reading no content; a pair that does not fit the changes, or a memo that will not load, falls back to detection | `d/` only |
 | `tdocs.v1` (keyed by `TreeId`, per namespace) | no (`EAGER = false`; warmed for land tips, PR heads and drafts, §23.5) | roaring bitmap of the doc ordinals of every File/Exec entry in the subtree, plus `dups` counts (§23.2.3) | `d/` only |
 
 - Mergeability (§20.4) is deliberately **not** a keyed derived type: it is the plain SQL table `mergeable`, one overwritten row per open head, so it cannot grow with trunk history.
 
 - Content-keyed memos (`mset`, `parsed`, `pgraph`, `phash`, §12A.5) use `ObjKey::Derived` with the key given in §12A.5, like `blame.v1`.
 - **Code-intelligence objects [audit: codeintel-folded]:** `tdocs.v1` (key `TreeId`) and the per-file objects `tags.v1` and `chunks.v1` (key `blake3(FileId ‖ lang ‖ version)`), plus the immutable index files `ciseg.v1` (tantivy segments), `civec.v1` (vector segments) and `ciidx.v1` (indexed bitmaps) are `ObjKey::Derived` objects under `d/`: evictable, recomputable and per namespace (§23.2.1, §23.2.4). They are never copied across namespaces (§3.3).
-- **Named future types** (each is one impl plus registration, with no client change): `copies` (copy detection), `pathsearch`. `pathlog` (a per-path changeset list for non-land refs) is built as `pathlog.v1` above.
+- **Named future types** (each is one impl plus registration, with no client change): `pathsearch`. `pathlog` (a per-path changeset list for non-land refs) and `copies` (copy detection) are built as `pathlog.v1` and `copies.v1` above.
 - **Warm-ref rule:** `UpdateRefs`, local commits and imports derive every eager type for new changesets before a ref moves. Readers never wait.
 - On ingest the server also writes the **git map** for every new tree, file and changeset: `(git oid, kind) -> asc id`. Trees and files come from `Entry.git`. Changesets come from `gitcommit`.
 - Adding a type means one `impl Derived` (or `DerivedKeyed`) plus registration. The write path never changes.
