@@ -50,8 +50,12 @@ while a delta is being written.
    `delta_bases (ns, file, base)` row first and then overwrites the loose value.
 4. When a mainline changeset is a merge, the pass walks back from its other parents and treats each
    changeset it meets the same way (each against its own first parent), stopping at changesets on the
-   branch's mainline. One merge's walk reads at most `max_changesets` changesets. A version written on
-   a side branch therefore gets a base on that branch even when the merge only adds the file.
+   branch's mainline. Side changesets count against the same `max_changesets` budget as mainline ones
+   and are read once per pass. When the budget runs out inside a walk, the cursor stays before that
+   merge and the next pass starts with it; a merge that is the first changeset of a pass is read as
+   far as the whole budget goes and then passed, so one huge merge cannot stall the pass. A version
+   written on a side branch therefore gets a base on that branch even when the merge only adds the
+   file.
 5. The cursor moves to the last row read.
 
 ## Keeping bases alive
