@@ -30,7 +30,13 @@ printf '%s\n' "$PASS" >"$WORK/pass"
 cleanup() {
   status=$?
   if [ -f "$DATA/postmaster.pid" ]; then "$PG_BIN/pg_ctl" -D "$DATA" -m immediate stop >/dev/null 2>&1 || true; fi
-  if [ "$status" -ne 0 ] && [ -f "$LOG" ]; then echo "--- postgres log (tail) ---" >&2; tail -n 15 "$LOG" >&2; fi
+  if [ "$status" -ne 0 ] && [ -f "$LOG" ]; then
+    # Every error the server logged (a failing test may have hit one long before the end), then the tail.
+    echo "--- postgres errors ---" >&2
+    grep -E -A2 ' (ERROR|FATAL|PANIC): ' "$LOG" | tail -n 200 >&2 || true
+    echo "--- postgres log (tail) ---" >&2
+    tail -n 15 "$LOG" >&2
+  fi
   rm -rf "$WORK"
   exit "$status"
 }
