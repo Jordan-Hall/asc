@@ -1787,6 +1787,39 @@ mod tests {
     }
 
     #[test]
+    fn a_switch_answer_moves_falls_back_or_fails() {
+        let moved = switch_answer(Ok(wire::SwitchResponse { conflicts: vec![] })).unwrap();
+        assert_eq!(moved, Some(vec![]));
+        let blocked = switch_answer(Ok(wire::SwitchResponse {
+            conflicts: vec![bytes::Bytes::from_static(b"src/a.rs")],
+        }))
+        .unwrap();
+        assert_eq!(blocked, Some(vec![RepoPath::new("src/a.rs").unwrap()]));
+        let unserved = switch_answer(Err(tonic::Status::failed_precondition("not mounted")));
+        assert_eq!(unserved.unwrap(), None);
+        let failed = switch_answer(Err(tonic::Status::internal("disk full")));
+        assert!(matches!(failed, Err(CliError::Fatal(m)) if m.contains("disk full")));
+        let hostile = switch_answer(Ok(wire::SwitchResponse {
+            conflicts: vec![bytes::Bytes::from_static(b"../etc/passwd")],
+        }));
+        assert!(hostile.is_err());
+    }
+
+    #[test]
+    fn staged_paths_are_sorted_once_each() {
+        let row = |p: &str, stage: u8| {
+            let mut r = StageRow::from_leaf(p.as_bytes().to_vec(), None);
+            r.stage = stage;
+            r
+        };
+        let paths = staged_paths(&[row("b", 1), row("a", 0), row("b", 2)]).unwrap();
+        assert_eq!(
+            paths,
+            [RepoPath::new("a").unwrap(), RepoPath::new("b").unwrap()]
+        );
+    }
+
+    #[test]
     fn parses_clusters_and_attached_values() {
         let p = parse(&os(&["-fqcnew", "main"]), Cmd::Switch, "u").unwrap();
         assert!(p.opts.force && p.opts.quiet);
