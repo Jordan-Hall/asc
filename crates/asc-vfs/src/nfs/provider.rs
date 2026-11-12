@@ -294,7 +294,7 @@ impl unixfs::UnixProvider for NfsProvider {
 /// Whether a process may be watching the mount at `root`. macOS cannot say who listens to
 /// FSEvents, and FSEvents never reports what the server changes, so a mounted workspace always
 /// counts as watched there. Linux asks `/proc` for inotify watches on the mount.
-fn watched(root: &Path) -> bool {
+pub(super) fn watched(root: &Path) -> bool {
     #[cfg(target_os = "macos")]
     {
         let _ = root;

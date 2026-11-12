@@ -794,3 +794,24 @@ fn the_base_tree_persists_beside_the_overlay() {
     std::fs::write(tmp.path().join("base"), "not a tree\n").unwrap();
     assert_eq!(crate::unixfs::load_base(tmp.path()), None);
 }
+
+#[test]
+fn a_server_nobody_mounted_has_no_watcher_note() {
+    let mut x = Nx::new("");
+    x.serve();
+    assert_eq!(crate::unixfs::UnixProvider::switch_note(x.provider()), None);
+}
+
+#[cfg(all(target_os = "linux", feature = "fuse"))]
+#[test]
+fn an_inotify_watch_on_the_mount_counts_as_watched() {
+    use rustix::fs::inotify::{CreateFlags, WatchFlags, add_watch, init};
+    let dir = tempfile::tempdir().unwrap();
+    let fd = init(CreateFlags::CLOEXEC).unwrap();
+    add_watch(&fd, dir.path(), WatchFlags::MODIFY).unwrap();
+    assert!(super::provider::watched(dir.path()));
+    assert_eq!(
+        crate::unixfs::WATCH_NOTE,
+        "note: file watchers do not see this switch; restart watch processes or use polling"
+    );
+}

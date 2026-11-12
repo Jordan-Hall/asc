@@ -1173,6 +1173,9 @@ mod tests {
             }
             Ok(vec![[from, b":", to].concat()])
         }
+        async fn switch_note(&self) -> Option<String> {
+            Some("note: watched".into())
+        }
         async fn retarget(&self, to: &[u8]) -> Result<(u64, u64), HostError> {
             self.retargeted.fetch_add(1, Ordering::SeqCst);
             Ok((to.len() as u64, 1))
@@ -1501,12 +1504,14 @@ mod tests {
             .unwrap()
             .into_inner();
         assert_eq!(safe.conflicts, [bytes::Bytes::from_static(b"old:new")]);
+        assert!(safe.notes.is_empty(), "a refused switch moved nothing");
         let forced = svc
             .switch(Request::new(sw(wire::SwitchMode::Force)))
             .await
             .unwrap()
             .into_inner();
         assert!(forced.conflicts.is_empty());
+        assert_eq!(forced.notes, ["note: watched"]);
         assert_eq!(host.switched.load(Ordering::SeqCst), 2);
 
         let moved = svc
