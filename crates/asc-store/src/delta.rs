@@ -4,6 +4,10 @@
 //! deltas, and only to loose objects; reads resolve them in [`BucketObjects`], so the wire never
 //! carries one.
 
+use std::collections::{HashMap, HashSet};
+
+use asc_core::id::ChunkId;
+use asc_core::object::ChunkList;
 use bytes::Bytes;
 use object_store::{ObjectStoreExt, PutPayload};
 
@@ -146,6 +150,36 @@ impl BucketObjects {
             .and_then(|r| delta_base(&r))
             .and_then(|b| key.delta_base_key(b)))
     }
+}
+
+/// `(new chunk, old chunk)` pairs for two versions of a large file. A chunk in both is left out;
+/// each other new chunk takes the next old chunk that the new version dropped, counting from the
+/// last chunk both share.
+pub fn pair_chunks(new: &ChunkList, old: &ChunkList) -> Vec<(ChunkId, ChunkId)> {
+    let in_new: HashSet<ChunkId> = new.chunks.iter().map(|c| c.0).collect();
+    let at_old: HashMap<ChunkId, usize> = old
+        .chunks
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (c.0, i))
+        .collect();
+    let mut out = Vec::new();
+    let mut j = 0;
+    for &(c, _) in &new.chunks {
+        if let Some(&i) = at_old.get(&c) {
+            j = j.max(i + 1);
+            continue;
+        }
+        while j < old.chunks.len() && in_new.contains(&old.chunks[j].0) {
+            j += 1;
+        }
+        let Some(&(o, _)) = old.chunks.get(j) else {
+            break;
+        };
+        j += 1;
+        out.push((c, o));
+    }
+    out
 }
 
 #[cfg(test)]
@@ -363,5 +397,35 @@ mod tests {
         assert_eq!(b.delta_base_of(file).await.unwrap(), Some(base));
         assert_eq!(b.get_loose_raw(&base).await.unwrap(), None);
         assert_eq!(b.get(&file).await.unwrap().unwrap(), small(5));
+    }
+
+    fn list(ids: &[&[u8]]) -> ChunkList {
+        ChunkList {
+            size: ids.len() as u64,
+            chunks: ids.iter().map(|b| (ChunkId::of(b), 1)).collect(),
+        }
+    }
+
+    #[test]
+    fn new_chunks_pair_with_the_dropped_chunks_between_shared_ones() {
+        let id = |b: &[u8]| ChunkId::of(b);
+        // `b` and `d` were edited into `B` and `D`; `x` was inserted after `e`.
+        let old = list(&[b"a", b"b", b"c", b"d", b"e"]);
+        let new = list(&[b"a", b"B", b"c", b"D", b"e", b"x"]);
+        assert_eq!(
+            pair_chunks(&new, &old),
+            vec![(id(b"B"), id(b"b")), (id(b"D"), id(b"d"))]
+        );
+        // Two edits in one gap take the dropped chunks in order; a shared chunk that moved back
+        // does not send the cursor back.
+        let old = list(&[b"a", b"b", b"c", b"d"]);
+        let new = list(&[b"d", b"P", b"Q", b"a"]);
+        assert_eq!(pair_chunks(&new, &old), Vec::new());
+        let new = list(&[b"a", b"P", b"Q", b"d"]);
+        assert_eq!(
+            pair_chunks(&new, &old),
+            vec![(id(b"P"), id(b"b")), (id(b"Q"), id(b"c"))]
+        );
+        assert_eq!(pair_chunks(&old, &old), Vec::new());
     }
 }

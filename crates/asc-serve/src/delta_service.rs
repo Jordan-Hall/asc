@@ -16,7 +16,7 @@ use asc_core::codec::decode_envelope;
 use asc_core::id::{ChangesetId, ChunkId, FileId, TreeId};
 use asc_core::object::{Change, Changeset, ChunkList, Entry, Kind, Tree};
 use asc_core::path::{Name, RepoPath};
-use asc_store::delta::Skip;
+use asc_store::delta::{Skip, pair_chunks};
 use asc_store::gc::{GcError, GcRootSource};
 use asc_store::key::ObjKey;
 use asc_store::objects::Objects;
@@ -599,36 +599,6 @@ impl Deltas<'_> {
     }
 }
 
-/// `(new chunk, old chunk)` pairs for two versions of a large file. A chunk in both is left out;
-/// each other new chunk takes the next old chunk that the new version dropped, counting from the
-/// last chunk both share.
-fn pair_chunks(new: &ChunkList, old: &ChunkList) -> Vec<(ChunkId, ChunkId)> {
-    let in_new: HashSet<ChunkId> = new.chunks.iter().map(|c| c.0).collect();
-    let at_old: std::collections::HashMap<ChunkId, usize> = old
-        .chunks
-        .iter()
-        .enumerate()
-        .map(|(i, c)| (c.0, i))
-        .collect();
-    let mut out = Vec::new();
-    let mut j = 0;
-    for &(c, _) in &new.chunks {
-        if let Some(&i) = at_old.get(&c) {
-            j = j.max(i + 1);
-            continue;
-        }
-        while j < old.chunks.len() && in_new.contains(&old.chunks[j].0) {
-            j += 1;
-        }
-        let Some(&(o, _)) = old.chunks.get(j) else {
-            break;
-        };
-        j += 1;
-        out.push((c, o));
-    }
-    out
-}
-
 /// Rewrites every delta of `entry` as a full value and drops its row: the rollback of delta
 /// storage. The cursors stay, so a pass that runs later does not redo old history.
 pub async fn expand_all(pool: &AnyPool, entry: &RepoEntry) -> Result<u64, GcError> {
@@ -687,36 +657,6 @@ pub async fn status(pool: &AnyPool, entry: &RepoEntry) -> Result<DeltaStatus, Gc
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn list(ids: &[&[u8]]) -> ChunkList {
-        ChunkList {
-            size: ids.len() as u64,
-            chunks: ids.iter().map(|b| (ChunkId::of(b), 1)).collect(),
-        }
-    }
-
-    #[test]
-    fn new_chunks_pair_with_the_dropped_chunks_between_shared_ones() {
-        let id = |b: &[u8]| ChunkId::of(b);
-        // `b` and `d` were edited into `B` and `D`; `x` was inserted after `e`.
-        let old = list(&[b"a", b"b", b"c", b"d", b"e"]);
-        let new = list(&[b"a", b"B", b"c", b"D", b"e", b"x"]);
-        assert_eq!(
-            pair_chunks(&new, &old),
-            vec![(id(b"B"), id(b"b")), (id(b"D"), id(b"d"))]
-        );
-        // Two edits in one gap take the dropped chunks in order; a shared chunk that moved back
-        // does not send the cursor back.
-        let old = list(&[b"a", b"b", b"c", b"d"]);
-        let new = list(&[b"d", b"P", b"Q", b"a"]);
-        assert_eq!(pair_chunks(&new, &old), Vec::new());
-        let new = list(&[b"a", b"P", b"Q", b"d"]);
-        assert_eq!(
-            pair_chunks(&new, &old),
-            vec![(id(b"P"), id(b"b")), (id(b"Q"), id(b"c"))]
-        );
-        assert_eq!(pair_chunks(&old, &old), Vec::new());
-    }
 
     #[test]
     fn rows_name_keys_of_their_own_kind() {
