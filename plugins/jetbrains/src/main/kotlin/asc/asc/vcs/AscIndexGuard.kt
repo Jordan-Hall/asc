@@ -97,7 +97,7 @@ class AscHydrationWatch : ProjectActivity {
                 ) ?: continue
                 last = System.currentTimeMillis()
                 NotificationGroupManager.getInstance().getNotificationGroup("asc")
-                    .createNotification(IndexGuard.message(alert), NotificationType.WARNING).notify(project)
+                    .createNotification(asc.asc.ui.AscActions.notificationHtml(IndexGuard.message(alert)), NotificationType.WARNING).notify(project)
             }
         }
     }

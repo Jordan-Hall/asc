@@ -136,8 +136,32 @@ object AscActions {
 
     fun notify(project: Project, title: String, text: String, ok: Boolean) {
         NotificationGroupManager.getInstance().getNotificationGroup("asc")
-            .createNotification(title, text, if (ok) NotificationType.INFORMATION else NotificationType.ERROR)
+            .createNotification(
+                escape(title),
+                notificationHtml(text),
+                if (ok) NotificationType.INFORMATION else NotificationType.ERROR,
+            )
             .notify(project)
+    }
+
+    /**
+     * Notifications render HTML, and the text here carries tag names, tag subjects, stash messages and
+     * bridge stderr, all of which a commit author or a server controls: escape it, then keep line breaks.
+     */
+    fun notificationHtml(text: String): String =
+        text.lineSequence().joinToString("<br>") { escape(it) }
+
+    private fun escape(s: String): String = buildString(s.length) {
+        for (c in s) {
+            when (c) {
+                '&' -> append("&amp;")
+                '<' -> append("&lt;")
+                '>' -> append("&gt;")
+                '"' -> append("&quot;")
+                '\'' -> append("&#39;")
+                else -> append(c)
+            }
+        }
     }
 }
 

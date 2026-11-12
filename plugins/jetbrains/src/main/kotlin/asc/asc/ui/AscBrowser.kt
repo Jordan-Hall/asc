@@ -507,7 +507,7 @@ internal class HostActions(private val project: Project, private val calls: AscC
                         else -> NotificationType.INFORMATION
                     }
                     val msg = (str(op, "message") ?: "").take(500)
-                    NotificationGroupManager.getInstance().getNotificationGroup("asc").createNotification(msg, type).notify(project)
+                    NotificationGroupManager.getInstance().getNotificationGroup("asc").createNotification(AscActions.notificationHtml(msg), type).notify(project)
                     JsonPrimitive(true)
                 }
                 "getState" -> {
