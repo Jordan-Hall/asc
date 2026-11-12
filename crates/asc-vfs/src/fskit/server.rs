@@ -612,8 +612,7 @@ impl Server {
             listings: Mutex::new(Listings::default()),
         });
         let stop = Arc::new(AtomicBool::new(false));
-        let conns: Conns =
-            Arc::new(Mutex::new(HashMap::new()));
+        let conns: Conns = Arc::new(Mutex::new(HashMap::new()));
         let readers: Arc<Mutex<Vec<JoinHandle<()>>>> = Arc::new(Mutex::new(Vec::new()));
         let (tx, rx) = mpsc::sync_channel::<Job>(QUEUE);
         let rx = Arc::new(Mutex::new(rx));
