@@ -40,5 +40,6 @@ class BridgeArgvTest {
         allowed("tag --delete", TagPlan.deleteArgs("v1"))
         allowed("push", TagPlan.pushArgs())
         allowed("stack get", TagPlan.stackGetArgs(root, root.resolve("wt/feat"), "feat"))
+        allowed("stash list", StashPlan.listArgs())
     }
 }
