@@ -253,6 +253,54 @@ jobs:
       - name: asc unit tests
         run: cargo nextest run --locked --profile ci -p asc --bins
 
+  # macOS serves virtual workspaces through the loopback NFS server; nothing else compiles that
+  # path, so the build, lints and the in-process NFS tests run here.
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 120
+    env:
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Toolchain (from rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-nextest
+      - name: Clippy (NFS backend and the daemon host)
+        run: cargo clippy --locked -p asc-vfs -p asc --features asc-vfs/nfs --all-targets -- -D warnings
+      - name: NFS tests
+        run: cargo nextest run --locked --profile ci -p asc-vfs --features nfs
+      - name: asc unit tests
+        run: cargo nextest run --locked --profile ci -p asc --bins
+
+  # The FUSE tests that mount a real file system; they need /dev/fuse and fusermount.
+  fuse:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: FUSE
+        run: |
+          for i in 1 2 3; do
+            sudo apt-get update -qq && sudo apt-get install -y -qq fuse3 && break
+            sleep 20
+          done
+          sudo chmod 0666 /dev/fuse
+          ls -l /dev/fuse
+      - name: Toolchain (from rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Mounted FUSE tests
+        run: cargo test --locked -p asc-vfs --features fuse,nfs --lib -- --include-ignored --test-threads=1 fuse::
+
   jetbrains:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
