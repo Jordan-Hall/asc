@@ -115,6 +115,8 @@ fn op(ws: WorkspaceId, n: u8) -> NewOp {
         head_after: None,
         wc_snapshot: Some(ChangesetId::from_bytes([n; 32])),
         undoes: None,
+        head_ref_before: Some("master".into()),
+        head_ref_after: None,
     }
 }
 
@@ -133,6 +135,8 @@ async fn round_trips_and_lists_newest_first() {
     assert_eq!(got.undoes, Some(a));
     assert_eq!(got.argv, "commit -m x");
     assert_eq!(got.head_after, None);
+    assert_eq!(got.head_ref_before.as_deref(), Some("master"));
+    assert_eq!(got.head_ref_after, None);
     assert_eq!(
         by_op_id(&db, repo, second.op_id)
             .await

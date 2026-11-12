@@ -247,14 +247,19 @@ fn commit_and_amend_feed_the_change_index() {
 }
 
 #[test]
-fn clean_leaves_a_row_without_a_snapshot() {
+fn clean_keeps_the_removed_files_in_the_snapshot() {
     let r = Repo::new();
     r.write("scratch.txt", "x\n");
     r.ok(&["clean", "-f"]);
     assert!(!r.root.join("scratch.txt").exists());
     let op = r.last_op("clean");
     assert_eq!(op.argv, "clean -f");
-    assert!(op.wc_snapshot.is_none());
+    assert!(op.wc_snapshot.is_some());
+    // Past the bound the row stays, without a snapshot.
+    r.ok(&["config", "asc.opLog.untrackedMaxBytes", "1"]);
+    r.write("scratch.txt", "x\n");
+    r.ok(&["clean", "-f"]);
+    assert!(r.last_op("clean").wc_snapshot.is_none());
     // A dry run destroys nothing and leaves no row.
     r.write("scratch.txt", "x\n");
     let rows = r.ops().len();

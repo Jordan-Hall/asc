@@ -436,3 +436,90 @@ fn op_log_clamps_a_huge_limit() {
             .unwrap();
     assert!(v["ops"].as_array().unwrap().len() <= 1_000);
 }
+
+#[test]
+fn undo_of_clean_brings_back_untracked_and_ignored_files() {
+    let r = Repo::new();
+    r.commit(".gitignore", "*.log\n", "ignore logs");
+    r.write("scratch.txt", "scratch\n");
+    fs::create_dir_all(r.root.join("out/deep")).unwrap();
+    r.write("out/deep/x.bin", "bin\n");
+    r.write("run.log", "log\n");
+    r.ok(&["clean", "-fdx"]);
+    assert!(!r.root.join("scratch.txt").exists());
+    assert!(!r.root.join("out").exists());
+    assert!(!r.root.join("run.log").exists());
+    let o = r.asc(&["undo"]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert!(!o.stderr.contains("not restored"), "{}", o.stderr);
+    assert_eq!(r.read("scratch.txt"), "scratch\n");
+    assert_eq!(r.read("out/deep/x.bin"), "bin\n");
+    assert_eq!(r.read("run.log"), "log\n");
+    // They come back untracked, not staged.
+    let st = r.ok(&["status", "--porcelain"]);
+    assert!(st.contains("?? scratch.txt"), "{st}");
+}
+
+#[test]
+fn undo_of_clean_past_the_bound_says_the_files_are_gone() {
+    let r = Repo::new();
+    r.ok(&["config", "asc.opLog.untrackedMaxBytes", "4"]);
+    r.write("big.txt", "more than four bytes\n");
+    r.ok(&["clean", "-f"]);
+    let o = r.asc(&["undo"]);
+    assert!(o.stderr.contains("not restored"), "{}", o.stderr);
+    assert!(!r.root.join("big.txt").exists());
+    // `0` turns the untracked part off.
+    r.ok(&["config", "asc.opLog.untrackedMaxBytes", "0"]);
+    r.write("tiny", "x");
+    r.ok(&["clean", "-f"]);
+    let o = r.asc(&["undo"]);
+    assert!(o.stderr.contains("not restored"), "{}", o.stderr);
+}
+
+#[test]
+fn undo_of_a_forced_switch_brings_back_the_untracked_file_it_overwrote() {
+    let r = Repo::new();
+    r.ok(&["switch", "-c", "side"]);
+    r.commit("new.txt", "tracked on side\n", "add new");
+    r.ok(&["switch", "master"]);
+    r.write("new.txt", "my untracked work\n");
+    r.ok(&["switch", "-f", "side"]);
+    assert_eq!(r.read("new.txt"), "tracked on side\n");
+    r.ok(&["undo"]);
+    assert_eq!(r.read("new.txt"), "my untracked work\n");
+}
+
+#[test]
+fn undo_of_a_switch_goes_back_to_the_branch_and_redo_returns() {
+    let r = Repo::new();
+    r.ok(&["branch", "side"]);
+    r.ok(&["switch", "side"]);
+    r.commit("s.txt", "side\n", "on side");
+    r.ok(&["switch", "master"]);
+    assert!(!r.root.join("s.txt").exists());
+    r.ok(&["undo"]);
+    assert_eq!(r.ok(&["branch", "--show-current"]).trim(), "side");
+    assert_eq!(r.read("s.txt"), "side\n");
+    r.ok(&["redo"]);
+    assert_eq!(r.ok(&["branch", "--show-current"]).trim(), "master");
+    assert!(!r.root.join("s.txt").exists());
+    // Off a detached HEAD and back.
+    let tip = r.sha("HEAD");
+    r.ok(&["switch", "--detach", "side"]);
+    r.ok(&["undo"]);
+    assert_eq!(r.ok(&["branch", "--show-current"]).trim(), "master");
+    assert_eq!(r.sha("HEAD"), tip);
+}
+
+#[test]
+fn undo_of_reset_hard_brings_back_the_untracked_file_it_overwrote() {
+    let r = Repo::new();
+    r.commit("n.txt", "tracked\n", "add n");
+    r.ok(&["reset", "--hard", "HEAD~1"]);
+    r.write("n.txt", "mine\n");
+    r.ok(&["reset", "--hard", "HEAD@{1}"]);
+    assert_eq!(r.read("n.txt"), "tracked\n");
+    r.ok(&["undo"]);
+    assert_eq!(r.read("n.txt"), "mine\n");
+}
