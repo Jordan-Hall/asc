@@ -2,7 +2,8 @@
 //! changes in the [`Overlay`]. A path resolves to the overlay entry when there is one, and
 //! otherwise to the base entry unless a deletion marker hides it. Reads of clean files go
 //! straight to the local content cache, writes copy the file up first, and every change is
-//! journaled as it happens, so the journal is exact and needs no reconcile.
+//! journaled as it happens, so the journal is exact; [`MergedFs::reconcile`] only replays the
+//! overlay for a reader whose hints never reached the disk.
 //!
 //! The FUSE and NFS front ends call the operations here and translate the answers to their
 //! protocol; what is specific to one kernel (passthrough, invalidation) goes through [`Notify`].
@@ -34,7 +35,9 @@ use tokio::runtime::Handle;
 
 use super::inodes::{GITFILE, InodeTable, ROOT};
 use super::overlay::{MAX_CHILDREN, Overlay};
-use super::{Attr, Config, Errno, JournalSink, NoNotify, Notify, TimeSource, VKind, block};
+use super::{
+    Attr, Config, Errno, JournalSink, NoNotify, Notify, Reconciled, TimeSource, VKind, block,
+};
 use crate::core::{CoreFs, DehydrateOutcome, Node, Result, SwitchOutcome, VfsError};
 use crate::policy::Decision;
 
@@ -1556,6 +1559,37 @@ impl MergedFs {
         }
         self.invalidate(&changed, &before);
         Ok((SwitchOutcome::default(), changed))
+    }
+
+    /// Journals every change the overlay holds, for a reader whose hints were lost (the daemon
+    /// stopped before its journal reached the disk): each path the user deleted, each file or
+    /// symlink the user wrote, and each entry the base tree does not have.
+    pub fn reconcile(&self) -> io::Result<Reconciled> {
+        let mut r = Reconciled::default();
+        let _g = lock(&self.ns);
+        for p in self.overlay.whiteouts()? {
+            r.examined += 1;
+            if self.overlay.meta(&p)?.is_none() {
+                self.journal.record(Op::Deleted, p.as_bytes());
+                r.deleted += 1;
+            }
+        }
+        for (p, dir) in self.overlay.entries()? {
+            r.examined += 1;
+            let in_base = !self.overlay.hides_base(&p)
+                && self
+                    .blk(self.core.resolve(&p))
+                    .map_err(io::Error::other)?
+                    .is_some();
+            if !in_base {
+                self.journal.record(Op::Created, p.as_bytes());
+                r.created += 1;
+            } else if !dir {
+                self.journal.record(Op::Modified, p.as_bytes());
+                r.modified += 1;
+            }
+        }
+        Ok(r)
     }
 
     /// A clean file holds nothing locally, so this only drops what the kernel cached. Modified

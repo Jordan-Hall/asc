@@ -14,19 +14,24 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use asc_core::path::RepoPath;
+use asc_state::StateDb;
+use asc_state::state::workspaces::Workspace;
 use asc_store::cachedir::CacheDir;
 use asc_wc::journal::Op;
 use asc_wc::redirect::Redirections;
+use asc_wc::times::entry_times_of;
 use tokio::runtime::Handle;
 
 use crate::core::CoreFs;
 
+pub mod convert;
 pub mod inodes;
 pub mod merged;
 pub mod overlay;
 #[cfg(test)]
 pub(crate) mod testkit;
 
+pub use convert::{Unvirtualized, unvirtualize};
 pub use merged::{Disk, MergedFs};
 
 /// The error every operation answers with: a POSIX error number of this platform.
@@ -36,6 +41,20 @@ pub type Errno = rustix::io::Errno;
 pub trait TimeSource: Send + Sync {
     /// The time, in Unix seconds, of each path, in order.
     fn times(&self, paths: &[RepoPath]) -> io::Result<Vec<i64>>;
+}
+
+/// [`TimeSource`] over `state.db`'s `entry_times` (U54v `times`).
+pub struct DbTimes {
+    pub db: StateDb,
+    pub ws: Workspace,
+    pub rt: Handle,
+}
+
+impl TimeSource for DbTimes {
+    fn times(&self, paths: &[RepoPath]) -> io::Result<Vec<i64>> {
+        block(&self.rt, entry_times_of(&self.db, &self.ws, paths))
+            .map_err(|e| io::Error::other(e.to_string()))
+    }
 }
 
 /// Where the file system appends its change hints. Every write passes through the daemon, so the
@@ -91,6 +110,16 @@ pub struct Config {
     /// The gitdir a read-only `.git` gitfile at the root names, so git and asc find the
     /// workspace inside the mount; `None` serves no `.git`.
     pub gitfile: Option<PathBuf>,
+}
+
+/// What reconcile journaled, for the daemon's metrics.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Reconciled {
+    /// Overlay entries and deletion markers examined.
+    pub examined: u64,
+    pub modified: u64,
+    pub created: u64,
+    pub deleted: u64,
 }
 
 /// What a path is, as `stat` shows it.

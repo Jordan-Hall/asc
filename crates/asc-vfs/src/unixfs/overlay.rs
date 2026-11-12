@@ -363,6 +363,46 @@ impl Overlay {
         walk(self.data.root(), 0)
     }
 
+    /// Every path `data/` holds, files and symlinks and directories, parents before children;
+    /// `true` marks a directory. At most [`MAX_WHITEOUTS`] paths; names that are not valid
+    /// repository names are skipped.
+    pub fn entries(&self) -> io::Result<Vec<(RepoPath, bool)>> {
+        use std::os::unix::ffi::OsStrExt;
+        let mut out = Vec::new();
+        let mut stack: Vec<(PathBuf, Option<RepoPath>, usize)> =
+            vec![(self.data.root().to_owned(), None, 0)];
+        while let Some((dir, at, depth)) = stack.pop() {
+            if depth > asc_core::path::MAX_TREE_DEPTH {
+                continue;
+            }
+            for e in fs::read_dir(&dir)? {
+                let e = e?;
+                if out.len() >= MAX_WHITEOUTS {
+                    return Ok(out);
+                }
+                let name = e.file_name();
+                let joined = match &at {
+                    Some(a) => {
+                        let mut b = a.as_bytes().to_vec();
+                        b.push(b'/');
+                        b.extend_from_slice(name.as_bytes());
+                        b
+                    }
+                    None => name.as_bytes().to_vec(),
+                };
+                let Ok(p) = RepoPath::new(joined) else {
+                    continue;
+                };
+                let is_dir = e.file_type()?.is_dir();
+                out.push((p.clone(), is_dir));
+                if is_dir {
+                    stack.push((e.path(), Some(p), depth + 1));
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// The directory the overlay lives on, for `statfs`.
     pub fn root(&self) -> &Path {
         self.data.root()
