@@ -274,3 +274,121 @@ fn a_moved_worktree_keeps_its_edits_and_is_served_at_the_new_path() {
     );
     assert!(!moved.exists());
 }
+
+/// `asc daemon stop` under the job's `ASC_HOME` when dropped, so the job's daemon and its mount
+/// go away pass or fail.
+struct JobDaemon<'a> {
+    sb: &'a Sandbox,
+    home: PathBuf,
+}
+
+impl Drop for JobDaemon<'_> {
+    fn drop(&mut self) {
+        let _ = self
+            .sb
+            .asc(self.sb.tmp.path())
+            .env("ASC_HOME", &self.home)
+            .args(["daemon", "stop"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+}
+
+/// The super options of the mount at `dir` (`/proc/self/mountinfo`, after ` - <type> <source> `).
+fn super_options(dir: &Path) -> String {
+    let want = dir.canonicalize().unwrap_or_else(|_| dir.to_owned());
+    let info = std::fs::read_to_string("/proc/self/mountinfo").unwrap_or_default();
+    info.lines()
+        .filter(|l| l.split(' ').nth(4).is_some_and(|m| Path::new(m) == want))
+        .filter_map(|l| l.split(" - ").nth(1))
+        .filter_map(|r| r.split(' ').nth(2))
+        .last()
+        .unwrap_or_default()
+        .to_owned()
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and fusermount3, and starts a daemon"]
+fn ci_checkout_virtual_serves_the_job_through_a_mount_other_users_may_read() {
+    let sb = Fuse::new();
+    let url = url::Url::from_directory_path(sb.dir("ci-bucket"))
+        .unwrap()
+        .to_string()
+        .trim_end_matches('/')
+        .to_owned();
+    let src = sb.dir("ci-src");
+    ok(
+        &sb,
+        &src,
+        &["init", "-q", "--refs", "shared", "--store", &url],
+    );
+    std::fs::create_dir_all(src.join("src")).unwrap();
+    std::fs::write(src.join("bun.lock"), "lock\n").unwrap();
+    std::fs::write(src.join("src").join("app.ts"), "app\n").unwrap();
+    ok(&sb, &src, &["add", "."]);
+    ok(&sb, &src, &["commit", "-q", "-m", "base"]);
+    ok(&sb, &src, &["push", "-q", "-u", "origin", "master"]);
+    let head = ok(&sb, &src, &["rev-parse", "HEAD"]).trim().to_owned();
+
+    let job = sb.dir("job");
+    let runner_temp = job.join("tmp");
+    let _daemon = JobDaemon {
+        sb: &sb,
+        home: runner_temp.join("asc-home"),
+    };
+    let out = sb
+        .asc(&job)
+        .envs(IDENT)
+        .env("GITHUB_TOKEN", "task-token")
+        .env("RUNNER_TEMP", &runner_temp)
+        .args(["ci", "checkout", "--repo", "asc/orbit", "--mode", "virtual"])
+        .arg(format!("--rev={head}"))
+        .args(["--dir", "work", "--server", "https://asc.example"])
+        .args(["--remote-url", &url, "--shim-dir"])
+        .arg(job.join("shim"))
+        .output()
+        .expect("spawn asc");
+
+    let root = rustix::process::geteuid().is_root();
+    let conf = std::fs::read_to_string("/etc/fuse.conf").unwrap_or_default();
+    if !root && !asc_ci::mounts::user_allow_other(&conf) {
+        // A runner that is not root and may not mount for other users is refused up front.
+        assert!(!out.status.success());
+        assert!(
+            text(&out.stderr).contains("needs `user_allow_other` in /etc/fuse.conf"),
+            "{}",
+            text(&out.stderr)
+        );
+        assert!(!job.join("work").join("bun.lock").exists());
+        return;
+    }
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let work = job.join("work");
+    assert!(
+        is_fuse_mount(&work),
+        "the job's work tree is not a FUSE mount"
+    );
+    let opts = super_options(&work);
+    assert!(
+        opts.split(',').any(|o| o == "allow_other"),
+        "the mount does not let other users in: {opts}"
+    );
+    assert_eq!(read(&work.join("src").join("app.ts")), "app\n");
+    // The tier stack, with the allow_other switch, persists for a daemon that mounts it again.
+    let in_job = |args: &[&str]| {
+        let out = sb
+            .asc(&work)
+            .env("ASC_HOME", runner_temp.join("asc-home"))
+            .envs(IDENT)
+            .args(args)
+            .output()
+            .expect("spawn asc");
+        assert!(out.status.success(), "asc {args:?}: {}", text(&out.stderr));
+        text(&out.stdout)
+    };
+    assert_eq!(in_job(&["rev-parse", "HEAD"]).trim(), head);
+    assert_eq!(in_job(&["config", "asc.vfs.allowOther"]).trim(), "true");
+    assert_eq!(in_job(&["status", "--porcelain"]), "");
+}

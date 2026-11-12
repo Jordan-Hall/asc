@@ -294,6 +294,7 @@ jobs:
             sleep 20
           done
           sudo chmod 0666 /dev/fuse
+          grep -qx user_allow_other /etc/fuse.conf || echo user_allow_other | sudo tee -a /etc/fuse.conf
           ls -l /dev/fuse
       - name: Toolchain (from rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
