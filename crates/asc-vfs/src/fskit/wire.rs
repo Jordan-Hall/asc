@@ -262,6 +262,35 @@ mod tests {
         assert!(read_frame(&mut io::Cursor::new(cut)).is_err());
     }
 
+    /// The attribute encoding both sides check: `macos/fskit/Tests/AscWireTests/WireTests.swift`
+    /// decodes the same bytes.
+    pub(crate) const GOLDEN_ATTR: &str = "1122334455667788000000000000000100000001000001a4\
+        00000001000001f5000000140000000000000005000000000000100000000000000000011dcd6500\
+        ffffffffffffffff2cb41780000000000000000000000000";
+
+    #[test]
+    fn the_attribute_encoding_matches_the_swift_client() {
+        let a = Attr {
+            ino: 0x1122_3344_5566_7788,
+            size: 5,
+            blocks: 8,
+            atime: UNIX_EPOCH + Duration::new(1, 500_000_000),
+            mtime: UNIX_EPOCH - Duration::from_millis(250),
+            ctime: UNIX_EPOCH,
+            kind: VKind::File,
+            perm: 0o644,
+            nlink: 1,
+            uid: 501,
+            gid: 20,
+            blksize: 4096,
+            ttl: Duration::ZERO,
+        };
+        let mut w = Writer::new();
+        put_attr(&mut w, &a, 1);
+        let hex: String = w.bytes().iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(hex, GOLDEN_ATTR);
+    }
+
     #[test]
     fn errors_map_to_darwin_numbers() {
         assert_eq!(err_of(Errno::NOENT), 2);
