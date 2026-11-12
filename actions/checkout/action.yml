@@ -20,8 +20,11 @@ inputs:
     description: asc server URL (https, or plain http to loopback only).
     default: ${{ github.server_url }}
   mode:
-    description: plain (default) or virtual.
+    description: plain (default) or virtual (Linux runners; the daemon on the host serves the work tree over FUSE).
     default: plain
+  mount-access:
+    description: "virtual mode: who besides the runner user may use the mount, root (default; a container that runs as root) or all (a container that runs as another user)."
+    default: root
   sparse-checkout:
     description: Newline separated cones.
     default: ''
@@ -50,6 +53,7 @@ runs:
         IN_PATH: ${{ inputs.path }}
         IN_SERVER: ${{ inputs.server }}
         IN_MODE: ${{ inputs.mode }}
+        IN_ACCESS: ${{ inputs.mount-access }}
         IN_SPARSE: ${{ inputs.sparse-checkout }}
         ASC_TOKEN: ${{ inputs.token }}
       run: |
@@ -71,7 +75,7 @@ runs:
           base=()
           if [ -n "$IN_BASE" ]; then base=(--base "$IN_BASE"); fi
           asc ci checkout --repo "$IN_REPO" --rev "$IN_REF" --dir "$IN_PATH" --mode "$IN_MODE" \
-            --server "$IN_SERVER" "${base[@]}" "${sparse[@]}"
+            --mount-access "$IN_ACCESS" --server "$IN_SERVER" "${base[@]}" "${sparse[@]}"
           echo "mode=asc" >>"$GITHUB_OUTPUT"
         else
           # Not an asc repository: the plain git path of upstream checkout.

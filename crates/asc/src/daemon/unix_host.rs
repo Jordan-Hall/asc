@@ -134,22 +134,32 @@ impl VirtualBackend for UnixBackend {
 fn provider(
     kind: Kind,
     cfg: unixfs::Config,
-    // NFS mounts are reachable by every user the file modes allow; only FUSE needs the option.
+    // NFS mounts are reachable by every user the file modes allow; only FUSE reads it.
     #[cfg_attr(
         not(all(target_os = "linux", feature = "vfs-fuse")),
         allow(unused_variables)
     )]
-    allow_other: bool,
+    mount_access: Option<&str>,
 ) -> Result<Arc<dyn UnixProvider>, HostError> {
     let unavailable = |e: &dyn std::fmt::Display| HostError::Precondition(e.to_string());
     match kind {
         #[cfg(all(target_os = "linux", feature = "vfs-fuse"))]
-        Kind::Fuse => asc_vfs::fuse::FuseProvider::new(asc_vfs::fuse::Config {
-            allow_other,
-            ..asc_vfs::fuse::Config::over(cfg, true)
-        })
-        .map(|p| Arc::new(p) as Arc<dyn UnixProvider>)
-        .map_err(|e| unavailable(&e)),
+        Kind::Fuse => {
+            let access = match mount_access {
+                None => asc_vfs::fuse::Access::Owner,
+                Some(v) => asc_vfs::fuse::Access::parse(v).ok_or_else(|| {
+                    HostError::Precondition(format!(
+                        "asc.vfs.mountAccess must be owner, root or all, not `{v}`"
+                    ))
+                })?,
+            };
+            asc_vfs::fuse::FuseProvider::new(asc_vfs::fuse::Config {
+                access,
+                ..asc_vfs::fuse::Config::over(cfg, true)
+            })
+            .map(|p| Arc::new(p) as Arc<dyn UnixProvider>)
+            .map_err(|e| unavailable(&e))
+        }
         #[cfg(feature = "vfs-nfs")]
         Kind::Nfs => asc_vfs::nfs::NfsProvider::new(cfg)
             .map(|p| Arc::new(p) as Arc<dyn UnixProvider>)
@@ -221,11 +231,11 @@ async fn start(cx: HostContext, rt: Handle) -> Result<Arc<dyn Hosted>, HostError
         root_time: floor_seconds(SystemTime::now()),
         gitfile: Some(cx.home.gitdir(cx.ws.ws.id)),
     };
-    let allow_other = opened.allow_other;
+    let mount_access = opened.mount_access.clone();
     let provider = {
         let root = root.clone();
         blocking(move || {
-            let p = provider(kind, cfg, allow_other)?;
+            let p = provider(kind, cfg, mount_access.as_deref())?;
             p.mount(&root).map_err(vfs)?;
             Ok(p)
         })

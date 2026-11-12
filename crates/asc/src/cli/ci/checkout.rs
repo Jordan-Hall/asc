@@ -1,4 +1,5 @@
-//! `asc ci checkout --repo R --rev <head> --base <base> --dir . [--mode plain|virtual] [--sparse d]`
+//! `asc ci checkout --repo R --rev <head> --base <base> --dir . [--mode plain|virtual]
+//! [--mount-access root|all] [--sparse d]`
 //! (SPEC §12.3). The validated plan, cache mode, exports and the tier stack come from
 //! [`asc_ci::checkout`]. This file drives the steps through the `asc` binary itself, with
 //! `ASC_HOME`, `ASC_TOKEN` and the host cache set for the children: clone (which unpacks a seed
@@ -23,6 +24,7 @@ pub const FLAGS: &[&str] = &[
     "--base",
     "--dir",
     "--mode",
+    "--mount-access",
     "--sparse",
     "--server",
     "--host-cache",
@@ -55,6 +57,9 @@ struct Args {
     dir: PathBuf,
     #[arg(long, default_value = "plain")]
     mode: String,
+    /// Who besides the runner user may use a virtual mount: `root` or `all`.
+    #[arg(long, default_value = "root")]
+    mount_access: String,
     #[arg(long)]
     sparse: Vec<String>,
     /// The asc server's public URL (`TURBO_API`).
@@ -209,6 +214,7 @@ pub async fn run(ctx: &Ctx, rest: &[OsString]) -> Result<ExitCode> {
         base: a.base.clone(),
         dir: dir.clone(),
         mode: a.mode.clone(),
+        mount_access: a.mount_access.clone(),
         sparse: a.sparse.clone(),
         event: a.event.clone(),
         runner_temp: runner_temp.clone(),

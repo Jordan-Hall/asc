@@ -62,9 +62,32 @@ pub struct Config {
     pub gitfile: Option<PathBuf>,
     /// Try kernel passthrough for clean files.
     pub passthrough: bool,
-    /// Mount with `allow_other`, so other users (a CI job's container) can reach the files.
-    /// Without root it needs `user_allow_other` in `/etc/fuse.conf`.
-    pub allow_other: bool,
+    /// Who besides the owner may use the mount (a CI job's container).
+    pub access: Access,
+}
+
+/// Who may use a FUSE mount. The kernel still checks file modes (`default_permissions`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Access {
+    /// Only the user who mounted it (FUSE's default).
+    #[default]
+    Owner,
+    /// The owner and root (`allow_root`): a container that runs as root.
+    Root,
+    /// Every user (`allow_other`): a container that runs as another user.
+    Anyone,
+}
+
+impl Access {
+    /// Parses `asc.vfs.mountAccess`: `owner`, `root` or `all`.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "owner" => Some(Self::Owner),
+            "root" => Some(Self::Root),
+            "all" => Some(Self::Anyone),
+            _ => None,
+        }
+    }
 }
 
 impl Config {
@@ -83,7 +106,7 @@ impl Config {
             root_time: cfg.root_time,
             gitfile: cfg.gitfile,
             passthrough,
-            allow_other: false,
+            access: Access::Owner,
         }
     }
 }
@@ -684,7 +707,7 @@ pub struct FuseProvider {
     fs: Arc<MergedFs>,
     kernel: Arc<Kernel>,
     want_pt: bool,
-    allow_other: bool,
+    access: Access,
     backing: Backing,
     session: Mutex<Option<fuser::BackgroundSession>>,
     mount: Mutex<Option<PathBuf>>,
@@ -695,7 +718,7 @@ impl FuseProvider {
     /// Opens the overlay and the inode table; nothing is mounted yet.
     pub fn new(cfg: Config) -> io::Result<Self> {
         let want_pt = cfg.passthrough;
-        let allow_other = cfg.allow_other;
+        let access = cfg.access;
         let fs = Arc::new(MergedFs::new(unixfs::Config {
             core: cfg.core,
             local: cfg.local,
@@ -716,7 +739,7 @@ impl FuseProvider {
             fs,
             kernel,
             want_pt,
-            allow_other,
+            access,
             backing: Arc::new(Mutex::new(HashMap::new())),
             session: Mutex::new(None),
             mount: Mutex::new(None),
@@ -794,9 +817,11 @@ impl Provider for FuseProvider {
             MountOption::NoSuid,
             MountOption::NoAtime,
         ];
-        if self.allow_other {
-            cfg.acl = fuser::SessionACL::All;
-        }
+        cfg.acl = match self.access {
+            Access::Owner => fuser::SessionACL::Owner,
+            Access::Root => fuser::SessionACL::RootAndOwner,
+            Access::Anyone => fuser::SessionACL::All,
+        };
         cfg.n_threads = Some(
             std::thread::available_parallelism()
                 .map_or(2, std::num::NonZero::get)

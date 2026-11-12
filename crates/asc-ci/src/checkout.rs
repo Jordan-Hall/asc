@@ -69,6 +69,9 @@ pub struct Options {
     /// `plain`, or `virtual` on Linux: the daemon on the runner host serves the work tree over
     /// FUSE and the job's containers reach it through an `rshared` bind mount (SPEC §12.3).
     pub mode: String,
+    /// Who besides the runner user may use a virtual mount: `root` (a container that runs as
+    /// root, the default) or `all` (a container that runs as another user).
+    pub mount_access: String,
     pub sparse: Vec<String>,
     pub event: String,
     pub runner_temp: PathBuf,
@@ -143,11 +146,14 @@ impl Plan {
             "virtual" => return bad("--mode virtual needs a Linux runner (FUSE); use plain"),
             _ => return bad("--mode must be plain or virtual"),
         };
+        if !matches!(opts.mount_access.as_str(), "root" | "all") {
+            return bad("--mount-access must be root or all");
+        }
         if opts.sparse.iter().any(|s| !ref_arg_ok(s)) {
             return bad("--sparse takes cone directories");
         }
         if opts.token.is_empty() || !no_ctl(&opts.token) {
-            return bad("no Actions task token: GITHUB_TOKEN is empty");
+            return bad("no task token: ASC_TOKEN and GITHUB_TOKEN are empty");
         }
         let lower = opts.server.to_ascii_lowercase();
         if !(lower.starts_with("https://") || loopback_http(&lower)) || !no_ctl(&opts.server) {
@@ -185,8 +191,8 @@ impl Plan {
     }
 
     /// The repository config keys of step 6 (SPEC §3.5): `asc.cache.dir`, `asc.cache.readOnly`
-    /// and `remote.origin.ascServer`; in virtual mode also `asc.vfs.allowOther`, so the job's
-    /// containers, which run as other users, can reach the mount.
+    /// and `remote.origin.ascServer`; in virtual mode also `asc.vfs.mountAccess`, so the job's
+    /// containers can reach the mount.
     pub fn config_entries(&self) -> Vec<(String, String)> {
         let slash = |p: &Path| p.display().to_string().replace('\\', "/");
         let mut v = vec![("asc.cache.dir".to_owned(), slash(&self.job_cache))];
@@ -198,7 +204,10 @@ impl Plan {
             self.opts.server.clone(),
         ));
         if self.virtual_mode {
-            v.push(("asc.vfs.allowOther".to_owned(), "true".to_owned()));
+            v.push((
+                "asc.vfs.mountAccess".to_owned(),
+                self.opts.mount_access.clone(),
+            ));
         }
         v
     }
@@ -361,6 +370,7 @@ mod tests {
             base: Some("master".into()),
             dir: t.join("w"),
             mode: "plain".into(),
+            mount_access: "root".into(),
             sparse: vec![],
             event: "pull_request".into(),
             runner_temp: t.join("tmp"),
@@ -451,6 +461,7 @@ mod tests {
         with(&|o| o.rev = "--upload-pack=x".into());
         with(&|o| o.base = Some("a\nb".into()));
         with(&|o| o.mode = "lazy".into());
+        with(&|o| o.mount_access = "owner".into());
         with(&|o| o.token = String::new());
         with(&|o| o.server = "http://asc.example".into());
         with(&|o| o.server = "http://127.0.0.1.evil.example".into());
