@@ -384,7 +384,7 @@ pub enum ObjKey {
 
 `File` vs `ChunkList` is decided by size, which every referrer knows from its `Entry`/`Change`.
 
-**Stored value** (bucket and wire): `codec: u8 ‖ data`, codec `0` = raw and `1` = one zstd frame (level 3, content size set). A writer uses zstd only if the frame is < 90% of raw. Readers accept both. The stored bytes are the wire bytes; only the consumer decodes.
+**Stored value** (bucket and wire): `codec: u8 ‖ data`, codec `0` = raw and `1` = one zstd frame (level 3, content size set). A writer uses zstd only if the frame is < 90% of raw. Readers accept both. The stored bytes are the wire bytes; only the consumer decodes. At rest only, a server may also hold codec `2` (a delta: `2 ‖ base FileId ‖ zstd frame` compressed against the base, docs/design/DELTA-STORAGE.md) for loose `File` objects; `BucketObjects` resolves it on read, so every `get` and `get_stored` returns codec `0` or `1` and the wire never carries `2`.
 
 ### 3.2 Traits
 
