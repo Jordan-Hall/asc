@@ -1,9 +1,12 @@
-//! U58 acceptance: virtual (ProjFS) workspaces end to end through the built binary.
+//! U58 acceptance: virtual (ProjFS and Cloud Files) workspaces end to end through the built
+//! binary.
 //!
 //! * The tests in `projfs` need Windows with ProjFS enabled (`Client-ProjFS`) and start a real
 //!   daemon: `cargo test -p asc --test windows_virtual -- --ignored`.
-//! * The tests at the top run anywhere: a machine that cannot host a virtual workspace (no
-//!   ProjFS, not Windows, or `ASC_NO_DAEMON`) refuses `clone --mode virtual` and
+//! * The tests in `cloudfiles` need Windows 10 1709 or later (the Cloud Files API ships with it)
+//!   and start a real daemon with `asc.vfs.backend` set to `cloudfiles`.
+//! * The tests at the top run anywhere: a machine that cannot host a virtual workspace (neither
+//!   backend, not Windows, or `ASC_NO_DAEMON`) refuses `clone --mode virtual` and
 //!   `worktree add --mode virtual` with a clear message and leaves nothing behind.
 //!
 //! The `asc serve` source and the `virtual-*.t` compat scenarios need runner support for a
@@ -112,11 +115,13 @@ fn virtual_clone_is_refused_without_the_daemon_and_leaves_nothing() {
 
 #[test]
 fn virtual_clone_names_what_this_machine_lacks() {
-    // With ProjFS installed the daemon may host it, so there is nothing to refuse.
-    let projfs = std::env::var_os("SystemRoot")
-        .map(|r| Path::new(&r).join("System32").join("ProjectedFSLib.dll"))
-        .is_some_and(|p| p.exists());
-    if cfg!(windows) && projfs {
+    // With ProjFS or Cloud Files the daemon may host it, so there is nothing to refuse.
+    let has = |dll: &str| {
+        std::env::var_os("SystemRoot")
+            .map(|r| Path::new(&r).join("System32").join(dll))
+            .is_some_and(|p| p.exists())
+    };
+    if cfg!(windows) && (has("ProjectedFSLib.dll") || has("cldapi.dll")) {
         return;
     }
     let sb = Sandbox::new();
@@ -132,7 +137,7 @@ fn virtual_clone_names_what_this_machine_lacks() {
     let want = if cfg!(windows) {
         "Client-ProjFS"
     } else {
-        "supported on Windows (ProjFS) only"
+        "supported on Windows only"
     };
     assert!(err.contains(want), "{err}");
     assert!(err.contains("use --mode plain"), "{err}");
@@ -222,11 +227,23 @@ mod projfs {
 
     /// A sandbox whose daemon is stopped when the test ends, pass or fail: a daemon left running
     /// keeps the sandbox's files and the built binary open.
-    struct Virtual(Sandbox);
+    pub(super) struct Virtual(Sandbox);
 
     impl Virtual {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
             Self(Sandbox::new())
+        }
+
+        /// A sandbox whose virtual workspaces use `backend` (`asc.vfs.backend`, user config).
+        pub(super) fn with_backend(backend: &str) -> Self {
+            let sb = Sandbox::new();
+            let home = sb.tmp.path().to_path_buf();
+            ok(
+                &sb,
+                &home,
+                &["config", "--global", "asc.vfs.backend", backend],
+            );
+            Self(sb)
         }
     }
 
@@ -250,7 +267,7 @@ mod projfs {
         }
     }
 
-    fn virtual_clone(sb: &Sandbox, url: &str) -> std::path::PathBuf {
+    pub(super) fn virtual_clone(sb: &Sandbox, url: &str) -> std::path::PathBuf {
         let parent = sb.dir("work");
         ok(sb, &parent, &["clone", "-q", "--mode", "virtual", url, "v"]);
         parent.join("v")
@@ -272,7 +289,7 @@ mod projfs {
     }
 
     /// The mode asc recorded for the workspace at `dir` (`asc debug stats --json`).
-    fn recorded_mode(sb: &Sandbox, ws: &Path, dir: &Path) -> String {
+    pub(super) fn recorded_mode(sb: &Sandbox, ws: &Path, dir: &Path) -> String {
         let out = ok(sb, ws, &["debug", "stats", "--json"]);
         let v: serde_json::Value = serde_json::from_str(&out).expect("json");
         let key = |p: &str| p.trim_end_matches(['\\', '/']).to_ascii_lowercase();
@@ -287,7 +304,7 @@ mod projfs {
     }
 
     /// The hydrations the daemon reports per path (`asc debug hydrations --json`, one row per path).
-    fn hydrations(sb: &Sandbox, ws: &Path) -> Vec<(String, u64)> {
+    pub(super) fn hydrations(sb: &Sandbox, ws: &Path) -> Vec<(String, u64)> {
         let out = ok(sb, ws, &["debug", "hydrations", "--json"]);
         let v: serde_json::Value = serde_json::from_str(&out).expect("json");
         v.as_array()
@@ -301,7 +318,7 @@ mod projfs {
     }
 
     /// The total of hydrations the daemon reports.
-    fn downloads(sb: &Sandbox, ws: &Path) -> u64 {
+    pub(super) fn downloads(sb: &Sandbox, ws: &Path) -> u64 {
         hydrations(sb, ws).iter().map(|(_, n)| n).sum()
     }
 
@@ -560,5 +577,117 @@ mod projfs {
             .filter(|(p, _)| p.ends_with("src/b.txt"))
             .collect();
         assert!(read.is_empty(), "the key hydrated {read:?}");
+    }
+}
+
+/// The Cloud Files backend (SPEC §10.2b) through the same commands: the daemon serves the root as
+/// a sync root, and every work-tree operation reaches it from this (another) process.
+#[cfg(windows)]
+mod cloudfiles {
+    use std::path::Path;
+
+    use asc_vfs::win::select::{Backend, Found, found};
+
+    use super::projfs::{Virtual, downloads, hydrations, recorded_mode, virtual_clone};
+    use super::{ok, seed};
+
+    fn sandbox() -> Virtual {
+        Virtual::with_backend("cloudfiles")
+    }
+
+    fn is_sync_root(dir: &Path) -> bool {
+        found(dir) == Found::Virtual(Backend::CloudFiles)
+    }
+
+    #[test]
+    #[ignore = "needs Windows with the Cloud Files API and starts a daemon"]
+    fn clone_reads_edits_commits_and_switches() {
+        let sb = sandbox();
+        let url = seed(&sb);
+        let ws = virtual_clone(&sb, &url);
+        assert!(
+            is_sync_root(&ws),
+            "the clone is not a Cloud Files sync root"
+        );
+        assert_eq!(recorded_mode(&sb, &ws, &ws), "virtual");
+        assert_eq!(ok(&sb, &ws, &["status", "--porcelain"]), "");
+        assert_eq!(
+            std::fs::read_to_string(ws.join("src").join("b.txt")).unwrap(),
+            "b\n"
+        );
+        assert!(
+            hydrations(&sb, &ws)
+                .iter()
+                .any(|(p, _)| p.ends_with("src/b.txt")),
+            "reading src/b.txt did not hydrate it"
+        );
+        assert_eq!(ok(&sb, &ws, &["status", "--porcelain"]), "");
+
+        std::fs::write(ws.join("a.txt"), "a2\n").unwrap();
+        std::fs::write(ws.join("new.txt"), "n\n").unwrap();
+        std::fs::rename(ws.join("src").join("b.txt"), ws.join("src").join("b2.txt")).unwrap();
+        let status = ok(&sb, &ws, &["status", "--porcelain"]);
+        for want in [" M a.txt", "?? new.txt", " D src/b.txt", "?? src/b2.txt"] {
+            assert!(status.contains(want), "{want:?} missing from {status:?}");
+        }
+        ok(&sb, &ws, &["add", "-A"]);
+        ok(&sb, &ws, &["commit", "-q", "-m", "edit"]);
+        assert_eq!(ok(&sb, &ws, &["status", "--porcelain"]), "");
+
+        let before = downloads(&sb, &ws);
+        ok(&sb, &ws, &["switch", "-q", "side"]);
+        assert_eq!(std::fs::read_to_string(ws.join("c.txt")).unwrap(), "c\n");
+        assert_eq!(std::fs::read_to_string(ws.join("a.txt")).unwrap(), "a\n");
+        assert!(!ws.join("new.txt").exists());
+        assert!(ws.join("src").join("b.txt").is_file());
+        ok(&sb, &ws, &["switch", "-q", "master"]);
+        assert_eq!(std::fs::read_to_string(ws.join("a.txt")).unwrap(), "a2\n");
+        assert!(!ws.join("c.txt").exists());
+        assert_eq!(ok(&sb, &ws, &["status", "--porcelain"]), "");
+        assert_eq!(downloads(&sb, &ws), before, "switch downloaded objects");
+    }
+
+    #[test]
+    #[ignore = "needs Windows with the Cloud Files API and starts a daemon"]
+    fn reset_hard_restores_edits_and_deletions() {
+        let sb = sandbox();
+        let url = seed(&sb);
+        let ws = virtual_clone(&sb, &url);
+        std::fs::write(ws.join("a.txt"), "x\n").unwrap();
+        std::fs::remove_file(ws.join("src").join("b.txt")).unwrap();
+        ok(&sb, &ws, &["reset", "-q", "--hard"]);
+        assert_eq!(std::fs::read_to_string(ws.join("a.txt")).unwrap(), "a\n");
+        assert_eq!(
+            std::fs::read_to_string(ws.join("src").join("b.txt")).unwrap(),
+            "b\n"
+        );
+        assert_eq!(ok(&sb, &ws, &["status", "--porcelain"]), "");
+    }
+
+    #[test]
+    #[ignore = "needs Windows with the Cloud Files API and starts a daemon"]
+    fn convert_to_plain_keeps_edits_and_deletions() {
+        let sb = sandbox();
+        let url = seed(&sb);
+        let ws = virtual_clone(&sb, &url);
+        std::fs::write(ws.join("a.txt"), "edited\n").unwrap();
+        std::fs::remove_file(ws.join("src").join("b.txt")).unwrap();
+        ok(&sb, &ws, &["worktree", "convert", "--plain"]);
+        ok(&sb, &ws, &["daemon", "stop"]);
+        assert_eq!(recorded_mode(&sb, &ws, &ws), "plain");
+        assert!(
+            !is_sync_root(&ws),
+            "the converted root is still a sync root"
+        );
+        assert_eq!(
+            std::fs::read_to_string(ws.join("a.txt")).unwrap(),
+            "edited\n"
+        );
+        assert!(!ws.join("src").join("b.txt").exists());
+        assert_eq!(
+            ok(&sb, &ws, &["status", "--porcelain"]),
+            " M a.txt\n D src/b.txt\n"
+        );
+        assert_eq!(std::fs::read_to_string(ws.join("c.txt")).ok(), None);
     }
 }
