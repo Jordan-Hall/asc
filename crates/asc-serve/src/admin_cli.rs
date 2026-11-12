@@ -168,6 +168,8 @@ pub enum DeltaCmd {
     Run,
     /// Deltas, bases and the mainline backlog.
     Status,
+    /// Rewrites every delta in full (the rollback); the pass keeps its place in history.
+    Expand,
 }
 
 /// Opens the database and the store of `cfg`. The schema must already be migrated.
@@ -282,7 +284,8 @@ impl AdminCli {
                     let r = self.gc.run_delta_repo(&name, &self.delta).await?;
                     let _ = writeln!(
                         text,
-                        "{n}: read {} changeset(s), {} candidate(s); wrote {} delta(s),                          {} without gain, {} skipped; {} -> {} stored byte(s); expanded {}",
+                        "{n}: read {} changeset(s), {} candidate(s); wrote {} delta(s), \
+                         {} without gain, {} skipped; {} -> {} stored byte(s); expanded {}",
                         r.changesets,
                         r.candidates,
                         r.written,
@@ -292,6 +295,10 @@ impl AdminCli {
                         r.bytes_after,
                         r.expanded
                     );
+                }
+                DeltaCmd::Expand => {
+                    let full = self.gc.expand_deltas(&name).await?;
+                    let _ = writeln!(text, "{n}: rewrote {full} delta(s) in full");
                 }
                 DeltaCmd::Status => {
                     let s = self.gc.delta_status(&name).await?;

@@ -405,6 +405,30 @@ async fn one_changeset(
     Ok(())
 }
 
+/// Rewrites every delta of `entry` as a full value and drops its row: the rollback of delta
+/// storage. The cursors stay, so a pass that runs later does not redo old history.
+pub async fn expand_all(pool: &AnyPool, entry: &RepoEntry) -> Result<u64, GcError> {
+    let ns = entry.ns.as_bytes().to_vec();
+    let files: Vec<Vec<u8>> = sqlx::query_scalar("SELECT file FROM delta_bases WHERE ns = $1")
+        .bind(ns.clone())
+        .fetch_all(pool)
+        .await
+        .map_err(|e| sql("delta_bases", e))?;
+    let mut n = 0;
+    for f in files {
+        if entry.objects.expand_delta(file_id(&f)?).await? {
+            n += 1;
+        }
+        sqlx::query("DELETE FROM delta_bases WHERE ns = $1 AND file = $2")
+            .bind(ns.clone())
+            .bind(f)
+            .execute(pool)
+            .await
+            .map_err(|e| sql("delta_bases", e))?;
+    }
+    Ok(n)
+}
+
 /// The delta counts and backlog of `entry`.
 pub async fn status(pool: &AnyPool, entry: &RepoEntry) -> Result<DeltaStatus, GcError> {
     let ns = entry.ns.as_bytes().to_vec();

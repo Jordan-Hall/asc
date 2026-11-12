@@ -210,6 +210,8 @@ mod real {
         /// One delta pass, whether or not `[delta] enabled` is set.
         Run,
         Status,
+        /// Rewrites every delta as a full value (the rollback of delta storage).
+        Expand,
     }
 
     #[derive(clap::Subcommand, Debug)]
@@ -480,6 +482,7 @@ mod real {
                 let cmd = match cmd {
                     DeltaSub::Run => ac::DeltaCmd::Run,
                     DeltaSub::Status => ac::DeltaCmd::Status,
+                    DeltaSub::Expand => ac::DeltaCmd::Expand,
                 };
                 cli.delta(&cmd, &repos, all).await
             }

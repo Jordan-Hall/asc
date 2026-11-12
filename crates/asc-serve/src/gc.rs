@@ -701,6 +701,22 @@ impl GcService {
         out
     }
 
+    /// Rewrites every delta of `name` in full, under the collection lock.
+    pub async fn expand_deltas(&self, name: &RepoName) -> Result<u64, GcError> {
+        let guard = self.acquire().await?;
+        let out = async {
+            let entry = self
+                .registry
+                .open(name)
+                .await
+                .map_err(|e| GcError::Other(format!("{name}: {e}")))?;
+            crate::delta_service::expand_all(self.registry.pool(), &entry).await
+        }
+        .await;
+        guard.release().await;
+        out
+    }
+
     /// The delta counts and backlog of `name`.
     pub async fn delta_status(
         &self,
