@@ -304,6 +304,11 @@ impl MergedFs {
         self.overlay.root()
     }
 
+    /// The overlay's private directory, outside the merged view.
+    pub fn overlay_dir(&self) -> &Path {
+        self.overlay.dir()
+    }
+
     pub(crate) fn blk<F>(&self, f: F) -> F::Output
     where
         F: Future + Send,

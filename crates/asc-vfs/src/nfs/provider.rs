@@ -30,14 +30,50 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Ties handles to a work tree (FNV-1a of its overlay path).
-fn tag_of(p: &Path) -> u64 {
-    p.as_os_str()
-        .as_encoded_bytes()
-        .iter()
-        .fold(0xcbf2_9ce4_8422_2325u64, |h, &b| {
-            (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
-        })
+/// The file beside the overlay's directories that holds the handle tag.
+const TAG_FILE: &str = "nfs-handle-tag";
+
+/// The secret that ties handles to a work tree: 8 random bytes in `dir/nfs-handle-tag`, readable
+/// by the owner alone and kept across restarts, so handles a client holds stay valid and nobody
+/// else can make one.
+pub(crate) fn handle_tag(dir: &Path) -> io::Result<u64> {
+    use std::io::{Read, Write};
+    use std::os::unix::fs::OpenOptionsExt;
+    let p = dir.join(TAG_FILE);
+    let nofollow = rustix::fs::OFlags::NOFOLLOW.bits() as i32;
+    match fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(nofollow)
+        .open(&p)
+    {
+        Ok(mut f) => {
+            let m = f.metadata()?;
+            let mut b = [0u8; 8];
+            if m.is_file() && m.mode() & 0o077 == 0 && f.read_exact(&mut b).is_ok() {
+                let t = u64::from_be_bytes(b);
+                if t != 0 {
+                    return Ok(t);
+                }
+            }
+            // Short, shared or not a file: replaced by a new secret.
+            fs::remove_file(&p)?;
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    let mut b = [0u8; 8];
+    while u64::from_be_bytes(b) == 0 {
+        fs::File::open("/dev/urandom")?.read_exact(&mut b)?;
+    }
+    let mut f = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(nofollow)
+        .open(&p)?;
+    f.write_all(&b)?;
+    f.sync_all()?;
+    Ok(u64::from_be_bytes(b))
 }
 
 /// The system's NFS mount command for a server on `port`.
@@ -118,6 +154,8 @@ pub struct NfsProvider {
     fs: Arc<MergedFs>,
     files: Arc<Mutex<Files>>,
     require_resvport: bool,
+    /// MOUNT answers at any time (tests, whose client mounts by itself).
+    mounts_open: bool,
     state: Mutex<Option<Mounted>>,
     disk: Disk,
 }
@@ -133,14 +171,17 @@ impl NfsProvider {
             fs,
             files,
             require_resvport: true,
+            mounts_open: false,
             state: Mutex::new(None),
         })
     }
 
-    /// Accepts connections from unprivileged ports: for tests, whose client is not the kernel.
+    /// Accepts connections from unprivileged ports and MOUNT at any time: for tests, whose
+    /// client is not the kernel.
     #[cfg(test)]
     pub(crate) fn allow_any_port(mut self) -> Self {
         self.require_resvport = false;
+        self.mounts_open = true;
         self
     }
 
@@ -176,7 +217,8 @@ impl NfsProvider {
             ServerConfig {
                 owner: self.fs.uid,
                 require_resvport: self.require_resvport,
-                tag: tag_of(self.fs.overlay_root()),
+                tag: handle_tag(self.fs.overlay_dir())?,
+                mounts_open: self.mounts_open,
                 workers: std::thread::available_parallelism()
                     .map_or(4, std::num::NonZero::get)
                     .clamp(4, 16),
@@ -185,6 +227,14 @@ impl NfsProvider {
         let addr = server.addr();
         *st = Some(Mounted { server, root: None });
         Ok(addr)
+    }
+
+    /// Opens or shuts MOUNT on the running server, as `mount` does around the mount command.
+    #[cfg(test)]
+    pub(crate) fn set_mounts_open(&self, open: bool) {
+        if let Some(m) = lock(&self.state).as_ref() {
+            m.server.set_mounts_open(open);
+        }
     }
 
     /// Lookups held for handles handed to clients.
@@ -235,7 +285,18 @@ impl Provider for NfsProvider {
         }
         let addr = self.serve()?;
         let (prog, args) = mount_command(cfg!(target_os = "macos"), addr.port(), root);
-        if let Err(msg) = run_privileged(prog, &args) {
+        // MOUNT answers only while the system's client mounts.
+        let window = |open: bool| {
+            if let Some(m) = lock(&self.state).as_ref()
+                && !self.mounts_open
+            {
+                m.server.set_mounts_open(open);
+            }
+        };
+        window(true);
+        let ran = run_privileged(prog, &args);
+        window(false);
+        if let Err(msg) = ran {
             *lock(&self.state) = None;
             return Err(VfsError::Io(io::Error::other(format!(
                 "could not mount the NFS work tree at {}: {msg} (see WORKTREES.md, \
@@ -340,14 +401,25 @@ mod tests {
     }
 
     #[test]
-    fn tags_differ_per_work_tree_and_are_stable() {
-        assert_eq!(
-            tag_of(Path::new("/a/overlay")),
-            tag_of(Path::new("/a/overlay"))
-        );
+    fn handle_tags_are_owner_only_secrets_kept_across_restarts() {
+        let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let t = handle_tag(a.path()).unwrap();
+        assert_eq!(handle_tag(a.path()).unwrap(), t, "stable across restarts");
         assert_ne!(
-            tag_of(Path::new("/a/overlay")),
-            tag_of(Path::new("/b/overlay"))
+            handle_tag(b.path()).unwrap(),
+            t,
+            "each work tree has its own"
         );
+        let p = a.path().join(TAG_FILE);
+        assert_eq!(fs::metadata(&p).unwrap().mode() & 0o777, 0o600);
+        // A tag others can read is no secret: it is replaced.
+        fs::set_permissions(&p, fs::Permissions::from_mode(0o644)).unwrap();
+        let fresh = handle_tag(a.path()).unwrap();
+        assert_ne!(fresh, t);
+        assert_eq!(fs::metadata(&p).unwrap().mode() & 0o777, 0o600);
+        // A link in its place is not followed.
+        fs::remove_file(&p).unwrap();
+        std::os::unix::fs::symlink(b.path().join(TAG_FILE), &p).unwrap();
+        assert!(handle_tag(a.path()).is_err());
     }
 }

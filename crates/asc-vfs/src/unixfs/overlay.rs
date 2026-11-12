@@ -29,6 +29,7 @@ pub const MAX_CHILDREN: usize = 1_000_000;
 
 /// The overlay of one workspace.
 pub struct Overlay {
+    dir: PathBuf,
     data: SafeRoot,
     white: PathBuf,
     tmp: PathBuf,
@@ -57,6 +58,7 @@ impl Overlay {
     pub fn open(dir: &Path) -> io::Result<Self> {
         private_dir(dir)?;
         let o = Self {
+            dir: dir.to_path_buf(),
             data: SafeRoot::new(dir.join("data")),
             white: dir.join("white"),
             tmp: dir.join("tmp"),
@@ -364,6 +366,11 @@ impl Overlay {
     /// The directory the overlay lives on, for `statfs`.
     pub fn root(&self) -> &Path {
         self.data.root()
+    }
+
+    /// The private directory holding the overlay's parts; files kept here are never shown in the tree.
+    pub fn dir(&self) -> &Path {
+        &self.dir
     }
 }
 

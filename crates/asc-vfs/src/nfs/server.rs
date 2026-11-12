@@ -169,9 +169,13 @@ pub struct ServerConfig {
     pub owner: u32,
     /// Only privileged source ports may connect (only the kernel's client binds them).
     pub require_resvport: bool,
-    /// Ties handles to this work tree: a handle from another server is stale.
+    /// Ties handles to this work tree: a handle from another server is stale. A secret only the
+    /// owner can read, so nobody else can make a handle (AUTH_SYS names a uid it cannot prove).
     pub tag: u64,
     pub workers: usize,
+    /// Whether MOUNT answers from the start. The provider keeps it shut except while its own
+    /// mount command runs, so the root handle reaches the kernel and nobody else.
+    pub mounts_open: bool,
 }
 
 struct Shared {
@@ -186,6 +190,8 @@ struct Shared {
     /// Bumped by every switch; directories report it in their times so clients drop cached
     /// listings.
     generation: AtomicU64,
+    /// Whether MOUNT hands out the root handle now.
+    mounts_open: AtomicBool,
 }
 
 /// Why a procedure failed.
@@ -1030,7 +1036,9 @@ impl Shared {
                 let Ok(path) = args.opaque(1024) else {
                     return rpc::accepted(xid, Accept::GarbageArgs, &[]);
                 };
-                if cred.uid != self.cfg.owner && cred.uid != 0 {
+                if (cred.uid != self.cfg.owner && cred.uid != 0)
+                    || !self.mounts_open.load(Ordering::SeqCst)
+                {
                     w.u32(MNT3ERR_ACCES);
                 } else if path != EXPORT.as_bytes() && path != b"/" {
                     w.u32(MNT3ERR_NOENT);
@@ -1088,6 +1096,7 @@ impl Server {
             holds: Mutex::new(Holds::default()),
             listings: Mutex::new(Listings::default()),
             replies: Mutex::new(Replies::default()),
+            mounts_open: AtomicBool::new(cfg.mounts_open),
             cfg,
             verf: (boot as u64).to_be_bytes(),
             generation: AtomicU64::new(0),
@@ -1147,6 +1156,11 @@ impl Server {
     }
 
     /// Lookups the server holds for handed-out handles.
+    /// Opens or shuts MOUNT (see [`ServerConfig::mounts_open`]).
+    pub fn set_mounts_open(&self, open: bool) {
+        self.shared.mounts_open.store(open, Ordering::SeqCst);
+    }
+
     pub fn held(&self) -> usize {
         lock(&self.shared.holds).set.len()
     }
@@ -1196,6 +1210,39 @@ fn worker(sh: &Shared, rx: &Mutex<Receiver<Job>>) {
     }
 }
 
+/// Whether the process at the other end of a loopback connection is the kernel (uid 0) or the
+/// owner. Linux names the owner of every socket in `/proc/net/tcp`; a connection it does not list
+/// is refused. Elsewhere the handle tag and the shut MOUNT keep strangers out.
+#[cfg(target_os = "linux")]
+pub(crate) fn peer_allowed(stream: &TcpStream, owner: u32) -> bool {
+    let (Ok(peer), Ok(local)) = (stream.peer_addr(), stream.local_addr()) else {
+        return false;
+    };
+    let Ok(table) = std::fs::read_to_string("/proc/net/tcp") else {
+        return false;
+    };
+    matches!(socket_uid(&table, peer.port(), local.port()), Some(u) if u == 0 || u == owner)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn peer_allowed(_stream: &TcpStream, _owner: u32) -> bool {
+    true
+}
+
+/// The uid of the IPv4 loopback socket bound to `port` and connected to `to`, from the text of
+/// `/proc/net/tcp`.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn socket_uid(table: &str, port: u16, to: u16) -> Option<u32> {
+    let addr = |p: u16| format!("0100007F:{p:04X}");
+    let (want_local, want_remote) = (addr(port), addr(to));
+    table.lines().skip(1).find_map(|line| {
+        let f: Vec<&str> = line.split_whitespace().collect();
+        (f.len() > 7 && f[1] == want_local && f[2] == want_remote)
+            .then(|| f[7].parse().ok())
+            .flatten()
+    })
+}
+
 fn accept(
     listener: &TcpListener,
     sh: &Arc<Shared>,
@@ -1215,6 +1262,7 @@ fn accept(
         };
         if !peer.ip().is_loopback()
             || (sh.cfg.require_resvport && peer.port() >= 1024)
+            || (sh.cfg.require_resvport && !peer_allowed(&stream, sh.cfg.owner))
             || lock(conns).len() >= MAX_CONNS
         {
             let _ = stream.shutdown(Shutdown::Both);
