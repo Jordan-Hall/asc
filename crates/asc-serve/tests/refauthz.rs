@@ -708,3 +708,72 @@ fn the_cloud_config_caps_become_the_pipeline_quota() {
     assert!(pipeline.set_user_quota(q).is_ok());
     assert_eq!(pipeline.user_quota().max_user_refs(), 7);
 }
+
+/// SPEC §24.8.2 A3: `ListRefs` with a kind lists only branches or only tags, pages inside that
+/// namespace and refuses a prefix outside it; plain and branchless repositories agree.
+#[tokio::test]
+async fn list_refs_by_kind_lists_only_that_namespace() {
+    for branchless in [false, true] {
+        let f = fx(branchless).await;
+        let c1 = with_master(&f).await;
+        f.git_push(
+            "7:maint",
+            &[
+                cmd("refs/tags/v1", None, Some(&c1)),
+                cmd("refs/tags/v2", None, Some(&c1)),
+                cmd("refs/heads/release", None, Some(&c1)),
+            ],
+        )
+        .await
+        .unwrap();
+        let by = |kind: wire::RefKind, prefix: &'static str, limit: u32, after: &'static str| {
+            let refs = &f.refs;
+            async move {
+                refs.list_refs(
+                    &ctx("7:maint", IdMode::Asc),
+                    wire::ListRefsRequest {
+                        repo: Some(wire::RepoRef {
+                            name: "o/r".into(),
+                            id_mode: 0,
+                        }),
+                        prefix: prefix.into(),
+                        limit,
+                        after: after.into(),
+                        kind: kind as i32,
+                        ..Default::default()
+                    },
+                )
+                .await
+            }
+        };
+        let names =
+            |r: wire::ListRefsResponse| r.refs.into_iter().map(|x| x.name).collect::<Vec<_>>();
+
+        let tags = by(wire::RefKind::Tag, "", 0, "").await.unwrap();
+        assert_eq!(
+            names(tags),
+            ["refs/tags/v1", "refs/tags/v2"],
+            "{branchless}"
+        );
+        let heads = by(wire::RefKind::Branch, "", 0, "").await.unwrap();
+        assert_eq!(
+            names(heads),
+            ["refs/heads/master", "refs/heads/release"],
+            "{branchless}"
+        );
+
+        let first = by(wire::RefKind::Tag, "", 1, "").await.unwrap();
+        assert_eq!(first.next, "refs/tags/v1");
+        let second = by(wire::RefKind::Tag, "", 1, "refs/tags/v1").await.unwrap();
+        assert_eq!(names(second), ["refs/tags/v2"]);
+
+        let narrowed = by(wire::RefKind::Tag, "refs/tags/v2", 0, "").await.unwrap();
+        assert_eq!(names(narrowed), ["refs/tags/v2"]);
+        let e = by(wire::RefKind::Tag, "refs/heads/", 0, "")
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), tonic::Code::InvalidArgument);
+        let any = f.list("7:maint", "").await.unwrap();
+        assert_eq!(any.len(), 4, "{branchless}: {any:?}");
+    }
+}
