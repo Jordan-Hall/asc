@@ -251,22 +251,30 @@ async fn delta_pass(objects: &BucketObjects, map: &Map, git_dir: &Path) {
             ObjKey::File(FileId::from_bytes(b)),
         );
         if objects.has_many(&[fk]).await.expect("has")[0] {
-            files.push((fk, bk));
+            files.push((fk, vec![bk]));
         } else if let (Some(n), Some(o)) = (chunk_list(f).await, chunk_list(b).await) {
             chunks.extend(
                 pair_chunks(&n, &o)
                     .into_iter()
-                    .map(|(c, o)| (ObjKey::Chunk(c), ObjKey::Chunk(o))),
+                    .map(|(c, o)| (ObjKey::Chunk(c), vec![ObjKey::Chunk(o)])),
             );
         }
     }
-    let trees: Vec<(ObjKey, ObjKey)> = tree_pairs(git_dir)
+    let file = |g: &GitOid| id(g, 1).map(|f| ObjKey::File(FileId::from_bytes(f)));
+    for (new, near) in &new_file_candidates(git_dir) {
+        let Some(fk) = file(new) else { continue };
+        let bases: Vec<ObjKey> = near.iter().filter_map(file).collect();
+        if !bases.is_empty() && objects.has_many(&[fk]).await.expect("has")[0] {
+            files.push((fk, bases));
+        }
+    }
+    let trees: Vec<(ObjKey, Vec<ObjKey>)> = tree_pairs(git_dir)
         .iter()
         .filter_map(|(old, new)| {
             let (b, t) = (id(old, 2)?, id(new, 2)?);
             Some((
                 ObjKey::Tree(TreeId::from_bytes(t)),
-                ObjKey::Tree(TreeId::from_bytes(b)),
+                vec![ObjKey::Tree(TreeId::from_bytes(b))],
             ))
         })
         .collect();
@@ -274,20 +282,141 @@ async fn delta_pass(objects: &BucketObjects, map: &Map, git_dir: &Path) {
         let t = Instant::now();
         let (mut written, mut saved) = (0u64, 0u64);
         let mut cache = asc_store::delta::PlanCache::default();
-        for (key, base) in &pairs {
-            let planned = objects.plan_delta_cached(*key, *base, &mut cache).await;
+        let (mut plan_t, mut store_t) = (Duration::ZERO, Duration::ZERO);
+        for (key, bases) in &pairs {
+            let at = Instant::now();
+            let planned = objects.plan_best(*key, bases, &mut cache).await;
+            plan_t += at.elapsed();
             if let Ok(p) = planned.expect("plan") {
+                let at = Instant::now();
                 objects.store_delta(&p).await.expect("store");
+                store_t += at.elapsed();
                 written += 1;
                 saved += p.was.saturating_sub(p.stored.len() as u64);
             }
         }
         println!(
-            "delta kind={kind} pairs={} written={written} saved_bytes={saved} wall={:.1}s",
+            "delta kind={kind} pairs={} written={written} saved_bytes={saved} wall={:.1}s plan={:.1}s store={:.1}s",
             pairs.len(),
-            t.elapsed().as_secs_f64()
+            t.elapsed().as_secs_f64(),
+            plan_t.as_secs_f64(),
+            store_t.as_secs_f64()
         );
     }
+}
+
+/// Each file a first-parent commit adds, with the bases the server's pass tries for it: files of
+/// the parent's same directory with the same extension and a size within half to double, nearest
+/// sizes first, at most four.
+fn new_file_candidates(git_dir: &Path) -> Vec<(GitOid, Vec<GitOid>)> {
+    use std::collections::HashMap;
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .arg("--git-dir")
+            .arg(git_dir)
+            .args(args)
+            .output()
+            .expect("run git");
+        assert!(out.status.success(), "git {args:?} failed");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let ext = |name: &str| -> String {
+        let name = name.rsplit('/').next().unwrap_or(name);
+        match name.rfind('.') {
+            Some(0) | None => String::new(),
+            Some(i) => name[i + 1..].to_owned(),
+        }
+    };
+    let log = git(&[
+        "log",
+        "--all",
+        "--reverse",
+        "--first-parent",
+        "--no-renames",
+        "--raw",
+        "--no-abbrev",
+        "--format=C %P",
+    ]);
+    let sizes: HashMap<GitOid, u64> = git(&[
+        "cat-file",
+        "--batch-all-objects",
+        "--batch-check=%(objectname) %(objecttype) %(objectsize)",
+    ])
+    .lines()
+    .filter_map(|l| {
+        let mut f = l.split(' ');
+        let (oid, kind, size) = (f.next()?, f.next()?, f.next()?);
+        (kind == "blob").then(|| Some((oid.parse().ok()?, size.parse().ok()?)))?
+    })
+    .collect();
+    // (parent commit, directory) -> its files as (blob, size, extension).
+    type Listing = Vec<(GitOid, u64, String)>;
+    let mut listings: HashMap<(String, String), Listing> = HashMap::new();
+    let mut out = Vec::new();
+    let mut parent: Option<String> = None;
+    for line in log.lines() {
+        if let Some(ps) = line.strip_prefix("C ") {
+            parent = ps.split_whitespace().next().map(str::to_owned);
+            continue;
+        }
+        // :000000 100644 <zero> <new> A	<path>
+        let Some((meta, path)) = line.strip_prefix(':').and_then(|l| l.split_once('\t')) else {
+            continue;
+        };
+        let f: Vec<&str> = meta.split_whitespace().collect();
+        let (Some(p), [_, mode, _, new, "A"]) = (&parent, f.as_slice()) else {
+            continue;
+        };
+        if *mode == "120000" || *mode == "160000" {
+            continue;
+        }
+        let Ok(new) = new.parse::<GitOid>() else {
+            continue;
+        };
+        let dir = path
+            .rsplit_once('/')
+            .map(|(d, _)| d.to_owned())
+            .unwrap_or_default();
+        let entries = listings.entry((p.clone(), dir.clone())).or_insert_with(|| {
+            let spec = if dir.is_empty() {
+                String::new()
+            } else {
+                format!("{dir}/")
+            };
+            let mut args = vec!["ls-tree", "-l", p.as_str()];
+            if !spec.is_empty() {
+                args.push(spec.as_str());
+            }
+            git(&args)
+                .lines()
+                .filter_map(|l| {
+                    // <mode> blob <oid> <size>	<name>
+                    let (meta, name) = l.split_once('\t')?;
+                    let f: Vec<&str> = meta.split_whitespace().collect();
+                    let [m, "blob", oid, size] = f.as_slice() else {
+                        return None;
+                    };
+                    (*m == "100644" || *m == "100755")
+                        .then(|| Some((oid.parse().ok()?, size.parse().ok()?, ext(name))))?
+                })
+                .collect()
+        });
+        let Some(&size) = sizes.get(&new) else {
+            continue;
+        };
+        let e = ext(path);
+        let mut near: Vec<(u64, GitOid)> = entries
+            .iter()
+            .filter(|(_, s, x)| *x == e && *s <= 4 << 20 && s * 2 >= size && *s <= size * 2)
+            .map(|(o, s, _)| (s.abs_diff(size), *o))
+            .collect();
+        near.sort_by_key(|(d, _)| *d);
+        let near: Vec<GitOid> = near.into_iter().take(4).map(|(_, o)| o).collect();
+        if !near.is_empty() {
+            out.push((new, near));
+        }
+    }
+    out
 }
 
 /// `(old, new)` tree pairs in history order: each commit's root against its first parent's root,
