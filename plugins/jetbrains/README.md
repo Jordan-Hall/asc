@@ -28,7 +28,7 @@ inert in projects that are not asc workspaces: its menus, tool window and status
     then a folder inside the root).
   - Tags: Show Tags, Create Tag (a message makes it annotated), Delete Tag (pick one, then
     confirm), Push All Tags.
-  - Stash: Stash Changes (optionally with untracked files), Pop, Apply, Drop.
+  - Stash: Stash Changes (optionally with untracked files), Pop, Apply, Drop, Show Stashes.
   - Configure Agents: writes the project's MCP configuration with `asc mcp install --scope project`.
   - Sign In to a Host, Sign Out of a Host, Show Sign-in Status.
 
