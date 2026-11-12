@@ -167,6 +167,19 @@ fn every_front_stores_and_returns_entries_behind_the_token() {
     let again: Value =
         serde_json::from_str(&ok(&sb, &repo, &["cache", "env", "--shell", "json"])).unwrap();
     assert_eq!(again["TURBO_TOKEN"], token.as_str());
+    // In a work tree turbo's team is the tree's, recorded for the daemon's server tier.
+    let team = env["TURBO_TEAM"].as_str().unwrap().to_owned();
+    assert!(team.starts_with("asc-") && team.len() == 20, "{team}");
+    assert_eq!(again["TURBO_TEAM"], team.as_str());
+    let teams: Value = serde_json::from_slice(
+        &std::fs::read(sb.asc_home.join("buildcache-teams.json")).expect("teams file"),
+    )
+    .unwrap();
+    assert!(teams["teams"][&team]["root"].is_string(), "{teams}");
+    let outside = sb.dir("outside");
+    let plain: Value =
+        serde_json::from_str(&ok(&sb, &outside, &["cache", "env", "--shell", "json"])).unwrap();
+    assert_eq!(plain["TURBO_TEAM"], "asc");
 
     let _served = serve(&sb, &repo, port);
     let host = format!("127.0.0.1:{port}");
