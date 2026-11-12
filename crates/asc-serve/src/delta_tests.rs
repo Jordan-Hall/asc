@@ -227,6 +227,61 @@ async fn a_pass_stores_edited_versions_as_deltas_that_read_back_in_full() {
 }
 
 #[tokio::test]
+async fn a_merge_brings_its_side_branch_into_the_pass() {
+    let f = Fx::new().await;
+    f.gc.run_delta_repo(&name(), &on()).await.unwrap();
+    // A side branch off `c` adds `side` and then edits it; the merge lands. Against `c` the
+    // merge only adds `side`, so its edited version has a base only on the side branch.
+    let (w0, w1) = (version(40), version(50));
+    let (j0, j1) = (FileId::of(&w0), FileId::of(&w1));
+    let s1 = commit(&f.entry, &[f.css[2]], &[("side", &w0)]).await;
+    let s2 = commit(&f.entry, &[s1], &[("side", &w1)]).await;
+    let m = commit(&f.entry, &[f.css[2], s2], &[("side", &w1)]).await;
+    sqlx::query("INSERT INTO mainline (ns, ref, pos, cs) VALUES ($1, $2, 3, $3)")
+        .bind(f.entry.ns.as_bytes().to_vec())
+        .bind("refs/heads/master")
+        .bind(m.as_bytes().to_vec())
+        .execute(f.reg.pool())
+        .await
+        .unwrap();
+    let rep = f.gc.run_delta_repo(&name(), &on()).await.unwrap();
+    // The merge, then `s2` and `s1`; the walk stops at `c`, which is on the mainline.
+    assert_eq!(
+        (rep.changesets, rep.side, rep.written),
+        (1, 2, 1),
+        "{rep:?}"
+    );
+    assert_eq!(f.entry.objects.delta_base_of(j1).await.unwrap(), Some(j0));
+    assert_eq!(f.read(j1).await, w1);
+    // A side changeset is read once: the next pass has nothing to do.
+    let again = f.gc.run_delta_repo(&name(), &on()).await.unwrap();
+    assert_eq!((again.changesets, again.side), (0, 0), "{again:?}");
+    // A walk is bounded by `max_changesets`.
+    let tight = DeltaSettings {
+        max_changesets: 1,
+        ..on()
+    };
+    let n = commit(&f.entry, &[m], &[("small", b"x")]).await;
+    let t1 = commit(&f.entry, &[m], &[("side", &version(60))]).await;
+    let t2 = commit(&f.entry, &[t1], &[("side", &version(70))]).await;
+    let merge2 = commit(&f.entry, &[n, t2], &[("side", &version(70))]).await;
+    for (pos, cs) in [(4i64, n), (5, merge2)] {
+        sqlx::query("INSERT INTO mainline (ns, ref, pos, cs) VALUES ($1, $2, $3, $4)")
+            .bind(f.entry.ns.as_bytes().to_vec())
+            .bind("refs/heads/master")
+            .bind(pos)
+            .bind(cs.as_bytes().to_vec())
+            .execute(f.reg.pool())
+            .await
+            .unwrap();
+    }
+    let r1 = f.gc.run_delta_repo(&name(), &tight).await.unwrap();
+    assert_eq!((r1.changesets, r1.side), (1, 0), "{r1:?}");
+    let r2 = f.gc.run_delta_repo(&name(), &tight).await.unwrap();
+    assert_eq!((r2.changesets, r2.side), (1, 1), "{r2:?}");
+}
+
+#[tokio::test]
 async fn a_pass_respects_the_size_bounds_and_its_batch_limit() {
     let f = Fx::new().await;
     let big = DeltaSettings {
