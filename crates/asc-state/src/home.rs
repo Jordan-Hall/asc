@@ -88,6 +88,28 @@ impl AscHome {
         Self::resolve(|k| std::env::var_os(k), configured)
     }
 
+    /// The absolute root [`AscHome::locate`] would open, without creating anything.
+    pub fn locate_root() -> Result<PathBuf, HomeError> {
+        let configured = gix_config::File::from_globals().ok().and_then(|c| {
+            let path = c.path("asc.home")?;
+            path.interpolate(Default::default()).ok()
+        });
+        Self::resolve_root(|k| std::env::var_os(k), configured)
+    }
+
+    /// [`AscHome::locate_root`] with the environment and the `asc.home` value supplied.
+    pub fn resolve_root(
+        env: impl Fn(&str) -> Option<OsString>,
+        configured: Option<PathBuf>,
+    ) -> Result<PathBuf, HomeError> {
+        let non_empty = |name: &str| env(name).filter(|v| !v.is_empty()).map(PathBuf::from);
+        let root = match non_empty("ASC_HOME").or(configured) {
+            Some(root) => root,
+            None => default_root(&non_empty)?,
+        };
+        Ok(std::path::absolute(&root).unwrap_or(root))
+    }
+
     /// [`AscHome::locate`] with the environment and the `asc.home` value supplied by the caller.
     pub fn resolve(
         env: impl Fn(&str) -> Option<OsString>,
@@ -232,6 +254,21 @@ mod tests {
                 .find(|(n, _)| *n == k)
                 .map(|(_, v)| (*v).into())
         }
+    }
+
+    #[test]
+    fn the_root_is_resolved_without_creating_it() {
+        let d = tempfile::tempdir().unwrap();
+        let a = d.path().join("never-made");
+        let got = AscHome::resolve_root(
+            |k| (k == "ASC_HOME").then(|| a.clone().into_os_string()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(got, a);
+        assert!(!a.exists());
+        let configured = AscHome::resolve_root(|_| None, Some(a.clone())).unwrap();
+        assert_eq!(configured, a);
     }
 
     #[test]

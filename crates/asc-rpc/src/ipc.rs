@@ -103,6 +103,21 @@ impl IpcEndpoint {
         Self(name.into())
     }
 
+    /// This endpoint narrowed to one asc home: `key` (a short hex digest of the home's path) is
+    /// appended to the pipe name, or to the socket's file name, so daemons of different homes
+    /// never answer for each other.
+    pub fn for_home_key(&self, key: &str) -> Self {
+        if cfg!(windows) {
+            return Self(format!("{}-{key}", self.0));
+        }
+        let path = std::path::Path::new(&self.0);
+        let stem = path
+            .file_stem()
+            .map_or_else(|| "asc".into(), |s| s.to_string_lossy());
+        let name = format!("{stem}-{key}.sock");
+        Self(path.with_file_name(name).to_string_lossy().into_owned())
+    }
+
     /// The pipe name or socket path.
     pub fn as_str(&self) -> &str {
         &self.0
@@ -765,6 +780,17 @@ mod tests {
 
     fn unique() -> String {
         format!("{}-{}", std::process::id(), uuid::Uuid::new_v4().simple())
+    }
+
+    #[test]
+    fn a_home_key_narrows_the_endpoint_name() {
+        if cfg!(windows) {
+            let ep = IpcEndpoint::pipe("S-1-5-21").for_home_key("abc123");
+            assert_eq!(ep.as_str(), "asc-S-1-5-21-abc123");
+        } else {
+            let ep = IpcEndpoint::from_raw("/run/user/1/asc/asc.sock").for_home_key("abc123");
+            assert_eq!(ep.as_str(), "/run/user/1/asc/asc-abc123.sock");
+        }
     }
 
     fn test_endpoint(dir: &std::path::Path) -> IpcEndpoint {

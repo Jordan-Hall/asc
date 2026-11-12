@@ -34,6 +34,11 @@ use dispatch::Program;
 fn main() -> ExitCode {
     child::keep_std_handles_private();
     let args: Vec<OsString> = std::env::args_os().collect();
+    // The daemon started from a binary of another name (the `git` shim) runs as `asc daemon`.
+    let (args, forced_asc) = match daemon::lifecycle::daemon_entry(&args) {
+        Some(a) => (a, true),
+        None => (args, false),
+    };
     // The `git` shim's fall-through to real git needs no runtime and none of asc's registrations;
     // it is decided here, before either costs time (SPEC §11.4).
     #[cfg(all(feature = "serve", feature = "git-compat"))]
@@ -42,6 +47,7 @@ fn main() -> ExitCode {
     let hook = false;
     let argv0 = args.first().cloned().unwrap_or_default();
     if !hook
+        && !forced_asc
         && Program::from_argv0(&argv0) == Program::Git
         && let Some(code) = shim::fall_through(&args)
     {
@@ -51,7 +57,7 @@ fn main() -> ExitCode {
         .enable_all()
         .build()
     {
-        Ok(runtime) => runtime.block_on(run(args, hook)),
+        Ok(runtime) => runtime.block_on(run(args, hook, forced_asc)),
         Err(e) => {
             eprintln!("fatal: asc: cannot start the async runtime: {e}");
             ExitCode::from(128)
@@ -59,7 +65,7 @@ fn main() -> ExitCode {
     }
 }
 
-async fn run(args: Vec<OsString>, hook: bool) -> ExitCode {
+async fn run(args: Vec<OsString>, hook: bool, forced_asc: bool) -> ExitCode {
     // The `pre-receive` hook of the git protocol layer (SPEC §25.2) runs before anything else is
     // set up: it starts inside a git view, with git's own environment.
     #[cfg(all(feature = "serve", feature = "git-compat"))]
@@ -80,7 +86,7 @@ async fn run(args: Vec<OsString>, hook: bool) -> ExitCode {
         daemon::workspace_factory::DaemonWorkspaceFactory::system(),
     ));
     match Program::from_argv0(&argv0) {
-        Program::Git => dispatch::run(Program::Git, args).await,
-        Program::Asc => dispatch::run(Program::Asc, args).await,
+        Program::Git if !forced_asc => dispatch::run(Program::Git, args).await,
+        _ => dispatch::run(Program::Asc, args).await,
     }
 }

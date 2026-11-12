@@ -75,9 +75,49 @@ pub struct Config {
 /// name or a socket path); the plugin API tests use it so a test daemon never meets the
 /// user's own. The variable is the user's own environment, like `ASC_HOME`.
 pub fn endpoint_for_current_user() -> Result<IpcEndpoint, IpcError> {
-    match std::env::var("ASC_DAEMON_ENDPOINT") {
-        Ok(name) if !name.is_empty() => Ok(IpcEndpoint::from_raw(name)),
-        _ => IpcEndpoint::for_current_user(),
+    let root = AscHome::locate_root().map_err(|e| IpcError::NoRuntimeDir(e.to_string()))?;
+    endpoint_for_home(&root)
+}
+
+/// The endpoint of the daemon serving the home at `root` (SPEC §9.1): `ASC_DAEMON_ENDPOINT`
+/// when set; else the user's endpoint, narrowed by [`home_key`] unless `root` is the platform
+/// default home. A daemon only ever answers for the home it opened.
+pub fn endpoint_for_home(root: &Path) -> Result<IpcEndpoint, IpcError> {
+    if let Ok(name) = std::env::var("ASC_DAEMON_ENDPOINT")
+        && !name.is_empty()
+    {
+        return Ok(IpcEndpoint::from_raw(name));
+    }
+    let user = IpcEndpoint::for_current_user()?;
+    let default = AscHome::resolve_root(
+        |k| (k != "ASC_HOME").then(|| std::env::var_os(k)).flatten(),
+        None,
+    )
+    .ok();
+    Ok(match default {
+        Some(d) if same_home(&d, root) => user,
+        _ => user.for_home_key(&home_key(root)),
+    })
+}
+
+/// A short digest of a home's absolute path, case-folded where the file system is.
+pub fn home_key(root: &Path) -> String {
+    let abs = std::path::absolute(root).unwrap_or_else(|_| root.to_owned());
+    let text = abs.to_string_lossy();
+    let text = if cfg!(windows) {
+        text.to_lowercase()
+    } else {
+        text.into_owned()
+    };
+    blake3::hash(text.as_bytes()).to_hex()[..12].to_owned()
+}
+
+fn same_home(a: &Path, b: &Path) -> bool {
+    let abs = |p: &Path| std::path::absolute(p).unwrap_or_else(|_| p.to_owned());
+    if cfg!(windows) {
+        abs(a).to_string_lossy().to_lowercase() == abs(b).to_string_lossy().to_lowercase()
+    } else {
+        abs(a) == abs(b)
     }
 }
 
@@ -85,7 +125,7 @@ impl Config {
     /// The configuration for the current user and `home`.
     pub fn for_home(home: &AscHome) -> Result<Self, IpcError> {
         Ok(Self {
-            endpoint: endpoint_for_current_user()?,
+            endpoint: endpoint_for_home(home.root())?,
             run_dir: home.run(),
             log_dir: home.log(),
             version: super::VERSION.to_owned(),
@@ -149,6 +189,161 @@ pub trait Process: Send + Sync {
     fn kill(&self, pid: u32) -> io::Result<()>;
 }
 
+/// The first argument the daemon is started with. The binary may be running under another name
+/// (the `git` shim starts the daemon too), and this argument makes it run as `asc daemon`
+/// whatever that name is.
+pub const DAEMON_ENTRY: &str = "--asc-daemon-entry";
+
+/// `args` (argv0 first) as `asc` must read them when they start with [`DAEMON_ENTRY`]: the entry
+/// argument becomes `daemon`. `None` for any other command line.
+pub fn daemon_entry(args: &[std::ffi::OsString]) -> Option<Vec<std::ffi::OsString>> {
+    if args.get(1).is_none_or(|a| a != DAEMON_ENTRY) {
+        return None;
+    }
+    let mut out = args.to_vec();
+    out[1] = "daemon".into();
+    Some(out)
+}
+
+/// The daemon's environment: this process's, without `ASC_NO_DAEMON`, with `ASC_HOME` set to
+/// `home`. Names compare case-insensitively on Windows.
+fn daemon_env(
+    vars: impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+    home: &Path,
+) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    let same = |k: &std::ffi::OsStr, name: &str| {
+        if cfg!(windows) {
+            k.eq_ignore_ascii_case(name)
+        } else {
+            k == name
+        }
+    };
+    let mut out: Vec<_> = vars
+        .filter(|(k, _)| !same(k, "ASC_NO_DAEMON") && !same(k, "ASC_HOME"))
+        .collect();
+    out.push(("ASC_HOME".into(), home.as_os_str().to_owned()));
+    out
+}
+
+/// Windows: the daemon is created with handle inheritance off. `std::process::Command` always
+/// inherits every inheritable handle, so a daemon started by a process that was itself handed
+/// someone's pipe (the git shim under a test harness, a script reading `asc` output) would keep
+/// that pipe open for its whole life and the reader would never see the end of it.
+#[cfg(windows)]
+#[allow(unsafe_code)] // one CreateProcessW call with buffers owned by this function
+mod detached {
+    use std::ffi::OsString;
+    use std::io;
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Path;
+
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
+        DETACHED_PROCESS, PROCESS_INFORMATION, STARTUPINFOW,
+    };
+
+    /// The command line of `exe` and `args`: the program quoted, each argument quoted when it
+    /// holds a space or tab. Arguments with quotes are refused (none of asc's do).
+    pub(super) fn command_line(exe: &Path, args: &[&str]) -> io::Result<Vec<u16>> {
+        let exe = exe.as_os_str();
+        if exe.encode_wide().any(|c| c == u16::from(b'"')) || args.iter().any(|a| a.contains('"')) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a quote in the daemon command line",
+            ));
+        }
+        let mut line: Vec<u16> = Vec::new();
+        line.push(u16::from(b'"'));
+        line.extend(exe.encode_wide());
+        line.push(u16::from(b'"'));
+        for a in args {
+            line.push(u16::from(b' '));
+            let quote = a.is_empty() || a.contains([' ', '\t']);
+            if quote {
+                line.push(u16::from(b'"'));
+            }
+            line.extend(a.encode_utf16());
+            if quote {
+                line.push(u16::from(b'"'));
+            }
+        }
+        line.push(0);
+        Ok(line)
+    }
+
+    /// The `CREATE_UNICODE_ENVIRONMENT` block: `name=value\0` pairs, sorted by name ignoring
+    /// case, then a final `\0`. A pair whose name is empty or holds `=` is dropped.
+    pub(super) fn env_block(vars: &[(OsString, OsString)]) -> Vec<u16> {
+        let mut pairs: Vec<(Vec<u16>, Vec<u16>)> = vars
+            .iter()
+            .filter(|(k, _)| {
+                let k: Vec<u16> = k.encode_wide().collect();
+                !k.is_empty() && !k.contains(&u16::from(b'=')) && !k.contains(&0)
+            })
+            .map(|(k, v)| {
+                (
+                    k.encode_wide().collect(),
+                    v.encode_wide().filter(|&c| c != 0).collect(),
+                )
+            })
+            .collect();
+        let upper = |s: &[u16]| String::from_utf16_lossy(s).to_uppercase();
+        pairs.sort_by_key(|(k, _)| upper(k));
+        let mut block = Vec::new();
+        for (k, v) in pairs {
+            block.extend(k);
+            block.push(u16::from(b'='));
+            block.extend(v);
+            block.push(0);
+        }
+        if block.is_empty() {
+            block.push(0);
+        }
+        block.push(0);
+        block
+    }
+
+    pub(super) fn spawn(exe: &Path, args: &[&str], env: &[(OsString, OsString)]) -> io::Result<()> {
+        let app: Vec<u16> = exe.as_os_str().encode_wide().chain([0]).collect();
+        let mut line = command_line(exe, args)?;
+        let block = env_block(env);
+        // SAFETY: zeroed is the documented initial state of both structs.
+        let mut si: STARTUPINFOW = unsafe { std::mem::zeroed() };
+        si.cb = u32::try_from(std::mem::size_of::<STARTUPINFOW>()).unwrap_or(u32::MAX);
+        let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
+        // SAFETY: every pointer is to a NUL-terminated buffer owned here and alive for the
+        // call; inheritance is off, so the child gets no handle of this process.
+        let ok = unsafe {
+            CreateProcessW(
+                app.as_ptr(),
+                line.as_mut_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                DETACHED_PROCESS
+                    | CREATE_NEW_PROCESS_GROUP
+                    | CREATE_NO_WINDOW
+                    | CREATE_UNICODE_ENVIRONMENT,
+                block.as_ptr().cast(),
+                std::ptr::null(),
+                &si,
+                &mut pi,
+            )
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: both handles were just returned by CreateProcessW and are closed once; the
+        // child is not waited for, it outlives this process.
+        unsafe {
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+        }
+        Ok(())
+    }
+}
+
 /// The real processes: this executable, run detached, and the operating system's kill.
 pub struct SystemProcess {
     pub exe: PathBuf,
@@ -157,26 +352,24 @@ pub struct SystemProcess {
 }
 
 impl Process for SystemProcess {
+    #[cfg(windows)]
     fn spawn(&self) -> io::Result<()> {
+        let env = daemon_env(std::env::vars_os(), &self.home);
+        detached::spawn(&self.exe, &[DAEMON_ENTRY, "run"], &env)
+    }
+
+    #[cfg(not(windows))]
+    fn spawn(&self) -> io::Result<()> {
+        use std::os::unix::process::CommandExt;
         use std::process::{Command, Stdio};
         let mut cmd = Command::new(&self.exe);
-        cmd.args(["daemon", "run"])
-            .env("ASC_HOME", &self.home)
-            .env_remove("ASC_NO_DAEMON")
+        cmd.args([DAEMON_ENTRY, "run"])
+            .env_clear()
+            .envs(daemon_env(std::env::vars_os(), &self.home))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
-            cmd.creation_flags(0x0000_0008 | 0x0000_0200 | 0x0800_0000);
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            cmd.process_group(0);
-        }
+            .stderr(Stdio::null())
+            .process_group(0);
         // The child is not waited for: it outlives this process.
         cmd.spawn().map(drop)
     }
@@ -433,6 +626,74 @@ mod tests {
     use crate::daemon::{Never, RunConfig, not_served, run};
 
     static NEXT: AtomicUsize = AtomicUsize::new(0);
+
+    #[test]
+    fn only_the_hidden_entry_flag_forces_the_daemon() {
+        let os = |v: &[&str]| v.iter().map(std::ffi::OsString::from).collect::<Vec<_>>();
+        assert_eq!(daemon_entry(&os(&["git", "status"])), None);
+        assert_eq!(daemon_entry(&os(&["git"])), None);
+        assert_eq!(daemon_entry(&os(&["git", "run", DAEMON_ENTRY])), None);
+        assert_eq!(
+            daemon_entry(&os(&["git.exe", DAEMON_ENTRY, "run"])),
+            Some(os(&["git.exe", "daemon", "run"]))
+        );
+    }
+
+    #[test]
+    fn the_daemon_env_sets_the_home_and_drops_the_off_switch() {
+        let vars = [
+            ("PATH", "/bin"),
+            ("ASC_NO_DAEMON", "1"),
+            ("ASC_HOME", "/old"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.into(), v.into()));
+        let got = daemon_env(vars, Path::new("/new"));
+        let want: Vec<(std::ffi::OsString, std::ffi::OsString)> = vec![
+            ("PATH".into(), "/bin".into()),
+            ("ASC_HOME".into(), "/new".into()),
+        ];
+        assert_eq!(got, want);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_detached_command_line_and_env_block_are_well_formed() {
+        let wide = |s: &str| s.encode_utf16().collect::<Vec<u16>>();
+        let exe = "C:/a b/git.exe";
+        let line = detached::command_line(Path::new(exe), &[DAEMON_ENTRY, "run"]).unwrap();
+        let mut want = wide(&format!("\"{exe}\" --asc-daemon-entry run"));
+        want.push(0);
+        assert_eq!(line, want);
+        assert!(detached::command_line(Path::new("x.exe"), &["a\"b"]).is_err());
+
+        let vars: Vec<(std::ffi::OsString, std::ffi::OsString)> = vec![
+            ("b".into(), "2".into()),
+            ("A".into(), "1".into()),
+            ("=C:".into(), "skip".into()),
+        ];
+        let mut want = wide("A=1");
+        want.push(0);
+        want.extend(wide("b=2"));
+        want.extend([0, 0]);
+        assert_eq!(detached::env_block(&vars), want);
+        assert_eq!(detached::env_block(&[]), vec![0, 0]);
+    }
+
+    #[test]
+    fn homes_get_their_own_key() {
+        let d = tempfile::tempdir().unwrap();
+        let (a, b) = (d.path().join("a"), d.path().join("b"));
+        assert_ne!(home_key(&a), home_key(&b));
+        assert_eq!(home_key(&a), home_key(&a));
+        assert_eq!(home_key(&a).len(), 12);
+        if cfg!(windows) {
+            let upper = std::path::PathBuf::from(a.to_string_lossy().to_uppercase());
+            assert!(same_home(&a, &upper));
+            assert_eq!(home_key(&a), home_key(&upper));
+        }
+        assert!(!same_home(&a, &b));
+    }
 
     fn config(dir: &Path, version: &str) -> Config {
         let endpoint = if cfg!(windows) {
