@@ -539,7 +539,11 @@ impl<'a> Printer<'a> {
             }
             _ => return Ok(()),
         };
-        let Some(text) = self.diff.render(self.ws, old, new, &e.followed).await? else {
+        let Some(text) = self
+            .diff
+            .render(self.ws, e.id, old, new, &e.followed)
+            .await?
+        else {
             return Ok(());
         };
         let oneline = matches!(&self.kind, Kind::Builtin(Builtin::Oneline));

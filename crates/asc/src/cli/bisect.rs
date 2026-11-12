@@ -899,7 +899,7 @@ async fn show_diff_tree(ws: &WsCtx, id: ChangesetId, abbrev: usize) -> Result<()
         };
         let changes = ws
             .engine
-            .diff_trees(old, cs.root, None, &opts)
+            .diff_changeset(id, old, cs.root, None, &opts)
             .await
             .map_err(|e| fatal(e.to_string()))?;
         if !changes.is_empty() {

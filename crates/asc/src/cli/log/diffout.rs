@@ -2,7 +2,7 @@
 //! assembled from the engine's diff writers in git's order: raw and name listings, numstat, stat,
 //! shortstat, summary, then the patch.
 
-use asc_core::id::TreeId;
+use asc_core::id::{ChangesetId, TreeId};
 use asc_core::path::RepoPath;
 use asc_engine::diff::{
     self, DiffCtx, DiffOptions, NoAttributes, RenameOptions, write_numstat, write_patch,
@@ -117,12 +117,14 @@ impl DiffSetup {
         self.patch
     }
 
-    /// The diff from `old` to `new`; `None` when the trees do not differ in the pathspec.
-    /// `followed`, when not empty, replaces the pathspec: the paths `--follow` tracks at
-    /// this commit, so a rename shows as its pair.
+    /// The diff of changeset `cs` from `old` (its first parent's tree, or the empty tree) to
+    /// `new` (its tree); `None` when the trees do not differ in the pathspec. `followed`, when
+    /// not empty, replaces the pathspec: the paths `--follow` tracks at this commit, so a rename
+    /// shows as its pair. Without a pathspec, renames come from the `copies` memo.
     pub async fn render(
         &self,
         ws: &WsCtx,
+        cs: ChangesetId,
         old: TreeId,
         new: TreeId,
         followed: &[RepoPath],
@@ -134,7 +136,13 @@ impl DiffSetup {
         };
         let changes = ws
             .engine
-            .diff_trees(old, new, spec.as_ref().or(self.spec.as_ref()), &self.opts)
+            .diff_changeset(
+                cs,
+                old,
+                new,
+                spec.as_ref().or(self.spec.as_ref()),
+                &self.opts,
+            )
             .await
             .map_err(fatal)?;
         if changes.is_empty() {

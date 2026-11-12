@@ -540,7 +540,7 @@ async fn mail(
     let old = parent_root(ws, cs).await?;
     let changes = ws
         .engine
-        .diff_trees(old, cs.root, None, opts)
+        .diff_changeset(e.id, old, cs.root, None, opts)
         .await
         .map_err(fatal)?;
     if !changes.is_empty() {
