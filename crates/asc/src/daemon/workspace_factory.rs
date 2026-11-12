@@ -55,15 +55,15 @@ pub fn register_virtual_backend() {
 }
 
 /// Whether a backend can host virtual workspaces on this machine: one registered itself, or the
-/// platform's own backend loads (ProjFS on Windows; probed once, then registered).
+/// platform's own backend loads (ProjFS or Cloud Files on Windows; probed once, then registered).
 fn backend_available() -> bool {
     static PROBE: OnceLock<bool> = OnceLock::new();
     if VIRTUAL_BACKEND.load(Ordering::SeqCst) {
         return true;
     }
     *PROBE.get_or_init(|| {
-        #[cfg(all(windows, feature = "vfs-projfs"))]
-        if super::projfs_host::available() {
+        #[cfg(all(windows, any(feature = "vfs-projfs", feature = "vfs-cloudfiles")))]
+        if super::win_host::available() {
             register_virtual_backend();
             return true;
         }
@@ -74,9 +74,9 @@ fn backend_available() -> bool {
 /// The OS backend the daemon hosts virtual workspaces with; `None` where this build or machine
 /// has none.
 pub fn platform_backend() -> Option<Arc<dyn VirtualBackend>> {
-    #[cfg(all(windows, feature = "vfs-projfs"))]
-    if super::projfs_host::available() {
-        return Some(Arc::new(super::projfs_host::ProjfsBackend));
+    #[cfg(all(windows, any(feature = "vfs-projfs", feature = "vfs-cloudfiles")))]
+    if super::win_host::available() {
+        return Some(Arc::new(super::win_host::WinBackend));
     }
     None
 }
@@ -86,11 +86,11 @@ pub fn virtual_unavailable() -> String {
     let why = if lifecycle::disabled(&|k| std::env::var_os(k)) {
         "virtual workspaces need the daemon, which ASC_NO_DAEMON turns off"
     } else if !cfg!(windows) {
-        "virtual workspaces are supported on Windows (ProjFS) only"
-    } else if cfg!(feature = "vfs-projfs") {
-        "virtual workspaces need the Windows Projected File System; enable the Client-ProjFS feature"
+        "virtual workspaces are supported on Windows only"
+    } else if cfg!(any(feature = "vfs-projfs", feature = "vfs-cloudfiles")) {
+        "virtual workspaces need the Windows Projected File System (the Client-ProjFS feature) or the Cloud Files API (Windows 10 1709 or later)"
     } else {
-        "this build of asc has no ProjFS support"
+        "this build of asc has no Windows virtual file system support"
     };
     format!("{why}; use --mode plain")
 }
@@ -184,13 +184,23 @@ impl Mounts for DaemonMounts {
     }
 
     fn unvirtualize(&self, root: &Path) -> Result<Vec<String>, SinkError> {
-        #[cfg(all(windows, feature = "vfs-projfs"))]
+        #[cfg(all(windows, any(feature = "vfs-projfs", feature = "vfs-cloudfiles")))]
         {
-            let done = asc_vfs::projfs::unvirtualize(root)
-                .map_err(|e| format!("{}: {e}", root.display()))?;
+            use asc_vfs::win::select;
+            let done = match select::found(root) {
+                #[cfg(feature = "vfs-cloudfiles")]
+                select::Found::Virtual(select::Backend::CloudFiles) => {
+                    asc_vfs::cloudfiles::unvirtualize(root)
+                }
+                #[cfg(feature = "vfs-projfs")]
+                _ => asc_vfs::projfs::unvirtualize(root),
+                #[cfg(not(feature = "vfs-projfs"))]
+                _ => Ok(Default::default()),
+            }
+            .map_err(|e| format!("{}: {e}", root.display()))?;
             Ok(done.deleted)
         }
-        #[cfg(not(all(windows, feature = "vfs-projfs")))]
+        #[cfg(not(all(windows, any(feature = "vfs-projfs", feature = "vfs-cloudfiles"))))]
         {
             // No virtual backend on this build: the root was never virtualized.
             let _ = root;
@@ -260,8 +270,9 @@ pub(crate) async fn convert(
     gate: &Gate<'_>,
 ) -> SinkResult {
     // The provider lists the deletions before it stops: the ProjFS filter can leave a tombstone
-    // out of a directory listing and answers for one by name only while the root is served. The
-    // walk of the stopped root adds those it meets.
+    // out of a directory listing and answers for one by name only while the root is served, and
+    // Cloud Files keeps no tombstones at all. The walk of a stopped ProjFS root adds those it
+    // meets.
     let mut deleted = mounts.unmount(ws.ws.id, true).await?;
     let root = PathBuf::from(&ws.ws.mount);
     // Nothing under the root may be opened before it is plain again.

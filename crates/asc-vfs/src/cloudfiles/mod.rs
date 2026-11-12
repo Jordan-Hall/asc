@@ -117,7 +117,6 @@ pub(crate) fn guard(f: impl FnOnce()) {
     let _ = catch_unwind(AssertUnwindSafe(f));
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -549,16 +549,37 @@ pub(crate) fn volume_key(path: &Path) -> Option<String> {
     }
 }
 
+/// The backends virtual workspaces can use (`asc.vfs.backend`): ProjFS when its optional feature
+/// is on, otherwise Cloud Files, which Windows 10 1709 and later include.
+#[cfg(any(windows, test))]
+fn virtual_fs(projfs: bool, cloudfiles: bool) -> Check {
+    const ENABLE: &str = "Enable-WindowsOptionalFeature -Online -FeatureName Client-ProjFS -NoRestart (administrator)";
+    match (projfs, cloudfiles) {
+        (true, _) => Check::ok(
+            "virtual-fs",
+            "virtual workspaces use the Windows Projected File System",
+        ),
+        (false, true) => Check::ok(
+            "virtual-fs",
+            "virtual workspaces use the Windows Cloud Files API (ProjFS is not installed)",
+        )
+        .hint(format!("optional, for ProjFS instead: {ENABLE}")),
+        (false, false) => Check::warn(
+            "virtual-fs",
+            "neither the Windows Projected File System nor the Cloud Files API is available",
+        )
+        .hint(format!("virtual workspaces need one: {ENABLE}")),
+    }
+}
+
 #[cfg(windows)]
 async fn check_windows(home: &AscHome) -> Vec<Check> {
     let projfs = async {
-        let dll = system_root().join(r"System32\ProjectedFSLib.dll");
-        if dll.is_file() {
-            Check::ok("projfs", "the Windows Projected File System is installed")
-        } else {
-            Check::warn("projfs", "the Windows Projected File System is not installed")
-                .hint("virtual workspaces need it: Enable-WindowsOptionalFeature -Online -FeatureName Client-ProjFS -NoRestart (administrator)")
-        }
+        let sys = system_root().join("System32");
+        virtual_fs(
+            sys.join("ProjectedFSLib.dll").is_file(),
+            sys.join("cldapi.dll").is_file(),
+        )
     };
     let long_paths = async {
         let mut cmd = windows_tool(r"System32\reg.exe");
@@ -2004,5 +2025,20 @@ mod tests {
         let mut seen = 0;
         let cut = walk_dirs(dir.path(), &|_| false, 1, &mut |_, _| seen += 1);
         assert!(cut);
+    }
+
+    #[test]
+    fn virtual_fs_names_the_backend_in_use() {
+        let pf = virtual_fs(true, true);
+        assert_eq!((pf.level, pf.name.as_str()), (Level::Ok, "virtual-fs"));
+        assert!(pf.detail.contains("Projected File System"));
+        assert!(pf.hint.is_none());
+        let cf = virtual_fs(false, true);
+        assert_eq!(cf.level, Level::Ok);
+        assert!(cf.detail.contains("Cloud Files"));
+        assert!(cf.hint.unwrap().starts_with("optional"));
+        let none = virtual_fs(false, false);
+        assert_eq!(none.level, Level::Warn);
+        assert!(none.hint.unwrap().contains("Client-ProjFS"));
     }
 }

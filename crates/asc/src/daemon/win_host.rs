@@ -1,8 +1,11 @@
-//! The ProjFS backend of the daemon (U58; SPEC §10.2): hosts a virtual workspace with
-//! [`asc_vfs::projfs::ProjfsProvider`] and answers the daemon's `Hosted` calls with it.
+//! The Windows backends of the daemon (U58; SPEC §10.2, §10.2b): hosts a virtual workspace with
+//! [`asc_vfs::projfs::ProjfsProvider`] or [`asc_vfs::cloudfiles::CloudFilesProvider`] and answers
+//! the daemon's `Hosted` calls with it.
 //!
-//! * [`available`] says whether `ProjectedFSLib.dll` loads (Windows `Client-ProjFS` enabled).
-//! * [`ProjfsBackend::host`] opens the workspace the way the daemon's other jobs do, builds the
+//! * [`available`] says whether either backend loads: ProjFS (`ProjectedFSLib.dll`, the
+//!   `Client-ProjFS` feature) or Cloud Files (`cldapi.dll`, Windows 10 1709 and later).
+//! * [`WinBackend::host`] opens the workspace the way the daemon's other jobs do, picks the
+//!   backend (`asc.vfs.backend`; a root keeps the backend that virtualized it), builds the
 //!   [`CoreFs`] over the HEAD tree, starts the provider at the workspace's mount root and replays
 //!   a switch an earlier daemon left half done.
 //! * [`Hosted::switch`] plans the switch from the tree diff and the on-disk state of the paths it
@@ -10,7 +13,7 @@
 //!   it, untracked when a file the outgoing tree lacks sits in the way), records the new epoch and
 //!   hands the plan to the provider. Conflicts come back without touching the disk.
 //!
-//! The ProjFS and engine calls block, so each runs on a blocking thread of the daemon's runtime;
+//! The provider and engine calls block, so each runs on a blocking thread of the daemon's runtime;
 //! the command layer's futures are not `Send`, so opening the workspace does too.
 
 use std::collections::{BTreeSet, HashSet};
@@ -28,11 +31,13 @@ use asc_state::StateDb;
 use asc_state::state::workspaces::{self, Workspace};
 use asc_store::cachedir::CacheDir;
 use asc_store::objects::Objects;
-use asc_vfs::core::{CoreFs, Options, Provider, VfsError};
+use asc_vfs::core::{CoreFs, Options, VfsError};
 use asc_vfs::policy::{DEFAULT_DENY, HydrationPolicy};
-use asc_vfs::projfs::dehydrate::{DEFAULT_BUDGET, IDLE, Policy};
-use asc_vfs::projfs::switch::{Request, Store};
-use asc_vfs::projfs::{Config, DbTimes, ProjfsProvider, ffi};
+use asc_vfs::win::engine::{Request, Store};
+use asc_vfs::win::host::WinProvider;
+use asc_vfs::win::idle::{DEFAULT_BUDGET, IDLE, Policy};
+use asc_vfs::win::select::{self, Backend, Preference};
+use asc_vfs::win::{Config, DbTimes};
 use asc_wc::journal::Journal;
 use asc_wc::redirect::Redirections;
 use asc_wc::switch::{self as plan, Dirty};
@@ -51,9 +56,10 @@ use crate::refs_guard::ReadOnlyRefs;
 /// Most files and directories one prefetch visits.
 const MAX_PREFETCH: usize = 5_000_000;
 
-/// Whether the Windows Projected File System can be loaded on this machine.
+/// Whether a Windows backend can be loaded on this machine.
 pub fn available() -> bool {
-    ffi::Api::load().is_ok()
+    let can = select::loadable();
+    can.projfs || can.cloudfiles
 }
 
 fn failed(e: impl std::fmt::Display) -> HostError {
@@ -77,10 +83,10 @@ async fn blocking<T: Send + 'static>(
 }
 
 /// The backend the daemon registers on Windows.
-pub struct ProjfsBackend;
+pub struct WinBackend;
 
 #[async_trait]
-impl VirtualBackend for ProjfsBackend {
+impl VirtualBackend for WinBackend {
     async fn host(&self, cx: HostContext) -> Result<Arc<dyn Hosted>, HostError> {
         let rt = Handle::current();
         let inner_rt = rt.clone();
@@ -98,6 +104,7 @@ struct Opened {
     local: Option<CacheDir>,
     deny: String,
     budget: u64,
+    backend: Preference,
     locked: Arc<dyn Fn(&RepoPath) -> bool + Send + Sync>,
 }
 
@@ -141,13 +148,51 @@ async fn open(cx: &HostContext) -> Result<Opened, HostError> {
             .get("asc.vfs.hydrationBudget")
             .and_then(|t| parse_size(&t))
             .unwrap_or(DEFAULT_BUDGET),
+        backend: ctx
+            .config
+            .get("asc.vfs.backend")
+            .map(|v| v.parse())
+            .transpose()
+            .map_err(HostError::Invalid)?
+            .unwrap_or_default(),
         locked,
     })
+}
+
+/// Starts the provider of `backend`; `Err` names why it cannot run here.
+fn provider(backend: Backend, cfg: Config) -> Result<Arc<dyn WinProvider>, HostError> {
+    let unavailable = |e: &dyn std::fmt::Display| HostError::Precondition(e.to_string());
+    match backend {
+        #[cfg(feature = "vfs-projfs")]
+        Backend::ProjFs => asc_vfs::projfs::ProjfsProvider::new(cfg)
+            .map(|p| Arc::new(p) as Arc<dyn WinProvider>)
+            .map_err(|e| unavailable(&e)),
+        #[cfg(feature = "vfs-cloudfiles")]
+        Backend::CloudFiles => asc_vfs::cloudfiles::CloudFilesProvider::new(cfg)
+            .map(|p| Arc::new(p) as Arc<dyn WinProvider>)
+            .map_err(|e| unavailable(&e)),
+        #[allow(unreachable_patterns)] // a build with both backends covers every variant
+        other => {
+            drop(cfg);
+            Err(unavailable(&format!(
+                "this build of asc has no {other} support"
+            )))
+        }
+    }
 }
 
 async fn start(cx: HostContext, rt: Handle) -> Result<Arc<dyn Hosted>, HostError> {
     let root = PathBuf::from(&cx.ws.ws.mount);
     let opened = open(&cx).await?;
+    let backend = {
+        let root = root.clone();
+        let pref = opened.backend;
+        blocking(move || {
+            select::choose(pref, select::found(&root), select::loadable())
+                .map_err(HostError::Precondition)
+        })
+        .await?
+    };
     let objects: Arc<dyn Objects> = opened.objects.clone();
     let redirections = Redirections::load(&root).unwrap_or_default();
     let core = Arc::new(CoreFs::new(
@@ -167,27 +212,33 @@ async fn start(cx: HostContext, rt: Handle) -> Result<Arc<dyn Hosted>, HostError
         rt: rt.clone(),
     });
     let journal_sink: Arc<Journal> = cx.journal.clone();
-    let provider = ProjfsProvider::new(Config {
-        workspace: cx.ws.ws.id.0.into_bytes(),
-        core: core.clone(),
-        objects,
-        local: opened.local,
-        times,
-        journal: journal_sink,
-        redirections,
-        rt: rt.clone(),
-    })
-    .map_err(|e| HostError::Precondition(e.to_string()))?;
+    let provider = provider(
+        backend,
+        Config {
+            workspace: cx.ws.ws.id.0.into_bytes(),
+            core: core.clone(),
+            objects,
+            local: opened.local,
+            times,
+            journal: journal_sink,
+            redirections,
+            rt: rt.clone(),
+        },
+    )?;
     provider.set_store(Store {
         db: cx.db.clone(),
         ws: cx.ws.ws.id,
     });
-    let provider = Arc::new(provider);
+    eprintln!(
+        "asc daemon: virtual workspace {} served by {}",
+        root.display(),
+        provider.backend()
+    );
     {
         let provider = provider.clone();
         blocking(move || provider.mount(&root).map_err(vfs)).await?;
     }
-    let host = ProjfsHost {
+    let host = WinHost {
         provider,
         core,
         engine: opened.engine,
@@ -205,9 +256,9 @@ async fn start(cx: HostContext, rt: Handle) -> Result<Arc<dyn Hosted>, HostError
     Ok(Arc::new(host))
 }
 
-/// One workspace served by ProjFS.
-struct ProjfsHost {
-    provider: Arc<ProjfsProvider>,
+/// One workspace served by a Windows backend.
+struct WinHost {
+    provider: Arc<dyn WinProvider>,
     core: Arc<CoreFs>,
     engine: Arc<CliEngine>,
     db: StateDb,
@@ -223,7 +274,7 @@ fn tree_id(raw: &[u8]) -> Result<TreeId, HostError> {
         .map_err(|_| HostError::Invalid("a tree id is 32 bytes".into()))
 }
 
-impl ProjfsHost {
+impl WinHost {
     async fn row(&self) -> Result<Workspace, HostError> {
         workspaces::get(&self.db, self.ws)
             .await
@@ -329,7 +380,7 @@ impl ProjfsHost {
 }
 
 /// [`DiskState`] of the running provider, shareable with blocking threads.
-struct DiskView(Arc<ProjfsProvider>);
+struct DiskView(Arc<dyn WinProvider>);
 
 impl DiskState for DiskView {
     fn state(&self, path: &RepoPath) -> std::io::Result<PathState> {
@@ -347,7 +398,7 @@ impl DiskState for DiskView {
 }
 
 #[async_trait]
-impl Hosted for ProjfsHost {
+impl Hosted for WinHost {
     fn stats(&self) -> HostStats {
         let s = self.core.stats().snapshot();
         let name = |p: &RepoPath| String::from_utf8_lossy(p.as_bytes()).into_owned();

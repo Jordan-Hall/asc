@@ -16,24 +16,27 @@ pub(crate) fn for_workspace(ws: &WsCtx) -> Option<Box<dyn Projected>> {
     imp::open(ws.projection.toplevel())
 }
 
-#[cfg(all(windows, feature = "vfs-projfs"))]
+#[cfg(all(windows, any(feature = "vfs-projfs", feature = "vfs-cloudfiles")))]
 mod imp {
     use std::io;
     use std::path::Path;
 
     use asc_core::path::RepoPath;
-    use asc_vfs::projfs::ffi::{self, Api, file_state};
+    use asc_vfs::win::select;
     use asc_wc::SafeRoot;
     use asc_wc::plain::Projected;
 
     /// `PrjGetOnDiskFileState`: a placeholder, or a hydrated placeholder that was not changed.
+    #[cfg(feature = "vfs-projfs")]
     struct Projfs {
-        api: Api,
+        api: asc_vfs::projfs::ffi::Api,
         gate: SafeRoot,
     }
 
+    #[cfg(feature = "vfs-projfs")]
     impl Projected for Projfs {
         fn unchanged(&self, path: &RepoPath) -> io::Result<bool> {
+            use asc_vfs::projfs::ffi::{self, file_state};
             let Some(abs) = self.gate.resolve(path) else {
                 return Ok(false);
             };
@@ -46,12 +49,43 @@ mod imp {
         }
     }
 
+    /// A Cloud Files placeholder file still in sync: nothing wrote to it since the provider made
+    /// or last updated it. Read from its attributes alone, so nothing hydrates.
+    #[cfg(feature = "vfs-cloudfiles")]
+    struct CloudFiles {
+        gate: SafeRoot,
+    }
+
+    #[cfg(feature = "vfs-cloudfiles")]
+    impl Projected for CloudFiles {
+        fn unchanged(&self, path: &RepoPath) -> io::Result<bool> {
+            let Some(abs) = self.gate.resolve(path) else {
+                return Ok(false);
+            };
+            Ok(
+                asc_vfs::cloudfiles::ffi::probe(&asc_vfs::win::verbatim(&abs))
+                    .is_ok_and(|p| p.is_placeholder() && !p.is_dir() && p.in_sync),
+            )
+        }
+    }
+
     pub(super) fn open(root: &Path) -> Option<Box<dyn Projected>> {
-        let api = Api::load().ok()?;
-        Some(Box::new(Projfs {
-            api,
-            gate: SafeRoot::new(root),
-        }))
+        let gate = SafeRoot::new(root);
+        match select::found(root) {
+            #[cfg(feature = "vfs-cloudfiles")]
+            select::Found::Virtual(select::Backend::CloudFiles) => {
+                Some(Box::new(CloudFiles { gate }))
+            }
+            // A root not seen as a sync root is asked as a ProjFS one: the state of a file that
+            // is not a placeholder reads as changed, so the worst case is a plain read.
+            #[cfg(feature = "vfs-projfs")]
+            _ => {
+                let api = asc_vfs::projfs::ffi::Api::load().ok()?;
+                Some(Box::new(Projfs { api, gate }))
+            }
+            #[cfg(not(feature = "vfs-projfs"))]
+            _ => None,
+        }
     }
 }
 
@@ -89,7 +123,7 @@ mod imp {
 }
 
 #[cfg(not(any(
-    all(windows, feature = "vfs-projfs"),
+    all(windows, any(feature = "vfs-projfs", feature = "vfs-cloudfiles")),
     all(target_os = "linux", feature = "vfs-fuse")
 )))]
 mod imp {

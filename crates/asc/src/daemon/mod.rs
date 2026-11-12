@@ -21,11 +21,11 @@ pub mod plugin_api;
 pub mod plugin_api_inputs;
 pub mod plugin_api_read;
 pub mod plugin_api_stack;
-#[cfg(all(windows, feature = "vfs-projfs"))]
-pub mod projfs_host;
 pub mod scheduler;
 pub mod service;
 pub mod watch_stack;
+#[cfg(all(windows, any(feature = "vfs-projfs", feature = "vfs-cloudfiles")))]
+pub mod win_host;
 pub mod workspace_factory;
 
 pub use service::Service;
