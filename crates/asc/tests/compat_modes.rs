@@ -59,11 +59,12 @@ fn branchless_push_runs_in_both_modes() {
 }
 
 /// Scenarios per group. One test runs one group, so a slow machine fails one group naming what it
-/// did not reach and the other groups still report; the groups also run side by side.
-const GROUP_SIZE: usize = 20;
+/// did not reach and the other groups still report; the groups also run side by side, and small
+/// groups let CI's test shards share them evenly.
+const GROUP_SIZE: usize = 10;
 /// Groups the file declares. [`every_scenario_belongs_to_a_group`] fails when the scenarios outgrow
 /// them, so a new scenario cannot go unrun.
-const GROUPS: usize = 6;
+const GROUPS: usize = 12;
 
 /// The sorted names of the scenarios that run in both modes' sweep, `ASC_MODES_FILTER` applied.
 fn sweep_names() -> Vec<String> {
@@ -158,3 +159,9 @@ group!(scenarios_group_2_are_byte_identical_in_both_modes, 2);
 group!(scenarios_group_3_are_byte_identical_in_both_modes, 3);
 group!(scenarios_group_4_are_byte_identical_in_both_modes, 4);
 group!(scenarios_group_5_are_byte_identical_in_both_modes, 5);
+group!(scenarios_group_6_are_byte_identical_in_both_modes, 6);
+group!(scenarios_group_7_are_byte_identical_in_both_modes, 7);
+group!(scenarios_group_8_are_byte_identical_in_both_modes, 8);
+group!(scenarios_group_9_are_byte_identical_in_both_modes, 9);
+group!(scenarios_group_10_are_byte_identical_in_both_modes, 10);
+group!(scenarios_group_11_are_byte_identical_in_both_modes, 11);
