@@ -10,4 +10,9 @@ pub mod rpc;
 pub mod server;
 pub mod xdr;
 
+#[cfg(test)]
+mod client;
+#[cfg(test)]
+mod tests;
+
 pub use provider::NfsProvider;
