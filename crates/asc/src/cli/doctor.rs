@@ -692,6 +692,30 @@ fn unix_virtual_fs(fuse: Option<bool>, nfs: Option<bool>) -> Check {
     }
 }
 
+/// The macOS FSKit backend (SPEC §10.3b): `app` is `AscFS.app` installed, `group` its app group
+/// directory present (the module has run once, or `ASC_FSKIT_GROUP_DIR` names it).
+#[cfg(any(unix, test))]
+fn fskit_check(app: bool, group: bool) -> Check {
+    match (app, group) {
+        (true, true) => Check::ok(
+            "fskit",
+            "virtual workspaces mount through the asc FSKit module",
+        ),
+        (true, false) => Check::warn(
+            "fskit",
+            "AscFS.app is installed but its app group directory was not found",
+        )
+        .hint(
+            "open AscFS.app once and enable the asc file system in System Settings > General >              Login Items & Extensions > File System Extensions, or set ASC_FSKIT_GROUP_DIR",
+        ),
+        (false, _) => Check::info(
+            "fskit",
+            "the asc FSKit module is not installed; virtual workspaces use the NFS loopback",
+        )
+        .hint("install AscFS.app (macOS 26 or later) for the FSKit backend; see WORKTREES.md"),
+    }
+}
+
 #[cfg(unix)]
 async fn check_unix_vfs() -> Vec<Check> {
     #[cfg(all(target_os = "linux", feature = "vfs-fuse"))]
@@ -711,7 +735,17 @@ async fn check_unix_vfs() -> Vec<Check> {
     let nfs = Some(asc_vfs::nfs::available());
     #[cfg(not(feature = "vfs-nfs"))]
     let nfs = None;
-    vec![unix_virtual_fs(fuse, nfs)]
+    #[allow(unused_mut)] // only macOS builds with vfs-fskit add the FSKit check
+    let mut out = vec![unix_virtual_fs(fuse, nfs)];
+    #[cfg(all(target_os = "macos", feature = "vfs-fskit"))]
+    {
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        out.push(fskit_check(
+            asc_vfs::fskit::app_installed(home.as_deref()),
+            asc_vfs::fskit::group_dir().is_some_and(|d| d.is_dir()),
+        ));
+    }
+    out
 }
 
 /// Where each surface finds `git` (SPEC §11.4).
@@ -2093,5 +2127,17 @@ mod tests {
         assert!(helper.detail.contains("mount helper"));
         let build = unix_virtual_fs(None, None);
         assert!(build.hint.unwrap().contains("vfs-nfs"));
+    }
+
+    #[test]
+    fn fskit_check_names_what_is_missing() {
+        let ready = fskit_check(true, true);
+        assert_eq!((ready.level, ready.name.as_str()), (Level::Ok, "fskit"));
+        let unopened = fskit_check(true, false);
+        assert_eq!(unopened.level, Level::Warn);
+        assert!(unopened.hint.unwrap().contains("File System Extensions"));
+        let absent = fskit_check(false, false);
+        assert_eq!(absent.level, Level::Info);
+        assert!(absent.detail.contains("NFS"));
     }
 }

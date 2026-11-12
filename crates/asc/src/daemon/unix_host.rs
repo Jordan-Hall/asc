@@ -1,11 +1,13 @@
 //! The Unix backends of the daemon (SPEC §10.3, §10.3b): hosts a virtual workspace with
-//! [`asc_vfs::fuse::FuseProvider`] (Linux) or [`asc_vfs::nfs::NfsProvider`] (macOS, or Linux when
+//! [`asc_vfs::fuse::FuseProvider`] (Linux), [`asc_vfs::fskit::FskitProvider`] (macOS with the
+//! asc FSKit module installed) or [`asc_vfs::nfs::NfsProvider`] (macOS otherwise, or Linux when
 //! asked for) over one merged file system, and answers the daemon's `Hosted` calls with it.
 //!
-//! * [`available`] says whether a backend can serve here: FUSE needs `/dev/fuse`, NFS needs the
-//!   system's NFS mount command.
+//! * [`available`] says whether a backend can serve here: FUSE needs `/dev/fuse`, FSKit needs
+//!   macOS with `AscFS.app` installed and its app group present, NFS needs the system's NFS mount
+//!   command.
 //! * [`UnixBackend::host`] opens the workspace, picks the backend (`asc.vfs.backend`: `auto`,
-//!   `fuse` or `nfs`), builds the [`CoreFs`] over the HEAD tree with the overlay at
+//!   `fuse`, `fskit` or `nfs`), builds the [`CoreFs`] over the HEAD tree with the overlay at
 //!   `wc/<ws>/overlay`, and mounts it at the workspace root with a read-only `.git` gitfile.
 //! * [`Hosted::switch`] plans the switch like the Windows host and then moves the base tree: the
 //!   core serves the new tree, and the overlay entries of the switched paths are dropped. Every
@@ -49,6 +51,7 @@ use crate::cli::common::CliEngine;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Fuse,
+    Fskit,
     Nfs,
 }
 
@@ -56,19 +59,25 @@ impl Kind {
     pub fn name(self) -> &'static str {
         match self {
             Kind::Fuse => "fuse",
+            Kind::Fskit => "fskit",
             Kind::Nfs => "nfs",
         }
     }
 }
 
 /// The backends this build can serve on this machine, preferred first: FUSE (Linux) passes
-/// file data through the kernel and sees every open, so it leads; NFS needs no kernel module.
+/// file data through the kernel and sees every open, so it leads; FSKit (macOS) is the same in
+/// user space without a network stack; NFS needs no kernel module or extension.
 pub fn loadable() -> Vec<Kind> {
     #[allow(unused_mut)] // a build without either backend lists none
     let mut can = Vec::new();
     #[cfg(all(target_os = "linux", feature = "vfs-fuse"))]
     if asc_vfs::fuse::available() {
         can.push(Kind::Fuse);
+    }
+    #[cfg(all(unix, feature = "vfs-fskit"))]
+    if asc_vfs::fskit::available() {
+        can.push(Kind::Fskit);
     }
     #[cfg(feature = "vfs-nfs")]
     if asc_vfs::nfs::available() {
@@ -95,10 +104,11 @@ pub fn choose(pref: Option<&str>, can: &[Kind]) -> Result<Kind, HostError> {
             });
         }
         Some("fuse") => Kind::Fuse,
+        Some("fskit") => Kind::Fskit,
         Some("nfs") => Kind::Nfs,
         Some(other) => {
             return Err(HostError::Invalid(format!(
-                "asc.vfs.backend is '{other}'; on this system it is auto, fuse or nfs"
+                "asc.vfs.backend is '{other}'; on this system it is auto, fuse, fskit or nfs"
             )));
         }
     };
@@ -108,6 +118,8 @@ pub fn choose(pref: Option<&str>, can: &[Kind]) -> Result<Kind, HostError> {
         Err(HostError::Precondition(match want {
             Kind::Fuse => "FUSE is not available: it needs Linux, /dev/fuse and a build with the \
                            vfs-fuse feature"
+                .into(),
+            Kind::Fskit => "FSKit is not available: it needs macOS 26, AscFS.app installed and                             enabled in System Settings, and a build with the vfs-fskit feature"
                 .into(),
             Kind::Nfs => "NFS is not available: it needs the system's NFS client and a build with \
                           the vfs-nfs feature"
@@ -159,6 +171,18 @@ fn provider(
             })
             .map(|p| Arc::new(p) as Arc<dyn UnixProvider>)
             .map_err(|e| unavailable(&e))
+        }
+        #[cfg(all(unix, feature = "vfs-fskit"))]
+        Kind::Fskit => {
+            let group = asc_vfs::fskit::group_dir().ok_or_else(|| {
+                HostError::Precondition(format!(
+                    "the asc FSKit module's app group directory was not found; set {}",
+                    asc_vfs::fskit::GROUP_DIR_ENV
+                ))
+            })?;
+            asc_vfs::fskit::FskitProvider::new(cfg, group)
+                .map(|p| Arc::new(p) as Arc<dyn UnixProvider>)
+                .map_err(|e| unavailable(&e))
         }
         #[cfg(feature = "vfs-nfs")]
         Kind::Nfs => asc_vfs::nfs::NfsProvider::new(cfg)
@@ -543,11 +567,28 @@ mod tests {
     }
 
     #[test]
+    fn fskit_leads_nfs_on_macos_and_says_what_it_needs() {
+        assert_eq!(
+            choose(None, &[Kind::Fskit, Kind::Nfs]).unwrap(),
+            Kind::Fskit
+        );
+        assert_eq!(
+            choose(Some("fskit"), &[Kind::Fskit, Kind::Nfs]).unwrap(),
+            Kind::Fskit
+        );
+        assert!(matches!(
+            choose(Some("fskit"), &[Kind::Nfs]),
+            Err(HostError::Precondition(m)) if m.contains("AscFS.app")
+        ));
+        assert_eq!(Kind::Fskit.name(), "fskit");
+    }
+
+    #[test]
     fn windows_names_are_refused_here() {
         for v in ["projfs", "cloudfiles", "FUSE"] {
             assert!(matches!(
                 choose(Some(v), &[Kind::Fuse]),
-                Err(HostError::Invalid(m)) if m.contains("auto, fuse or nfs")
+                Err(HostError::Invalid(m)) if m.contains("auto, fuse, fskit or nfs")
             ));
         }
     }
