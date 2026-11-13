@@ -89,7 +89,7 @@ const INDEX_PAGE: i64 = 5000;
 const CHUNK_THRESHOLD: u64 = 4 * 1024 * 1024;
 /// Tables keyed by a namespace; the drop of a deleted repository clears each. A test checks that
 /// every table with an `ns` column is named here.
-const NS_TABLES: [&str; 61] = [
+const NS_TABLES: [&str; 63] = [
     "packs",
     "delta_bases",
     "delta_cursor",
@@ -151,6 +151,8 @@ const NS_TABLES: [&str; 61] = [
     "notify_events",
     "releases",
     "release_assets",
+    "cache_daily",
+    "cache_by_rev",
 ];
 
 // ------------------------------------------------------------------------------ statuses
