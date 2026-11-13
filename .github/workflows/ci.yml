@@ -119,9 +119,11 @@ jobs:
         with:
           name: nextest-archive
       # The archive includes the workspace binaries tests run via CARGO_BIN_EXE_*, so nothing is built here.
+      # Those paths are fixed at compile time, so the archive is extracted over the checkout: `target/`
+      # then sits where rust-build had it (both jobs check out to the same path).
       # nextest's `ci` profile (.config/nextest.toml) retries only the binaries that race for a free port.
       - name: Test
-        run: cargo nextest run --archive-file nextest-archive.tar.zst --workspace-remap . --profile ci --partition hash:${{ matrix.shard }}/4
+        run: cargo nextest run --archive-file nextest-archive.tar.zst --extract-to . --extract-overwrite --workspace-remap . --profile ci --partition hash:${{ matrix.shard }}/4
 
   rust-lint:
     runs-on: ubuntu-latest
