@@ -26,7 +26,10 @@ const TOUCH_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
 /// Eviction stops once the cache is at or below this share of the limit.
 const EVICT_TARGET_PERCENT: u128 = 80;
 /// Directory under the root that holds the assembled copies of large files.
-const ASSEMBLED_DIR: &str = "assembled";
+const ASSEMBLED_DIR: &str = "assembled-v2";
+/// The earlier name of that directory. Its copies were published without a content check, so
+/// they are never read again and eviction deletes them.
+const LEGACY_ASSEMBLED_DIR: &str = "assembled";
 /// Codec byte of `get_stored` output: the file holds raw decoded data.
 const RAW: u8 = 0;
 
@@ -165,12 +168,7 @@ impl Inner {
         buf.push(RAW);
         file.read_to_end(&mut buf).map_err(io_err)?;
         drop(file);
-        let stale = meta
-            .modified()
-            .ok()
-            .and_then(|m| m.elapsed().ok())
-            .is_some_and(|age| age > TOUCH_AFTER);
-        if stale && !self.read_only {
+        if is_stale(&meta) && !self.read_only {
             // Best effort: a failed touch only makes the file look older.
             let _ = filetime::set_file_mtime(&path, FileTime::now());
         }
@@ -199,9 +197,14 @@ impl Inner {
     /// an existing corrupt one is replaced.
     fn write(&self, key: &ObjKey, data: &[u8]) -> Result<()> {
         if matches!(self.get(key), Ok(Some(_))) {
-            return Ok(());
+            // Present, but a ref may name it before its directory entry was ever synced.
+            return self.sync_parent(key).map_err(io_err);
         }
         self.stage_and_publish(key, data).map_err(io_err)
+    }
+
+    fn sync_parent(&self, key: &ObjKey) -> io::Result<()> {
+        self.path(key).parent().map_or(Ok(()), sync_dir)
     }
 
     fn stage_and_publish(&self, key: &ObjKey, data: &[u8]) -> io::Result<()> {
@@ -211,10 +214,10 @@ impl Inner {
         file.write_all(data)?;
         file.sync_all()?;
         drop(file);
-        let mut created = false;
+        let mut created = 0;
         let renamed = dest
             .parent()
-            .map_or(Ok(false), create_dir_tracked)
+            .map_or(Ok(0), create_dir_tracked)
             .and_then(|c| {
                 created = c;
                 fs::rename(&tmp, &dest)
@@ -223,7 +226,8 @@ impl Inner {
             Ok(()) => sync_published(&dest, created),
             Err(_) if dest.exists() => {
                 let _ = fs::remove_file(&tmp);
-                Ok(())
+                // Another writer's rename won; its directory sync may not have happened yet.
+                dest.parent().map_or(Ok(()), sync_dir)
             }
             Err(e) => {
                 let _ = fs::remove_file(&tmp);
@@ -243,7 +247,7 @@ impl Inner {
         }
         let created = match to.parent() {
             Some(dir) => create_dir_tracked(dir)?,
-            None => false,
+            None => 0,
         };
         match fs::rename(&from, &to) {
             Ok(()) => sync_published(&to, created).map(|()| true),
@@ -253,6 +257,32 @@ impl Inner {
     }
 
     fn evict_to(&self, max_bytes: u64) -> io::Result<u64> {
+        let legacy = self.remove_legacy_assembled()?;
+        let freed = self.evict_current(max_bytes)?;
+        Ok(legacy + freed)
+    }
+
+    /// Deletes every file of the legacy assembled directory, whatever the limit. Returns the
+    /// bytes freed.
+    fn remove_legacy_assembled(&self) -> io::Result<u64> {
+        let dir = self.root.join(LEGACY_ASSEMBLED_DIR);
+        let (mut files, mut total) = (Vec::new(), 0u64);
+        collect_assembled(&dir, &mut files, &mut total)?;
+        let mut freed = 0;
+        for (_, len, path) in files {
+            if remove_evictable(&path).is_ok() {
+                freed += len;
+            }
+        }
+        // Emptied directories only: `remove_dir` refuses one that still holds something.
+        for fan in fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let _ = fs::remove_dir(fan.path());
+        }
+        let _ = fs::remove_dir(&dir);
+        Ok(freed)
+    }
+
+    fn evict_current(&self, max_bytes: u64) -> io::Result<u64> {
         let mut files = Vec::new();
         let mut total = 0u64;
         for item in Walk::new(&self.root, None)? {
@@ -260,7 +290,7 @@ impl Inner {
             total += meta.len();
             files.push((meta.modified()?, meta.len(), path));
         }
-        // Assembled large-file copies a plain checkout keeps (`assembled/<h2>/<hex>`).
+        // Assembled large-file copies a plain checkout keeps (`assembled-v2/<h2>/<hex>`).
         collect_assembled(&self.root.join(ASSEMBLED_DIR), &mut files, &mut total)?;
         // Whole packs a bucket keeps here (`pack/<id>.pack`) count as one file each.
         for (at, len, path) in crate::pack::cache::list(&self.root)? {
@@ -323,19 +353,14 @@ fn collect_assembled(
 }
 
 /// Removes an evicted file. Assembled copies are read-only, so the attribute is cleared
-/// first; an emptied fan-out directory under `assembled/` is removed too, ignoring failure.
+/// first; an emptied fan-out directory under `assembled-v2/` is removed too, ignoring failure.
 fn remove_evictable(path: &Path) -> io::Result<()> {
-    if let Ok(m) = fs::metadata(path) {
-        let mut perms = m.permissions();
-        if perms.readonly() {
-            #[allow(clippy::permissions_set_readonly_false)]
-            perms.set_readonly(false);
-            let _ = fs::set_permissions(path, perms);
-        }
-    }
+    clear_read_only(path);
     remove_if_present(path)?;
     if let Some(dir) = path.parent()
-        && dir.parent().is_some_and(|up| up.ends_with(ASSEMBLED_DIR))
+        && dir
+            .parent()
+            .is_some_and(|up| up.ends_with(ASSEMBLED_DIR) || up.ends_with(LEGACY_ASSEMBLED_DIR))
     {
         let _ = fs::remove_dir(dir);
     }
@@ -366,13 +391,17 @@ thread_local! {
 /// A rename is not durable until the directory that holds the new name is synced: after a
 /// power cut the file can be gone, or a new directory can vanish, even though the file data
 /// was synced and a ref already names the object. Windows cannot sync a directory this way,
-/// so there it does nothing.
+/// so there it does nothing. Some network and FUSE file systems refuse a directory sync; that
+/// is treated as success because the rename has already happened and there is nothing to retry.
 pub(crate) fn sync_dir(dir: &Path) -> io::Result<()> {
     #[cfg(test)]
     SYNC_DIR_CALLS.with(|c| c.set(c.get() + 1));
     #[cfg(unix)]
     {
-        File::open(dir)?.sync_all()
+        match File::open(dir).and_then(|f| f.sync_all()) {
+            Err(e) if sync_refused(&e) => Ok(()),
+            r => r,
+        }
     }
     #[cfg(not(unix))]
     {
@@ -381,22 +410,102 @@ pub(crate) fn sync_dir(dir: &Path) -> io::Result<()> {
     }
 }
 
-/// `create_dir_all` that reports whether `dir` did not exist before the call.
-fn create_dir_tracked(dir: &Path) -> io::Result<bool> {
-    let existed = dir.is_dir();
-    fs::create_dir_all(dir)?;
-    Ok(!existed)
+/// Whether `e` says the file system does not support syncing a directory.
+#[cfg(unix)]
+fn sync_refused(e: &io::Error) -> bool {
+    if matches!(
+        e.kind(),
+        io::ErrorKind::InvalidInput | io::ErrorKind::Unsupported
+    ) {
+        return true;
+    }
+    // EINVAL, ENOTSUP and ENOSYS by number, for platforms whose error kinds do not map them.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    const REFUSED: [i32; 3] = [22, 95, 38];
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    const REFUSED: [i32; 3] = [22, 45, 78];
+    e.raw_os_error().is_some_and(|n| REFUSED.contains(&n))
 }
 
-/// Syncs the directory of a freshly renamed `path`, and that directory's parent when this
-/// call created it.
-fn sync_published(path: &Path, created_dir: bool) -> io::Result<()> {
-    let Some(dir) = path.parent() else {
+/// Clears the read-only attribute of a regular file (Windows only; on Unix a file is removed
+/// without write permission, so nothing is done). A link is never followed, so a link's target
+/// keeps its permissions. Failure is ignored: the removal that follows reports what matters.
+#[allow(clippy::permissions_set_readonly_false)] // Windows only: clears the read-only attribute.
+pub fn clear_read_only(path: &Path) {
+    #[cfg(windows)]
+    if let Ok(m) = fs::symlink_metadata(path)
+        && m.is_file()
+        && m.permissions().readonly()
+    {
+        let mut perms = m.permissions();
+        perms.set_readonly(false);
+        let _ = fs::set_permissions(path, perms);
+    }
+    #[cfg(not(windows))]
+    let _ = path;
+}
+
+/// Refreshes the modification time of the regular file `path` when it is older than a day, so
+/// eviction order follows last use. Links are skipped and errors ignored; a read-only file
+/// stays read-only.
+pub fn touch_if_old(path: &Path) {
+    let Ok(m) = fs::symlink_metadata(path) else {
+        return;
+    };
+    if !m.is_file() || !is_stale(&m) {
+        return;
+    }
+    // Windows refuses to open a read-only file for writing, even to set its time stamp, so the
+    // attribute is lifted for the moment and put back.
+    #[cfg(windows)]
+    let sealed = m.permissions().readonly();
+    #[cfg(windows)]
+    if sealed {
+        clear_read_only(path);
+    }
+    let _ = filetime::set_file_mtime(path, FileTime::now());
+    #[cfg(windows)]
+    if sealed {
+        let mut perms = m.permissions();
+        perms.set_readonly(true);
+        let _ = fs::set_permissions(path, perms);
+    }
+}
+
+fn is_stale(meta: &fs::Metadata) -> bool {
+    meta.modified()
+        .ok()
+        .and_then(|m| m.elapsed().ok())
+        .is_some_and(|age| age > TOUCH_AFTER)
+}
+
+/// `create_dir_all` that reports how many directory levels it created.
+fn create_dir_tracked(dir: &Path) -> io::Result<usize> {
+    let missing = dir
+        .ancestors()
+        .take_while(|d| !d.as_os_str().is_empty() && !d.is_dir())
+        .count();
+    fs::create_dir_all(dir)?;
+    Ok(missing)
+}
+
+/// Syncs the directory of a freshly renamed `path`, then every level above it that this call
+/// created, and the first ancestor that already existed (it holds the topmost new name).
+fn sync_published(path: &Path, created_levels: usize) -> io::Result<()> {
+    let Some(mut dir) = path.parent() else {
         return Ok(());
     };
     sync_dir(dir)?;
-    if created_dir && let Some(up) = dir.parent() {
-        sync_dir(up)?;
+    for _ in 0..created_levels {
+        let Some(up) = dir.parent() else {
+            break;
+        };
+        sync_dir(if up.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            up
+        })?;
+        dir = up;
     }
     Ok(())
 }
@@ -623,8 +732,8 @@ pub(crate) mod tests {
         c.inner.write(&file_key(&a), &a).unwrap();
         assert_eq!(
             sync_calls() - before,
-            2,
-            "new fan-out dir: dir and its parent"
+            3,
+            "new class and fan-out dirs: both, and the root above them"
         );
 
         let before = sync_calls();
@@ -633,7 +742,11 @@ pub(crate) mod tests {
 
         let before = sync_calls();
         c.inner.write(&file_key(&b), &b).unwrap();
-        assert_eq!(sync_calls() - before, 0, "already present: nothing to sync");
+        assert_eq!(
+            sync_calls() - before,
+            1,
+            "already present: the directory is synced before a ref can name it"
+        );
     }
 
     #[test]
@@ -649,8 +762,8 @@ pub(crate) mod tests {
         assert!(src.inner.demote(&dst.inner, &file_key(&a)).unwrap());
         assert_eq!(
             sync_calls() - before,
-            2,
-            "new fan-out dir: dir and its parent"
+            3,
+            "new class and fan-out dirs: both, and the root above them"
         );
 
         let before = sync_calls();
@@ -896,6 +1009,117 @@ pub(crate) mod tests {
         assert!(fs::metadata(&big).unwrap().permissions().readonly());
         assert_eq!(c.evict_to(50).await.unwrap(), 100);
         assert!(!big.exists());
+    }
+
+    #[test]
+    fn syncing_a_directory_every_level_is_counted_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let deep = tmp.path().join("a").join("b").join("c");
+        assert_eq!(create_dir_tracked(&deep).unwrap(), 3);
+        assert_eq!(create_dir_tracked(&deep).unwrap(), 0);
+        let before = sync_calls();
+        sync_published(&deep.join("f"), 3).unwrap();
+        assert_eq!(sync_calls() - before, 4, "c, b, a and the existing root");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_directory_sync_a_file_system_refuses_is_success() {
+        assert!(sync_refused(&io::Error::from(io::ErrorKind::InvalidInput)));
+        assert!(sync_refused(&io::Error::from(io::ErrorKind::Unsupported)));
+        assert!(sync_refused(&io::Error::from_raw_os_error(22)));
+        assert!(!sync_refused(&io::Error::from(
+            io::ErrorKind::PermissionDenied
+        )));
+        // A real directory still syncs.
+        sync_dir(tempfile::tempdir().unwrap().path()).unwrap();
+    }
+
+    #[test]
+    fn touch_if_old_refreshes_an_old_file_and_leaves_a_recent_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = put_assembled(tmp.path(), "ee", 10, 3 * 86_400, true);
+        touch_if_old(&path);
+        let age = |p: &Path| {
+            fs::metadata(p)
+                .unwrap()
+                .modified()
+                .unwrap()
+                .elapsed()
+                .unwrap()
+        };
+        assert!(age(&path) < Duration::from_secs(3600));
+        let young = put_assembled(tmp.path(), "ff", 10, 600, false);
+        touch_if_old(&young);
+        assert!(age(&young) >= Duration::from_secs(600));
+        touch_if_old(&tmp.path().join("missing"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn clearing_read_only_leaves_a_links_target_read_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = put_assembled(tmp.path(), "tt", 5, 10, true);
+        let link = tmp.path().join("lnk");
+        if std::os::windows::fs::symlink_file(&target, &link).is_err() {
+            eprintln!("skipped: symlink creation is not permitted here");
+            return;
+        }
+        clear_read_only(&link);
+        assert!(fs::metadata(&target).unwrap().permissions().readonly());
+        clear_read_only(&target);
+        assert!(!fs::metadata(&target).unwrap().permissions().readonly());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn eviction_never_changes_the_permissions_of_a_links_target() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let c = open_in(tmp.path(), "cache");
+        let outside = tmp.path().join("outside");
+        fs::write(&outside, b"secret").unwrap();
+        fs::set_permissions(&outside, fs::Permissions::from_mode(0o400)).unwrap();
+        let dir = c.inner.root.join(ASSEMBLED_DIR).join("ab");
+        fs::create_dir_all(&dir).unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("link")).unwrap();
+        remove_evictable(&dir.join("link")).unwrap();
+        assert!(fs::symlink_metadata(dir.join("link")).is_err());
+        let mode = fs::metadata(&outside).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o400);
+    }
+
+    #[tokio::test]
+    async fn eviction_deletes_legacy_assembled_copies_even_under_the_limit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let c = open_in(tmp.path(), "cache");
+        let dir = c.inner.root.join(LEGACY_ASSEMBLED_DIR).join("ab");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("old"), vec![0u8; 40]).unwrap();
+        let current = put_assembled(&c.inner.root, "new", 10, 10, false);
+        assert_eq!(c.evict_to(u64::MAX).await.unwrap(), 40);
+        assert!(!c.inner.root.join(LEGACY_ASSEMBLED_DIR).exists());
+        assert!(current.exists());
+    }
+
+    #[test]
+    fn an_object_that_is_already_present_still_syncs_its_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let c = open_in(tmp.path(), "cache");
+        let data = b"present".to_vec();
+        c.inner.write(&file_key(&data), &data).unwrap();
+        let before = sync_calls();
+        c.inner.write(&file_key(&data), &data).unwrap();
+        assert_eq!(sync_calls() - before, 1);
+    }
+
+    #[test]
+    fn clearing_read_only_skips_a_missing_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        clear_read_only(&tmp.path().join("nothing"));
+        let f = put_assembled(tmp.path(), "aa", 5, 10, true);
+        remove_evictable(&f).unwrap();
+        assert!(!f.exists());
     }
 
     #[tokio::test]

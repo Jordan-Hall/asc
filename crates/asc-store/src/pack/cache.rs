@@ -138,7 +138,12 @@ impl PackCache {
             return Err(e);
         }
         match fs::rename(&tmp, self.path(id)) {
-            Ok(()) => crate::cachedir::sync_dir(&self.dir).map(|()| true),
+            Ok(()) => {
+                // A pack that is lost to a power cut is fetched again, so a failed directory
+                // sync is not worth failing the store for.
+                let _ = crate::cachedir::sync_dir(&self.dir);
+                Ok(true)
+            }
             Err(e) => {
                 let _ = fs::remove_file(&tmp);
                 // Another reader cached the same pack first: its copy is the same bytes.
