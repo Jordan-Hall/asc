@@ -18,14 +18,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  rust:
-    # The test run is split three ways by nextest's hash partition (about 14 minutes of tests in one
-    # job before); fmt, clippy and doc tests run beside it in rust-lint.
-    name: rust (${{ matrix.shard }}/3)
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3]
+  rust-build:
+    # The test binaries are compiled once here and archived; the four rust shards run the archive
+    # without compiling. fmt, clippy and doc tests run beside them in rust-lint.
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
@@ -48,9 +43,44 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          # One cache for the three shards: they build the same test binaries.
+          # The only job that saves the cache.
           shared-key: rust-test
-          save-if: ${{ matrix.shard == 1 }}
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-nextest
+      # The archive holds the test binaries and the workspace's own binaries (CARGO_BIN_EXE_*).
+      - name: Archive tests
+        run: cargo nextest archive --workspace --locked --archive-file nextest-archive.tar.zst
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: nextest-archive
+          path: nextest-archive.tar.zst
+          retention-days: 1
+          # Already zstd-compressed.
+          compression-level: 0
+
+  rust:
+    # The test run is split four ways by nextest's hash partition over the archive that rust-build
+    # compiled once (about 14 minutes of tests in one job before).
+    name: rust (${{ matrix.shard }}/4)
+    needs: rust-build
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      # ~100 test binaries: no debug info and no incremental data keep the runner's disk from filling.
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_INCREMENTAL: '0'
+      # Tests compare against the pinned git only (docs/git-fidelity.md); ASC_GIT_ORACLE and
+      # ASC_REAL_GIT are appended to the job environment by the "Pinned git oracle" step.
+      ASC_ORACLE_STRICT: '1'
+    steps:
+      # Tests read fixtures from the source tree.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # The pinned git is built from its sha256-verified tarball; the build is cached on the pins.
       - name: Pinned git oracle cache
         id: oracle-cache
@@ -79,12 +109,19 @@ jobs:
         with:
           path: ~/.cache/asc-oracle
           key: ${{ steps.oracle-cache.outputs.cache-primary-key }}
+      # nextest runs through cargo, and a few tests start cargo or rustc themselves.
+      - name: Toolchain (from rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
       - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-nextest
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: nextest-archive
+      # The archive includes the workspace binaries tests run via CARGO_BIN_EXE_*, so nothing is built here.
       # nextest's `ci` profile (.config/nextest.toml) retries only the binaries that race for a free port.
       - name: Test
-        run: cargo nextest run --workspace --locked --profile ci --partition hash:${{ matrix.shard }}/3
+        run: cargo nextest run --archive-file nextest-archive.tar.zst --workspace-remap . --profile ci --partition hash:${{ matrix.shard }}/4
 
   rust-lint:
     runs-on: ubuntu-latest
