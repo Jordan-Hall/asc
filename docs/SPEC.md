@@ -48,8 +48,9 @@ Crate edges (v1.9): the dependency order is asc-core, asc-store, asc-engine, the
 
 **Not built in v1** (each is additive):
 - *Measured v1.x items:* logical dedup across a fork network (§3.3; deviation recorded as §19 decision 6). Segment packing of small objects and per-pack zstd dictionaries are built (docs/design/PACKED-OBJECTS.md).
-- *Gated on measurement:* a host-level fetch proxy for CI. The daemon-side turbo cache tier is built: the daemon's turbo front reads a local miss through the work tree's build cache server and uploads in the background when the tier is read-write (docs/designs/build-cache.md §4.3). The path log beyond the mainline index is built as the derived type `pathlog.v1` (§5).
-- *Out of scope:* the asc RPC protocol over SSH and `asc-authenticate` (§25.11.9; git over SSH and git smart-HTTP are in scope, §15.6, §25), SSH user certificates and security-key (`sk-*`) keys on the `asc serve` listener (v1.x, §25.11.1), jj-style first-class conflicts, workspace sync, `node_modules` snapshots, `WatchRefs`, `asc run` task execution, TypeScript import-graph inference, parsing `package-lock.json`/`pnpm-lock.yaml`/`yarn.lock`/`bun.lockb` (they are eco-global files, §12A.2), compatibility with the IDEs' built-in git (ASC's plugins replace it, §24), and real git operating inside an asc workspace.
+- *Built:* the daemon-side turbo cache tier: the daemon's turbo front reads a local miss through the work tree's build cache server and uploads in the background when the tier is read-write (docs/designs/build-cache.md §4.3). The path log beyond the mainline index is the derived type `pathlog.v1` (§5).
+- *Decided 2026-11-13, design written, not built yet:* jj-style first-class conflicts (`docs/design/FIRST-CLASS-CONFLICTS.md`, row 16), `node_modules` snapshots (`docs/design/DEPENDENCY-SNAPSHOTS.md`, row 22), `asc run` task execution (`docs/design/TASK-RUNNER.md`, row 24), and real git inside a workspace as a read-only view (`docs/design/GIT-VIEW.md`, row 26).
+- *On the roadmap (docs/ROADMAP-NEXT.md):* `WatchRefs` (row 18); the asc RPC protocol over SSH and `asc-authenticate` (§25.11.9, row 54); SSH user certificates and security-key (`sk-*`) keys on the `asc serve` listener (§25.11.1, row 55); workspace sync (row 12); TypeScript import-graph inference (row 56); parsing `package-lock.json`/`pnpm-lock.yaml`/`yarn.lock`/`bun.lockb` for the project graph (§12A.2, row 57); compatibility with the IDEs' built-in git (row 26); a host-level fetch proxy for CI, gated on measurement (row 58); shared `BucketRefs` across forks (row 8); the git commands marked "native in a later unit" (§11.5, row 59); a signing settings page (row 60).
 
 ---
 
@@ -5000,7 +5001,7 @@ Units U80 to U83 (PLAN) build it: the module, view and feature flag; the upload-
 | Key types | `ssh-ed25519`, `ecdsa-sha2-nistp256`, `-nistp384`, `-nistp521`, `rsa-sha2-256` and `rsa-sha2-512` (RSA keys of at least `min_rsa_bits`, default 2048). `ssh-rsa` with SHA-1 signatures and `ssh-dss` are refused |
 | Commands | `git-upload-pack '<repo>'` and `git-receive-pack '<repo>'` only, protocol v2 fetch where the client sends `GIT_PROTOCOL=version=2`, else v0/v1; push v0/v1 |
 | Refused, always | shell, subsystem (sftp), any other exec, `pty-req`, `x11-req`, port forwarding (`direct-tcpip`, `tcpip-forward`), socket forwarding, tunnels, agent forwarding, `git-upload-archive`, `git-lfs-authenticate`, `env` other than `GIT_PROTOCOL` |
-| Not in v1 (additive) | SSH user certificates (a trusted user CA), `sk-ecdsa` and `sk-ed25519` security-key types, the asc RPC protocol over SSH and `asc-authenticate` (§25.11.9), an OpenSSH forced-command entry for operators who want `sshd` in front |
+| Not in v1 (additive) | SSH user certificates (a trusted user CA), `sk-ecdsa` and `sk-ed25519` security-key types, the asc RPC protocol over SSH and `asc-authenticate` (§25.11.9), an OpenSSH forced-command entry for operators who want `sshd` in front. The first three are rows 54 and 55 of `docs/ROADMAP-NEXT.md` |
 
 #### 25.11.2 The SSH library: `russh`
 
