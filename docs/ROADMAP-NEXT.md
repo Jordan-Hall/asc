@@ -33,7 +33,7 @@ considered and rejected for this reason.
 | # | Item | What it does | Size | Status |
 |---|---|---|---|---|
 | 5 | Cold-only deltas | Only history past a set age or distance from every tip may become a delta | D | decision |
-| 6 | Never serve a delta | A written rule and a test: every read path, cache and client receives full values | S | open |
+| 6 | Never serve a delta | A written rule and a test: every read path, cache and client receives full values | S | done |
 | 7 | Cold-read benchmark | Latency of reading a depth-eight chain from an S3-compatible store, recorded in `docs/BENCHMARKS.md`, before deltas are enabled anywhere | S | open |
 | 8 | Fork deduplication | Forks share objects instead of copying them | D | open |
 | 9 | Large-file chunk pairing | Chunks are 65 MB of the 192.6 MB dash store; git packs the same files in 50 MB | S | open |
@@ -47,7 +47,7 @@ considered and rejected for this reason.
 | 12 | Snapshot sync | Snapshots go to the commit cloud: work in progress follows the user between machines | D | after 11 |
 | 13 | Agent overlay worktrees | Writes land in a small overlay; the rest is served from the store. Measure the disk use of an agent worktree first | D | open |
 | 14 | `asc doctor` picks the mode | Detects reflink and virtual support, states the choice and what it costs | S | open |
-| 15 | Link mode as last resort | Documented so; doctor recommends virtual mode or a volume that clones | S | open |
+| 15 | Link mode as last resort | Documented so; doctor recommends virtual mode or a volume that clones | S | done |
 
 ## 4. Agents and merging
 
@@ -80,17 +80,17 @@ own server and sends no repository data to a third party.
 | # | Item | What it does | Size | Status |
 |---|---|---|---|---|
 | 28 | Exploited-in-the-wild ranking | CISA's Known Exploited Vulnerabilities list and EPSS scores beside CVSS, from mirrored files | S | open |
-| 29 | Re-scan trunk on new advisories | What has already landed is checked again when advisories change, with a notice. Check first for an existing schedule | S | check first |
-| 30 | Reachability | A finding is marked "used" only when the code index shows the package or symbol is referenced. Check first: `deps/imports.rs` | D | check first |
-| 31 | Images and CI actions | Dockerfile base images and pinned CI actions are scanned as well as language packages | S | check first |
+| 29 | Re-scan trunk on new advisories | What has already landed is checked again when advisories change, with a notice. Checked: scans run only on request and at landing; nothing reacts to a new advisory | S | open |
+| 30 | Reachability | A finding is marked "used" only when the code index shows the package or symbol is referenced. Checked: `deps/imports.rs` collects the npm packages the sources import, but nothing reads the set | D | open |
+| 31 | Images and CI actions | Dockerfile base images and pinned CI actions are scanned as well as language packages Checked: none of the three is parsed | S | open |
 | 32 | SBOM per revision | CycloneDX or SPDX for any changeset, from the data already parsed | S | open |
-| 33 | Advisories against asc itself | The server and the CLI tell the operator when the running version has an advisory. Check first: `update.rs` | S | check first |
+| 33 | Advisories against asc itself | The server and the CLI tell the operator when the running version has an advisory. Checked: not present | S | open |
 | 34 | Cache and artifact marking | Build-cache entries and CI artifacts built with a dependency that later got an advisory are flagged | D | open |
 | 36 | One security status | Each repository and each change has one status (clean, findings, unknown) with the versions to move to | S | open |
 | 37 | Security page across repositories | One page per owner or organisation listing every repository's status and findings, with export | S | open |
 | 38 | Notifications | A notice to the repository's watchers when its status changes | S | open |
 | 39 | Agent tools | MCP tools that read findings and manage scanning | S | open |
-| 40 | Scanner limits | Time and CPU limits per scan, set by the operator | S | check first |
+| 40 | Scanner limits | A total time limit and a CPU limit per scan. Checked: file, byte, package and concurrency limits exist; these two do not | S | open |
 
 ## 7. Adoption
 
