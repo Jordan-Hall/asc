@@ -7,12 +7,24 @@
 //! different from a feed that was loaded and does not list the CVE; [`Intel::lookup`] keeps the two apart.
 //! A feed that parses but holds too few usable rows is refused, so a wrong or emptied file can never
 //! make every CVE read as "not listed".
+//!
+//! [`IntelSource`] below fetches (or reads from a file), holds and ages the two feeds. It asks for the
+//! whole public file with no query string, so nothing about any repository leaves the server; all
+//! matching is local.
 
 use std::collections::{BTreeSet, HashMap};
 use std::io::Read;
+use std::path::PathBuf;
+use std::sync::{Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::time::SystemTime;
 
 use serde::Deserialize;
 use serde::de::{DeserializeSeed, Error as _, IgnoredAny, MapAccess, SeqAccess, Visitor};
+use tokio_util::sync::CancellationToken;
+
+use super::config::{Config, Endpoint};
+use super::egress::{Egress, Limits};
+use super::osv::Clock;
 
 /// Most entries read from a KEV catalog.
 pub const MAX_KEV_ENTRIES: usize = 200_000;
@@ -502,10 +514,10 @@ pub struct IntelHit {
 /// The loaded feeds. A feed is `None` when it was never loaded or failed to load.
 #[derive(Debug, Clone, Default)]
 pub struct Intel {
-    /// The KEV catalog, when loaded.
-    pub kev: Option<Kev>,
-    /// The EPSS scores, when loaded.
-    pub epss: Option<Epss>,
+    /// The KEV catalog, when loaded and still trusted.
+    pub kev: Option<Arc<Kev>>,
+    /// The EPSS scores, when loaded and still trusted.
+    pub epss: Option<Arc<Epss>>,
 }
 
 impl Intel {
@@ -535,6 +547,594 @@ impl Intel {
                 .map_or(Feed::NotListed, Feed::Listed),
         };
         IntelHit { cve, kev, epss }
+    }
+}
+
+// ------------------------------------------------------------------------------ the source
+
+/// Longest wait before a fetch that failed on the network is tried again, in seconds (the TTL when it
+/// is shorter).
+const RETRY_SECS: i64 = 300;
+/// The longest a read of a feed file may take before the refresh gives up on it.
+const FILE_READ_LIMIT: std::time::Duration = std::time::Duration::from_secs(60);
+/// How far in the future a feed's own date may lie, in seconds, before the file is refused. A far future
+/// date would otherwise make every later, genuine file look like a rollback.
+const MAX_FUTURE_SECS: i64 = 2 * 86_400;
+
+/// Unix seconds of a feed date: `YYYY-MM-DD`, optionally followed by `T` or a space, `HH:MM:SS`, a
+/// fraction, and `Z`, `+HHMM`, `+HH:MM` or `+HH`. Anything else gives `None`.
+pub fn epoch_of(s: &str) -> Option<i64> {
+    fn num(s: &str, from: usize, to: usize) -> Option<i64> {
+        let t = s.get(from..to)?;
+        if t.is_empty() || !t.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        t.parse().ok()
+    }
+    let b = s.as_bytes();
+    if b.len() < 10 || b[4] != b'-' || b[7] != b'-' {
+        return None;
+    }
+    let (y, m, d) = (num(s, 0, 4)?, num(s, 5, 7)?, num(s, 8, 10)?);
+    if !(1970..=2200).contains(&y) || !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    let mut secs = crate::ai::clock::month_start_of(y, u32::try_from(m).ok()?) + (d - 1) * 86_400;
+    let rest = s.get(10..)?;
+    if rest.is_empty() {
+        return Some(secs);
+    }
+    let rest = rest.strip_prefix(['T', ' '])?;
+    let rb = rest.as_bytes();
+    if rb.len() < 8 || rb[2] != b':' || rb[5] != b':' {
+        return None;
+    }
+    let (h, mi, se) = (num(rest, 0, 2)?, num(rest, 3, 5)?, num(rest, 6, 8)?);
+    if h > 23 || mi > 59 || se > 59 {
+        return None;
+    }
+    secs += h * 3600 + mi * 60 + se;
+    let mut tail = rest.get(8..)?;
+    if let Some(frac) = tail.strip_prefix('.') {
+        let n = frac.bytes().take_while(u8::is_ascii_digit).count();
+        if n == 0 {
+            return None;
+        }
+        tail = frac.get(n..)?;
+    }
+    if tail.is_empty() || tail == "Z" {
+        return Some(secs);
+    }
+    let sign = match tail.as_bytes()[0] {
+        b'+' => 1,
+        b'-' => -1,
+        _ => return None,
+    };
+    let z = tail.get(1..)?;
+    let (oh, om) = match z.len() {
+        2 => (num(z, 0, 2)?, 0),
+        4 => (num(z, 0, 2)?, num(z, 2, 4)?),
+        5 if z.as_bytes()[2] == b':' => (num(z, 0, 2)?, num(z, 3, 5)?),
+        _ => return None,
+    };
+    if oh > 23 || om > 59 {
+        return None;
+    }
+    Some(secs - sign * (oh * 3600 + om * 60))
+}
+
+type Stamp = (SystemTime, u64);
+
+/// What a feed needs from its parsed form.
+trait Parsed: Sized + Send + Sync + 'static {
+    fn parse_feed(bytes: &[u8], min_rows: usize) -> Result<Self, IntelError>;
+    fn feed_date(&self) -> Option<&str>;
+    fn feed_version(&self) -> Option<&str>;
+    fn rows(&self) -> usize;
+}
+
+impl Parsed for Kev {
+    fn parse_feed(bytes: &[u8], min_rows: usize) -> Result<Self, IntelError> {
+        parse_kev(bytes, min_rows)
+    }
+    fn feed_date(&self) -> Option<&str> {
+        self.date_released.as_deref()
+    }
+    fn feed_version(&self) -> Option<&str> {
+        self.catalog_version.as_deref()
+    }
+    fn rows(&self) -> usize {
+        self.len()
+    }
+}
+
+impl Parsed for Epss {
+    fn parse_feed(bytes: &[u8], min_rows: usize) -> Result<Self, IntelError> {
+        parse_epss(bytes, min_rows)
+    }
+    fn feed_date(&self) -> Option<&str> {
+        self.score_date.as_deref()
+    }
+    fn feed_version(&self) -> Option<&str> {
+        self.model_version.as_deref()
+    }
+    fn rows(&self) -> usize {
+        self.len()
+    }
+}
+
+/// Where one feed comes from.
+enum Origin {
+    Off,
+    Url { url: String, limits: Limits },
+    File { path: PathBuf, max_bytes: u64 },
+}
+
+impl Origin {
+    fn of(endpoint: &Endpoint, file: Option<&PathBuf>) -> Self {
+        if let Some(path) = file {
+            return Origin::File {
+                path: path.clone(),
+                max_bytes: endpoint.max_bytes.0,
+            };
+        }
+        if !endpoint.enabled() {
+            return Origin::Off;
+        }
+        Origin::Url {
+            url: endpoint.url.clone(),
+            limits: Limits {
+                timeout: std::time::Duration::from_secs(endpoint.timeout_secs),
+                max_bytes: usize::try_from(endpoint.max_bytes.0).unwrap_or(usize::MAX),
+            },
+        }
+    }
+
+    fn configured(&self) -> bool {
+        !matches!(self, Origin::Off)
+    }
+}
+
+/// One feed as held: the last good copy and what the last attempt did.
+struct Slot<T> {
+    data: Option<Arc<T>>,
+    /// The feed's own date, in unix seconds, when it has a usable one.
+    date: Option<i64>,
+    /// When the held copy was last read or confirmed by a successful fetch or look at the file.
+    loaded_at: i64,
+    /// Size and modification time of the file the copy came from.
+    stamp: Option<Stamp>,
+    /// The file state that was refused, so the same file is not parsed again.
+    rejected: Option<Stamp>,
+    attempted: Option<i64>,
+    /// The last attempt failed on the network, so the next one comes after the short retry delay. A feed
+    /// that was fetched but refused (bad content, bad date) waits the full TTL instead.
+    soon: bool,
+    error: Option<String>,
+}
+
+impl<T> Default for Slot<T> {
+    fn default() -> Self {
+        Self {
+            data: None,
+            date: None,
+            loaded_at: 0,
+            stamp: None,
+            rejected: None,
+            attempted: None,
+            soon: false,
+            error: None,
+        }
+    }
+}
+
+#[derive(Default)]
+struct Held {
+    kev: Slot<Kev>,
+    epss: Slot<Epss>,
+}
+
+struct Sel<T> {
+    get: fn(&Held) -> &Slot<T>,
+    get_mut: fn(&mut Held) -> &mut Slot<T>,
+}
+
+const KEV_SLOT: Sel<Kev> = Sel {
+    get: |h| &h.kev,
+    get_mut: |h| &mut h.kev,
+};
+const EPSS_SLOT: Sel<Epss> = Sel {
+    get: |h| &h.epss,
+    get_mut: |h| &mut h.epss,
+};
+
+/// Whether a feed can be used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeedState {
+    /// No URL and no file is configured.
+    Unconfigured,
+    /// Configured, but there is no copy, or the copy is too old to trust: every lookup is unknown.
+    Unknown,
+    /// A copy is held and trusted.
+    Current,
+}
+
+/// What one feed is doing, for the status call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FeedStatus {
+    pub state: FeedState,
+    /// KEV catalog version or EPSS model version of the held copy.
+    pub version: Option<String>,
+    /// CVEs in the held copy (0 when none is held).
+    pub count: usize,
+    /// The feed's own date of the held copy.
+    pub date: Option<String>,
+    /// When the held copy was last read or confirmed, in unix seconds.
+    pub loaded_at: Option<i64>,
+    /// Seconds since `loaded_at`.
+    pub age_secs: Option<i64>,
+    /// Why the feed is unknown, or what the last refresh said when it failed. Empty when all is well.
+    pub note: String,
+}
+
+/// The status of both feeds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IntelStatus {
+    pub kev: FeedStatus,
+    pub epss: FeedStatus,
+}
+
+/// Fetches the KEV and EPSS feeds, holds the last good copy of each and ages it.
+///
+/// [`IntelSource::refresh`] is the only part that waits for the network or the disk; it does nothing
+/// when no feed is due and returns at once when another call is already refreshing. [`IntelSource::get`]
+/// never waits for it: it takes a brief read lock and hands out the copies that are still trusted.
+pub struct IntelSource {
+    egress: Arc<Egress>,
+    clock: Clock,
+    ttl: i64,
+    stale: i64,
+    kev_origin: Origin,
+    epss_origin: Origin,
+    kev_min: usize,
+    epss_min: usize,
+    held: RwLock<Held>,
+    refreshing: tokio::sync::Mutex<()>,
+}
+
+impl IntelSource {
+    pub fn new(egress: Arc<Egress>, cfg: &Config, clock: Clock) -> Self {
+        let secs = |v: u64| i64::try_from(v).unwrap_or(i64::MAX);
+        Self {
+            egress,
+            clock,
+            ttl: secs(cfg.intel_ttl_secs),
+            stale: secs(cfg.intel_stale_secs),
+            kev_origin: Origin::of(&cfg.kev, cfg.kev_file.as_ref()),
+            epss_origin: Origin::of(&cfg.epss, cfg.epss_file.as_ref()),
+            kev_min: KEV_MIN_ROWS,
+            epss_min: EPSS_MIN_ROWS,
+            held: RwLock::new(Held::default()),
+            refreshing: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    /// The fewest rows a feed must have, replaced so tests can use small files.
+    #[cfg(test)]
+    pub(crate) fn with_min_rows(mut self, kev: usize, epss: usize) -> Self {
+        self.kev_min = kev;
+        self.epss_min = epss;
+        self
+    }
+
+    fn read(&self) -> RwLockReadGuard<'_, Held> {
+        self.held.read().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn write(&self) -> RwLockWriteGuard<'_, Held> {
+        self.held.write().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn expired<T>(&self, s: &Slot<T>, now: i64) -> bool {
+        now.saturating_sub(s.loaded_at) > self.stale
+            || s.date.is_some_and(|d| now.saturating_sub(d) > self.stale)
+    }
+
+    fn usable<T>(&self, s: &Slot<T>, now: i64) -> Option<Arc<T>> {
+        s.data.clone().filter(|_| !self.expired(s, now))
+    }
+
+    /// The feeds as they can be trusted now. A feed that was never loaded, whose last good copy is older
+    /// than `intel_stale_secs`, or whose own date is that old, is `None`, so lookups say unknown.
+    pub fn get(&self) -> Intel {
+        let now = (self.clock)();
+        let h = self.read();
+        Intel {
+            kev: self.usable(&h.kev, now),
+            epss: self.usable(&h.epss, now),
+        }
+    }
+
+    /// How often `refresh` is worth calling: the TTL, or the short retry delay when that is shorter.
+    /// A call in between does nothing for a URL and costs one `stat` for a file.
+    pub fn poll_every(&self) -> std::time::Duration {
+        let secs = self.ttl.clamp(1, RETRY_SECS);
+        std::time::Duration::from_secs(u64::try_from(secs).unwrap_or(1))
+    }
+
+    /// The state of both feeds now.
+    pub fn status(&self) -> IntelStatus {
+        let now = (self.clock)();
+        let h = self.read();
+        IntelStatus {
+            kev: self.feed_status(self.kev_origin.configured(), &h.kev, now),
+            epss: self.feed_status(self.epss_origin.configured(), &h.epss, now),
+        }
+    }
+
+    fn feed_status<T: Parsed>(&self, configured: bool, s: &Slot<T>, now: i64) -> FeedStatus {
+        let usable = self.usable(s, now).is_some();
+        let state = match (configured, usable) {
+            (false, _) => FeedState::Unconfigured,
+            (true, true) => FeedState::Current,
+            (true, false) => FeedState::Unknown,
+        };
+        let note = match (&s.error, state) {
+            (Some(e), _) => e.clone(),
+            (None, FeedState::Unknown) if s.data.is_some() => {
+                "the held copy is older than the stale window".to_owned()
+            }
+            (None, FeedState::Unknown) => "the feed has not been loaded yet".to_owned(),
+            _ => String::new(),
+        };
+        FeedStatus {
+            state,
+            version: s
+                .data
+                .as_ref()
+                .and_then(|d| d.feed_version().map(str::to_owned)),
+            count: s.data.as_ref().map_or(0, |d| d.rows()),
+            date: s
+                .data
+                .as_ref()
+                .and_then(|d| d.feed_date().map(str::to_owned)),
+            loaded_at: s.data.as_ref().map(|_| s.loaded_at),
+            age_secs: s
+                .data
+                .as_ref()
+                .map(|_| now.saturating_sub(s.loaded_at).max(0)),
+            note,
+        }
+    }
+
+    /// Brings the feeds up to date: a URL is fetched when its TTL has run out (after a failure, sooner), a
+    /// file is read again when its size or modification time changed. Does nothing when nothing is due,
+    /// and returns at once when another call is refreshing, so callers need not coordinate. A failure or a
+    /// refused file keeps the last good copy, which `get` stops handing out after `intel_stale_secs`.
+    pub async fn refresh(&self) {
+        let Ok(_one_at_a_time) = self.refreshing.try_lock() else {
+            return;
+        };
+        self.refresh_one(&self.kev_origin, self.kev_min, KEV_SLOT)
+            .await;
+        self.refresh_one(&self.epss_origin, self.epss_min, EPSS_SLOT)
+            .await;
+    }
+
+    /// Calls `refresh` now and then every `every`, until `shutdown` is cancelled (which also cuts a
+    /// refresh short). Meant to run as a background task, never on a request path. A failed refresh is
+    /// logged once, with the feed name and the reason (which never holds the URL), and tried again later.
+    pub async fn run(&self, shutdown: &CancellationToken, every: std::time::Duration) {
+        let (mut kev_logged, mut epss_logged) = (String::new(), String::new());
+        loop {
+            tokio::select! {
+                () = self.refresh() => {}
+                () = shutdown.cancelled() => return,
+            }
+            let st = self.status();
+            for (feed, now, before) in [
+                ("kev", &st.kev.note, &mut kev_logged),
+                ("epss", &st.epss.note, &mut epss_logged),
+            ] {
+                if now == before {
+                    continue;
+                }
+                if now.is_empty() {
+                    tracing::info!(feed, "exploitation feed is current again");
+                } else {
+                    tracing::warn!(feed, note = %now, "exploitation feed not refreshed");
+                }
+                before.clone_from(now);
+            }
+            tokio::select! {
+                () = tokio::time::sleep(every) => {}
+                () = shutdown.cancelled() => return,
+            }
+        }
+    }
+
+    fn fail<T>(&self, sel: &Sel<T>, now: i64, msg: String, rejected: Option<Stamp>, soon: bool) {
+        let mut h = self.write();
+        let s = (sel.get_mut)(&mut h);
+        s.attempted = Some(now);
+        s.soon = soon;
+        s.error = Some(msg);
+        if rejected.is_some() {
+            s.rejected = rejected;
+        }
+    }
+
+    async fn refresh_one<T: Parsed>(&self, origin: &Origin, min_rows: usize, sel: Sel<T>) {
+        let now = (self.clock)();
+        let (attempted, soon, stamp, rejected, held_date) = {
+            let h = self.read();
+            let s = (sel.get)(&h);
+            (
+                s.attempted,
+                s.soon,
+                s.stamp.filter(|_| s.data.is_some()),
+                s.rejected,
+                s.data.as_ref().and(s.date),
+            )
+        };
+        let (bytes, new_stamp) = match origin {
+            Origin::Off => return,
+            Origin::Url { url, limits } => {
+                let wait = if soon {
+                    self.ttl.min(RETRY_SECS)
+                } else {
+                    self.ttl
+                };
+                if attempted.is_some_and(|a| now.saturating_sub(a) < wait) {
+                    return;
+                }
+                match self.egress.get_retry(url, limits, None).await {
+                    Ok(b) => (b, None),
+                    Err(e) => {
+                        self.fail(&sel, now, format!("the fetch failed: {e}"), None, true);
+                        return;
+                    }
+                }
+            }
+            Origin::File { path, max_bytes } => {
+                let meta = match tokio::fs::metadata(path).await {
+                    Ok(m) => m,
+                    Err(e) => {
+                        let msg = format!("the file cannot be read ({})", e.kind());
+                        self.fail(&sel, now, msg, None, false);
+                        return;
+                    }
+                };
+                if !meta.is_file() {
+                    let msg = "the path is not a regular file".to_owned();
+                    self.fail(&sel, now, msg, None, false);
+                    return;
+                }
+                let st: Stamp = (
+                    meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+                    meta.len(),
+                );
+                if stamp == Some(st) {
+                    let mut h = self.write();
+                    let s = (sel.get_mut)(&mut h);
+                    s.attempted = Some(now);
+                    s.error = None;
+                    return;
+                }
+                if rejected == Some(st) {
+                    let mut h = self.write();
+                    (sel.get_mut)(&mut h).attempted = Some(now);
+                    return;
+                }
+                let too_big = format!("the file is larger than its limit of {max_bytes} bytes");
+                if meta.len() > *max_bytes {
+                    self.fail(&sel, now, too_big, Some(st), false);
+                    return;
+                }
+                let (p, max) = (path.clone(), *max_bytes);
+                // The path may have been swapped for a pipe since the check above, and opening or
+                // reading one can block for good: the wait is bounded so the refresh guard is released.
+                let read = tokio::time::timeout(
+                    FILE_READ_LIMIT,
+                    tokio::task::spawn_blocking(move || -> std::io::Result<Vec<u8>> {
+                        let file = std::fs::File::open(p)?;
+                        if !file.metadata()?.is_file() {
+                            return Err(std::io::ErrorKind::InvalidInput.into());
+                        }
+                        let mut out = Vec::new();
+                        file.take(max.saturating_add(1)).read_to_end(&mut out)?;
+                        Ok(out)
+                    }),
+                )
+                .await;
+                match read {
+                    Ok(Ok(Ok(b))) if b.len() as u64 <= *max_bytes => (b, Some(st)),
+                    Ok(Ok(Ok(_))) => {
+                        self.fail(&sel, now, too_big, Some(st), false);
+                        return;
+                    }
+                    Ok(Ok(Err(e))) => {
+                        let msg = format!("the file cannot be read ({})", e.kind());
+                        self.fail(&sel, now, msg, None, false);
+                        return;
+                    }
+                    Ok(Err(_)) => {
+                        let msg = "the file reader stopped".to_owned();
+                        self.fail(&sel, now, msg, None, false);
+                        return;
+                    }
+                    Err(_) => {
+                        let msg = "reading the file took too long".to_owned();
+                        self.fail(&sel, now, msg, None, false);
+                        return;
+                    }
+                }
+            }
+        };
+        let feed = match tokio::task::spawn_blocking(move || T::parse_feed(&bytes, min_rows)).await
+        {
+            Ok(Ok(f)) => f,
+            Ok(Err(e)) => {
+                self.fail(
+                    &sel,
+                    now,
+                    format!("the feed was refused: {e}"),
+                    new_stamp,
+                    false,
+                );
+                return;
+            }
+            Err(_) => {
+                self.fail(
+                    &sel,
+                    now,
+                    "the feed reader stopped".to_owned(),
+                    new_stamp,
+                    false,
+                );
+                return;
+            }
+        };
+        let date = feed.feed_date().and_then(epoch_of);
+        if let Err(why) = self.judge(date, held_date, now) {
+            self.fail(
+                &sel,
+                now,
+                format!("the feed was refused: {why}"),
+                new_stamp,
+                false,
+            );
+            return;
+        }
+        let mut h = self.write();
+        let s = (sel.get_mut)(&mut h);
+        s.data = Some(Arc::new(feed));
+        s.date = date;
+        s.loaded_at = now;
+        s.stamp = new_stamp;
+        s.rejected = None;
+        s.attempted = Some(now);
+        s.soon = false;
+        s.error = None;
+    }
+
+    /// Whether a new copy dated `date` may replace one dated `held`: it must carry a usable date (an
+    /// undated feed could never be told stale), not from the future, not older than the stale window (a
+    /// replayed file) and not older than the copy held (a rollback).
+    fn judge(&self, date: Option<i64>, held: Option<i64>, now: i64) -> Result<(), String> {
+        let Some(d) = date else {
+            return Err("it has no usable date".to_owned());
+        };
+        if d > now.saturating_add(MAX_FUTURE_SECS) {
+            return Err("its date lies in the future".to_owned());
+        }
+        if now.saturating_sub(d) > self.stale {
+            return Err("its date is older than the stale window".to_owned());
+        }
+        if held.is_some_and(|h| d < h) {
+            return Err("it is older than the copy held".to_owned());
+        }
+        Ok(())
     }
 }
 
@@ -774,6 +1374,34 @@ CVE-2020-0008,0.25,0.75\n";
     }
 
     #[test]
+    fn feed_dates_become_unix_seconds() {
+        assert_eq!(epoch_of("1970-01-02"), Some(86_400));
+        assert_eq!(epoch_of("2026-11-12T15:00:00.000Z"), Some(1_794_495_600));
+        assert_eq!(epoch_of("2026-11-12T15:00:00Z"), Some(1_794_495_600));
+        assert_eq!(epoch_of("2026-11-12T00:00:00+0000"), Some(1_794_441_600));
+        assert_eq!(epoch_of("2026-11-12T02:00:00+02:00"), Some(1_794_441_600));
+        assert_eq!(epoch_of("2026-11-11T22:00:00-02"), Some(1_794_441_600));
+        assert_eq!(epoch_of("2026-11-12 00:00:00"), Some(1_794_441_600));
+        for bad in [
+            "",
+            "2026-11",
+            "2026-13-01",
+            "2026-00-10",
+            "2026-11-32",
+            "1969-12-31",
+            "2026-11-12T25:00:00Z",
+            "2026-11-12T10:00",
+            "2026-11-12T10:00:00.Z",
+            "2026-11-12T10:00:00+9",
+            "2026-11-12T10:00:00 UTC",
+            "20261112",
+            "2026-11-12\u{e9}",
+        ] {
+            assert!(epoch_of(bad).is_none(), "{bad}");
+        }
+    }
+
+    #[test]
     fn cve_ids_are_normalised() {
         assert_eq!(
             normalize_cve(" cve-2021-44228 ").as_deref(),
@@ -853,8 +1481,8 @@ cve-2020-0001,0.5,0.6\n";
 
     fn intel() -> Intel {
         Intel {
-            kev: Some(parse_kev(KEV.as_bytes(), 1).unwrap()),
-            epss: Some(parse_epss(EPSS.as_bytes(), 1).unwrap()),
+            kev: Some(Arc::new(parse_kev(KEV.as_bytes(), 1).unwrap())),
+            epss: Some(Arc::new(parse_epss(EPSS.as_bytes(), 1).unwrap())),
         }
     }
 

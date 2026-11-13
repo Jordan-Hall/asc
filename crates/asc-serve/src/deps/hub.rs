@@ -14,11 +14,13 @@ use asc_rpc::server::{CallCtx, MAX_STRING, wire};
 use async_trait::async_trait;
 use bytes::Bytes;
 use tokio::sync::Semaphore;
+use tokio_util::sync::CancellationToken;
 use tonic::Status;
 
 use super::config::Config;
 use super::egress::Egress;
 use super::gate::{CheckRequest, DepsCheck, MAX_LINES, dependency_files};
+use super::intel::IntelSource;
 use super::latest::Latest;
 use super::model::{Dep, Ecosystem, Lookup};
 use super::osv::{Clock, Osv, Query};
@@ -52,6 +54,8 @@ pub struct DepsHub {
     pub(crate) registry: Arc<Registry>,
     pub(crate) view: RepoView,
     pub(crate) osv: Osv,
+    /// The KEV and EPSS feeds, held in memory.
+    pub(crate) intel: IntelSource,
     pub(crate) latest: Latest,
     pub(crate) commits: Arc<ServerMutations>,
     permits: Semaphore,
@@ -224,6 +228,7 @@ impl DepsHub {
     ) -> Arc<Self> {
         let pool = registry.pool().clone();
         let osv = Osv::new(egress.clone(), pool.clone(), &cfg, clock.clone());
+        let intel = IntelSource::new(egress.clone(), &cfg, clock.clone());
         let latest = Latest::new(
             egress,
             pool,
@@ -245,6 +250,7 @@ impl DepsHub {
             permits: Semaphore::new(cfg.max_concurrent_scans),
             registry,
             osv,
+            intel,
             latest,
             commits,
             server_url: server_url.map(|u| u.trim_end_matches('/').to_owned()),
@@ -256,6 +262,19 @@ impl DepsHub {
 
     pub fn now(&self) -> i64 {
         (self.clock)()
+    }
+
+    /// The exploitation feeds (KEV, EPSS): `refresh` brings them up to date, `get` reads them.
+    pub fn intel(&self) -> &IntelSource {
+        &self.intel
+    }
+
+    /// Keeps the exploitation feeds (KEV, EPSS) up to date: refreshes once at start, then every
+    /// `IntelSource::poll_every` (a URL is fetched only when `intel_ttl_secs` has run out, a feed file is
+    /// looked at for changes), until `shutdown` is cancelled. Run it as one background task; no request
+    /// waits for it. Failures are logged and the last good copy stays until it goes stale.
+    pub async fn run_intel(self: Arc<Self>, shutdown: CancellationToken) {
+        self.intel.run(&shutdown, self.intel.poll_every()).await;
     }
 
     pub fn today(&self) -> String {

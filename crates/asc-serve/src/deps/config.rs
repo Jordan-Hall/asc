@@ -159,6 +159,22 @@ pub struct Config {
     pub advisory_file: Option<PathBuf>,
     /// Largest advisory file, after decompression.
     pub advisory_max_bytes: ByteSize,
+    /// The CISA Known Exploited Vulnerabilities catalog: the full URL of the public JSON file (no query
+    /// string). Empty: off, which is the default; the feed is then unknown, never "not listed".
+    pub kev: Endpoint,
+    /// A local copy of the KEV catalog (JSON, plain or gzip), read again when it changes. Not together
+    /// with `kev.url`.
+    pub kev_file: Option<PathBuf>,
+    /// The EPSS scores: the full URL of the public CSV file (plain or gzip, no query string). Empty: off,
+    /// which is the default.
+    pub epss: Endpoint,
+    /// A local copy of the EPSS file, read again when it changes. Not together with `epss.url`.
+    pub epss_file: Option<PathBuf>,
+    /// Seconds before the KEV and EPSS feeds are fetched again.
+    pub intel_ttl_secs: u64,
+    /// Seconds a feed that cannot be refreshed, or whose own date is that old, is still trusted. After
+    /// that the feed is unknown.
+    pub intel_stale_secs: u64,
     /// Hosts the scanner may call, exact or `*.suffix`. Empty: the hosts of the URLs above.
     pub egress_allow: Vec<String>,
     pub registries: Registries,
@@ -201,6 +217,12 @@ impl Default for Config {
             osv: Endpoint::new("https://api.osv.dev", 30, 16 * ByteSize::MIB),
             advisory_file: None,
             advisory_max_bytes: ByteSize(512 * ByteSize::MIB),
+            kev: Endpoint::new("", 30, 32 * ByteSize::MIB),
+            kev_file: None,
+            epss: Endpoint::new("", 60, 128 * ByteSize::MIB),
+            epss_file: None,
+            intel_ttl_secs: 6 * 3600,
+            intel_stale_secs: 7 * 86_400,
             egress_allow: Vec::new(),
             registries: Registries::default(),
             archive_max_bytes: ByteSize(128 * ByteSize::MIB),
@@ -246,6 +268,8 @@ impl Config {
     pub fn resolved(mut self) -> Self {
         let d = Self::default();
         self.osv = self.osv.filled(&d.osv);
+        self.kev = self.kev.filled(&d.kev);
+        self.epss = self.epss.filled(&d.epss);
         let r = &mut self.registries;
         let b = &d.registries;
         r.crates_io = r.crates_io.clone().filled(&b.crates_io);
@@ -265,7 +289,11 @@ impl Config {
 
     /// The URLs the config names, with the key of each.
     fn urls(&self) -> Vec<(String, &str)> {
-        let mut v = vec![("osv".to_owned(), self.osv.url.as_str())];
+        let mut v = vec![
+            ("osv".to_owned(), self.osv.url.as_str()),
+            ("kev".to_owned(), self.kev.url.as_str()),
+            ("epss".to_owned(), self.epss.url.as_str()),
+        ];
         for (k, e) in self.registries.all() {
             v.push((format!("registries.{k}"), e.url.as_str()));
         }
@@ -287,7 +315,11 @@ impl Config {
     /// key.
     pub fn validate(&self, net: &NetGuardConfig) -> Result<(), String> {
         let guard = Guard::new(net.clone());
-        let mut endpoints: Vec<(String, &Endpoint)> = vec![("osv".to_owned(), &self.osv)];
+        let mut endpoints: Vec<(String, &Endpoint)> = vec![
+            ("osv".to_owned(), &self.osv),
+            ("kev".to_owned(), &self.kev),
+            ("epss".to_owned(), &self.epss),
+        ];
         for (k, e) in self.registries.all() {
             endpoints.push((format!("registries.{k}"), e));
         }
@@ -303,6 +335,12 @@ impl Config {
             }
             if e.url.ends_with('/') {
                 return Err(format!("deps.{key}.url must not end with a slash"));
+            }
+            // A feed is one public file: nothing may be added to the request.
+            if matches!(key.as_str(), "kev" | "epss") && e.url.contains(['?', '#']) {
+                return Err(format!(
+                    "deps.{key}.url must be the plain URL of the file, with no query string or fragment"
+                ));
             }
             guard
                 .parse_endpoint(&e.url, Shape::Endpoint)
@@ -335,6 +373,30 @@ impl Config {
                     "deps.{key}.url names {host}, which deps.egress_allow does not admit"
                 ));
             }
+        }
+        for (key, url, file) in [
+            ("kev", &self.kev.url, &self.kev_file),
+            ("epss", &self.epss.url, &self.epss_file),
+        ] {
+            if let Some(f) = file {
+                if f.as_os_str().is_empty() {
+                    return Err(format!("deps.{key}_file must not be empty"));
+                }
+                if !url.is_empty() {
+                    return Err(format!(
+                        "deps.{key}_file and deps.{key}.url name the same feed twice; keep one"
+                    ));
+                }
+            }
+        }
+        if self.intel_ttl_secs < 60 || self.intel_ttl_secs > 30 * 86_400 {
+            return Err("deps.intel_ttl_secs must be 60 to 2592000".into());
+        }
+        if self.intel_stale_secs < self.intel_ttl_secs || self.intel_stale_secs > 365 * 86_400 {
+            return Err(
+                "deps.intel_stale_secs must be at least deps.intel_ttl_secs and at most 31536000"
+                    .into(),
+            );
         }
         if self.osv.url.is_empty() && self.advisory_file.is_none() {
             return Err("deps needs deps.osv.url or deps.advisory_file".into());
@@ -525,6 +587,143 @@ mod tests {
             let e = c.validate(&net()).unwrap_err();
             assert!(e.contains(key), "{key}: {e}");
         }
+    }
+
+    #[test]
+    fn the_intel_feeds_are_off_by_default_and_opt_in() {
+        let c = Config::default().resolved();
+        assert!(!c.kev.enabled() && !c.epss.enabled());
+        assert!(c.kev_file.is_none() && c.epss_file.is_none());
+        assert_eq!((c.intel_ttl_secs, c.intel_stale_secs), (21_600, 604_800));
+        c.validate(&net()).unwrap();
+        assert!(
+            !c.allowed_hosts().iter().any(|h| h.contains("cisa")),
+            "an unused feed admits no host"
+        );
+
+        let c: Config = toml::from_str(
+            "kev.url = \"https://feeds.example/kev.json\"\nepss.url = \"https://epss.example/epss_scores-current.csv.gz\"\nintel_ttl_secs = 3600\n",
+        )
+        .unwrap();
+        let c = c.resolved();
+        c.validate(&net()).unwrap();
+        assert_eq!(
+            c.kev.timeout_secs, 30,
+            "unnamed keys keep their built-in value"
+        );
+        assert!(c.epss.max_bytes.0 >= 64 * ByteSize::MIB);
+        let hosts = c.allowed_hosts();
+        for h in ["feeds.example", "epss.example", "api.osv.dev"] {
+            assert!(hosts.iter().any(|x| x == h), "{h} in {hosts:?}");
+        }
+        let off: Config =
+            toml::from_str("kev.url = \"https://feeds.example/kev.json\"\nkev.off = true\n")
+                .unwrap();
+        assert!(!off.resolved().kev.enabled());
+        let files: Config = toml::from_str(
+            "kev_file = \"/var/lib/asc/kev.json\"\nepss_file = \"/var/lib/asc/epss.csv\"\n",
+        )
+        .unwrap();
+        files.resolved().validate(&net()).unwrap();
+        assert!(toml::from_str::<Config>("[kev]\nbogus = 1\n").is_err());
+    }
+
+    #[test]
+    fn the_intel_urls_are_judged_like_the_osv_url() {
+        let with = |f: &dyn Fn(&mut Config)| {
+            let mut c = Config::default();
+            f(&mut c);
+            c.validate(&net())
+        };
+        for key in ["kev", "epss"] {
+            let set = |c: &mut Config, u: &str| match key {
+                "kev" => c.kev.url = u.into(),
+                _ => c.epss.url = u.into(),
+            };
+            with(&|c| set(c, "https://feeds.example/f.json")).unwrap();
+            for bad in [
+                "http://feeds.example/f.json",
+                "https://127.0.0.1/f.json",
+                "https://10.1.2.3:8443/f.json",
+                "https://user:pw@feeds.example/f.json",
+                "https://feeds.example/f.json?cve=CVE-2021-44228",
+                "https://feeds.example/f.json#x",
+                "https://feeds.example/dir/",
+            ] {
+                let e = with(&|c| set(c, bad)).unwrap_err();
+                assert!(e.contains(&format!("deps.{key}.url")), "{bad}: {e}");
+            }
+            let e = with(&|c| {
+                set(c, "https://feeds.example/f.json");
+                c.egress_allow = vec!["api.osv.dev".into()];
+            })
+            .unwrap_err();
+            assert!(e.contains("does not admit") && e.contains(key), "{e}");
+        }
+        // The operator's loopback opt-in is the only way to a plain http mirror.
+        let mut n = net();
+        n.allow_loopback_http = true;
+        let mut c = Config::default();
+        c.kev.url = "http://127.0.0.1:8080/kev.json".into();
+        c.epss.url = "http://127.0.0.1:8081/epss.csv".into();
+        assert!(c.validate(&net()).is_err());
+        c.validate(&n).unwrap();
+    }
+
+    #[test]
+    fn the_intel_bounds_and_the_file_or_url_rule_are_checked() {
+        for (f, key) in [
+            (
+                Box::new(|c: &mut Config| c.intel_ttl_secs = 59) as Box<dyn Fn(&mut Config)>,
+                "intel_ttl_secs",
+            ),
+            (
+                Box::new(|c| c.intel_ttl_secs = 31 * 86_400),
+                "intel_ttl_secs",
+            ),
+            (
+                Box::new(|c| {
+                    c.intel_ttl_secs = 7200;
+                    c.intel_stale_secs = 7199;
+                }),
+                "intel_stale_secs",
+            ),
+            (
+                Box::new(|c| c.intel_stale_secs = 366 * 86_400),
+                "intel_stale_secs",
+            ),
+            (Box::new(|c| c.kev.timeout_secs = 601), "kev.timeout_secs"),
+            (
+                Box::new(|c| c.epss.max_bytes = ByteSize(10)),
+                "epss.max_bytes",
+            ),
+            (Box::new(|c| c.kev_file = Some("".into())), "kev_file"),
+            (
+                Box::new(|c| {
+                    c.kev.url = "https://feeds.example/kev.json".into();
+                    c.kev_file = Some("/var/lib/asc/kev.json".into());
+                }),
+                "kev_file",
+            ),
+            (
+                Box::new(|c| {
+                    c.epss.url = "https://feeds.example/epss.csv".into();
+                    c.epss_file = Some("/var/lib/asc/epss.csv".into());
+                }),
+                "epss_file",
+            ),
+        ] {
+            let mut c = Config::default();
+            f(&mut c);
+            let e = c.validate(&net()).unwrap_err();
+            assert!(e.contains(key), "{key}: {e}");
+        }
+        let c = Config {
+            intel_ttl_secs: 60,
+            intel_stale_secs: 60,
+            ..Config::default()
+        };
+        c.validate(&net()).unwrap();
     }
 
     #[test]
