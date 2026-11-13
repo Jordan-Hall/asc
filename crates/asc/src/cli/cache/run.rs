@@ -207,10 +207,14 @@ pub(crate) struct Ran {
     pub(crate) code: Option<i32>,
     pub(crate) stdout: Option<Vec<u8>>,
     pub(crate) stderr: Option<Vec<u8>>,
+    /// How long the command ran. The time runs until the child's output pipes close, so a
+    /// background process the task leaves holding them lengthens it.
+    pub(crate) elapsed: std::time::Duration,
 }
 
 /// Runs `command` in `cwd`, copying its output through as it arrives and keeping it.
 pub(crate) fn run_teed(command: &[OsString], cwd: &Path) -> Result<Ran> {
+    let began = std::time::Instant::now();
     let mut child = Command::new(program(&command[0]))
         .args(&command[1..])
         .current_dir(cwd)
@@ -236,6 +240,7 @@ pub(crate) fn run_teed(command: &[OsString], cwd: &Path) -> Result<Ran> {
         code: status.code(),
         stdout,
         stderr,
+        elapsed: began.elapsed(),
     })
 }
 
@@ -333,11 +338,13 @@ pub(crate) async fn cached(ctx: &Ctx, a: &Spec) -> Result<ExitCode> {
     }
     store.put_action(&key, &action).map_err(io_err)?;
     if mode == Mode::ReadWrite {
-        store.queue_push(&key).map_err(io_err)?;
+        let rev = remote::build_rev(ctx).await;
+        remote::queue_timed(&store, &key, ran.elapsed, rev.as_deref()).map_err(io_err)?;
         spawn_push(&store, &ctx.cwd);
     }
     if let Ok(max) = max_size(ctx) {
         let _ = store.maybe_gc(max);
+        remote::prune_durations(&store);
     }
     Ok(ExitCode::SUCCESS)
 }

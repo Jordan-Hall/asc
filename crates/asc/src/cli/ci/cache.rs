@@ -221,6 +221,19 @@ pub struct HttpApi {
     /// `<owner>.<repo>`, the turbo cache namespace.
     slug: String,
     auth: Option<String>,
+    /// The revision the build belongs to, sent as `x-asc-rev` on cache reads and writes.
+    rev: Option<String>,
+}
+
+/// Whether `s` is exactly 64 lowercase hex characters, the form the server accepts in
+/// `x-asc-rev`.
+pub(crate) fn rev_header_ok(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// True for the two routes whose reads and writes the server counts.
+fn counted_route(path: &str) -> bool {
+    path.starts_with("/v8/artifacts/") || path.starts_with("/v8/asc/ac/")
 }
 
 impl HttpApi {
@@ -248,7 +261,15 @@ impl HttpApi {
             origin: server.trim_end_matches('/').to_owned(),
             slug: format!("{owner}.{name}"),
             auth,
+            rev: None,
         })
+    }
+
+    /// Ties the cache reads and writes of this client to `rev`. A value that is not 64
+    /// lowercase hex characters is ignored: the header is never sent malformed.
+    pub fn with_rev(mut self, rev: &str) -> Self {
+        self.rev = rev_header_ok(rev).then(|| rev.to_owned());
+        self
     }
 
     /// Posts `body` as JSON to `path?slug=<owner>.<repo>` at the server's origin and returns
@@ -261,7 +282,7 @@ impl HttpApi {
         let url = format!("{}{path}?slug={}", self.origin, pct(&self.slug));
         let bytes = Bytes::from(serde_json::to_vec(body).map_err(api_err)?);
         let res = self
-            .call(reqwest::Method::POST, url, bytes, MAX_MANIFEST_BYTES)
+            .call(reqwest::Method::POST, url, bytes, MAX_MANIFEST_BYTES, &[])
             .await?;
         if !res.status.is_success() {
             return Err(failure(res));
@@ -278,8 +299,37 @@ impl HttpApi {
         body: Bytes,
         limit: usize,
     ) -> Result<Reply, CiError> {
+        self.turbo_timed(method, path, body, limit, None, None)
+            .await
+    }
+
+    /// Like [`Self::turbo`]; a PUT of an artifact or entry also carries `x-artifact-duration`
+    /// when `duration_ms` is the measured run time of the task, and a GET or PUT of those
+    /// routes carries `x-asc-rev`: the client's own revision, else `rev` (the one recorded
+    /// with the task), when valid.
+    pub async fn turbo_timed(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Bytes,
+        limit: usize,
+        duration_ms: Option<u64>,
+        rev: Option<&str>,
+    ) -> Result<Reply, CiError> {
         let url = format!("{}{path}?slug={}", self.origin, pct(&self.slug));
-        self.call(method, url, body, limit).await
+        let mut extra = Vec::new();
+        if counted_route(path) && (method == reqwest::Method::GET || method == reqwest::Method::PUT)
+        {
+            if let Some(rev) = self.rev.as_deref().or(rev.filter(|r| rev_header_ok(r))) {
+                extra.push(("x-asc-rev", rev.to_owned()));
+            }
+            if method == reqwest::Method::PUT
+                && let Some(ms) = duration_ms.filter(|ms| *ms > 0)
+            {
+                extra.push(("x-artifact-duration", ms.to_string()));
+            }
+        }
+        self.call(method, url, body, limit, &extra).await
     }
 
     /// The request as plain HTTP, for h3.
@@ -288,6 +338,7 @@ impl HttpApi {
         method: &reqwest::Method,
         url: &str,
         body: &Bytes,
+        extra: &[(&'static str, String)],
     ) -> Option<http::Request<Bytes>> {
         let mut req = http::Request::builder().method(method).uri(url).header(
             http::header::USER_AGENT,
@@ -298,11 +349,22 @@ impl HttpApi {
             v.set_sensitive(true);
             req = req.header(http::header::AUTHORIZATION, v);
         }
+        for (name, value) in extra {
+            req = req.header(*name, http::HeaderValue::from_str(value).ok()?);
+        }
         req.body(body.clone()).ok()
     }
 
-    fn request(&self, method: reqwest::Method, url: String) -> reqwest::RequestBuilder {
-        let r = self.client.request(method, url);
+    fn request(
+        &self,
+        method: reqwest::Method,
+        url: String,
+        extra: &[(&'static str, String)],
+    ) -> reqwest::RequestBuilder {
+        let mut r = self.client.request(method, url);
+        for (name, value) in extra {
+            r = r.header(*name, value.as_str());
+        }
         match &self.auth {
             Some(a) => match reqwest::header::HeaderValue::from_str(a) {
                 Ok(mut v) => {
@@ -324,8 +386,9 @@ impl HttpApi {
         url: String,
         body: Bytes,
         limit: usize,
+        extra: &[(&'static str, String)],
     ) -> Result<Reply, CiError> {
-        if let Some(req) = self.h3_request(&method, &url, &body) {
+        if let Some(req) = self.h3_request(&method, &url, &body, extra) {
             match self.h3.send(&req, limit).await {
                 asc_rpc::h3::Attempt::Done(r) => return Ok(r),
                 asc_rpc::h3::Attempt::Failed(e) => return Err(api_err(e)),
@@ -333,7 +396,7 @@ impl HttpApi {
             }
         }
         let mut res = self
-            .request(method, url)
+            .request(method, url, extra)
             .body(body)
             .send()
             .await
@@ -425,7 +488,7 @@ impl ManifestApi for HttpApi {
             url.push_str("?overwrite=1");
         }
         let res = self
-            .call(reqwest::Method::PUT, url, body, MAX_ERROR_BYTES)
+            .call(reqwest::Method::PUT, url, body, MAX_ERROR_BYTES, &[])
             .await?;
         match res.status {
             s if s == reqwest::StatusCode::CREATED || s.is_success() => Ok(true),
@@ -437,7 +500,13 @@ impl ManifestApi for HttpApi {
     async fn get(&self, store: StoreKind, key: &str) -> Result<Option<Bytes>, CiError> {
         let url = format!("{}/{}/{}", self.base, store.as_str(), pct(key));
         let res = self
-            .call(reqwest::Method::GET, url, Bytes::new(), MAX_MANIFEST_BYTES)
+            .call(
+                reqwest::Method::GET,
+                url,
+                Bytes::new(),
+                MAX_MANIFEST_BYTES,
+                &[],
+            )
             .await?;
         match res.status {
             reqwest::StatusCode::NOT_FOUND => Ok(None),
@@ -453,7 +522,13 @@ impl ManifestApi for HttpApi {
     ) -> Result<Option<(String, Bytes)>, CiError> {
         let url = format!("{}/{}?prefix={}", self.base, store.as_str(), pct(prefix));
         let res = self
-            .call(reqwest::Method::GET, url, Bytes::new(), MAX_MANIFEST_BYTES)
+            .call(
+                reqwest::Method::GET,
+                url,
+                Bytes::new(),
+                MAX_MANIFEST_BYTES,
+                &[],
+            )
             .await?;
         match res.status {
             reqwest::StatusCode::NOT_FOUND => Ok(None),
@@ -478,7 +553,13 @@ impl ManifestApi for HttpApi {
             pct(prefix)
         );
         let res = self
-            .call(reqwest::Method::GET, url, Bytes::new(), 4 * 1024 * 1024)
+            .call(
+                reqwest::Method::GET,
+                url,
+                Bytes::new(),
+                4 * 1024 * 1024,
+                &[],
+            )
             .await?;
         if !res.status.is_success() {
             return Err(failure(res));
@@ -511,6 +592,122 @@ mod tests {
         assert_eq!(percent_decode("a%2Fb%20c").as_deref(), Some("a/b c"));
         assert_eq!(percent_decode("%zz"), None);
         assert_eq!(percent_decode("%4"), None);
+    }
+}
+
+/// The cache headers, against a local plain-HTTP server (loopback only, as a test).
+#[cfg(test)]
+mod header_tests {
+    use std::sync::{Arc, Mutex};
+
+    use axum::Router;
+    use axum::http::{HeaderMap, Method, StatusCode};
+
+    use super::*;
+
+    const REV: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    type Seen = Arc<Mutex<Vec<(Method, Option<String>, Option<String>)>>>;
+
+    async fn client(rev: Option<&str>) -> (HttpApi, Seen) {
+        let seen: Seen = Arc::default();
+        let log = seen.clone();
+        let app = Router::new().fallback(move |m: Method, h: HeaderMap| {
+            let log = log.clone();
+            async move {
+                let get = |n: &str| h.get(n).and_then(|v| v.to_str().ok()).map(str::to_owned);
+                log.lock()
+                    .unwrap()
+                    .push((m, get("x-asc-rev"), get("x-artifact-duration")));
+                StatusCode::OK
+            }
+        });
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = l.local_addr().unwrap().port();
+        tokio::spawn(async move { axum::serve(l, app).await });
+        let mut api = HttpApi::new(&format!("http://127.0.0.1:{port}"), "o/r", None).unwrap();
+        if let Some(rev) = rev {
+            api = api.with_rev(rev);
+        }
+        (api, seen)
+    }
+
+    async fn drive(api: &HttpApi, duration: Option<u64>) {
+        for path in ["/v8/artifacts/asc-k", "/v8/asc/ac/k"] {
+            for m in [Method::GET, Method::PUT, Method::HEAD] {
+                let d = if m == Method::PUT { duration } else { None };
+                api.turbo_timed(m, path, Bytes::new(), 1024, d, None)
+                    .await
+                    .unwrap();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn the_rev_header_goes_on_get_and_put_of_both_routes_when_valid() {
+        let (api, seen) = client(Some(REV)).await;
+        drive(&api, None).await;
+        for (m, rev, _) in seen.lock().unwrap().iter() {
+            let want = (*m != Method::HEAD).then(|| REV.to_owned());
+            assert_eq!(*rev, want, "{m}");
+        }
+        assert_eq!(seen.lock().unwrap().len(), 6);
+    }
+
+    #[tokio::test]
+    async fn the_rev_header_is_absent_without_a_rev_or_with_a_malformed_one() {
+        let upper = REV.to_uppercase();
+        for rev in [
+            None,
+            Some(&REV[..63]),
+            Some(upper.as_str()),
+            Some("g"),
+            Some(""),
+        ] {
+            let (api, seen) = client(rev).await;
+            drive(&api, None).await;
+            assert!(seen.lock().unwrap().iter().all(|(_, r, _)| r.is_none()));
+        }
+    }
+
+    #[tokio::test]
+    async fn the_duration_header_goes_on_put_only_and_only_when_known() {
+        let (api, seen) = client(None).await;
+        drive(&api, Some(1234)).await;
+        for (m, _, d) in seen.lock().unwrap().iter() {
+            let want = (*m == Method::PUT).then(|| "1234".to_owned());
+            assert_eq!(*d, want, "{m}");
+        }
+        let (api, seen) = client(None).await;
+        drive(&api, None).await;
+        assert!(seen.lock().unwrap().iter().all(|(_, _, d)| d.is_none()));
+        let (api, seen) = client(None).await;
+        drive(&api, Some(0)).await;
+        assert!(seen.lock().unwrap().iter().all(|(_, _, d)| d.is_none()));
+    }
+
+    #[tokio::test]
+    async fn the_cache_headers_stay_off_other_routes() {
+        let (api, seen) = client(Some(REV)).await;
+        api.turbo_timed(
+            Method::PUT,
+            "/v8/asc/cas/ab",
+            Bytes::new(),
+            1024,
+            Some(5),
+            Some(REV),
+        )
+        .await
+        .unwrap();
+        api.turbo(Method::GET, "/v8/asc/build-revs/x", Bytes::new(), 1024)
+            .await
+            .unwrap();
+        assert!(
+            seen.lock()
+                .unwrap()
+                .iter()
+                .all(|(_, r, d)| r.is_none() && d.is_none())
+        );
     }
 }
 

@@ -907,8 +907,10 @@ async fn store_compile(
     store.put_action(&plan.unit_key, &listing).map_err(io_err)?;
 
     if mode == Mode::ReadWrite {
+        // Only the compile entry ran for this long; the dependency listing was not timed.
+        let rev = remote::build_rev(ctx).await;
         store.queue_push(&plan.unit_key).map_err(io_err)?;
-        store.queue_push(&key).map_err(io_err)?;
+        remote::queue_timed(store, &key, ran.elapsed, rev.as_deref()).map_err(io_err)?;
         spawn_push(store, &ctx.cwd);
     }
     if let Ok(max) = max_size(ctx) {
