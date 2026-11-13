@@ -78,7 +78,8 @@ cannot cross volumes.
 
 Files over 4 MiB are clones there too. asc keeps one assembled copy of each large file per machine,
 inside the cache directory, and clones every plain worktree's file from it. On a volume that cannot
-clone, asc makes no assembled copy, so each worktree writes its own as before.
+clone, asc makes no assembled copy, so each worktree writes its own as before. These copies count
+toward the cache size limit, and the oldest are removed together with the rest of the cache.
 
 | System | Volume | How to get one |
 |---|---|---|
