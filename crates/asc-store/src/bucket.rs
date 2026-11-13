@@ -52,10 +52,11 @@ impl BucketObjects {
         Self::new(Arc::new(InMemory::new()), Path::default())
     }
 
-    /// A bucket in a local directory (created if missing).
+    /// A bucket in a local directory (created if missing). Each write syncs the file and its
+    /// directory before it returns.
     pub fn local(dir: &std::path::Path) -> Result<Self> {
         std::fs::create_dir_all(dir).map_err(|e| Error::Url(e.to_string()))?;
-        let fs = LocalFileSystem::new_with_prefix(dir)?;
+        let fs = LocalFileSystem::new_with_prefix(dir)?.with_fsync(true);
         Ok(Self::new(Arc::new(fs), Path::default()).with_bucket_packs(Default::default()))
     }
 
@@ -97,7 +98,7 @@ pub(crate) fn open_url(url: &url::Url) -> Result<(Arc<dyn ObjectStore>, Path)> {
             .to_file_path()
             .map_err(|()| Error::Url(format!("not a local path: {url}")))?;
         std::fs::create_dir_all(&dir).map_err(|e| Error::Url(e.to_string()))?;
-        let fs = LocalFileSystem::new_with_prefix(&dir)?;
+        let fs = LocalFileSystem::new_with_prefix(&dir)?.with_fsync(true);
         return Ok((Arc::new(fs), Path::default()));
     }
     let (store, root) = object_store::parse_url(url)?;
@@ -442,6 +443,20 @@ mod tests {
         assert_eq!(&b.get(&key).await.unwrap().unwrap()[..], b"via url");
         let on_disk = dir.path().join("f").join(&key.path()[2..]);
         assert!(on_disk.exists(), "{on_disk:?}");
+    }
+
+    #[tokio::test]
+    async fn file_url_store_syncs_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = url::Url::from_directory_path(dir.path()).unwrap();
+        let (store, root) = open_url(&url).unwrap();
+        assert!(format!("{store:?}").contains("fsync: true"), "{store:?}");
+        let b = BucketObjects::new(store, root);
+        let key = ObjKey::File(FileId::of(b"durable"));
+        b.put(&key, encode_stored(b"durable")).await.unwrap();
+        assert_eq!(&b.get(&key).await.unwrap().unwrap()[..], b"durable");
+        let local = BucketObjects::local(dir.path()).unwrap();
+        assert!(format!("{:?}", local.store).contains("fsync: true"));
     }
 
     #[tokio::test]
