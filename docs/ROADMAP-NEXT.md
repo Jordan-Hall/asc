@@ -48,6 +48,7 @@ considered and rejected for this reason.
 | 13 | Agent overlay worktrees | Writes land in a small overlay; the rest is served from the store. Measure the disk use of an agent worktree first | D | open |
 | 14 | `asc doctor` picks the mode | Detects reflink and virtual support, states the choice and what it costs | S | done |
 | 15 | Link mode as last resort | Documented so; doctor recommends virtual mode or a volume that clones | S | done |
+| 41 | One virtual file system core, measured | Research first: benchmark ProjFS, Cloud Files, FUSE, NFS and FSKit on the same workload (cold open, warm read, directory walk, status, write, switch), then decide whether one Rust core behind a single transport can beat them on every system. Candidates: a loopback SMB3 server (Windows 11 24H2 and later accept another port), loopback NFSv4 everywhere, or keeping the native drivers behind one shared core. A kernel driver of our own is out: it needs driver signing on Windows and macOS | D | open |
 
 ## 4. Agents and merging
 
