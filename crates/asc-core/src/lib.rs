@@ -11,6 +11,7 @@ pub mod path;
 pub mod pathacl;
 pub mod policy;
 pub mod secrets;
+pub mod self_deps;
 pub mod sig;
 pub mod sshsig;
 pub mod transport_policy;
