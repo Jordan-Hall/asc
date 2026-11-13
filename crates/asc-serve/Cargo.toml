@@ -62,6 +62,8 @@ zip = { workspace = true }
 serde = { workspace = true }
 sqlx = { workspace = true }
 thiserror = { workspace = true }
+# Reads gzip feeds (deps/intel.rs) and builds gzip request bodies in tests; the backend `zip` already uses.
+flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"] }
 object_store = { workspace = true }
 tokio = { workspace = true }
 tower = { workspace = true }
@@ -108,5 +110,3 @@ rustix = { workspace = true, features = ["process"] }
 # `run_index_suite`: the pack index contract, run against the SQL index.
 asc-store = { workspace = true, features = ["testkit"] }
 rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "ring", "pem"] }
-# Builds gzip request bodies for the upload-pack tests (U81); the backend `zip` already uses.
-flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"] }

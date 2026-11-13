@@ -27,6 +27,7 @@ pub mod facts;
 pub mod gate;
 pub mod hub;
 pub mod imports;
+pub mod intel;
 pub mod latest;
 pub mod latest_facts;
 pub mod listing;
