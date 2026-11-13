@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use asc_core::codec::{CodecError, decode_envelope};
 use asc_core::content::{CHUNK_THRESHOLD, ChunkAssembler, ContentError};
-use asc_core::id::{FileId, GitOid, TreeId};
+use asc_core::id::{FileHasher, FileId, GitOid, TreeId};
 use asc_core::object::{Change, ChunkList, Entry, Kind};
 use asc_core::path::{Name, RepoPath, checkout_safe};
 use asc_engine::Engine;
@@ -562,10 +562,15 @@ async fn materialise<O: Objects, R: Refs>(
         // Reflink only: a byte copy from the assembled file would be a full private copy.
         let cloned =
             assembled_usable(&assembled, size) && reflink_copy::reflink(&assembled, tmp).is_ok();
-        if !cloned {
-            // `File::create` in `write_chunked` replaces anything a failed clone left at `tmp`.
+        if cloned {
+            // Eviction goes by last use, so a reused copy gets a fresh time stamp.
+            asc_store::cachedir::touch_if_old(&assembled);
+        } else {
+            // `write_chunked` only creates a new file, so whatever a failed clone left at `tmp`
+            // (or anyone planted there) is removed first, as a link itself and never followed.
+            remove_sealed(tmp);
             write_chunked(wc.store, file, tmp).await?;
-            publish_assembled(tmp, &assembled);
+            publish_assembled(tmp, &assembled, file);
         }
     } else {
         write_chunked(wc.store, file, tmp).await?;
@@ -580,7 +585,7 @@ fn assembled_path(store: &StoreSet, file: FileId) -> PathBuf {
     store
         .cache
         .root()
-        .join("assembled")
+        .join("assembled-v2")
         .join(&hex[..2])
         .join(&hex)
 }
@@ -589,14 +594,15 @@ fn assembled_path(store: &StoreSet, file: FileId) -> PathBuf {
 /// read-only mark set when it was published: the same trust the reflink from the store's loose
 /// file has. It is never hard-linked, so a worktree edit cannot reach it.
 fn assembled_usable(assembled: &Path, size: u64) -> bool {
-    fs::metadata(assembled).is_ok_and(|m| m.is_file() && m.len() == size)
+    fs::symlink_metadata(assembled).is_ok_and(|m| m.is_file() && m.len() == size)
 }
 
 /// Offers the finished large file `tmp` as the assembled copy: a clone into a temporary name,
-/// made read-only and renamed into place. Where the volume cannot clone nothing is left behind,
-/// so such a volume never stores the file twice. Failure is ignored: the checkout is correct
-/// without the copy.
-fn publish_assembled(tmp: &Path, assembled: &Path) {
+/// checked against `file`, made read-only and renamed into place. The check matters because
+/// `tmp` sits in the work tree: anything that replaced it would otherwise be shared by every
+/// later checkout. Where the volume cannot clone nothing is left behind, so such a volume never
+/// stores the file twice. Failure is ignored: the checkout is correct without the copy.
+fn publish_assembled(tmp: &Path, assembled: &Path, file: FileId) {
     let Some(fan) = assembled.parent() else {
         return;
     };
@@ -604,12 +610,32 @@ fn publish_assembled(tmp: &Path, assembled: &Path) {
         return;
     }
     let part = temp_beside(assembled);
+    remove_sealed(&part);
     let published = reflink_copy::reflink(tmp, &part).is_ok()
+        && has_content_of(&part, file)
+        && sync_file(&part).is_ok()
         && make_read_only(&part).is_ok()
         && fs::rename(&part, assembled).is_ok();
     if !published {
         remove_sealed(&part);
     }
+}
+
+/// Flushes the data of the file at `path` to disk, so a rename never publishes a name whose
+/// bytes were lost in a power cut.
+fn sync_file(path: &Path) -> io::Result<()> {
+    fs::OpenOptions::new().write(true).open(path)?.sync_all()
+}
+
+/// Whether the file at `path` hashes to `file`, read in pieces so it is never held in memory.
+fn has_content_of(path: &Path, file: FileId) -> bool {
+    let mut hasher = FileHasher::new();
+    for_each_piece(path, |piece| {
+        hasher.update(piece);
+        Ok(())
+    })
+    .is_ok()
+        && hasher.finalize() == file
 }
 
 /// Writes `file` to `tmp` as a regular file with the line endings a checkout under `smudge`
@@ -723,14 +749,10 @@ fn make_read_only(path: &Path) -> io::Result<()> {
     fs::set_permissions(path, perms)
 }
 
-/// Removes a part-written or sealed (read-only) file, ignoring failure.
-#[allow(clippy::permissions_set_readonly_false)] // Windows only: clears the read-only attribute.
+/// Removes a part-written or sealed (read-only) file, ignoring failure. A link is removed
+/// itself, and its target is never touched.
 fn remove_sealed(path: &Path) {
-    if let Ok(m) = fs::metadata(path) {
-        let mut perms = m.permissions();
-        perms.set_readonly(false);
-        let _ = fs::set_permissions(path, perms);
-    }
+    asc_store::cachedir::clear_read_only(path);
     let _ = fs::remove_file(path);
 }
 
@@ -751,7 +773,12 @@ async fn write_chunked(store: &StoreSet, file: FileId, tmp: &Path) -> Result<()>
     let list: ChunkList = decode_envelope(&list_bytes)?;
     let chunks = list.chunks.clone();
     let mut asm = ChunkAssembler::new(list, file)?;
-    let mut out = fs::File::create(tmp).map_err(io_at(tmp))?;
+    // A new file only: an existing entry or link at `tmp` is an error, never written through.
+    let mut out = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(tmp)
+        .map_err(io_at(tmp))?;
     for (id, _) in chunks {
         let data = store
             .get(&ObjKey::Chunk(id))
@@ -1028,7 +1055,7 @@ mod tests {
     }
 
     fn assembled_files(fx: &Fixture) -> Vec<PathBuf> {
-        let dir = fx.store.cache.root().join("assembled");
+        let dir = fx.store.cache.root().join("assembled-v2");
         let mut found = Vec::new();
         for fan in fs::read_dir(dir).into_iter().flatten() {
             for f in fs::read_dir(fan.unwrap().path()).unwrap() {
@@ -1081,6 +1108,124 @@ mod tests {
         fs::write(&bad, b"short").unwrap();
         checkout(&wc, fx.empty(), to, Mode::Safe).await.unwrap();
         assert!(fx.read("big.bin") == data);
+    }
+
+    fn volume_clones(dir: &Path) -> bool {
+        crate::depclone::volume_reflinks(dir).unwrap_or(false)
+    }
+
+    #[tokio::test]
+    async fn a_clone_with_other_bytes_is_not_published() {
+        let fx = Fixture::new();
+        let data = large();
+        let ing = asc_core::content::ingest(io::Cursor::new(data.clone())).unwrap();
+        let dir = fx._dir.path().join("pub");
+        fs::create_dir_all(&dir).unwrap();
+        let (good, bad) = (dir.join("good"), dir.join("bad"));
+        fs::write(&good, &data).unwrap();
+        let mut other = data.clone();
+        other[1000] ^= 1;
+        fs::write(&bad, &other).unwrap();
+        assert!(has_content_of(&good, ing.file));
+        assert!(!has_content_of(&bad, ing.file));
+        assert!(!has_content_of(&dir.join("missing"), ing.file));
+
+        if !volume_clones(&dir) {
+            eprintln!("skipped: this volume cannot clone, so nothing is ever published");
+            return;
+        }
+        let assembled = assembled_path(&fx.store, ing.file);
+        publish_assembled(&bad, &assembled, ing.file);
+        assert!(!assembled.exists());
+        assert!(assembled_files(&fx).is_empty(), "no part file is left");
+        // The same call with the right bytes does publish, so the check above is what refused.
+        publish_assembled(&good, &assembled, ing.file);
+        assert!(has_content_of(&assembled, ing.file));
+        assert!(fs::metadata(&assembled).unwrap().permissions().readonly());
+    }
+
+    #[tokio::test]
+    async fn a_file_planted_at_the_temp_name_is_not_written_through() {
+        let fx = Fixture::new();
+        let data = large();
+        let ing = asc_core::content::ingest(io::Cursor::new(data.clone())).unwrap();
+        fx.tree(&[("big.bin", F, &data)]).await;
+        let outside = fx._dir.path().join("outside");
+        fs::write(&outside, b"keep").unwrap();
+
+        let planted = fx._dir.path().join("planted");
+        fs::write(&planted, b"x").unwrap();
+        assert!(write_chunked(&fx.store, ing.file, &planted).await.is_err());
+        assert_eq!(fs::read(&planted).unwrap(), b"x");
+
+        #[cfg(unix)]
+        {
+            let link = fx._dir.path().join("link");
+            std::os::unix::fs::symlink(&outside, &link).unwrap();
+            assert!(write_chunked(&fx.store, ing.file, &link).await.is_err());
+            assert_eq!(fs::read(&outside).unwrap(), b"keep");
+            // The caller's path removes the link itself, not its target, before writing.
+            remove_sealed(&link);
+            assert!(fs::symlink_metadata(&link).is_err());
+            assert_eq!(fs::read(&outside).unwrap(), b"keep");
+        }
+        let fresh = fx._dir.path().join("fresh");
+        write_chunked(&fx.store, ing.file, &fresh).await.unwrap();
+        assert!(fs::read(&fresh).unwrap() == data);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn removing_a_sealed_link_leaves_its_target_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target");
+        fs::write(&target, b"t").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o400)).unwrap();
+        let link = dir.path().join("l");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        remove_sealed(&link);
+        assert!(fs::symlink_metadata(&link).is_err());
+        assert_eq!(
+            fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o400
+        );
+    }
+
+    #[tokio::test]
+    async fn reusing_an_assembled_copy_refreshes_its_time_stamp() {
+        let fx = Fixture::new();
+        let data = large();
+        let to = fx.tree(&[("big.bin", F, &data)]).await;
+        let (first, _, _) = check_out_twice(&fx, to, "big.bin").await;
+        assert!(first == data);
+        if !volume_clones(fx._dir.path()) {
+            eprintln!("skipped: this volume cannot clone, so no assembled copy is kept");
+            return;
+        }
+        let found = assembled_files(&fx);
+        assert_eq!(found.len(), 1, "{found:?}");
+        let copy = &found[0];
+        let mut perms = fs::metadata(copy).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)] // Test only: unseal to set the time.
+        perms.set_readonly(false);
+        fs::set_permissions(copy, perms).unwrap();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3 * 86_400);
+        let f = fs::OpenOptions::new().write(true).open(copy).unwrap();
+        f.set_modified(old).unwrap();
+        drop(f);
+        make_read_only(copy).unwrap();
+        let wc = fx.wc();
+        checkout(&wc, to, fx.empty(), Mode::Safe).await.unwrap();
+        checkout(&wc, fx.empty(), to, Mode::Safe).await.unwrap();
+        let age = fs::metadata(copy)
+            .unwrap()
+            .modified()
+            .unwrap()
+            .elapsed()
+            .unwrap();
+        assert!(age < std::time::Duration::from_secs(3600), "{age:?}");
+        assert!(fs::metadata(copy).unwrap().permissions().readonly());
     }
 
     /// Every file is checked out with CRLF line endings.
