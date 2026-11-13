@@ -1541,6 +1541,149 @@ async fn workspace_checks(ctx: &Ctx) -> Vec<Check> {
     out
 }
 
+// ------------------------------------------------------------------ worktree mode
+
+/// What `worktree-mode` knows about this machine and repository. `None` is a fact that could not
+/// be found out.
+struct ModeFacts {
+    /// A virtual backend is available (the `virtual-fs` check is ok).
+    backend: bool,
+    /// The asc home volume reflinks.
+    reflinks: Option<bool>,
+    /// The work tree and the asc home are on one volume.
+    same_volume: Option<bool>,
+    /// `asc.worktree.mode`: `auto`, `virtual` or `plain`.
+    mode: String,
+    /// `asc.worktree.link` is `symlink`.
+    link: bool,
+}
+
+impl ModeFacts {
+    fn summary(&self) -> String {
+        let yn = |v: Option<bool>| match v {
+            Some(true) => "yes",
+            Some(false) => "no",
+            None => "unknown",
+        };
+        format!(
+            "volume reflinks: {}; virtual backend: {}; work tree and asc home on one volume: {}; \
+             asc.worktree.mode={}; asc.worktree.link={}",
+            yn(self.reflinks),
+            yn(Some(self.backend)),
+            yn(self.same_volume),
+            self.mode,
+            if self.link { "symlink" } else { "copy" },
+        )
+    }
+}
+
+/// The mode that fits, in the order of WORKTREES.md: virtual, else plain copy on a volume that
+/// reflinks, else link mode as the last resort. Pure, so every branch is testable.
+fn recommend(f: &ModeFacts) -> (Level, String, Option<String>) {
+    const LINK_COST: &str = "tools that resolve real paths look beside the shared copy, and git shows a type change per link";
+    let facts = f.summary();
+    if f.backend {
+        return if f.mode == "plain" && !f.link {
+            (
+                Level::Info,
+                format!("use virtual worktrees; asc.worktree.mode=plain turns them off ({facts})"),
+                Some("asc config asc.worktree.mode auto".to_owned()),
+            )
+        } else {
+            (
+                Level::Ok,
+                format!("use virtual worktrees; new ones are virtual ({facts})"),
+                None,
+            )
+        };
+    }
+    if f.reflinks == Some(true) {
+        if f.same_volume == Some(false) && !f.link {
+            return (
+                Level::Warn,
+                format!(
+                    "a reflink cannot cross volumes and the work tree is not on the asc home volume, so every worktree is a full copy ({facts})"
+                ),
+                Some(
+                    "move the repository to the asc home volume, or `asc config asc.worktree.link symlink`"
+                        .to_owned(),
+                ),
+            );
+        }
+        if f.link {
+            return (
+                Level::Info,
+                format!(
+                    "use plain copy: this volume reflinks, so link mode is not needed ({facts})"
+                ),
+                Some("asc config asc.worktree.link copy".to_owned()),
+            );
+        }
+        return (
+            Level::Ok,
+            format!("use plain copy: this volume reflinks, so copies cost no space ({facts})"),
+            None,
+        );
+    }
+    if f.link {
+        return (
+            Level::Ok,
+            format!(
+                "use link mode, the last resort, and it is on; the cost is that {LINK_COST} ({facts})"
+            ),
+            None,
+        );
+    }
+    let hint = Some("asc config asc.worktree.link symlink".to_owned());
+    if f.reflinks.is_none() {
+        return (
+            Level::Info,
+            format!(
+                "cannot tell whether this volume reflinks; link mode is the last resort ({facts})"
+            ),
+            hint,
+        );
+    }
+    (
+        Level::Warn,
+        format!(
+            "no virtual backend and no reflinks, so every worktree is a full copy; link mode is the last resort and its cost is that {LINK_COST} ({facts})"
+        ),
+        hint,
+    )
+}
+
+async fn check_worktree_mode(ctx: &Ctx, home: &AscHome, backend: bool) -> Check {
+    let tmp = home.tmp();
+    let reflinks = tokio::task::spawn_blocking(move || {
+        std::fs::create_dir_all(&tmp).ok()?;
+        asc_wc::depclone::volume_reflinks(&tmp).ok()
+    })
+    .await
+    .ok()
+    .flatten();
+    let same_volume = ctx.ws_opt().and_then(|ws| {
+        let a = volume_key(ws.projection.toplevel())?;
+        Some(a == volume_key(home.root())?)
+    });
+    let facts = ModeFacts {
+        backend,
+        reflinks,
+        same_volume,
+        mode: ctx
+            .config
+            .get("asc.worktree.mode")
+            .unwrap_or_else(|| "auto".to_owned()),
+        link: ctx.config.get("asc.worktree.link").as_deref() == Some("symlink"),
+    };
+    let (level, detail, hint) = recommend(&facts);
+    let c = Check::new(level, "worktree-mode", detail);
+    match hint {
+        Some(h) => c.hint(h),
+        None => c,
+    }
+}
+
 // ------------------------------------------------------------------ gathering and fixing
 
 async fn gather(ctx: &Ctx, home: &AscHome, store: Option<&str>) -> Vec<Check> {
@@ -1573,7 +1716,11 @@ async fn gather(ctx: &Ctx, home: &AscHome, store: Option<&str>) -> Vec<Check> {
     out.extend(surfaces);
     out.push(daemon);
     out.push(space);
+    let backend = platform
+        .iter()
+        .any(|c| c.name == "virtual-fs" && c.level == Level::Ok);
     out.extend(platform);
+    out.push(check_worktree_mode(ctx, home, backend).await);
     out.extend(ws);
     out.extend(auth);
     out.extend(store_check);
@@ -2127,6 +2274,78 @@ mod tests {
         assert!(helper.detail.contains("mount helper"));
         let build = unix_virtual_fs(None, None);
         assert!(build.hint.unwrap().contains("vfs-nfs"));
+    }
+
+    fn facts(
+        backend: bool,
+        reflinks: Option<bool>,
+        same_volume: Option<bool>,
+        mode: &str,
+        link: bool,
+    ) -> ModeFacts {
+        ModeFacts {
+            backend,
+            reflinks,
+            same_volume,
+            mode: mode.to_owned(),
+            link,
+        }
+    }
+
+    #[test]
+    fn recommend_prefers_virtual_when_a_backend_exists() {
+        let (l, d, h) = recommend(&facts(true, Some(false), Some(true), "auto", false));
+        assert_eq!(l, Level::Ok);
+        assert!(d.starts_with("use virtual worktrees"));
+        assert!(h.is_none());
+        let (l, _, h) = recommend(&facts(true, Some(true), Some(true), "virtual", false));
+        assert_eq!((l, h), (Level::Ok, None));
+        let (l, d, h) = recommend(&facts(true, Some(true), Some(true), "plain", false));
+        assert_eq!(l, Level::Info);
+        assert!(d.contains("asc.worktree.mode=plain"));
+        assert_eq!(h.unwrap(), "asc config asc.worktree.mode auto");
+    }
+
+    #[test]
+    fn recommend_uses_plain_copy_on_a_volume_that_reflinks() {
+        let (l, d, h) = recommend(&facts(false, Some(true), Some(true), "auto", false));
+        assert_eq!(l, Level::Ok);
+        assert!(d.starts_with("use plain copy"));
+        assert!(h.is_none());
+        let (l, _, _) = recommend(&facts(false, Some(true), None, "auto", false));
+        assert_eq!(l, Level::Ok);
+        let (l, d, h) = recommend(&facts(false, Some(true), Some(true), "auto", true));
+        assert_eq!(l, Level::Info);
+        assert!(d.contains("link mode is not needed"));
+        assert_eq!(h.unwrap(), "asc config asc.worktree.link copy");
+    }
+
+    #[test]
+    fn recommend_warns_when_a_reflink_would_cross_volumes() {
+        let (l, d, h) = recommend(&facts(false, Some(true), Some(false), "auto", false));
+        assert_eq!(l, Level::Warn);
+        assert!(d.contains("cannot cross volumes"));
+        assert!(h.unwrap().contains("asc.worktree.link symlink"));
+        // Link mode works across volumes.
+        let (l, _, _) = recommend(&facts(false, Some(true), Some(false), "auto", true));
+        assert_eq!(l, Level::Info);
+    }
+
+    #[test]
+    fn recommend_keeps_link_mode_as_the_last_resort() {
+        let (l, d, h) = recommend(&facts(false, Some(false), Some(true), "auto", true));
+        assert_eq!(l, Level::Ok);
+        assert!(d.contains("the last resort"));
+        assert!(h.is_none());
+        let (l, d, h) = recommend(&facts(false, Some(false), Some(true), "auto", false));
+        assert_eq!(l, Level::Warn);
+        assert!(d.contains("full copy"));
+        assert_eq!(h.unwrap(), "asc config asc.worktree.link symlink");
+        let (l, d, h) = recommend(&facts(false, None, None, "auto", false));
+        assert_eq!(l, Level::Info);
+        assert!(d.contains("cannot tell"));
+        assert!(h.is_some());
+        assert!(d.contains("volume reflinks: unknown"));
     }
 
     #[test]
