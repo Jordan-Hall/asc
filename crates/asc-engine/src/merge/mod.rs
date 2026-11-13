@@ -192,6 +192,23 @@ impl MergeDrivers for NoDrivers {
     }
 }
 
+/// The three versions handed to a structural merger.
+pub struct StructuralRequest<'a> {
+    pub path: &'a RepoPath,
+    pub base: &'a [u8],
+    pub ours: &'a [u8],
+    pub theirs: &'a [u8],
+}
+
+/// Merges source files by syntax (top-level items) where the line-based text merge left
+/// conflicts. The engine calls it only after a text conflict, for paths whose merge attribute
+/// is unspecified; the implementation picks the languages it knows (by extension) and returns
+/// `None` for the rest. Implemented outside the engine so it never links a parser.
+pub trait StructuralMerge: Send + Sync {
+    /// The merged file when every item merges cleanly; `None` keeps the text conflict.
+    fn merge(&self, req: &StructuralRequest<'_>) -> Option<Vec<u8>>;
+}
+
 /// Inputs shared by every merge entry point.
 #[derive(Clone)]
 pub struct MergeOptions {
@@ -201,6 +218,8 @@ pub struct MergeOptions {
     pub labels: Labels,
     pub attrs: Arc<dyn MergeAttributes>,
     pub drivers: Arc<dyn MergeDrivers>,
+    /// Tried after a text conflict; `None` (the default) keeps the text conflict.
+    pub structural: Option<Arc<dyn StructuralMerge>>,
 }
 
 impl Default for MergeOptions {
@@ -212,6 +231,7 @@ impl Default for MergeOptions {
             labels: Labels::default(),
             attrs: Arc::new(NoMergeAttributes),
             drivers: Arc::new(NoDrivers),
+            structural: None,
         }
     }
 }

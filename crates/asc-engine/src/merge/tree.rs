@@ -23,7 +23,7 @@ use futures::stream::{self, StreamExt, TryStreamExt};
 use super::text::{is_binary, merge_text};
 use super::{
     Conflict, ConflictKind, DriverRequest, Error, Favor, MergeAttr, MergeOptions, MergeOutcome,
-    Result, Stages,
+    Result, Stages, StructuralRequest,
 };
 use crate::Engine;
 
@@ -561,7 +561,19 @@ impl<O: Objects, R: Refs> Engine<O, R> {
         }
         let m = merge_text(&b, &o, &t, opts, attr == MergeAttr::Union);
         Ok(if m.conflicted {
-            Merged::Conflict(m.bytes)
+            let by_syntax = match (&opts.structural, &attr) {
+                (Some(s), MergeAttr::Unspecified) => s.merge(&StructuralRequest {
+                    path,
+                    base: &b,
+                    ours: &o,
+                    theirs: &t,
+                }),
+                _ => None,
+            };
+            match by_syntax {
+                Some(bytes) => Merged::Clean(bytes),
+                None => Merged::Conflict(m.bytes),
+            }
         } else {
             Merged::Clean(m.bytes)
         })
@@ -903,6 +915,101 @@ mod tests {
         assert_eq!(at("ours").await, Some(b"ours\n".to_vec()));
         assert_eq!(at("bin").await, Some(b"ours\n".to_vec()));
         assert_eq!(at("drv").await, Some(b"OURS\nTHEIRS\n".to_vec()));
+    }
+
+    /// Records the paths it is asked about; answers with `reply` for every one.
+    struct Fake {
+        reply: Option<Vec<u8>>,
+        calls: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl Fake {
+        fn new(reply: Option<&[u8]>) -> Arc<Self> {
+            Arc::new(Self {
+                reply: reply.map(<[u8]>::to_vec),
+                calls: Default::default(),
+            })
+        }
+
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl crate::merge::StructuralMerge for Fake {
+        fn merge(&self, req: &StructuralRequest<'_>) -> Option<Vec<u8>> {
+            self.calls.lock().unwrap().push(req.path.to_string());
+            self.reply.clone()
+        }
+    }
+
+    fn structural(f: &Arc<Fake>) -> MergeOptions {
+        MergeOptions {
+            structural: Some(f.clone()),
+            ..opts()
+        }
+    }
+
+    #[tokio::test]
+    async fn structural_runs_only_after_a_text_conflict_and_its_result_is_used() {
+        let e = engine();
+        let base = [("clean", "1\n2\n3\n4\n5\n"), ("c", "x\n")];
+        let ours = [("clean", "A\n2\n3\n4\n5\n"), ("c", "ours\n")];
+        let theirs = [("clean", "1\n2\n3\n4\nB\n"), ("c", "theirs\n")];
+        let f = Fake::new(Some(b"joined\n"));
+        let got = merge(&e, &base, &ours, &theirs, &structural(&f)).await;
+        assert!(got.is_clean());
+        assert_eq!(f.calls(), vec!["c".to_string()]);
+        assert_eq!(read(&e, got.root, "c").await, Some(b"joined\n".to_vec()));
+        assert_eq!(
+            read(&e, got.root, "clean").await,
+            Some(b"A\n2\n3\n4\nB\n".to_vec())
+        );
+    }
+
+    #[tokio::test]
+    async fn structural_none_keeps_the_text_conflict_markers() {
+        let e = engine();
+        let f = Fake::new(None);
+        let got = merge(
+            &e,
+            &[("c", "x\n")],
+            &[("c", "ours\n")],
+            &[("c", "theirs\n")],
+            &structural(&f),
+        )
+        .await;
+        assert_eq!(f.calls().len(), 1);
+        assert_eq!(got.conflicts.len(), 1);
+        assert_eq!(got.conflicts[0].kind, ConflictKind::Content);
+        assert!(got.conflicts[0].marked_id.is_some());
+        let text = read(&e, got.root, "c").await.unwrap();
+        assert!(text.starts_with(b"<<<<<<<"));
+    }
+
+    #[tokio::test]
+    async fn an_attribute_beats_structural_merge() {
+        let e = engine();
+        let attrs: HashMap<&'static str, MergeAttr> = HashMap::from([
+            ("drv", MergeAttr::Driver("upper".into())),
+            ("nodrv", MergeAttr::Driver("missing".into())),
+            ("text", MergeAttr::Text),
+            ("union", MergeAttr::Union),
+            ("ours", MergeAttr::Ours),
+            ("unset", MergeAttr::Unset),
+        ]);
+        let f = Fake::new(Some(b"structural\n"));
+        let o = MergeOptions {
+            attrs: Arc::new(Table(attrs)),
+            drivers: Arc::new(Upper),
+            ..structural(&f)
+        };
+        let names = ["drv", "nodrv", "text", "union", "ours", "unset"];
+        let base: Vec<(&str, &str)> = names.iter().map(|n| (*n, "base\n")).collect();
+        let ours: Vec<(&str, &str)> = names.iter().map(|n| (*n, "ours\n")).collect();
+        let theirs: Vec<(&str, &str)> = names.iter().map(|n| (*n, "theirs\n")).collect();
+        merge(&e, &base, &ours, &theirs, &o).await;
+        assert!(f.calls().is_empty());
     }
 
     #[tokio::test]
