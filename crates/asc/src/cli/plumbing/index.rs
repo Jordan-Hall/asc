@@ -157,9 +157,7 @@ impl Index {
                 None => {}
             }
         }
-        for path in &removes {
-            stage::remove(&ws.db, id, self.set, path).await?;
-        }
+        stage::remove_many(&ws.db, id, self.set, &removes).await?;
         stage::upsert(&ws.db, id, self.set, &upserts).await?;
         // The target's copy of the rows is stale now.
         self.target = Target::open(ctx).await?;

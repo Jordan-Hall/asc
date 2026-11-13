@@ -829,10 +829,10 @@ impl<'a> Applier<'a> {
         // `--cached`: the work tree files differ from the staged content, so the rows are
         // written without the stat of the files (the index must not call them clean).
         let id = self.ws.workspace.ws.id;
-        let mut upserts = Vec::new();
+        let (mut removes, mut upserts) = (Vec::new(), Vec::new());
         for edit in &edits {
             let key = edit.path().as_bytes().to_vec();
-            stage::remove(&self.ws.db, id, StageSet::Default, &key).await?;
+            removes.push(key.clone());
             let head = target.head_leaf(self.ws, edit.path()).await?;
             match edit {
                 Edit::Put { leaf, .. } if head.as_ref() != Some(leaf) => {
@@ -842,6 +842,7 @@ impl<'a> Applier<'a> {
                 _ => {}
             }
         }
+        stage::remove_many(&self.ws.db, id, StageSet::Default, &removes).await?;
         stage::upsert(&self.ws.db, id, StageSet::Default, &upserts).await?;
         crate::ext::index_sink()
             .on_stage_changed(id, &[])

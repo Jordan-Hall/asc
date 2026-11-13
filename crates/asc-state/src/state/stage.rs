@@ -263,12 +263,31 @@ pub async fn replace_tx(
 
 /// Removes every stage of one path (the path is staged as in HEAD again).
 pub async fn remove(db: &StateDb, ws: WorkspaceId, set: StageSet, path: &[u8]) -> Result<()> {
-    sqlx::query("DELETE FROM stage WHERE ws_id = ? AND set_id = ? AND path = ?")
-        .bind(ws.to_string())
-        .bind(set.raw())
-        .bind(path)
-        .execute(db.pool())
-        .await?;
+    remove_many(db, ws, set, &[path]).await
+}
+
+/// [`remove`] for many paths in one transaction: one commit (one sync to disk) however many
+/// paths, and all of them go or none. A caller with a list must use this, not a loop of [`remove`].
+pub async fn remove_many<P: AsRef<[u8]>>(
+    db: &StateDb,
+    ws: WorkspaceId,
+    set: StageSet,
+    paths: &[P],
+) -> Result<()> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let ws = ws.to_string();
+    let mut tx = db.begin().await?;
+    for path in paths {
+        sqlx::query("DELETE FROM stage WHERE ws_id = ? AND set_id = ? AND path = ?")
+            .bind(&ws)
+            .bind(set.raw())
+            .bind(path.as_ref())
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
     Ok(())
 }
 

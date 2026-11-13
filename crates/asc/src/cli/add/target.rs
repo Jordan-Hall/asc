@@ -354,9 +354,7 @@ impl Target {
                 None => {}
             }
         }
-        for path in &removes {
-            stage::remove(&ws.db, id, self.set, path).await?;
-        }
+        stage::remove_many(&ws.db, id, self.set, &removes).await?;
         stage::upsert(&ws.db, id, self.set, &upserts).await?;
         let paths: Vec<RepoPath> = edits.iter().map(|e| e.path().clone()).collect();
         self.mirror(ctx, id, &paths).await

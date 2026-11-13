@@ -361,18 +361,20 @@ pub(crate) async fn stage_from_tree(
         }
     }
     let (id, mut rows, mut changed) = (ws.workspace.ws.id, Vec::new(), Vec::new());
+    let mut removes: Vec<Vec<u8>> = Vec::new();
     for (path, want) in desired {
         let head = ws
             .engine
             .lookup(head_root, &path)
             .await?
             .map(|e| leaf_of(&e));
-        stage::remove(&ws.db, id, StageSet::Default, path.as_bytes()).await?;
+        removes.push(path.as_bytes().to_vec());
         if head != want {
             rows.push(StageRow::from_leaf(path.as_bytes().to_vec(), want.as_ref()));
         }
         changed.push(path);
     }
+    stage::remove_many(&ws.db, id, StageSet::Default, &removes).await?;
     stage::upsert(&ws.db, id, StageSet::Default, &rows).await?;
     // The staged content comes from a tree, not from the files, so no stat may be trusted: the
     // sink patches every changed entry (previously staged paths and the new rows) stat-dirty.
