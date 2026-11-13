@@ -46,7 +46,7 @@ considered and rejected for this reason.
 | 11 | Continuous snapshots | The daemon snapshots a virtual worktree when it goes idle, so `asc undo` covers any change and a crashed agent's work is recoverable | D | open |
 | 12 | Snapshot sync | Snapshots go to the commit cloud: work in progress follows the user between machines | D | after 11 |
 | 13 | Agent overlay worktrees | Writes land in a small overlay; the rest is served from the store. Measure the disk use of an agent worktree first | D | open |
-| 14 | `asc doctor` picks the mode | Detects reflink and virtual support, states the choice and what it costs | S | open |
+| 14 | `asc doctor` picks the mode | Detects reflink and virtual support, states the choice and what it costs | S | done |
 | 15 | Link mode as last resort | Documented so; doctor recommends virtual mode or a volume that clones | S | done |
 
 ## 4. Agents and merging

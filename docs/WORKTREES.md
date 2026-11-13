@@ -15,7 +15,8 @@ so link mode is what saves the space there.
 
 ## Which mode to use
 
-Use the first mode on this list that fits your machine.
+Use the first mode on this list that fits your machine. `asc doctor` reports which of these fits
+this machine (`worktree-mode`).
 
 1. Virtual, when the machine can serve it. Nothing unchanged is on disk, and tools see ordinary files.
 2. Plain copy on a volume that clones (Dev Drive or ReFS, Btrfs, XFS, APFS). Files are ordinary files and cost no extra space.

@@ -43,7 +43,7 @@ Configuration keys are in [`CONFIG.md`](CONFIG.md). Getting started is in
 | `data-export request`, `list`, `delete` | Asks for an archive of your data (JSON Lines), lists the archives or deletes one. | `asc data-export request` |
 | `data-export download` | Writes an archive to a new file only you can read; it refuses an existing file. | `asc data-export download 3 -o my-data.jsonl` |
 | `usage` | What your account, an organization (`--owner org:NAME`) or the whole server (`--owner instance`) used this month or in `--period YYYY-MM`; `--spend key\|user\|repo\|day\|month` groups the AI spend instead. | `asc usage --owner org:acme --spend key` |
-| `doctor` | Checks the install, git and the store. `--fix` repairs what needs no administrator rights; `--workflows` lists push triggers on non-shared branches. | `asc doctor --json` |
+| `doctor` | Checks the install, git, the store and which worktree mode fits (`worktree-mode`). `--fix` repairs what needs no administrator rights; `--workflows` lists push triggers on non-shared branches. | `asc doctor --json` |
 | `install-shim` | Optional git compatibility: puts a `git` next to `asc` so `git` is asc inside an asc workspace and real git elsewhere. | `asc install-shim` |
 | `upgrade` | Signature-verified upgrade, side by side. The release source is `asc.releasesUrl`, `ASC_DOWNLOAD_BASE_URL` or `--from <dir>`. | `asc upgrade --check` |
 | `self-update` | The same as `upgrade`, under the name the installers use. | `asc self-update --check` |
