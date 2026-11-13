@@ -1332,6 +1332,25 @@ async fn integrity_sample(
     )
 }
 
+/// Why a local store path cannot be used, or None when it is a directory.
+fn store_dir_problem(dir: &std::path::Path) -> Option<String> {
+    match std::fs::metadata(dir) {
+        Ok(m) if m.is_dir() => None,
+        Ok(_) => Some(format!(
+            "the store path is not a directory: {}",
+            dir.display()
+        )),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(format!(
+            "the store directory does not exist: {}",
+            dir.display()
+        )),
+        Err(e) => Some(format!(
+            "cannot read the store directory {}: {e}",
+            dir.display()
+        )),
+    }
+}
+
 async fn check_store(url: &str) -> Vec<Check> {
     let parsed = match url::Url::parse(url) {
         Ok(u) => u,
@@ -1341,12 +1360,25 @@ async fn check_store(url: &str) -> Vec<Check> {
     if out[0].level == Level::Fail {
         return out;
     }
+    // A diagnosis creates nothing: opening a local store would make its directory.
+    if parsed.scheme() == "file" {
+        match parsed.to_file_path() {
+            Ok(dir) => {
+                if let Some(text) = store_dir_problem(&dir) {
+                    out.push(Check::fail("store", text));
+                    return out;
+                }
+            }
+            Err(()) => {
+                out.push(Check::fail("store", "the store url is not a local path"));
+                return out;
+            }
+        }
+    }
     let opened = if parsed.scheme() == "s3" {
         asc_store::s3::open(&parsed).map_err(|e| e.to_string())
     } else {
-        object_store::parse_url(&parsed)
-            .map(|(s, p)| (std::sync::Arc::from(s), p))
-            .map_err(|e| e.to_string())
+        asc_store::bucket::open_url_with(&parsed, true).map_err(|e| e.to_string())
     };
     let (store, root) = match opened {
         Ok(v) => v,
@@ -2036,6 +2068,23 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_local_store_path_is_judged_by_what_it_is() {
+        let t = tempfile::tempdir().unwrap();
+        assert_eq!(store_dir_problem(t.path()), None);
+        let missing = t.path().join("nope");
+        let m = store_dir_problem(&missing).unwrap();
+        assert!(m.starts_with("the store directory does not exist: "), "{m}");
+        let file = t.path().join("f");
+        std::fs::write(&file, b"x").unwrap();
+        let m = store_dir_problem(&file).unwrap();
+        assert!(m.starts_with("the store path is not a directory: "), "{m}");
+        // A path through a file is neither missing nor a directory: the error is shown with the path.
+        let under = file.join("sub");
+        let m = store_dir_problem(&under).unwrap();
+        assert!(m.contains(&under.display().to_string()), "{m}");
+    }
+
     use super::*;
 
     #[test]

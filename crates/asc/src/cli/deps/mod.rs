@@ -3,6 +3,8 @@
 //! ```text
 //! asc deps scan [--rev REV] [--ecosystem E]... [--refresh]
 //! asc deps findings [--state S]... [--ecosystem E]... [--severity S] [--package NAME]
+//!                   [--sort newest|exploited] [--exploited]
+//! asc deps sbom [--rev REV] [--ecosystem E]... [--out PATH [--force]]
 //! asc deps updates [--rev REV] [--ecosystem E]... [--security] [--ignored]
 //! asc deps propose [--security] [--max-kind patch|minor|major] [--dry-run] [--max-groups N] [PACKAGE]...
 //! asc deps dismiss <id> --reason not-used|tolerable|inaccurate|fix-started [--note TEXT]
@@ -22,6 +24,7 @@
 mod config;
 mod findings;
 mod propose;
+mod sbom;
 mod scan;
 mod updates;
 
@@ -65,6 +68,8 @@ pub enum Sub {
     Scan(scan::ScanArgs),
     /// Lists the recorded findings.
     Findings(findings::FindingsArgs),
+    /// Writes a CycloneDX bill of materials of a revision, to standard output or --out.
+    Sbom(sbom::SbomArgs),
     /// Lists the updates that are available.
     Updates(updates::UpdatesArgs),
     /// Records updates as changes on agent/deps refs.
@@ -109,6 +114,10 @@ pub const NATIVE: &[NativeSpec] = &[NativeSpec {
         "--no-groups",
         "--ignore",
         "--no-ignore",
+        "--sort",
+        "--exploited",
+        "--out",
+        "--force",
     ],
     placeholders: &[],
 }];
@@ -117,6 +126,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     match a.cmd {
         Sub::Scan(x) => scan::run(ctx, x).await,
         Sub::Findings(x) => findings::list(ctx, x).await,
+        Sub::Sbom(x) => sbom::run(ctx, x).await,
         Sub::Updates(x) => updates::run(ctx, x).await,
         Sub::Propose(x) => propose::run(ctx, x).await,
         Sub::Dismiss(x) => findings::dismiss(ctx, x).await,

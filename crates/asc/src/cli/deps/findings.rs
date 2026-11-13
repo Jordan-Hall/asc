@@ -4,10 +4,10 @@ use std::process::ExitCode;
 
 use asc_rpc::server::wire;
 
-use super::scan::finding_line;
+use super::scan::{feed_line, finding_line};
 use super::{bad, client, ecosystems, remote_with_token};
 use crate::cli::agent::conn::Conn;
-use crate::cli::codeintel::{emit_json, lines, with_stdout};
+use crate::cli::codeintel::{clean_str, emit_json, lines, with_stdout};
 use crate::cli::common::{Ctx, Result};
 
 #[derive(clap::Args, Debug)]
@@ -23,6 +23,12 @@ pub struct FindingsArgs {
     /// Only this package (exact name).
     #[arg(long)]
     package: Option<String>,
+    /// Order: newest (the default) or exploited (KEV-listed first, then by EPSS).
+    #[arg(long)]
+    sort: Option<String>,
+    /// Only findings the KEV catalog lists.
+    #[arg(long)]
+    exploited: bool,
     #[arg(long)]
     limit: Option<u32>,
     #[arg(long = "page")]
@@ -93,6 +99,19 @@ pub(crate) fn severity_of(name: &str) -> Result<i32> {
     } as i32)
 }
 
+pub(crate) fn sort_of(name: &str) -> Result<i32> {
+    use wire::DepFindingSort as S;
+    Ok(match name.to_ascii_lowercase().as_str() {
+        "newest" => S::Newest,
+        "exploited" => S::Exploited,
+        other => {
+            return Err(bad(format!(
+                "unknown sort {other:?}; it is newest or exploited"
+            )));
+        }
+    } as i32)
+}
+
 pub(crate) fn reason_of(name: &str) -> Result<i32> {
     use wire::DepDismissReason as R;
     Ok(match name.to_ascii_lowercase().replace('_', "-").as_str() {
@@ -124,6 +143,7 @@ pub async fn list(ctx: &Ctx, a: FindingsArgs) -> Result<ExitCode> {
         .transpose()?
         .unwrap_or(0);
     let ecos = ecosystems(&a.ecosystems)?;
+    let sort = a.sort.as_deref().map(sort_of).transpose()?.unwrap_or(0);
     let conn = Conn::open(ctx, remote.as_deref()).await?;
     let repo = conn.repo_ref();
     let r = conn
@@ -136,6 +156,8 @@ pub async fn list(ctx: &Ctx, a: FindingsArgs) -> Result<ExitCode> {
                 name: a.package.clone().unwrap_or_default(),
                 limit: a.limit.unwrap_or(0),
                 page_token: a.page.clone().unwrap_or_default(),
+                sort,
+                only_exploited: a.exploited,
             };
             async move {
                 Ok(client(&s)
@@ -153,7 +175,23 @@ pub async fn list(ctx: &Ctx, a: FindingsArgs) -> Result<ExitCode> {
                 writeln!(out, "{}\t#{}", finding_line(f), f.id)?;
             }
             if !r.next_page_token.is_empty() {
-                writeln!(out, "# more: --page {}", r.next_page_token)?;
+                writeln!(out, "# more: --page {}", clean_str(&r.next_page_token))?;
+            }
+            for l in [
+                feed_line("kev", r.kev_feed.as_ref()),
+                feed_line("epss", r.epss_feed.as_ref()),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                writeln!(out, "{l}")?;
+            }
+            if r.open_exploited > 0 {
+                writeln!(
+                    out,
+                    "# {} open findings are known exploited",
+                    r.open_exploited
+                )?;
             }
         }
         Ok(if r.findings.is_empty() {
@@ -254,5 +292,26 @@ mod tests {
             wire::DepDismissReason::FixStarted as i32
         );
         assert!(reason_of("because").is_err());
+        assert_eq!(
+            sort_of("Exploited").unwrap(),
+            wire::DepFindingSort::Exploited as i32
+        );
+        assert_eq!(sort_of("newest").unwrap(), 0);
+        assert!(sort_of("worst").is_err());
+    }
+
+    #[test]
+    fn sort_and_exploited_flags_parse() {
+        use clap::Parser;
+        #[derive(clap::Parser, Debug)]
+        struct P {
+            #[command(flatten)]
+            a: FindingsArgs,
+        }
+        let p = P::try_parse_from(["x", "--sort", "exploited", "--exploited"]).unwrap();
+        assert_eq!(p.a.sort.as_deref(), Some("exploited"));
+        assert!(p.a.exploited);
+        let p = P::try_parse_from(["x"]).unwrap();
+        assert_eq!((p.a.sort, p.a.exploited), (None, false));
     }
 }
