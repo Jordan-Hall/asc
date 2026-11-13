@@ -153,6 +153,10 @@ they grant. See [`mcp.md`](mcp.md).
 | `ASC_HOST_BUILDCACHE` | The read-only host build cache store `asc/rust-cache` adds as `asc.buildcache.lower`. |
 | `ASC_SERVE_CONFIG` | The `asc-serve.toml` path for `asc serve`, when `--config` is not given. |
 
-A server whose object store is a local directory (a `file://` storage URL) syncs each object and its directory before the write returns, on Linux and macOS. On Windows a directory cannot be synced this way.
+A server whose object store is a local directory (a `file://` storage URL) syncs each object and its directory before the write returns, on Linux and macOS. On Windows a directory cannot be synced this way. The `asc-serve.toml` key `store_local_fsync` (a boolean, default `true`) turns this off with `false`, for a volume that already guarantees durability or a throwaway test server; any other value is a config error. It has no effect on `s3://` and `memory:///` stores.
+
+A `file://` store URL names the directory its path decodes to (`file:///srv/my%20store` is `/srv/my store`), the same directory for the server and for every tool, whether the path holds a space, a `~` or a `%`.
+
+The SQLite databases that hold refs and changesets (the server's `db` file and the client's `state.db`) run in WAL mode with `synchronous = FULL`, so a commit acknowledged to a caller survives power loss. These levels are not configurable.
 
 The server reads its own file, `asc-serve.toml`; see [`../deploy/README.md`](../deploy/README.md).
