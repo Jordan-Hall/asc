@@ -488,8 +488,13 @@ jobs:
       - name: Toolchain (from rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # Built once. The JSON artifact list is kept so the test step runs the binary without a second
+      # cargo invocation (which rebuilt asc-serve and asc, about four minutes, in the measured run).
       - name: Build the virtual workspace tests
-        run: cargo test -p asc --locked --test windows_virtual --no-run
+        shell: bash
+        run: |
+          cargo test -p asc --locked --test windows_virtual --no-run --message-format=json-render-diagnostics \
+            > "$RUNNER_TEMP/windows_virtual.json"
       - name: Virtual workspace tests
         shell: bash
         timeout-minutes: 60
@@ -498,8 +503,7 @@ jobs:
         # One test at a time, each with a limit, so a test that hangs is named and the others still report.
         # The built test binary runs directly: going through cargo again would rebuild asc for every test.
         run: |
-          bin=$(cargo test -p asc --locked --test windows_virtual --no-run --message-format=json \
-            | jq -r 'select(.reason == "compiler-artifact" and .target.name == "windows_virtual" and .executable != null) | .executable')
+          bin=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "windows_virtual" and .executable != null) | .executable' "$RUNNER_TEMP/windows_virtual.json")
           bin=$(cygpath -u "$bin")
           test -x "$bin" || { echo "::error::no windows_virtual test binary"; exit 1; }
           cd crates/asc
