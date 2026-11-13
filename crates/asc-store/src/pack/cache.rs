@@ -138,7 +138,7 @@ impl PackCache {
             return Err(e);
         }
         match fs::rename(&tmp, self.path(id)) {
-            Ok(()) => Ok(true),
+            Ok(()) => crate::cachedir::sync_dir(&self.dir).map(|()| true),
             Err(e) => {
                 let _ = fs::remove_file(&tmp);
                 // Another reader cached the same pack first: its copy is the same bytes.

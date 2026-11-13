@@ -204,12 +204,16 @@ impl Inner {
         file.write_all(data)?;
         file.sync_all()?;
         drop(file);
+        let mut created = false;
         let renamed = dest
             .parent()
-            .map_or(Ok(()), fs::create_dir_all)
-            .and_then(|()| fs::rename(&tmp, &dest));
+            .map_or(Ok(false), create_dir_tracked)
+            .and_then(|c| {
+                created = c;
+                fs::rename(&tmp, &dest)
+            });
         match renamed {
-            Ok(()) => Ok(()),
+            Ok(()) => sync_published(&dest, created),
             Err(_) if dest.exists() => {
                 let _ = fs::remove_file(&tmp);
                 Ok(())
@@ -230,11 +234,12 @@ impl Inner {
             remove_if_present(&from)?;
             return Ok(true);
         }
-        if let Some(dir) = to.parent() {
-            fs::create_dir_all(dir)?;
-        }
+        let created = match to.parent() {
+            Some(dir) => create_dir_tracked(dir)?,
+            None => false,
+        };
         match fs::rename(&from, &to) {
-            Ok(()) => Ok(true),
+            Ok(()) => sync_published(&to, created).map(|()| true),
             Err(_) if !from.exists() => Ok(false),
             Err(e) => Err(e),
         }
@@ -284,6 +289,52 @@ fn open_shared(path: &Path) -> io::Result<File> {
         opts.share_mode(0x1 | 0x2 | 0x4);
     }
     opts.open(path)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Calls to `sync_dir` on this thread (tests count calls, not effects).
+    pub(crate) static SYNC_DIR_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Flushes a directory's entries to disk.
+///
+/// A rename is not durable until the directory that holds the new name is synced: after a
+/// power cut the file can be gone, or a new directory can vanish, even though the file data
+/// was synced and a ref already names the object. Windows cannot sync a directory this way,
+/// so there it does nothing.
+pub(crate) fn sync_dir(dir: &Path) -> io::Result<()> {
+    #[cfg(test)]
+    SYNC_DIR_CALLS.with(|c| c.set(c.get() + 1));
+    #[cfg(unix)]
+    {
+        File::open(dir)?.sync_all()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+        Ok(())
+    }
+}
+
+/// `create_dir_all` that reports whether `dir` did not exist before the call.
+fn create_dir_tracked(dir: &Path) -> io::Result<bool> {
+    let existed = dir.is_dir();
+    fs::create_dir_all(dir)?;
+    Ok(!existed)
+}
+
+/// Syncs the directory of a freshly renamed `path`, and that directory's parent when this
+/// call created it.
+fn sync_published(path: &Path, created_dir: bool) -> io::Result<()> {
+    let Some(dir) = path.parent() else {
+        return Ok(());
+    };
+    sync_dir(dir)?;
+    if created_dir && let Some(up) = dir.parent() {
+        sync_dir(up)?;
+    }
+    Ok(())
 }
 
 fn remove_if_present(path: &Path) -> io::Result<()> {
@@ -480,6 +531,68 @@ pub(crate) mod tests {
 
     fn file_key(data: &[u8]) -> ObjKey {
         ObjKey::File(FileId::of(data))
+    }
+
+    fn sync_calls() -> usize {
+        SYNC_DIR_CALLS.with(std::cell::Cell::get)
+    }
+
+    /// Two distinct payloads whose keys share one fan-out directory.
+    fn same_fanout_pair() -> (Vec<u8>, Vec<u8>) {
+        let first = b"fanout-0".to_vec();
+        let hex = |d: &[u8]| FileId::of(d).to_string()[..2].to_string();
+        let want = hex(&first);
+        let second = (1u32..)
+            .map(|n| format!("fanout-{n}").into_bytes())
+            .find(|d| hex(d) == want)
+            .unwrap();
+        (first, second)
+    }
+
+    #[test]
+    fn put_of_new_object_syncs_directories() {
+        let tmp = tempfile::tempdir().unwrap();
+        let c = open_in(tmp.path(), "cache");
+        let (a, b) = same_fanout_pair();
+
+        let before = sync_calls();
+        c.inner.write(&file_key(&a), &a).unwrap();
+        assert_eq!(
+            sync_calls() - before,
+            2,
+            "new fan-out dir: dir and its parent"
+        );
+
+        let before = sync_calls();
+        c.inner.write(&file_key(&b), &b).unwrap();
+        assert_eq!(sync_calls() - before, 1, "existing fan-out dir: dir only");
+
+        let before = sync_calls();
+        c.inner.write(&file_key(&b), &b).unwrap();
+        assert_eq!(sync_calls() - before, 0, "already present: nothing to sync");
+    }
+
+    #[test]
+    fn demote_syncs_destination_directories() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = open_in(tmp.path(), "src");
+        let dst = open_in(tmp.path(), "dst");
+        let (a, b) = same_fanout_pair();
+        src.inner.write(&file_key(&a), &a).unwrap();
+        src.inner.write(&file_key(&b), &b).unwrap();
+
+        let before = sync_calls();
+        assert!(src.inner.demote(&dst.inner, &file_key(&a)).unwrap());
+        assert_eq!(
+            sync_calls() - before,
+            2,
+            "new fan-out dir: dir and its parent"
+        );
+
+        let before = sync_calls();
+        assert!(src.inner.demote(&dst.inner, &file_key(&b)).unwrap());
+        assert_eq!(sync_calls() - before, 1, "existing fan-out dir: dir only");
+        assert!(dst.inner.path(&file_key(&b)).is_file());
     }
 
     #[tokio::test]
