@@ -25,7 +25,7 @@ considered and rejected for this reason.
 |---|---|---|---|---|
 | 1 | Server scrub | A slow, resumable job re-reads stored objects, checks hashes (delta bases first), reports, and repairs from a second copy | D | open |
 | 2 | Object-lock mode | Optional bucket versioning or object lock with a delete delay, so a GC fault or a leaked key cannot destroy history | D | open |
-| 3 | Local durability audit | Every object write and rename is synced before a ref names it; fix what is not | S | open |
+| 3 | Local durability audit | Every object write and rename is synced before a ref names it; fix what is not. Done: directory sync in the object store, demote and pack cache; fsync on a local-directory server store. Open: the SQLite synchronous level on the server and the client. | S | in progress |
 | 4 | Backup chain check | Backup verifies that every delta chain restores | S | open |
 
 ## 2. Storage size

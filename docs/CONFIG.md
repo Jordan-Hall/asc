@@ -153,4 +153,6 @@ they grant. See [`mcp.md`](mcp.md).
 | `ASC_HOST_BUILDCACHE` | The read-only host build cache store `asc/rust-cache` adds as `asc.buildcache.lower`. |
 | `ASC_SERVE_CONFIG` | The `asc-serve.toml` path for `asc serve`, when `--config` is not given. |
 
+A server whose object store is a local directory (a `file://` storage URL) syncs each object and its directory before the write returns, on Linux and macOS. On Windows a directory cannot be synced this way.
+
 The server reads its own file, `asc-serve.toml`; see [`../deploy/README.md`](../deploy/README.md).
