@@ -337,7 +337,7 @@ and evaluated through the API and the hub shows it; every key below is parsed st
 ## 8. CI failure grouping and flaky tests
 
 - **RPCs** (`ciinsights.proto`, `ci-insights.v1`): `CiInsights.ReportTestCases`, `ListFailureGroups`, `GetFailureGroup`,
-  `SetFailureGroupState`, `FlakyHistory`, `ListFlakyTests`.
+  `SetFailureGroupState`, `FlakyHistory`, `ListFlakyTests`; and `CacheSummary` (feature `ci-cache.v1`, below).
 - **Grouping:** normalise the first failure line and message (strip numbers, hex ids, uuids, timestamps, absolute paths, ports),
   `signature = BLAKE3(job, test, normalised)`; one group per signature. A test is flaky when it passed and failed on the same head or
   failed then passed on a retry within the window; rate = flips / runs per day bucket. Quarantine only when policy `[ci]
@@ -349,6 +349,21 @@ and evaluated through the API and the hub shows it; every key below is parsed st
   (a JUnit XML adapter in the hub's Actions bridge, `services/ascsync`).
 - **Tests:** normalisation table, grouping across runs, flaky detection on constructed histories, bounds on 5,000 cases, quarantine
   authorisation, replay of the same (run, job) replaces rather than doubles.
+- **Build cache use** (`CiInsights.CacheSummary`, feature `ci-cache.v1`): repository read, cheap, same authorisation and
+  error mapping as `FlakyHistory`, so a repository the caller may not read answers like one that does not exist.
+  - *Request:* `repo`; `days` (7, 30 or 90; anything else, including 0, means 30; the window counts today and ends today, UTC);
+    `changeset` (optional; empty means none, otherwise exactly 32 bytes, else `INVALID_ARGUMENT`).
+  - *Response:* `totals` (the sum over the window), `days` (oldest first; each `day` is unix seconds at 00:00 UTC; a day without
+    counts is left out and the client fills the gap), `since` (the first day of the window), and `change` with `has_change`
+    (true only when a changeset was given and counts exist for it).
+  - *Counted:* per repository and day, and per change version, five counters: `hits`, `misses`, `puts`, `bytes_served` and
+    `saved_ms`. `saved_ms` is the task time the hits measured (the stored `x-artifact-duration` of each artifact served), never an
+    estimate. Counters never go below zero and saturate at the largest 64-bit signed value. Daily rows are kept 180 days, change
+    rows 30 days after their last update (at most 2,000 per repository).
+  - *Cache headers:* a cache client sends `x-asc-rev` (the change version id as 64 lowercase hex characters) so its requests count for that change
+    version; a missing or malformed value counts for the repository only and never fails the request. `x-artifact-duration` is the
+    task time in milliseconds sent with an artifact upload; a value above one week (604,800,000 ms) is capped to one week when kept
+    and when counted as saved time.
 
 ## 9. Bring your own storage
 
@@ -993,6 +1008,7 @@ Every method of the build-out services (98). A test keeps this list equal to the
 - `asc.v1.CiInsights/SetFailureGroupState` — repo write; mutating
 - `asc.v1.CiInsights/FlakyHistory` — repo read
 - `asc.v1.CiInsights/ListFlakyTests` — repo read; paged
+- `asc.v1.CiInsights/CacheSummary` — repo read; cheap; feature `ci-cache.v1`
 
 **Storage** (`storage.proto`)
 
