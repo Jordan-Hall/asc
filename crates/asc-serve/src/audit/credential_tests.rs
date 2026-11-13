@@ -101,7 +101,11 @@ async fn a_token_is_audited_when_created_and_when_revoked_and_the_secret_never_i
     .events;
     let text = format!("{all:?}");
     assert!(!text.contains(&secret));
-    assert!(!text.contains(secret.rsplit('_').next().unwrap()));
+    // `asc<k>_<id>_<random>`: the random part is base64url and may hold `_` itself, so split off
+    // the two fixed segments instead of taking the last one.
+    let random = secret.splitn(3, '_').nth(2).unwrap();
+    assert!(random.len() >= 43, "{random}");
+    assert!(!text.contains(random));
     let v = store::verify_chain(&pool, &Scope::instance(), 0, 0)
         .await
         .unwrap();
