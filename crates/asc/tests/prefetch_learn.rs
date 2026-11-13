@@ -138,7 +138,10 @@ fn learned_days_bounds_the_learned_warm() {
     let (code, _, err) = r.run_with(&["prefetch", "--learn", "p"], b"src/a.ts\n");
     assert_eq!(code, 0, "{err}");
     r.ok(&["config", "asc.prefetch.learnedDays", "0"]);
-    // A profile used this second is still inside a window of zero days.
+    // Zero is accepted. What it warms depends on whether the clock's second has turned since
+    // the profile was learned, so only the exit code is checked.
+    r.ok(&["prefetch", "--learned"]);
+    r.ok(&["config", "asc.prefetch.learnedDays", "1"]);
     assert!(
         r.ok(&["prefetch", "--learned"])
             .contains("prefetched 1 files")
