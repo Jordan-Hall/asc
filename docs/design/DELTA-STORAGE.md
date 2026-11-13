@@ -102,6 +102,46 @@ while a delta is being written.
 - **Storage migration and backup** copy raw values within the same namespace; `delta_bases` and
   `delta_cursor` are namespace tables (`NS_TABLES`) and are backed up and restored with the database.
 
+## Deltas are never served
+
+The rule: every path that hands object bytes to a client, a cache tier or another namespace hands a
+full, self-contained value (codec `0` or `1`), never codec `2`. A delta exists only as a loose value
+inside the bucket of the namespace that has its `delta_bases` row.
+
+How it holds. The only function that returns raw stored bytes is `BucketObjects::get_loose_raw`, and it
+is `pub(crate)` to `asc-store`. Its callers are the resolver (`get_loose_stored`, which decodes a delta
+against its base and re-encodes the result), the delta code in `delta.rs` (planning, expanding, base
+checks) and the pack job. Everything that leaves the crate goes through `get`, `get_many`, `get_stored`
+or `get_range`, which resolve.
+
+| Outward path | How it complies |
+| --- | --- |
+| `GetObjects` (`asc-rpc` server, behind `ServerObjects`) | Reads with `get_stored`, so each value is resolved and verified before it is sent. |
+| Fetch, clone and sync clients | They use `GetObjects`. A client also refuses codec `2` (`check_codec`). |
+| Git-compat serving and the git projection | Read through `Objects::get`, which returns decoded content. |
+| Cache role | It relays `GetObjects` answers from its upstream and stores what it received, so it only ever holds full values. Its own reads of the origin use the same RPC. |
+| Pack job | Reads raw values, skips every delta and leaves it loose, so a pack never holds codec `2`. |
+| `CopyClosure` between repositories | Uses `get_stored` and `put`, so the destination gets full values and re-hashes them. |
+
+Within-namespace exceptions, where raw bytes move but never outward:
+
+- Storage migration copies a repository's objects, byte for byte, from one bucket to another for the
+  same namespace. The `delta_bases` and `delta_cursor` rows stay with that namespace, so the deltas keep
+  their bases.
+- Backup copies the bucket files and a database snapshot. The snapshot includes `delta_bases`
+  (`NS_TABLES`), and a restore brings both back together.
+
+Transient exception: a fork copies raw loose objects into the fork's namespace, in the same bucket by
+server-side copy or across buckets through the server. The fork has no `delta_bases` rows, so
+`expand_copied` rewrites every copied delta in full before the fork is made ready. Nothing reads the
+fork until then.
+
+Tests: `asc-serve/src/delta_tests.rs` makes the pass (or `store_delta`) turn a file, a tree and a chunk
+into deltas and then reads them through the real `GetObjects` handler. Each served value must not start
+with codec `2`, must pass `check_codec` and must decode to the original bytes under its key. The fork
+case is `a_fork_gets_full_values_where_the_source_holds_deltas` in `admin.rs`, and the pack case is
+`the_pack_job_leaves_deltas_loose_and_their_bases_may_be_packed` in `delta.rs`.
+
 ## Configuration
 
 ```toml
@@ -146,4 +186,5 @@ Migrations `0611_delta_bases` and `0612_delta_kinds` (PostgreSQL and SQLite):
   rollback expands, chunk pairing, row kinds, GC keeps a base
   until its last delta is swept, a purged base expands its dependents and takes no new ones, the admin
   command and the rollback.
+- `asc-serve/src/delta_tests.rs`: `GetObjects` serves a file, a tree and a chunk delta in full.
 - `asc-serve/src/admin.rs`: a fork holds full values where the source holds deltas.
