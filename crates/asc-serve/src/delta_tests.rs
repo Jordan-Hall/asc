@@ -638,3 +638,120 @@ async fn a_new_file_is_stored_against_a_similar_file_of_its_directory() {
     );
     assert_eq!(e.objects.get(&key).await.unwrap().unwrap(), added);
 }
+
+// ------------------------------------------------------------------ deltas are never served
+
+/// What a client gets from `GetObjects` for `keys`: the stored bytes of each, in the order
+/// asked. Goes through the same handler the service uses, gate included.
+async fn served(reg: &Arc<Registry>, keys: &[ObjKey]) -> Vec<(ObjKey, bytes::Bytes)> {
+    use asc_rpc::IdMode;
+    use asc_rpc::auth::Principal;
+    use asc_rpc::server::{CallCtx, ObjectsHandler as _, wire};
+    use futures::TryStreamExt as _;
+    let ctx = CallCtx {
+        repo: name(),
+        id_mode: IdMode::Asc,
+        principal: Principal { id: "t".into() },
+        op_id: None,
+        client: None,
+        admin: Default::default(),
+    };
+    let req = wire::GetObjectsRequest {
+        repo: Some(wire::RepoRef {
+            name: name().as_str().to_owned(),
+            id_mode: IdMode::Asc.to_wire(),
+        }),
+        keys: keys
+            .iter()
+            .map(|k| wire::ObjKey::try_from(k).unwrap())
+            .collect(),
+    };
+    let handler = crate::objects::ServerObjects::new(reg.clone());
+    let msgs: Vec<_> = handler
+        .get_objects(&ctx, req)
+        .await
+        .unwrap()
+        .try_collect()
+        .await
+        .unwrap();
+    assert!(msgs.iter().all(|m| m.missing.is_empty()), "{msgs:?}");
+    msgs.into_iter()
+        .flat_map(|m| m.objects)
+        .map(|o| (ObjKey::try_from(&o.key.unwrap()).unwrap(), o.data))
+        .collect()
+}
+
+/// Every served value is a wire value (codec 0 or 1) that decodes to `want` under its key.
+fn assert_full(got: &[(ObjKey, bytes::Bytes)], want: &[(ObjKey, &[u8])]) {
+    assert_eq!(got.len(), want.len());
+    for ((k, stored), (wk, data)) in got.iter().zip(want) {
+        assert_eq!(k, wk);
+        assert_ne!(stored[0], 2, "{k} was served as a delta");
+        asc_store::codec::check_codec(stored).unwrap();
+        assert_eq!(
+            asc_store::objects::decode_verified(k, stored).unwrap(),
+            *data,
+            "{k}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn get_objects_serves_a_file_the_pass_turned_into_a_delta_in_full() {
+    let f = Fx::new().await;
+    let (v1, v2) = (version(10), version(20));
+    let (k1, k2) = (ObjKey::File(FileId::of(&v1)), ObjKey::File(FileId::of(&v2)));
+    f.gc.run_delta_repo(&name(), &on()).await.unwrap();
+    // Both are deltas at rest; the base of `k2` is itself a delta (a chain of two).
+    assert!(f.entry.objects.delta_base_of(k1).await.unwrap().is_some());
+    assert!(f.entry.objects.delta_base_of(k2).await.unwrap().is_some());
+    let got = served(&f.reg, &[k2, k1]).await;
+    assert_full(&got, &[(k2, &v2), (k1, &v1)]);
+}
+
+#[tokio::test]
+async fn get_objects_serves_a_tree_the_pass_turned_into_a_delta_in_full() {
+    let reg = registry().await;
+    let e = repo(&reg).await;
+    let names: Vec<String> = (0..300).map(|i| format!("src/module_{i:04}.rs")).collect();
+    let files: Vec<(&str, &[u8])> = names.iter().map(|n| (n.as_str(), n.as_bytes())).collect();
+    let a = commit(&e, &[], &files).await;
+    let b = commit(&e, &[a], &[("src/module_0007.rs", b"edited")]).await;
+    for (pos, cs) in [a, b].into_iter().enumerate() {
+        sqlx::query("INSERT INTO mainline (ns, ref, pos, cs) VALUES ($1, $2, $3, $4)")
+            .bind(e.ns.as_bytes().to_vec())
+            .bind("refs/heads/master")
+            .bind(pos as i64)
+            .bind(cs.as_bytes().to_vec())
+            .execute(reg.pool())
+            .await
+            .unwrap();
+    }
+    let key = ObjKey::Tree(dir_tree(&e, b, "src").await);
+    let want = e.objects.get(&key).await.unwrap().unwrap();
+    let rep = delta_service::pass(reg.pool(), &e, &on()).await.unwrap();
+    assert_eq!(rep.trees, 1, "{rep:?}");
+    assert!(e.objects.delta_base_of(key).await.unwrap().is_some());
+    let got = served(&reg, &[key]).await;
+    assert_full(&got, &[(key, &want)]);
+}
+
+#[tokio::test]
+async fn get_objects_serves_a_chunk_stored_as_a_delta_in_full() {
+    use asc_core::id::ChunkId;
+    use asc_store::codec::encode_stored;
+    let reg = registry().await;
+    let e = repo(&reg).await;
+    let (old, new) = (version(usize::MAX), version(30));
+    let put_chunk = async |data: &[u8]| {
+        let key = ObjKey::Chunk(ChunkId::of(data));
+        e.objects.put(&key, encode_stored(data)).await.unwrap();
+        key
+    };
+    let (base, chunk) = (put_chunk(&old).await, put_chunk(&new).await);
+    let p = e.objects.plan_delta(chunk, base).await.unwrap().unwrap();
+    e.objects.store_delta(&p).await.unwrap();
+    assert_eq!(e.objects.delta_base_of(chunk).await.unwrap(), Some(base));
+    let got = served(&reg, &[chunk, base]).await;
+    assert_full(&got, &[(chunk, &new), (base, &old)]);
+}
