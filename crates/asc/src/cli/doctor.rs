@@ -1653,18 +1653,26 @@ fn recommend(f: &ModeFacts) -> (Level, String, Option<String>) {
     )
 }
 
+/// The cache directory a checkout clones from: `asc.cache.dir`, else the home's `cache/` (the
+/// same choice `WcParts::new` makes). A clone only works inside one volume, so this is the
+/// place to probe and to compare against, and it is never inside the work tree by default.
+fn clone_source_dir(configured: Option<PathBuf>, home: &AscHome) -> PathBuf {
+    configured.unwrap_or_else(|| home.cache())
+}
+
 async fn check_worktree_mode(ctx: &Ctx, home: &AscHome, backend: bool) -> Check {
-    let tmp = home.tmp();
+    let source = clone_source_dir(ctx.config.path("asc.cache.dir"), home);
+    let probe_dir = source.clone();
     let reflinks = tokio::task::spawn_blocking(move || {
-        std::fs::create_dir_all(&tmp).ok()?;
-        asc_wc::depclone::volume_reflinks(&tmp).ok()
+        std::fs::create_dir_all(&probe_dir).ok()?;
+        asc_wc::depclone::volume_reflinks(&probe_dir).ok()
     })
     .await
     .ok()
     .flatten();
     let same_volume = ctx.ws_opt().and_then(|ws| {
         let a = volume_key(ws.projection.toplevel())?;
-        Some(a == volume_key(home.root())?)
+        Some(a == volume_key(&source)?)
     });
     let facts = ModeFacts {
         backend,
@@ -2069,6 +2077,16 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(integrity_sample(&store, &root).await.level, Level::Fail);
+    }
+
+    #[test]
+    fn worktree_mode_probes_the_cache_a_checkout_clones_from() {
+        let t = tempfile::tempdir().unwrap();
+        let home = AscHome::open(t.path().join("home")).unwrap();
+        let moved = t.path().join("elsewhere");
+        assert_eq!(clone_source_dir(Some(moved.clone()), &home), moved);
+        assert_eq!(clone_source_dir(None, &home), home.cache());
+        assert_ne!(clone_source_dir(None, &home), home.tmp());
     }
 
     #[test]
