@@ -305,6 +305,7 @@ const TABLE: &[(&str, Class, &[&str])] = &[
         "CiInsights",
         Class::Cheap,
         &[
+            "CacheSummary",
             "FlakyHistory",
             "GetFailureGroup",
             "ListFailureGroups",

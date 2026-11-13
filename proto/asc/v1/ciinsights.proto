@@ -16,6 +16,7 @@ service CiInsights {
   rpc SetFailureGroupState(SetFailureGroupStateRequest) returns (SetFailureGroupStateResponse);   // repo write; mutating, x-asc-op-id
   rpc FlakyHistory(FlakyHistoryRequest) returns (FlakyHistoryResponse);            // repo read
   rpc ListFlakyTests(ListFlakyTestsRequest) returns (ListFlakyTestsResponse);      // repo read; paged
+  rpc CacheSummary(CacheSummaryRequest) returns (CacheSummaryResponse);            // repo read; build cache use, advertised as "ci-cache.v1"
 }
 
 enum TestOutcome {
@@ -159,4 +160,31 @@ message ListFlakyTestsRequest {
 message ListFlakyTestsResponse {
   repeated FlakyTest tests = 1;
   string next_page_token = 2;
+}
+
+// What a build cache did for a repository over a window of days. `days` is 7, 30 or 90; any other value, including 0, means 30.
+message CacheSummaryRequest {
+  RepoRef repo = 1;
+  uint32 days = 2;                // length of the window in days, counting today; 7, 30 or 90, else 30
+  bytes changeset = 3;            // optional: a changeset id of exactly 32 bytes whose own counts are wanted in `change`; empty means none
+}
+// Five counters of cache use. All are plain counts since the start of the period they describe.
+message CacheCounters {
+  uint64 hits = 1;                // lookups the cache answered
+  uint64 misses = 2;              // lookups the cache could not answer
+  uint64 puts = 3;                // artifacts stored in the cache
+  uint64 bytes_served = 4;        // bytes sent out for the hits
+  uint64 saved_ms = 5;            // milliseconds of task time the hits saved; the measured time of the tasks they replaced, never an estimate
+}
+// The counters of one day.
+message CacheDay {
+  int64 day = 1;                  // unix seconds at 00:00 UTC of the day
+  CacheCounters counters = 2;     // what the cache did on that day
+}
+message CacheSummaryResponse {
+  CacheCounters totals = 1;       // the sum over all days of the window
+  repeated CacheDay days = 2;     // days of the window that have counts, oldest first; a day with no counts is left out
+  CacheCounters change = 3;       // the counts of the requested changeset; set only when `has_change` is true
+  bool has_change = 4;            // true only when a changeset was given and counts exist for it
+  int64 since = 5;                // unix seconds at 00:00 UTC of the first day of the window; the window ends with today
 }

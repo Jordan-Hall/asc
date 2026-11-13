@@ -837,6 +837,7 @@ pub async fn serve(
     }
     features.push(audit::APPEND_FEATURE.to_owned());
     features.push(ci::insights::FEATURE.to_owned());
+    features.push(ci::insights::CACHE_FEATURE.to_owned());
     features.push(stats::owner::FEATURE.to_owned());
     features.extend(codeintel::features::features(&ext.codeintel));
     features.extend(storage::features(&ext.byos));

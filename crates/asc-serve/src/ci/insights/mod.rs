@@ -26,11 +26,23 @@ mod tests;
 
 use std::sync::{Arc, OnceLock};
 
+use asc_rpc::server::{CallCtx, wire};
+use tonic::Status;
+
+use crate::ci::cache_stats::{self, Counters};
 use crate::policy::PolicyStore;
 use crate::registry::{Extensions, Registry};
 
 /// What `Version.features` adds for the `CiInsights` service.
 pub const FEATURE: &str = "ci-insights.v1";
+/// What `Version.features` adds for `CacheSummary`.
+pub const CACHE_FEATURE: &str = "ci-cache.v1";
+/// Days of `CacheSummary` when the request names none or an unsupported number.
+pub const DEFAULT_CACHE_DAYS: u32 = 30;
+/// The windows `CacheSummary` accepts, in days.
+pub const CACHE_WINDOWS: [u32; 3] = [7, 30, 90];
+/// Bytes of the changeset id `CacheSummary` accepts.
+const CHANGESET_LEN: usize = 32;
 /// Test cases in one `ReportTestCases`.
 pub const MAX_CASES: usize = 5_000;
 /// Bytes of one report (names and messages).
@@ -122,6 +134,75 @@ impl Insights {
     pub fn with_pathrules(mut self, slot: Arc<crate::pathrules::PathRulesSlot>) -> Self {
         self.pathrules = slot;
         self
+    }
+
+    /// `CiInsights.CacheSummary`.
+    pub async fn cache_summary(
+        &self,
+        ctx: &CallCtx,
+        req: wire::CacheSummaryRequest,
+    ) -> Result<wire::CacheSummaryResponse, Status> {
+        self.cache_summary_at(ctx, req, crate::review::now()).await
+    }
+
+    /// [`Self::cache_summary`] with the clock given as unix seconds.
+    pub(crate) async fn cache_summary_at(
+        &self,
+        ctx: &CallCtx,
+        req: wire::CacheSummaryRequest,
+        now: i64,
+    ) -> Result<wire::CacheSummaryResponse, Status> {
+        if !req.changeset.is_empty() && req.changeset.len() != CHANGESET_LEN {
+            return Err(Status::invalid_argument(
+                "changeset is empty or exactly 32 bytes",
+            ));
+        }
+        let days = if CACHE_WINDOWS.contains(&req.days) {
+            req.days
+        } else {
+            DEFAULT_CACHE_DAYS
+        };
+        let entry = self
+            .registry
+            .open(&ctx.repo)
+            .await
+            .map_err(crate::commit_graph_rpc::registry_status)?;
+        let today = asc_ci::insights::flaky::day_start(now);
+        let since = today - (i64::from(days) - 1) * 86_400;
+        let pool = self.registry.pool();
+        let (totals, per_day) = cache_stats::summary(pool, entry.ns, since, today)
+            .await
+            .map_err(crate::review::sql)?;
+        let change = if req.changeset.is_empty() {
+            None
+        } else {
+            cache_stats::for_rev(pool, entry.ns, &req.changeset)
+                .await
+                .map_err(crate::review::sql)?
+        };
+        Ok(wire::CacheSummaryResponse {
+            totals: Some(counters(&totals)),
+            days: per_day
+                .iter()
+                .map(|(day, c)| wire::CacheDay {
+                    day: *day,
+                    counters: Some(counters(c)),
+                })
+                .collect(),
+            has_change: change.is_some(),
+            change: change.as_ref().map(counters),
+            since,
+        })
+    }
+}
+
+fn counters(c: &Counters) -> wire::CacheCounters {
+    wire::CacheCounters {
+        hits: c.hits,
+        misses: c.misses,
+        puts: c.puts,
+        bytes_served: c.bytes_served,
+        saved_ms: c.saved_ms,
     }
 }
 
