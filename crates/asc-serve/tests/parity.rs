@@ -392,6 +392,15 @@ fn rows() -> Vec<Row> {
             "OOOO-",
         ),
         row(
+            "/asc.v1.CiInsights/CacheSummary",
+            &wire::CacheSummaryRequest {
+                repo: repo(),
+                ..Default::default()
+            },
+            REPO,
+            "OOOO-",
+        ),
+        row(
             "/asc.v1.Cloud/ListWorkspaces",
             &wire::ListWorkspacesRequest {
                 repo: repo(),
