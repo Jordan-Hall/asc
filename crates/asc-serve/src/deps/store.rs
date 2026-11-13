@@ -434,6 +434,36 @@ pub async fn list(
     query.fetch_all(pool).await?.iter().map(row_of).collect()
 }
 
+/// The advisory id and aliases of the open findings of `repo_id`, at most `limit` rows, newest first. Only
+/// what a feed lookup needs is read and decoded.
+pub async fn open_names(
+    pool: &AnyPool,
+    repo_id: i64,
+    limit: usize,
+) -> Result<Vec<(String, Vec<String>)>, sqlx::Error> {
+    #[derive(Deserialize)]
+    struct Names {
+        #[serde(default)]
+        aliases: Vec<String>,
+    }
+    let q = format!(
+        "SELECT advisory, detail FROM deps_findings WHERE repo_id = $1 AND state = $2 ORDER BY id DESC LIMIT {limit}"
+    );
+    let rows = sqlx::query(sqlx::AssertSqlSafe(q))
+        .bind(repo_id)
+        .bind(State::Open as i64)
+        .fetch_all(pool)
+        .await?;
+    rows.iter()
+        .map(|r| {
+            let detail: String = r.try_get("detail")?;
+            let n: Names =
+                serde_json::from_str(&detail).map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
+            Ok((r.try_get("advisory")?, n.aliases))
+        })
+        .collect()
+}
+
 /// How many findings of `repo_id` are in each state.
 pub async fn counts(
     pool: &AnyPool,

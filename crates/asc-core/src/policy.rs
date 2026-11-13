@@ -46,6 +46,8 @@
 //! block_severity = "high"      # refuse a landing that adds a dependency with an advisory at or above this
 //!                              # (low | moderate | high | critical); absent: the policy never blocks on one
 //! block_unknown = true         # and refuse when the advisory lookup failed (default true; fail closed)
+//! block_exploited = true       # refuse a landing that adds a dependency with an advisory on the KEV list
+//! epss_threshold = 0.5         # refuse one whose advisory has an EPSS score at or above this (0 = off)
 //!
 //! [ci]
 //! flaky_threshold = 0.02       # flips per run at which a test counts as flaky
@@ -745,14 +747,31 @@ impl DepSeverity {
 }
 
 /// `[deps]`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DepsPolicy {
     /// A landing that adds a dependency with an advisory at or above this is refused. `None`: the
     /// policy never blocks on advisories.
     pub block_severity: Option<DepSeverity>,
     /// With `block_severity` set, a landing is also refused when the advisory source could not be
-    /// asked, because an unknown answer is not a clean one. On unless the policy says otherwise.
+    /// asked, because an unknown answer is not a clean one. On unless the policy says otherwise. It
+    /// is read the same way when only `block_exploited` or `epss_threshold` is set, except that those
+    /// keys never accept an incomplete scan (a file that cannot be read, too many packages, a failed
+    /// lookup): the landing is refused whatever this says.
     pub block_unknown: bool,
+    /// A landing that adds a dependency with an advisory the KEV catalog lists is refused. The check
+    /// fails closed: when the KEV feed is missing or stale the landing is refused, whatever
+    /// `block_unknown` says.
+    pub block_exploited: bool,
+    /// A landing that adds a dependency with an advisory whose EPSS score is at or above this is
+    /// refused. 0 (the default) is off, otherwise between 0 and 1. Fails closed like `block_exploited`.
+    pub epss_threshold: f64,
+}
+
+impl DepsPolicy {
+    /// Whether the policy needs the exploitation feeds to judge a landing.
+    pub fn needs_intel(&self) -> bool {
+        self.block_exploited || self.epss_threshold > 0.0
+    }
 }
 
 impl Default for DepsPolicy {
@@ -760,6 +779,8 @@ impl Default for DepsPolicy {
         Self {
             block_severity: None,
             block_unknown: true,
+            block_exploited: false,
+            epss_threshold: 0.0,
         }
     }
 }
@@ -1086,6 +1107,10 @@ struct RawDeps {
     block_severity: Option<String>,
     #[serde(default = "yes")]
     block_unknown: bool,
+    #[serde(default)]
+    block_exploited: bool,
+    #[serde(default)]
+    epss_threshold: f64,
 }
 
 impl Default for RawDeps {
@@ -1093,6 +1118,8 @@ impl Default for RawDeps {
         Self {
             block_severity: None,
             block_unknown: true,
+            block_exploited: false,
+            epss_threshold: 0.0,
         }
     }
 }
@@ -1665,9 +1692,23 @@ fn build_deps(raw: RawDeps) -> Result<DepsPolicy, Failure> {
             ))
         })?),
     };
+    if !raw.epss_threshold.is_finite() || !(0.0..=1.0).contains(&raw.epss_threshold) {
+        return Err(PolicyError(format!(
+            "[deps] epss_threshold {} must be a number from 0 to 1 (0 is off)",
+            raw.epss_threshold
+        ))
+        .into());
+    }
     Ok(DepsPolicy {
         block_severity,
         block_unknown: raw.block_unknown,
+        block_exploited: raw.block_exploited,
+        // -0.0 is also off
+        epss_threshold: if raw.epss_threshold > 0.0 {
+            raw.epss_threshold
+        } else {
+            0.0
+        },
     })
 }
 
@@ -2372,6 +2413,64 @@ block = \"high\"
             .is_err(),
             "unknown keys are errors"
         );
+    }
+
+    #[test]
+    fn the_exploitation_keys_default_off_and_are_checked() {
+        let p = |extra: &str| Policy::parse(format!("{HEAD}{extra}").as_bytes());
+        let d = p("").unwrap().deps;
+        assert!(!d.block_exploited && d.epss_threshold == 0.0 && !d.needs_intel());
+        let on = p("[deps]
+block_exploited = true
+")
+        .unwrap()
+        .deps;
+        assert!(on.block_exploited && on.needs_intel());
+        assert_eq!(on.block_severity, None);
+        let e = p("[deps]
+epss_threshold = 0.25
+")
+        .unwrap()
+        .deps;
+        assert_eq!(e.epss_threshold, 0.25);
+        assert!(e.needs_intel() && !e.block_exploited);
+        let whole = p("[deps]
+epss_threshold = 1
+")
+        .unwrap()
+        .deps;
+        assert_eq!(whole.epss_threshold, 1.0, "an integer is a number too");
+        let zero = p("[deps]
+epss_threshold = 0.0
+")
+        .unwrap()
+        .deps;
+        assert!(!zero.needs_intel());
+        for bad in [
+            "epss_threshold = nan",
+            "epss_threshold = inf",
+            "epss_threshold = -0.1",
+            "epss_threshold = 1.01",
+            "epss_threshold = 2",
+            "epss_threshold = \"0.5\"",
+            "block_exploited = \"yes\"",
+        ] {
+            assert!(
+                p(&format!(
+                    "[deps]
+{bad}
+"
+                ))
+                .is_err(),
+                "{bad}"
+            );
+        }
+        let msg = p("[deps]
+epss_threshold = 1.5
+")
+        .unwrap_err()
+        .to_string();
+        assert!(msg.contains("epss_threshold"), "{msg}");
     }
 
     #[test]

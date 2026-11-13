@@ -935,7 +935,7 @@ impl ServerGate {
             }
         }
         if let Some(p) = &effective
-            && p.deps.block_severity.is_some()
+            && (p.deps.block_severity.is_some() || p.deps.needs_intel())
         {
             self.check_deps(entry, old.or(in_force.source), new, &added, p.deps)
                 .await?;

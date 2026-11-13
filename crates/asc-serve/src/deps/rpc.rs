@@ -5,7 +5,7 @@
 //!
 //! | call | needs |
 //! |---|---|
-//! | `ListFindings`, `ListUpdates`, `GetConfig` | read |
+//! | `ListFindings`, `ListUpdates`, `GetConfig`, `ScanStatus`, `Sbom` | read |
 //! | `Scan`, `ProposeUpdate`, `SetConfig`, `Dismiss` | write, and a maintainer of the policy or repository admin |
 //!
 //! An agent credential reaches none of them (`agents::authz` closes every service it does not name).
@@ -93,6 +93,18 @@ impl DepsService for DepsRpc {
             .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
             .await?;
         self.hub.scan_status(&ctx).await.map(Response::new)
+    }
+
+    async fn sbom(
+        &self,
+        request: Request<wire::SbomRequest>,
+    ) -> Result<Response<wire::SbomResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        let ctx = self
+            .env
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
+            .await?;
+        self.hub.sbom(&ctx, msg).await.map(Response::new)
     }
 
     async fn list_findings(

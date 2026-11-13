@@ -20,9 +20,9 @@ use tonic::Status;
 use super::config::Config;
 use super::egress::Egress;
 use super::gate::{CheckRequest, DepsCheck, MAX_LINES, dependency_files};
-use super::intel::IntelSource;
+use super::intel::{Feed, FeedState, FeedStatus, Intel, IntelSource};
 use super::latest::Latest;
-use super::model::{Dep, Ecosystem, Lookup};
+use super::model::{Advisory, Dep, Ecosystem, Lookup};
 use super::osv::{Clock, Osv, Query};
 use super::parse::{MAX_FILE_BYTES, parse_file};
 use super::plan::effective;
@@ -44,6 +44,10 @@ pub const DEFAULT_PAGE: usize = 50;
 pub const MAX_PAGE: usize = 200;
 /// Longest note on a finding, in bytes.
 pub const MAX_NOTE: usize = 1024;
+/// Findings the exploited sort and `only_exploited` judge, at most (the newest ones).
+pub const MAX_SORTED: usize = 10_000;
+/// Most file notes in one `Sbom` answer.
+pub const MAX_SBOM_NOTES: usize = 20;
 /// Most dependency files one landing check reads.
 pub const MAX_GATE_FILES: usize = 200;
 /// Most new package versions one landing check looks up.
@@ -168,7 +172,160 @@ fn reason_wire(code: i64) -> i32 {
     i32::try_from(code).unwrap_or(0)
 }
 
-pub fn finding_wire(r: &FindingRow) -> wire::DepFinding {
+/// The exploitation feeds as they stand for one call: what they hold, and which of them the operator
+/// configured (a feed that is not configured says nothing, so it cannot make an answer unknown).
+pub struct IntelView {
+    pub(crate) intel: Intel,
+    pub(crate) kev: FeedStatus,
+    pub(crate) epss: FeedStatus,
+}
+
+impl IntelView {
+    pub(crate) fn kev_usable(&self) -> bool {
+        self.intel.kev.is_some()
+    }
+
+    /// Whether KEV lists the advisory named by `ids` (its id and aliases).
+    fn kev_lists<'a>(&self, ids: impl IntoIterator<Item = &'a str>) -> bool {
+        matches!(self.intel.lookup(ids).kev, Feed::Listed(_))
+    }
+
+    /// Why a feed cannot be used, in words that carry no URL or path.
+    fn feed_problem(s: &FeedStatus) -> &'static str {
+        match s.state {
+            FeedState::Unconfigured => "not configured",
+            FeedState::Unknown => "not loaded, or its copy is too old",
+            FeedState::Current => "current",
+        }
+    }
+
+    /// What the feeds say about `a`. Listed when KEV lists it or EPSS has a row; not listed only when
+    /// every configured feed is loaded and has none; unknown otherwise.
+    pub fn of(&self, a: &Advisory) -> wire::DepIntel {
+        let ids = std::iter::once(a.id.as_str()).chain(a.aliases.iter().map(String::as_str));
+        let hit = self.intel.lookup(ids);
+        let kev = match &hit.kev {
+            Feed::Listed(k) => Some(k),
+            _ => None,
+        };
+        let epss = match &hit.epss {
+            Feed::Listed(e) => Some(*e),
+            _ => None,
+        };
+        let configured = |s: &FeedStatus| s.state != FeedState::Unconfigured;
+        let settled = |unknown: bool, s: &FeedStatus| !configured(s) || !unknown;
+        let kev_unknown = matches!(hit.kev, Feed::Unknown);
+        let epss_unknown = matches!(hit.epss, Feed::Unknown);
+        let status = if kev.is_some() || epss.is_some() {
+            wire::DepIntelStatus::Listed
+        } else if (configured(&self.kev) || configured(&self.epss))
+            && settled(kev_unknown, &self.kev)
+            && settled(epss_unknown, &self.epss)
+        {
+            wire::DepIntelStatus::NotListed
+        } else {
+            wire::DepIntelStatus::Unknown
+        };
+        wire::DepIntel {
+            status: status as i32,
+            cve: hit.cve.first().cloned().unwrap_or_default(),
+            kev: kev.is_some(),
+            kev_added: kev.and_then(|k| k.date_added.clone()).unwrap_or_default(),
+            kev_due: kev.and_then(|k| k.due_date.clone()).unwrap_or_default(),
+            kev_ransomware: kev.is_some_and(|k| k.ransomware),
+            epss: epss.map_or(0.0, |e| e.score),
+            epss_percentile: epss.map_or(0.0, |e| e.percentile),
+            epss_date: if epss.is_some() {
+                self.epss.date.clone().unwrap_or_default()
+            } else {
+                String::new()
+            },
+        }
+    }
+}
+
+fn feed_wire(s: &FeedStatus) -> wire::DepIntelFeeds {
+    wire::DepIntelFeeds {
+        state: (match s.state {
+            FeedState::Unconfigured => wire::DepFeedState::Unconfigured,
+            FeedState::Unknown => wire::DepFeedState::Unknown,
+            FeedState::Current => wire::DepFeedState::Current,
+        }) as i32,
+        version: s.version.clone().unwrap_or_default(),
+        count: u32::try_from(s.count).unwrap_or(u32::MAX),
+        loaded_at: s.loaded_at.unwrap_or(0),
+        age_seconds: s.age_secs.unwrap_or(0),
+    }
+}
+
+/// A page token for the in-memory orders: the offset of the next finding, as plain digits.
+/// An offset at or past the end is a valid token: the page it names is empty.
+fn offset_of(scope: &str, who: &str, token: &str) -> Result<usize, Status> {
+    if token.is_empty() {
+        return Ok(0);
+    }
+    let bad = || Status::invalid_argument("invalid page token");
+    let payload = crate::pagetoken::open(scope, who, token)?;
+    if payload.is_empty()
+        || !payload.bytes().all(|b| b.is_ascii_digit())
+        || (payload.len() > 1 && payload.starts_with('0'))
+    {
+        return Err(bad());
+    }
+    let n: usize = payload.parse().map_err(|_| bad())?;
+    if n == 0 {
+        return Err(bad());
+    }
+    Ok(n)
+}
+
+/// Cuts `rows` to `cap`; true when something was cut (the store returns one row more than it was asked for).
+pub(crate) fn cut<T>(rows: &mut Vec<T>, cap: usize) -> bool {
+    let over = rows.len() > cap;
+    rows.truncate(cap);
+    over
+}
+
+/// A hash of the filters of a findings list, so that an offset token is only good for the filters it
+/// was issued under.
+pub(crate) fn filter_hash(
+    states: &[State],
+    ecosystems: &[String],
+    min: i64,
+    name: &str,
+    sort: wire::DepFindingSort,
+    only_exploited: bool,
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let mut st: Vec<i64> = states.iter().map(|s| *s as i64).collect();
+    st.sort_unstable();
+    st.hash(&mut h);
+    let mut eco = ecosystems.to_vec();
+    eco.sort_unstable();
+    eco.hash(&mut h);
+    (min, name, sort as i32, only_exploited).hash(&mut h);
+    h.finish()
+}
+
+/// The order of the exploited sort: KEV-listed first, then EPSS descending, then CVSS descending, then the
+/// newer finding.
+fn exploited_order(
+    a: &(FindingRow, wire::DepIntel),
+    b: &(FindingRow, wire::DepIntel),
+) -> std::cmp::Ordering {
+    b.1.kev
+        .cmp(&a.1.kev)
+        .then_with(|| b.1.epss.total_cmp(&a.1.epss))
+        .then_with(|| b.0.advisory.cvss.total_cmp(&a.0.advisory.cvss))
+        .then_with(|| b.0.id.cmp(&a.0.id))
+}
+
+pub fn finding_wire(r: &FindingRow, intel: &IntelView) -> wire::DepFinding {
+    finding_with(r, intel.of(&r.advisory))
+}
+
+fn finding_with(r: &FindingRow, intel: wire::DepIntel) -> wire::DepFinding {
     wire::DepFinding {
         id: u64::try_from(r.id).unwrap_or(0),
         ecosystem: r.ecosystem.clone(),
@@ -184,6 +341,7 @@ pub fn finding_wire(r: &FindingRow) -> wire::DepFinding {
             cvss: r.advisory.cvss,
             fixed_versions: r.advisory.fixed.clone(),
             url: r.advisory.url.clone(),
+            intel: Some(intel),
         }),
         state: state_wire(r.state),
         fixed_in: r.fixed_in.clone(),
@@ -275,6 +433,16 @@ impl DepsHub {
     /// waits for it. Failures are logged and the last good copy stays until it goes stale.
     pub async fn run_intel(self: Arc<Self>, shutdown: CancellationToken) {
         self.intel.run(&shutdown, self.intel.poll_every()).await;
+    }
+
+    /// The feeds as they stand now, for one call.
+    pub fn intel_view(&self) -> IntelView {
+        let (intel, status) = self.intel.snapshot();
+        IntelView {
+            intel,
+            kev: status.kev,
+            epss: status.epss,
+        }
     }
 
     pub fn today(&self) -> String {
@@ -496,7 +664,9 @@ impl DepsHub {
         } else {
             found.iter().map(|f| unrecorded(f, now)).collect()
         };
-        let mut findings: Vec<wire::DepFinding> = rows.iter().map(finding_wire).collect();
+        let view = self.intel_view();
+        let mut findings: Vec<wire::DepFinding> =
+            rows.iter().map(|r| finding_wire(r, &view)).collect();
         findings.sort_by(|a, b| {
             let sev = |f: &wire::DepFinding| f.advisory.as_ref().map_or(0, |x| x.severity);
             sev(b)
@@ -529,6 +699,46 @@ impl DepsHub {
             truncated: snap.truncated || assessed.capped,
             source: assessed.source.to_owned(),
             packages_by_ecosystem: by_ecosystem.into_iter().collect(),
+        })
+    }
+
+    /// A CycloneDX bill of materials of a revision. Read like [`Self::scan`] (the same limits and the same
+    /// concurrency limit), but nothing is looked up, recorded or sent anywhere.
+    pub async fn sbom(
+        &self,
+        ctx: &CallCtx,
+        req: wire::SbomRequest,
+    ) -> Result<wire::SbomResponse, Status> {
+        let _permit = self.permit().await?;
+        let entry = self.entry(ctx).await?;
+        let ids = self.codec(ctx, &entry);
+        let trunk = self.trunk(&entry).await?;
+        let rev = self.rev(&ids, &entry, &req.rev).await?;
+        let loaded = self.repo_config(&entry, trunk).await?;
+        let mut ecos = ecosystems_of(&req.ecosystems)?;
+        if ecos.is_empty() {
+            ecos = loaded.config.ecosystems.clone();
+        }
+        let snap = self.snapshot(&entry, rev, &ecos).await?;
+        let sbom = super::sbom::cyclonedx(
+            &snap.deps,
+            &ctx.repo.to_string(),
+            &hex(rev.as_bytes()),
+            self.cfg.max_packages,
+        );
+        let notes: Vec<String> = snap
+            .files
+            .iter()
+            .filter(|f| !f.error.is_empty())
+            .take(MAX_SBOM_NOTES)
+            .map(|f| format!("{}: {}", f.path, f.error))
+            .collect();
+        Ok(wire::SbomResponse {
+            document: Bytes::from(sbom.document),
+            components: u32::try_from(sbom.components).unwrap_or(u32::MAX),
+            scanned: ids.changeset_out(rev).await?,
+            truncated: snap.truncated || sbom.truncated,
+            notes,
         })
     }
 
@@ -582,26 +792,119 @@ impl DepsHub {
             .collect();
         let min = store::severity_code(sev_from_wire(req.min_severity)?);
         let limit = page_limit(req.limit, DEFAULT_PAGE, MAX_PAGE);
-        let scope = format!("Deps.ListFindings|{}", ctx.repo);
-        let after = parse_after(&scope, &ctx.principal.id, &req.page_token)?;
+        let sort = wire::DepFindingSort::try_from(req.sort)
+            .map_err(|_| Status::invalid_argument("unknown sort"))?;
+        let in_memory = sort == wire::DepFindingSort::Exploited || req.only_exploited;
+        let tag = match (sort, req.only_exploited) {
+            (wire::DepFindingSort::Newest, false) => "",
+            (wire::DepFindingSort::Newest, true) => ".newest-exploited",
+            (wire::DepFindingSort::Exploited, false) => ".exploited",
+            (wire::DepFindingSort::Exploited, true) => ".exploited-only",
+        };
+        // An offset token is only good for the filters it was issued under.
+        let filters = filter_hash(
+            &states,
+            &ecosystems,
+            min,
+            &req.name,
+            sort,
+            req.only_exploited,
+        );
+        let scope = if in_memory {
+            format!("Deps.ListFindings{tag}|{}|{filters:016x}", ctx.repo)
+        } else {
+            format!("Deps.ListFindings{tag}|{}", ctx.repo)
+        };
+        let after = if in_memory {
+            0
+        } else {
+            parse_after(&scope, &ctx.principal.id, &req.page_token)?
+        };
+        // The in-memory orders decode up to MAX_SORTED rows, so they queue like a scan.
+        let _permit = if in_memory {
+            Some(self.permit().await?)
+        } else {
+            None
+        };
         let entry = self.entry(ctx).await?;
         let pool = self.registry.pool();
+        let view = self.intel_view();
+        if req.only_exploited && !view.kev_usable() {
+            return Err(Status::failed_precondition(format!(
+                "only_exploited needs the KEV feed, which is {}",
+                IntelView::feed_problem(&view.kev)
+            )));
+        }
         let filter = store::Filter {
             states,
             ecosystems,
             min_severity: min,
             name: req.name,
         };
-        let mut rows = store::list(pool, entry.key.0, &filter, after, limit)
-            .await
-            .map_err(sql)?;
-        let next_page_token = if rows.len() > limit {
-            rows.truncate(limit);
-            rows.last()
-                .map(|r| after_token(&scope, &ctx.principal.id, r.id))
-                .unwrap_or_default()
+        let mut truncated = false;
+        let (page, next_page_token) = if in_memory {
+            let mut rows = store::list(pool, entry.key.0, &filter, 0, MAX_SORTED)
+                .await
+                .map_err(sql)?;
+            truncated = cut(&mut rows, MAX_SORTED);
+            let mut judged: Vec<(FindingRow, wire::DepIntel)> = rows
+                .into_iter()
+                .map(|r| {
+                    let i = view.of(&r.advisory);
+                    (r, i)
+                })
+                .filter(|(_, i)| !req.only_exploited || i.kev)
+                .collect();
+            if sort == wire::DepFindingSort::Exploited {
+                judged.sort_by(exploited_order);
+            }
+            let start = offset_of(&scope, &ctx.principal.id, &req.page_token)?.min(judged.len());
+            let end = start.saturating_add(limit).min(judged.len());
+            let next = if end < judged.len() {
+                crate::pagetoken::seal(&scope, &ctx.principal.id, &end.to_string())
+            } else {
+                String::new()
+            };
+            let page: Vec<wire::DepFinding> = judged
+                .drain(start..end)
+                .map(|(r, i)| finding_with(&r, i))
+                .collect();
+            (page, next)
         } else {
-            String::new()
+            let mut rows = store::list(pool, entry.key.0, &filter, after, limit)
+                .await
+                .map_err(sql)?;
+            let next = if rows.len() > limit {
+                rows.truncate(limit);
+                rows.last()
+                    .map(|r| after_token(&scope, &ctx.principal.id, r.id))
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
+            (rows.iter().map(|r| finding_wire(r, &view)).collect(), next)
+        };
+        // The count reads up to MAX_SORTED rows: only the first page pays for it, under a scan slot.
+        let open_exploited = if view.kev_usable() && req.page_token.is_empty() {
+            let _count_permit = if _permit.is_none() {
+                Some(self.permit().await?)
+            } else {
+                None
+            };
+            let names = store::open_names(pool, entry.key.0, MAX_SORTED)
+                .await
+                .map_err(sql)?;
+            let n = names
+                .iter()
+                .filter(|(id, aliases)| {
+                    view.kev_lists(
+                        std::iter::once(id.as_str()).chain(aliases.iter().map(String::as_str)),
+                    )
+                })
+                .count();
+            u32::try_from(n).unwrap_or(u32::MAX)
+        } else {
+            0
         };
         let counts = store::counts(pool, entry.key.0).await.map_err(sql)?;
         let by_severity = store::open_by_severity(pool, entry.key.0)
@@ -609,7 +912,7 @@ impl DepsHub {
             .map_err(sql)?;
         let last = store::last_scan(pool, entry.key.0).await.map_err(sql)?;
         Ok(wire::ListDepFindingsResponse {
-            findings: rows.iter().map(finding_wire).collect(),
+            findings: page,
             next_page_token,
             counts_by_state: counts.into_iter().map(|(k, v)| (k.to_owned(), v)).collect(),
             last_scan: last.as_ref().map_or(0, |l| l.at),
@@ -634,6 +937,10 @@ impl DepsHub {
                 .map(|(k, v)| (k.to_owned(), v))
                 .collect(),
             last_lookup: last.map_or(0, |l| i32::try_from(l.lookup).unwrap_or(0)),
+            kev_feed: Some(feed_wire(&view.kev)),
+            epss_feed: Some(feed_wire(&view.epss)),
+            open_exploited,
+            truncated,
         })
     }
 
@@ -682,7 +989,7 @@ impl DepsHub {
         .map_err(sql)?
         .ok_or_else(|| Status::not_found("no such finding"))?;
         Ok(wire::DismissDepFindingResponse {
-            finding: Some(finding_wire(&row)),
+            finding: Some(finding_wire(&row, &self.intel_view())),
         })
     }
 }
@@ -753,9 +1060,11 @@ fn line(eco: Ecosystem, name: &str, version: &str, id: &str, sev: DepSeverity) -
 #[async_trait]
 impl DepsCheck for DepsHub {
     async fn check(&self, req: &CheckRequest<'_>) -> Result<Vec<String>, Status> {
-        let Some(block) = req.policy.block_severity else {
+        let block = req.policy.block_severity;
+        let needs_intel = req.policy.needs_intel();
+        if block.is_none() && !needs_intel {
             return Ok(Vec::new());
-        };
+        }
         let files = dependency_files(req.touched);
         if files.is_empty() {
             return Ok(Vec::new());
@@ -815,8 +1124,11 @@ impl DepsCheck for DepsHub {
             );
         }
         let mut lines: Vec<String> = Vec::new();
+        // The exploitation keys always fail closed on an incomplete scan: an advisory that was never
+        // looked up cannot be judged. The severity gate alone keeps `block_unknown`.
+        let strict = req.policy.block_unknown || needs_intel;
         // A file that cannot be read says nothing about what it adds.
-        if req.policy.block_unknown && !unreadable.is_empty() {
+        if strict && !unreadable.is_empty() {
             lines.push(
                 "a dependency file of the update cannot be read, so it cannot be checked".into(),
             );
@@ -825,7 +1137,7 @@ impl DepsCheck for DepsHub {
             return Ok(lines);
         }
         let (pkgs, capped) = distinct(&introduced, MAX_GATE_PACKAGES);
-        if capped && req.policy.block_unknown {
+        if capped && strict {
             return Ok(vec![format!(
                 "the update adds more than {MAX_GATE_PACKAGES} package versions and cannot be checked; push it in parts"
             )]);
@@ -849,7 +1161,10 @@ impl DepsCheck for DepsHub {
         let dismissed = store::dismissed(self.registry.pool(), req.entry.key.0)
             .await
             .map_err(sql)?;
+        let view = self.intel_view();
         let mut vulnerable: Vec<String> = Vec::new();
+        let mut exploited: Vec<String> = Vec::new();
+        let mut judged_by_feed = false;
         let mut failed: Vec<String> = Vec::new();
         for (q, a) in queries.iter().zip(&answers) {
             match a {
@@ -862,8 +1177,39 @@ impl DepsCheck for DepsHub {
                             q.version.clone(),
                             adv.id.clone(),
                         ));
-                        if sev >= block && !dis {
+                        if dis {
+                            continue;
+                        }
+                        if block.is_some_and(|b| sev >= b) {
                             vulnerable.push(line(q.eco, &q.name, &q.version, &adv.id, sev));
+                        }
+                        if needs_intel {
+                            judged_by_feed = true;
+                            let hit = view.intel.lookup(
+                                std::iter::once(adv.id.as_str())
+                                    .chain(adv.aliases.iter().map(String::as_str)),
+                            );
+                            let why = match (&hit.kev, &hit.epss) {
+                                (Feed::Listed(_), _) if req.policy.block_exploited => {
+                                    Some("known exploited".to_owned())
+                                }
+                                (_, Feed::Listed(e))
+                                    if req.policy.epss_threshold > 0.0
+                                        && e.score >= req.policy.epss_threshold =>
+                                {
+                                    Some(format!(
+                                        "EPSS {:.3} at or above {}",
+                                        e.score, req.policy.epss_threshold
+                                    ))
+                                }
+                                _ => None,
+                            };
+                            if let Some(why) = why {
+                                exploited.push(format!(
+                                    "{} ({why})",
+                                    line(q.eco, &q.name, &q.version, &adv.id, sev)
+                                ));
+                            }
                         }
                     }
                 }
@@ -878,13 +1224,42 @@ impl DepsCheck for DepsHub {
                 Lookup::Uncovered => {}
             }
         }
-        if !vulnerable.is_empty() {
+        // A feed the policy needs but cannot read leaves the added advisories unjudged: fail closed,
+        // whatever `block_unknown` says.
+        let mut missing: Vec<String> = Vec::new();
+        if judged_by_feed {
+            let need = |on: bool, name: &str, s: &FeedStatus| {
+                (on && s.state != FeedState::Current)
+                    .then(|| format!("the {name} feed is {}", IntelView::feed_problem(s)))
+            };
+            missing.extend(need(req.policy.block_exploited, "KEV", &view.kev));
+            missing.extend(need(req.policy.epss_threshold > 0.0, "EPSS", &view.epss));
+        }
+        let refused = !vulnerable.is_empty() || !exploited.is_empty() || !missing.is_empty();
+        if let Some(b) = block
+            && !vulnerable.is_empty()
+        {
             lines.push(format!(
                 "the update adds dependencies with advisories at or above {}",
-                block.name()
+                b.name()
             ));
             lines.extend(vulnerable);
-        } else if req.policy.block_unknown && !failed.is_empty() {
+        }
+        if !exploited.is_empty() {
+            lines.push(
+                "the update adds dependencies with advisories the policy treats as exploited"
+                    .into(),
+            );
+            lines.extend(exploited);
+        }
+        if !missing.is_empty() {
+            lines.push(
+                "the policy needs exploitation data that is not available, so the update cannot be judged"
+                    .into(),
+            );
+            lines.extend(missing);
+        }
+        if !refused && strict && !failed.is_empty() {
             lines.push(
                 "the advisory lookup failed for dependencies this update adds, and the policy blocks on an unknown answer"
                     .into(),

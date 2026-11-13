@@ -73,6 +73,9 @@ use crate::registry::{Extensions, Registry};
 
 /// What `Version.features` adds.
 pub const FEATURE: &str = "deps.v1";
+/// What `Version.features` adds when findings carry KEV and EPSS data (`DepAdvisory.intel`, the exploited
+/// sort and the feed status of `ListFindings`).
+pub const INTEL_FEATURE: &str = "deps.intel.v1";
 /// The refs proposals are recorded on.
 pub const REF_PREFIX: &str = "refs/heads/agent/deps/";
 
@@ -133,7 +136,7 @@ pub fn register(
 /// What `Version.features` adds when the service is mounted.
 pub fn features(ext: &Extensions) -> Vec<String> {
     if ext.deps.get().is_some() {
-        vec![FEATURE.to_owned()]
+        vec![FEATURE.to_owned(), INTEL_FEATURE.to_owned()]
     } else {
         Vec::new()
     }

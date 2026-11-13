@@ -855,6 +855,21 @@ impl IntelSource {
         }
     }
 
+    /// The feeds and their status from one read lock and one clock reading, so the two cannot disagree.
+    pub fn snapshot(&self) -> (Intel, IntelStatus) {
+        let now = (self.clock)();
+        let h = self.read();
+        let intel = Intel {
+            kev: self.usable(&h.kev, now),
+            epss: self.usable(&h.epss, now),
+        };
+        let status = IntelStatus {
+            kev: self.feed_status(self.kev_origin.configured(), &h.kev, now),
+            epss: self.feed_status(self.epss_origin.configured(), &h.epss, now),
+        };
+        (intel, status)
+    }
+
     /// How often `refresh` is worth calling: the TTL, or the short retry delay when that is shorter.
     /// A call in between does nothing for a URL and costs one `stat` for a file.
     pub fn poll_every(&self) -> std::time::Duration {

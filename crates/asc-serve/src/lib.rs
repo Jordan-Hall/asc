@@ -1024,6 +1024,12 @@ pub async fn serve(
         ))
         .spawn_worker(std::time::Duration::from_secs(cfg.pack.repack_interval.0))
     });
+    // The KEV and EPSS feeds are kept up to date in the background (started after the last step that can fail, only when deps are enabled).
+    let intel_stop = tokio_util::sync::CancellationToken::new();
+    let intel_task = ext
+        .deps
+        .get()
+        .map(|h| tokio::spawn(h.clone().run_intel(intel_stop.clone())));
     let served = server
         .add_routes(routes)
         .serve_with_shutdown(cfg.listen, async move {
@@ -1031,6 +1037,10 @@ pub async fn serve(
             let _ = admin_stop.send(());
         })
         .await;
+    intel_stop.cancel();
+    if let Some(t) = intel_task {
+        t.abort();
+    }
     // The indexing workers commit what they buffered before the rest stops.
     if let Some(i) = indexers {
         i.stop().await;

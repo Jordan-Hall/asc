@@ -11,6 +11,18 @@ use serde_json::{Value, json};
 use super::model::{Dep, DepKind, Ecosystem};
 use super::purl::purl_of;
 
+/// The most bytes a document may take. The gRPC message limit is 17 MiB (`asc-rpc` `MAX_MESSAGE`); this
+/// leaves room for the rest of the response.
+pub const MAX_DOCUMENT_BYTES: usize = 12 << 20;
+
+/// Bytes kept back for the parts of the document that are not components (the header, the root, the
+/// composition marker and the closing of the lists).
+const FIXED_BYTES: usize = 4096;
+
+/// The most version ranges one component lists, and the most bytes of them together.
+const MAX_RANGES: usize = 16;
+const MAX_RANGE_BYTES: usize = 1024;
+
 /// The result of [`cyclonedx`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Sbom {
@@ -18,7 +30,7 @@ pub struct Sbom {
     pub document: Vec<u8>,
     /// Components in the document.
     pub components: usize,
-    /// More distinct packages existed than the limit allowed.
+    /// More distinct packages existed than the limit allowed, or the document reached its size limit.
     pub truncated: bool,
 }
 
@@ -58,6 +70,18 @@ fn canon_key(d: &Dep) -> String {
 /// A manifest floor is not an installed version, so a package known only from a manifest has no
 /// `version` and an unversioned purl, and a manifest entry is dropped when a pin of the package exists.
 pub fn cyclonedx(deps: &[Dep], repo: &str, changeset: &str, limit: usize) -> Sbom {
+    cyclonedx_within(deps, repo, changeset, limit, MAX_DOCUMENT_BYTES)
+}
+
+/// [`cyclonedx`] with an explicit size limit: components stop before the document would pass `budget`
+/// bytes, and the document then says it is incomplete.
+pub fn cyclonedx_within(
+    deps: &[Dep],
+    repo: &str,
+    changeset: &str,
+    limit: usize,
+    budget: usize,
+) -> Sbom {
     let pinned_names: HashSet<(&'static str, String)> = deps
         .iter()
         .filter(|d| d.kind == DepKind::Lock)
@@ -104,7 +128,8 @@ pub fn cyclonedx(deps: &[Dep], repo: &str, changeset: &str, limit: usize) -> Sbo
     for ((eco, canon, _), e) in &mut map {
         e.direct |= direct_names.contains(&(*eco, canon.clone()));
     }
-    let truncated = map.len() > limit;
+    let mut truncated = map.len() > limit;
+    let mut used = FIXED_BYTES + repo.len() + changeset.len();
     let mut seen: HashSet<String> = HashSet::new();
     seen.insert("root".to_owned());
     let mut components = Vec::new();
@@ -131,8 +156,24 @@ pub fn cyclonedx(deps: &[Dep], repo: &str, changeset: &str, limit: usize) -> Sbo
         if !e.pinned {
             props.push(json!({"name": "asc:pinned", "value": "false"}));
             if !e.ranges.is_empty() {
-                let range = e.ranges.iter().cloned().collect::<Vec<_>>().join(", ");
-                props.push(json!({"name": "asc:range", "value": range}));
+                let mut kept: Vec<&str> = Vec::new();
+                let mut bytes = 0usize;
+                let mut cut = false;
+                for r in &e.ranges {
+                    let add = r.len() + if kept.is_empty() { 0 } else { 2 };
+                    if kept.len() >= MAX_RANGES || bytes + add > MAX_RANGE_BYTES {
+                        cut = true;
+                        continue;
+                    }
+                    bytes += add;
+                    kept.push(r);
+                }
+                if !kept.is_empty() {
+                    props.push(json!({"name": "asc:range", "value": kept.join(", ")}));
+                }
+                if cut {
+                    props.push(json!({"name": "asc:range-truncated", "value": "true"}));
+                }
             }
         }
         let mut c = json!({
@@ -150,6 +191,15 @@ pub fn cyclonedx(deps: &[Dep], repo: &str, changeset: &str, limit: usize) -> Sbo
                 o.insert("purl".into(), Value::String(p));
             }
         }
+        // The pretty form of the component, indented to its depth, plus its entry in `dependsOn`.
+        let cost = serde_json::to_string_pretty(&c).map_or(0, |t| t.len() + 4 * t.lines().count())
+            + 2
+            + if e.direct { bom_ref.len() + 12 } else { 0 };
+        if used.saturating_add(cost) > budget {
+            truncated = true;
+            break;
+        }
+        used += cost;
         if e.direct {
             direct_refs.push(bom_ref);
         }
@@ -389,5 +439,74 @@ mod tests {
         // the too-long name has no purl but still a unique bom-ref
         let long = comps.iter().find(|c| c.get("purl").is_none()).unwrap();
         assert!(long["bom-ref"].as_str().unwrap().starts_with("asc:npm:"));
+    }
+
+    #[test]
+    fn many_large_components_stop_before_the_size_limit() {
+        let pad = "x".repeat(300);
+        let d: Vec<Dep> = (0..60_000)
+            .map(|i| {
+                Dep::lock(
+                    Ecosystem::Npm,
+                    &format!("p{i:06}-{pad}"),
+                    "1.0.0",
+                    "package-lock.json",
+                )
+            })
+            .collect();
+        let s = cyclonedx(&d, "r", "c", 100_000);
+        assert!(s.truncated);
+        assert!(s.components > 1000 && s.components < 60_000);
+        assert!(
+            s.document.len() <= MAX_DOCUMENT_BYTES,
+            "{}",
+            s.document.len()
+        );
+        assert!(s.document.len() > MAX_DOCUMENT_BYTES / 2);
+        let v = parse(&s);
+        assert_eq!(v["components"].as_array().unwrap().len(), s.components);
+        assert_eq!(
+            v["compositions"],
+            json!([{"aggregate": "incomplete", "assemblies": ["root"]}])
+        );
+    }
+
+    #[test]
+    fn a_small_budget_cuts_and_a_large_one_does_not() {
+        let d: Vec<Dep> = (0..50)
+            .map(|i| Dep::lock(Ecosystem::CratesIo, &format!("c{i}"), "1.0.0", "Cargo.lock"))
+            .collect();
+        let full = cyclonedx_within(&d, "r", "c", 100, 1 << 20);
+        assert!(!full.truncated);
+        let cut = cyclonedx_within(&d, "r", "c", 100, 6000);
+        assert!(cut.truncated);
+        assert!(cut.components < 50);
+        assert!(cut.document.len() <= 6000);
+    }
+
+    #[test]
+    fn the_range_list_of_one_component_is_capped_and_says_so() {
+        let d: Vec<Dep> = (0..200)
+            .map(|i| {
+                Dep::manifest(
+                    Ecosystem::Npm,
+                    "a",
+                    &format!("^{i}.0.0-{}", "r".repeat(40)),
+                    "",
+                    "package.json",
+                )
+            })
+            .collect();
+        let v = parse(&cyclonedx(&d, "r", "c", 10));
+        let props = v["components"][0]["properties"].as_array().unwrap();
+        let range = props.iter().find(|p| p["name"] == "asc:range").unwrap();
+        let text = range["value"].as_str().unwrap();
+        assert!(text.len() <= MAX_RANGE_BYTES);
+        assert!(text.split(", ").count() <= MAX_RANGES);
+        assert!(props.contains(&json!({"name": "asc:range-truncated", "value": "true"})));
+        let few = vec![Dep::manifest(Ecosystem::Npm, "a", "^1", "", "package.json")];
+        let v = parse(&cyclonedx(&few, "r", "c", 10));
+        let props = v["components"][0]["properties"].as_array().unwrap();
+        assert!(props.iter().all(|p| p["name"] != "asc:range-truncated"));
     }
 }

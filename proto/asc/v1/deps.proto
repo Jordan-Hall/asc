@@ -24,6 +24,7 @@ service DepsService {
   rpc GetConfig(GetDepsConfigRequest) returns (GetDepsConfigResponse);           // repo read
   rpc Dismiss(DismissDepFindingRequest) returns (DismissDepFindingResponse);     // repo maintainer; x-asc-op-id
   rpc ScanStatus(DepScanStatusRequest) returns (DepScanStatusResponse);          // repo read; what a running Scan has done
+  rpc Sbom(SbomRequest) returns (SbomResponse);                                  // repo read; a CycloneDX bill of materials of a revision
 }
 
 enum DepSeverity {
@@ -82,6 +83,50 @@ message DepAdvisory {
   double cvss = 5;             // base score when the advisory states one, else 0
   repeated string fixed_versions = 6;
   string url = 7;
+  DepIntel intel = 8;          // what the KEV and EPSS feeds say now; filled on read, never stored
+}
+
+// Whether a feed lists an advisory. A feed that is off, was never loaded or is too old to trust gives UNKNOWN, never
+// NOT_LISTED.
+enum DepIntelStatus {
+  DEP_INTEL_STATUS_UNSPECIFIED = 0;   // the server does not say (an older server)
+  DEP_INTEL_STATUS_UNKNOWN = 1;       // a configured feed cannot be used now, or none is configured
+  DEP_INTEL_STATUS_NOT_LISTED = 2;    // every configured feed is loaded and has no row for the advisory
+  DEP_INTEL_STATUS_LISTED = 3;        // KEV lists it, or EPSS has a score for it
+}
+
+// Exploitation data for one advisory, matched by CVE id (the advisory id or an alias).
+message DepIntel {
+  DepIntelStatus status = 1;
+  string cve = 2;                     // the CVE id that matched; the first one when several do; empty when none
+  bool kev = 3;                       // in the CISA Known Exploited Vulnerabilities catalog
+  string kev_added = 4;               // "YYYY-MM-DD"; empty when unknown
+  string kev_due = 5;                 // "YYYY-MM-DD"; empty when unknown
+  bool kev_ransomware = 6;            // KEV marks it as used in ransomware campaigns
+  double epss = 7;                    // EPSS probability 0..1; 0 when there is no row
+  double epss_percentile = 8;         // 0..1; 0 when there is no row
+  string epss_date = 9;               // the date of the EPSS file; empty when unknown
+}
+
+enum DepFindingSort {
+  DEP_FINDING_SORT_NEWEST = 0;        // newest finding first (the default)
+  DEP_FINDING_SORT_EXPLOITED = 1;     // KEV-listed first, then EPSS descending, then CVSS descending, then newest
+}
+
+enum DepFeedState {
+  DEP_FEED_STATE_UNSPECIFIED = 0;
+  DEP_FEED_STATE_UNCONFIGURED = 1;    // the operator set no URL and no file
+  DEP_FEED_STATE_UNKNOWN = 2;         // configured, but not loaded yet or too old to trust
+  DEP_FEED_STATE_CURRENT = 3;         // a copy is held and trusted
+}
+
+// How one exploitation feed stands. Never carries the feed URL or a file path.
+message DepIntelFeeds {
+  DepFeedState state = 1;
+  string version = 2;                 // KEV catalog version or EPSS model version of the held copy
+  uint32 count = 3;                   // CVEs in the held copy
+  int64 loaded_at = 4;                // unix seconds the copy was read or confirmed; 0 when none
+  int64 age_seconds = 5;              // seconds since `loaded_at`; 0 when none
 }
 
 message DepFinding {
@@ -158,6 +203,14 @@ message ListDepFindingsRequest {
   string name = 5;                      // exact package name
   uint32 limit = 6;                     // 0 means 50, at most 200
   string page_token = 7;
+  // EXPLOITED pages by offset into one in-memory ordering of at most the newest 10,000 findings. A token
+  // is good for the sort that made it only. Paging is not stable when findings change between calls:
+  // a finding may repeat or be skipped. An offset at or past the end gives an empty last page with no
+  // next token. The call takes a scan slot. NEWEST pages by finding id and is stable.
+  DepFindingSort sort = 8;
+  // Only findings KEV lists. Fails with FAILED_PRECONDITION when the KEV feed is not configured, not
+  // loaded or too old (the message names that state, never a URL or path). Takes a scan slot.
+  bool only_exploited = 9;
 }
 message ListDepFindingsResponse {
   repeated DepFinding findings = 1;
@@ -170,6 +223,10 @@ message ListDepFindingsResponse {
   map<string, uint32> packages_by_ecosystem = 8;   // of those, per OSV ecosystem name; the values add up to `packages_checked`; empty for a scan recorded before this field existed
   map<string, uint32> open_by_severity = 9;   // open findings of the repository per severity ("critical", "high", "moderate", "low", "unknown"); every key is present
   uint32 packages_unknown = 10;         // of `packages_checked`, how many the last scan could not look up
+  DepIntelFeeds kev_feed = 11;
+  DepIntelFeeds epss_feed = 12;
+  uint32 open_exploited = 13;           // open (not dismissed) findings KEV lists, among the newest 10,000 open findings; set on the first page only (an empty page_token), 0 on later pages
+  bool truncated = 14;                  // sort EXPLOITED or only_exploited looked at the newest 10,000 findings only, and the repository has more that match the filters
 }
 
 message DepUpdate {
@@ -303,4 +360,20 @@ message DismissDepFindingRequest {
 }
 message DismissDepFindingResponse {
   DepFinding finding = 1;
+}
+
+// A CycloneDX 1.6 JSON bill of materials of the dependencies of one revision, read like Scan (same limits; empty
+// `ecosystems` means every ecosystem of `.asc/deps.toml`, else every one found; `rev` empty means the tip of trunk).
+// Nothing is recorded and no repository data leaves the server.
+message SbomRequest {
+  RepoRef repo = 1;
+  string rev = 2;
+  repeated string ecosystems = 3;
+}
+message SbomResponse {
+  bytes document = 1 [(asc.v1.json) = JSON_KIND_TEXT];   // the JSON document
+  uint32 components = 2;
+  bytes scanned = 3 [(asc.v1.json) = JSON_KIND_HEX];   // the changeset that was read
+  bool truncated = 4;                   // more manifests or packages than the limits allow; the document is partial
+  repeated string notes = 5;            // files that could not be read, at most 20
 }
