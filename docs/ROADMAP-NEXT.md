@@ -117,7 +117,7 @@ From a review of the hub's asc pages on 2026-11-13 (routes, templates and styles
 | 50 | Repository templates | Templates in the create flow | D | open |
 | 51 | Own pages for repo home, diff and issues | Rebuilt in the asc design system, with the loose `asc-*.css` files folded into it, so no page is the upstream forge's template with a new skin | D | open |
 | 52 | SBOM download | On the dependency page (the server side is row 32); the owner-wide security page is row 37 | S | after 32 |
-| 53 | `projfs` CI job under 8 minutes | It is the longest job (12 minutes: 5 building, 4 testing) The test step no longer calls cargo a second time (it rebuilt two crates for about four minutes); the timing is to be confirmed from a CI run. | S | in progress |
+| 53 | `projfs` CI job under 8 minutes | It is the longest job (12 minutes: 5 building, 4 testing) Done: the test step no longer calls cargo a second time (it rebuilt two crates for about four minutes); the job took 7 minutes 23 seconds in the first run after. | S | done |
 
 ## Order of work
 
