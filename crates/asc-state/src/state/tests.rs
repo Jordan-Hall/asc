@@ -75,6 +75,30 @@ fn row(path: &str, leaf: Option<&Leaf>) -> StageRow {
 }
 
 #[tokio::test]
+async fn state_db_is_wal_with_synchronous_full_on_every_connection() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = open(&dir).await;
+    // Hold several connections at once so each one is checked, not one reused.
+    let mut held = Vec::new();
+    for _ in 0..4 {
+        held.push(db.pool().acquire().await.unwrap());
+    }
+    for conn in &mut held {
+        let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
+            .fetch_one(&mut **conn)
+            .await
+            .unwrap();
+        assert_eq!(mode, "wal");
+        // 2 is FULL; NORMAL is 1.
+        let sync: i64 = sqlx::query_scalar("PRAGMA synchronous")
+            .fetch_one(&mut **conn)
+            .await
+            .unwrap();
+        assert_eq!(sync, 2);
+    }
+}
+
+#[tokio::test]
 async fn open_twice_is_idempotent_and_sets_pragmas() {
     let dir = tempfile::tempdir().unwrap();
     let db = open(&dir).await;
@@ -337,6 +361,42 @@ async fn workspaces_lifecycle() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn remove_many_is_one_transaction() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = open(&dir).await;
+    let r = repo(&db, "r").await;
+    let ws = workspace(&db, r, "/a", "refs/heads/master").await;
+    let names: Vec<String> = (0..60).map(|i| format!("dir/file-{i:03}")).collect();
+    let rows: Vec<StageRow> = names.iter().map(|n| row(n, Some(&leaf(1)))).collect();
+    stage::upsert(&db, ws, StageSet::Default, &rows)
+        .await
+        .unwrap();
+    stage::upsert(&db, ws, StageSet::Default, &[row("keep", None)])
+        .await
+        .unwrap();
+
+    // Every commit writes at least one WAL frame, so 60 commits would grow the log by 60 frames or
+    // more, and one commit by a handful.
+    let wal = dir.path().join("home").join("state.db-wal");
+    let before = std::fs::metadata(&wal).unwrap().len();
+    let paths: Vec<Vec<u8>> = names.iter().map(|n| n.as_bytes().to_vec()).collect();
+    stage::remove_many(&db, ws, StageSet::Default, &paths)
+        .await
+        .unwrap();
+    let frame = 24 + 4096;
+    let frames = (std::fs::metadata(&wal).unwrap().len() - before) / frame;
+    assert!(frames < 20, "{frames} WAL frames for one batch");
+
+    let left = stage::overlay(&db, ws, StageSet::Default).await.unwrap();
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0].path, b"keep");
+    // An empty batch is a no-op.
+    stage::remove_many::<&[u8]>(&db, ws, StageSet::Default, &[])
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
