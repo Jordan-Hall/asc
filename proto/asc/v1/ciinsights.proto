@@ -166,7 +166,7 @@ message ListFlakyTestsResponse {
 message CacheSummaryRequest {
   RepoRef repo = 1;
   uint32 days = 2;                // length of the window in days, counting today; 7, 30 or 90, else 30
-  bytes changeset = 3;            // optional: a changeset id of exactly 32 bytes whose own counts are wanted in `change`; empty means none
+  bytes changeset = 3 [(asc.v1.json) = JSON_KIND_HEX]; // optional: a changeset id of exactly 32 bytes whose own counts are wanted in `change`; empty means none
 }
 // Five counters of cache use. All are plain counts since the start of the period they describe.
 message CacheCounters {
