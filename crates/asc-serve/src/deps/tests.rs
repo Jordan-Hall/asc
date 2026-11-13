@@ -19,6 +19,7 @@ use sqlx::AnyPool;
 
 use super::config::Config;
 use super::egress::{Egress, FetchError, Limits};
+use super::intel::{Feed, FeedState, IntelSource};
 use super::latest::Latest;
 use super::model::{Ecosystem, Lookup};
 use super::osv::{Clock, Osv, Query};
@@ -39,6 +40,8 @@ pub(super) struct MockState {
     /// Path to the number of failures still to give before the route answers.
     pub flaky: HashMap<String, u32>,
     pub delay: Option<Duration>,
+    /// When set, every answer waits for a permit, so a test decides when a request may finish.
+    pub gate: Option<Arc<tokio::sync::Semaphore>>,
     /// `"METHOD path"` of every request.
     pub hits: Vec<String>,
     /// The number of queries of every `querybatch`.
@@ -67,13 +70,18 @@ async fn handle(State(st): State<Arc<Mutex<MockState>>>, req: Request<Body>) -> 
     let (parts, body) = req.into_parts();
     let path = parts.uri.path().to_owned();
     let bytes = to_bytes(body, 8 << 20).await.unwrap_or_default();
-    let delay = {
+    let (delay, gate) = {
         let mut g = st.lock().unwrap_or_else(PoisonError::into_inner);
         g.hits.push(format!("{} {path}", parts.method));
-        g.delay
+        (g.delay, g.gate.clone())
     };
     if let Some(d) = delay {
         tokio::time::sleep(d).await;
+    }
+    if let Some(gate) = gate
+        && let Ok(permit) = gate.acquire().await
+    {
+        permit.forget();
     }
     let mut g = st.lock().unwrap_or_else(PoisonError::into_inner);
     if path == "/v1/querybatch" {
@@ -1008,4 +1016,633 @@ async fn a_registry_that_fails_or_answers_oddly_is_an_error_naming_the_ecosystem
             .unwrap_err()
             .contains("switched off")
     );
+}
+
+// ------------------------------------------------------------------------------ KEV and EPSS feeds
+
+/// 2026-11-12T15:00:00Z.
+const T0: i64 = 1_794_495_600;
+const DAY: i64 = 86_400;
+
+fn iso(t: i64) -> String {
+    let (y, m, d) = crate::ai::clock::ymd(t);
+    let s = t.rem_euclid(DAY);
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        s / 3600,
+        s % 3600 / 60,
+        s % 60
+    )
+}
+
+fn kev_doc(version: &str, date: i64, cves: &[&str]) -> String {
+    let rows: Vec<String> = cves
+        .iter()
+        .map(|c| {
+            format!(
+                r#"{{"cveID":"{c}","dateAdded":"2024-01-01","dueDate":"2024-01-22","knownRansomwareCampaignUse":"Known"}}"#
+            )
+        })
+        .collect();
+    format!(
+        r#"{{"catalogVersion":"{version}","dateReleased":"{}","vulnerabilities":[{}]}}"#,
+        iso(date),
+        rows.join(",")
+    )
+}
+
+fn epss_doc(version: &str, date: Option<i64>, cves: &[&str]) -> String {
+    let mut s = match date {
+        Some(d) => format!("#model_version:{version},score_date:{}\n", iso(d)),
+        None => String::new(),
+    };
+    s.push_str("cve,epss,percentile\n");
+    for c in cves {
+        s.push_str(&format!("{c},0.5,0.9\n"));
+    }
+    s
+}
+
+fn intel_source(c: &Config, clk: Clock) -> Arc<IntelSource> {
+    Arc::new(IntelSource::new(egress_for(c), c, clk).with_min_rows(1, 1))
+}
+
+fn kev_listed(src: &IntelSource, cve: &str) -> Feed<()> {
+    match src.get().lookup([cve]).kev {
+        Feed::Unknown => Feed::Unknown,
+        Feed::NotListed => Feed::NotListed,
+        Feed::Listed(_) => Feed::Listed(()),
+    }
+}
+
+fn set_mtime(path: &std::path::Path, ahead: u64) {
+    let f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+    f.set_modified(std::time::SystemTime::now() + Duration::from_secs(ahead))
+        .unwrap();
+}
+
+#[tokio::test]
+async fn an_unconfigured_feed_is_unknown_never_not_listed() {
+    let c = Config::default();
+    let (clk, _) = clock(T0);
+    let src = intel_source(&c, clk);
+    src.refresh().await;
+    let st = src.status();
+    assert_eq!(st.kev.state, FeedState::Unconfigured);
+    assert_eq!(st.epss.state, FeedState::Unconfigured);
+    assert_eq!(
+        (st.kev.count, st.kev.loaded_at, st.kev.age_secs),
+        (0, None, None)
+    );
+    let hit = src.get().lookup(["CVE-2021-44228"]);
+    assert_eq!(hit.kev, Feed::Unknown);
+    assert_eq!(hit.epss, Feed::Unknown);
+}
+
+#[tokio::test]
+async fn a_file_source_is_read_and_read_again_when_it_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let (kev, epss) = (dir.path().join("kev.json"), dir.path().join("epss.csv"));
+    std::fs::write(&kev, kev_doc("v1", T0 - 3600, &["CVE-2021-44228"])).unwrap();
+    std::fs::write(&epss, epss_doc("m1", Some(T0 - 3600), &["CVE-2021-44228"])).unwrap();
+    let c = Config {
+        kev_file: Some(kev.clone()),
+        epss_file: Some(epss.clone()),
+        ..Config::default()
+    };
+    let (clk, now) = clock(T0);
+    let src = intel_source(&c, clk);
+
+    assert_eq!(src.status().kev.state, FeedState::Unknown, "not loaded yet");
+    assert_eq!(kev_listed(&src, "CVE-2021-44228"), Feed::Unknown);
+    src.refresh().await;
+    let st = src.status();
+    assert_eq!(st.kev.state, FeedState::Current);
+    assert_eq!(st.kev.version.as_deref(), Some("v1"));
+    assert_eq!((st.kev.count, st.epss.count), (1, 1));
+    assert_eq!(st.epss.version.as_deref(), Some("m1"));
+    assert_eq!(st.kev.date.as_deref(), Some(iso(T0 - 3600).as_str()));
+    assert_eq!((st.kev.loaded_at, st.kev.age_secs), (Some(T0), Some(0)));
+    assert_eq!(kev_listed(&src, "CVE-2021-44228"), Feed::Listed(()));
+    assert_eq!(kev_listed(&src, "CVE-2020-0001"), Feed::NotListed);
+    assert!(matches!(
+        src.get().lookup(["CVE-2021-44228"]).epss,
+        Feed::Listed(_)
+    ));
+
+    // Untouched: not read again, and its age is not reset, so an old file cannot pass for a fresh one.
+    now.store(T0 + 600, Ordering::SeqCst);
+    src.refresh().await;
+    let st = src.status();
+    assert_eq!((st.kev.loaded_at, st.kev.age_secs), (Some(T0), Some(600)));
+
+    // A new size is read again.
+    now.store(T0 + 700, Ordering::SeqCst);
+    std::fs::write(
+        &kev,
+        kev_doc("v2", T0, &["CVE-2021-44228", "CVE-2020-0001"]),
+    )
+    .unwrap();
+    src.refresh().await;
+    assert_eq!(src.status().kev.version.as_deref(), Some("v2"));
+    assert_eq!(src.status().kev.count, 2);
+    assert_eq!(kev_listed(&src, "CVE-2020-0001"), Feed::Listed(()));
+
+    // The same size with a new modification time is read again.
+    let same_len = kev_doc("v3", T0, &["CVE-2021-44228", "CVE-2020-0002"]);
+    assert_eq!(
+        same_len.len() as u64,
+        std::fs::metadata(&kev).unwrap().len()
+    );
+    std::fs::write(&kev, same_len).unwrap();
+    set_mtime(&kev, 120);
+    src.refresh().await;
+    assert_eq!(src.status().kev.version.as_deref(), Some("v3"));
+    assert_eq!(kev_listed(&src, "CVE-2020-0001"), Feed::NotListed);
+    assert_eq!(kev_listed(&src, "CVE-2020-0002"), Feed::Listed(()));
+}
+
+#[tokio::test]
+async fn a_refused_file_keeps_the_last_good_copy_and_is_not_parsed_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let kev = dir.path().join("kev.json");
+    std::fs::write(&kev, kev_doc("v1", T0, &["CVE-2021-44228"])).unwrap();
+    let c = Config {
+        kev_file: Some(kev.clone()),
+        ..Config::default()
+    };
+    let (clk, now) = clock(T0);
+    let src = intel_source(&c, clk);
+    src.refresh().await;
+
+    std::fs::write(&kev, "{ not json").unwrap();
+    now.store(T0 + 60, Ordering::SeqCst);
+    src.refresh().await;
+    let st = src.status().kev;
+    assert_eq!(st.state, FeedState::Current, "the good copy is still held");
+    assert!(st.note.contains("refused"), "{}", st.note);
+    assert_eq!(st.version.as_deref(), Some("v1"));
+    assert_eq!(kev_listed(&src, "CVE-2021-44228"), Feed::Listed(()));
+    src.refresh().await;
+    assert!(src.status().kev.note.contains("refused"));
+
+    // A file with too few rows is refused too, and a missing file is a failure, not an empty feed.
+    std::fs::write(&kev, r#"{"vulnerabilities": []}"#).unwrap();
+    src.refresh().await;
+    assert!(src.status().kev.note.contains("refused"));
+    std::fs::remove_file(&kev).unwrap();
+    src.refresh().await;
+    assert!(src.status().kev.note.contains("cannot be read"));
+    assert_eq!(kev_listed(&src, "CVE-2021-44228"), Feed::Listed(()));
+
+    std::fs::write(&kev, kev_doc("v2", T0 + 100, &["CVE-2020-0001"])).unwrap();
+    src.refresh().await;
+    let st = src.status().kev;
+    assert_eq!((st.version.as_deref(), st.note.as_str()), (Some("v2"), ""));
+}
+
+#[tokio::test]
+async fn a_file_larger_than_the_limit_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let kev = dir.path().join("kev.json");
+    std::fs::write(&kev, kev_doc("v1", T0, &["CVE-2021-44228"])).unwrap();
+    let mut c = Config {
+        kev_file: Some(kev),
+        ..Config::default()
+    };
+    c.kev.max_bytes = crate::config::ByteSize(20);
+    let (clk, _) = clock(T0);
+    let src = intel_source(&c, clk);
+    src.refresh().await;
+    let st = src.status().kev;
+    assert_eq!(st.state, FeedState::Unknown);
+    assert!(st.note.contains("larger than"), "{}", st.note);
+}
+
+#[tokio::test]
+async fn a_url_source_is_fetched_once_per_ttl() {
+    let m = Mock::start().await;
+    m.route("/kev.json", 200, &kev_doc("v1", T0, &["CVE-2021-44228"]));
+    m.route(
+        "/epss.csv",
+        200,
+        &epss_doc("m1", Some(T0), &["CVE-2021-44228"]),
+    );
+    let mut c = config(&m);
+    c.kev.url = format!("{}/kev.json", m.url());
+    c.epss.url = format!("{}/epss.csv", m.url());
+    c.validate(&net()).unwrap();
+    let ttl = c.intel_ttl_secs as i64;
+    let (clk, now) = clock(T0);
+    let src = intel_source(&c, clk);
+    src.refresh().await;
+    src.refresh().await;
+    assert_eq!((m.count("GET /kev.json"), m.count("GET /epss.csv")), (1, 1));
+    assert_eq!(kev_listed(&src, "CVE-2021-44228"), Feed::Listed(()));
+    assert_eq!(src.status().epss.state, FeedState::Current);
+    now.store(T0 + ttl - 1, Ordering::SeqCst);
+    src.refresh().await;
+    assert_eq!(m.count("GET /kev.json"), 1);
+    now.store(T0 + ttl + 1, Ordering::SeqCst);
+    src.refresh().await;
+    assert_eq!((m.count("GET /kev.json"), m.count("GET /epss.csv")), (2, 2));
+    // Only the two feed files were asked for.
+    assert!(
+        m.hits()
+            .iter()
+            .all(|h| h == "GET /kev.json" || h == "GET /epss.csv")
+    );
+}
+
+#[tokio::test]
+async fn a_failing_fetch_keeps_the_last_copy_until_the_stale_window_ends() {
+    let m = Mock::start().await;
+    m.route(
+        "/kev.json",
+        200,
+        &kev_doc("v1", T0 - 3600, &["CVE-2021-44228"]),
+    );
+    let mut c = config(&m);
+    c.kev.url = format!("{}/kev.json", m.url());
+    let (ttl, stale) = (c.intel_ttl_secs as i64, c.intel_stale_secs as i64);
+    let (clk, now) = clock(T0);
+    let src = intel_source(&c, clk);
+    src.refresh().await;
+    assert_eq!(kev_listed(&src, "CVE-2021-44228"), Feed::Listed(()));
+
+    m.route("/kev.json", 500, "{}");
+    now.store(T0 + ttl + 1, Ordering::SeqCst);
+    src.refresh().await;
+    let st = src.status().kev;
+    assert_eq!(st.state, FeedState::Current);
+    assert!(st.note.contains("fetch failed"), "{}", st.note);
+    assert!(!st.note.contains("127.0.0.1"), "the error names no URL");
+    assert_eq!(kev_listed(&src, "CVE-2021-44228"), Feed::Listed(()));
+
+    // A failed fetch is tried again after a short wait, not after the whole TTL.
+    let before = m.count("GET /kev.json");
+    now.store(T0 + ttl + 10, Ordering::SeqCst);
+    src.refresh().await;
+    assert_eq!(m.count("GET /kev.json"), before);
+    now.store(T0 + ttl + 400, Ordering::SeqCst);
+    src.refresh().await;
+    assert!(m.count("GET /kev.json") > before);
+
+    now.store(T0 + stale - 7200, Ordering::SeqCst);
+    src.refresh().await;
+    assert_eq!(kev_listed(&src, "CVE-2021-44228"), Feed::Listed(()));
+    assert_eq!(src.status().kev.state, FeedState::Current);
+
+    now.store(T0 + stale + 10, Ordering::SeqCst);
+    src.refresh().await;
+    assert_eq!(kev_listed(&src, "CVE-2021-44228"), Feed::Unknown);
+    let st = src.status().kev;
+    assert_eq!(st.state, FeedState::Unknown);
+    assert_eq!(st.count, 1, "the copy is still reported, but not trusted");
+
+    // The feed comes back: trusted again.
+    m.route(
+        "/kev.json",
+        200,
+        &kev_doc("v2", T0 + stale, &["CVE-2021-44228"]),
+    );
+    now.store(T0 + stale + 1000, Ordering::SeqCst);
+    src.refresh().await;
+    assert_eq!(kev_listed(&src, "CVE-2021-44228"), Feed::Listed(()));
+    assert_eq!(src.status().kev.version.as_deref(), Some("v2"));
+}
+
+#[tokio::test]
+async fn a_feed_that_was_never_fetched_is_unknown() {
+    let m = Mock::start().await;
+    m.route("/kev.json", 500, "{}");
+    let mut c = config(&m);
+    c.kev.url = format!("{}/kev.json", m.url());
+    let (clk, _) = clock(T0);
+    let src = intel_source(&c, clk);
+    src.refresh().await;
+    assert_eq!(kev_listed(&src, "CVE-2021-44228"), Feed::Unknown);
+    let st = src.status().kev;
+    assert_eq!(st.state, FeedState::Unknown);
+    assert!(st.note.contains("fetch failed"));
+    // A host off the allowlist is refused before anything is sent.
+    let mut c = config(&m);
+    c.kev.url = format!("{}/kev.json", m.url());
+    c.egress_allow = vec!["registry.example".into()];
+    let (clk, _) = clock(T0);
+    let src = IntelSource::new(egress_for(&c), &c, clk);
+    let before = m.hits().len();
+    src.refresh().await;
+    assert_eq!(m.hits().len(), before);
+    assert!(src.status().kev.note.contains("allowlist"));
+}
+
+#[tokio::test]
+async fn an_older_file_than_the_one_held_is_refused() {
+    let m = Mock::start().await;
+    m.route("/kev.json", 200, &kev_doc("new", T0, &["CVE-2021-44228"]));
+    m.route(
+        "/epss.csv",
+        200,
+        &epss_doc("new", Some(T0), &["CVE-2021-44228"]),
+    );
+    let mut c = config(&m);
+    c.kev.url = format!("{}/kev.json", m.url());
+    c.epss.url = format!("{}/epss.csv", m.url());
+    let ttl = c.intel_ttl_secs as i64;
+    let (clk, now) = clock(T0 + 60);
+    let src = intel_source(&c, clk);
+    src.refresh().await;
+
+    // A replay of yesterday's file, and an undated copy of the scores.
+    m.route(
+        "/kev.json",
+        200,
+        &kev_doc("old", T0 - DAY, &["CVE-2020-0001"]),
+    );
+    m.route("/epss.csv", 200, &epss_doc("old", None, &["CVE-2020-0001"]));
+    now.store(T0 + ttl + 100, Ordering::SeqCst);
+    src.refresh().await;
+    let st = src.status();
+    assert_eq!(st.kev.version.as_deref(), Some("new"));
+    assert!(
+        st.kev.note.contains("older than the copy held"),
+        "{}",
+        st.kev.note
+    );
+    assert_eq!(st.epss.version.as_deref(), Some("new"));
+    assert!(st.epss.note.contains("no usable date"), "{}", st.epss.note);
+    assert_eq!(kev_listed(&src, "CVE-2021-44228"), Feed::Listed(()));
+    assert_eq!(kev_listed(&src, "CVE-2020-0001"), Feed::NotListed);
+
+    // The same date is not a rollback; a newer one replaces the copy.
+    m.route("/kev.json", 200, &kev_doc("same", T0, &["CVE-2020-0001"]));
+    now.store(T0 + 2 * ttl + 200, Ordering::SeqCst);
+    src.refresh().await;
+    assert_eq!(src.status().kev.version.as_deref(), Some("same"));
+    m.route(
+        "/kev.json",
+        200,
+        &kev_doc("newer", T0 + ttl, &["CVE-2020-0001"]),
+    );
+    now.store(T0 + 3 * ttl + 300, Ordering::SeqCst);
+    src.refresh().await;
+    assert_eq!(src.status().kev.version.as_deref(), Some("newer"));
+    assert_eq!(src.status().kev.note, "");
+}
+
+#[tokio::test]
+async fn a_file_dated_in_the_future_or_long_ago_is_not_current() {
+    let m = Mock::start().await;
+    let mut c = config(&m);
+    c.kev.url = format!("{}/kev.json", m.url());
+    let (ttl, stale) = (c.intel_ttl_secs as i64, c.intel_stale_secs as i64);
+    let (clk, now) = clock(T0);
+    let src = intel_source(&c, clk);
+
+    m.route(
+        "/kev.json",
+        200,
+        &kev_doc("future", T0 + 10 * DAY, &["CVE-2021-44228"]),
+    );
+    src.refresh().await;
+    assert_eq!(src.status().kev.state, FeedState::Unknown);
+    assert!(src.status().kev.note.contains("future"));
+
+    // A replayed old file does not pass as current, even when it is fetched just now.
+    m.route(
+        "/kev.json",
+        200,
+        &kev_doc("old", T0 - stale - DAY, &["CVE-2021-44228"]),
+    );
+    now.store(T0 + ttl + 1, Ordering::SeqCst);
+    src.refresh().await;
+    let st = src.status().kev;
+    assert_eq!((st.state, st.count), (FeedState::Unknown, 0));
+    assert!(
+        st.note.contains("older than the stale window"),
+        "{}",
+        st.note
+    );
+    assert_eq!(kev_listed(&src, "CVE-2021-44228"), Feed::Unknown);
+
+    // A copy that was fine when it came ages out by its own date, though it was fetched lately.
+    let base = T0 + 2 * ttl + 2;
+    m.route(
+        "/kev.json",
+        200,
+        &kev_doc("v1", base - stale + DAY, &["CVE-2021-44228"]),
+    );
+    now.store(base, Ordering::SeqCst);
+    src.refresh().await;
+    assert_eq!(kev_listed(&src, "CVE-2021-44228"), Feed::Listed(()));
+    now.store(base + DAY + 3600, Ordering::SeqCst);
+    assert_eq!(kev_listed(&src, "CVE-2021-44228"), Feed::Unknown);
+    assert_eq!(src.status().kev.state, FeedState::Unknown);
+}
+
+#[tokio::test]
+async fn readers_do_not_wait_for_a_refresh_and_only_one_refresh_runs() {
+    let m = Mock::start().await;
+    m.route("/kev.json", 200, &kev_doc("v1", T0, &["CVE-2021-44228"]));
+    let mut c = config(&m);
+    c.kev.url = format!("{}/kev.json", m.url());
+    let ttl = c.intel_ttl_secs as i64;
+    let (clk, now) = clock(T0);
+    let src = intel_source(&c, clk);
+    src.refresh().await;
+
+    // The next fetch answers only when this test lets it.
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    m.with(|s| s.gate = Some(gate.clone()));
+    m.route(
+        "/kev.json",
+        200,
+        &kev_doc("v2", T0 + 10, &["CVE-2020-0001"]),
+    );
+    now.store(T0 + ttl + 1, Ordering::SeqCst);
+    let slow = tokio::spawn({
+        let src = src.clone();
+        async move { src.refresh().await }
+    });
+    // Wait until the request is in flight (the bound only ends a test that would hang).
+    tokio::time::timeout(Duration::from_secs(60), async {
+        while m.count("GET /kev.json") < 2 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    // The fetch is still pending. Readers answer from the held copy, and a second refresh gives up
+    // at once: a zero timeout polls it once, so it would fail if it waited for anything.
+    assert_eq!(kev_listed(&src, "CVE-2021-44228"), Feed::Listed(()));
+    assert_eq!(src.status().kev.version.as_deref(), Some("v1"));
+    tokio::time::timeout(Duration::ZERO, src.refresh())
+        .await
+        .expect("a second refresh does not wait for the first");
+    assert!(!slow.is_finished(), "the fetch is held back");
+    assert_eq!(m.count("GET /kev.json"), 2, "one fetch at a time");
+
+    gate.add_permits(1);
+    slow.await.unwrap();
+    assert_eq!(src.status().kev.version.as_deref(), Some("v2"));
+    assert_eq!(kev_listed(&src, "CVE-2020-0001"), Feed::Listed(()));
+    assert_eq!(kev_listed(&src, "CVE-2021-44228"), Feed::NotListed);
+}
+
+#[tokio::test]
+async fn a_feed_without_a_date_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let (kev, epss) = (dir.path().join("kev.json"), dir.path().join("epss.csv"));
+    std::fs::write(
+        &kev,
+        r#"{"catalogVersion":"v1","vulnerabilities":[{"cveID":"CVE-2021-44228","dateAdded":"2024-01-01"}]}"#,
+    )
+    .unwrap();
+    std::fs::write(&epss, epss_doc("m1", None, &["CVE-2021-44228"])).unwrap();
+    let c = Config {
+        kev_file: Some(kev.clone()),
+        epss_file: Some(epss),
+        ..Config::default()
+    };
+    let (clk, _) = clock(T0);
+    let src = intel_source(&c, clk);
+    src.refresh().await;
+    let st = src.status();
+    for f in [&st.kev, &st.epss] {
+        assert_eq!((f.state, f.count), (FeedState::Unknown, 0));
+        assert!(f.note.contains("no usable date"), "{}", f.note);
+    }
+    assert_eq!(kev_listed(&src, "CVE-2021-44228"), Feed::Unknown);
+
+    // With a good copy held, an undated file does not replace it.
+    std::fs::write(&kev, kev_doc("v1", T0, &["CVE-2021-44228"])).unwrap();
+    src.refresh().await;
+    assert_eq!(kev_listed(&src, "CVE-2021-44228"), Feed::Listed(()));
+    std::fs::write(
+        &kev,
+        r#"{"catalogVersion":"v2","vulnerabilities":[{"cveID":"CVE-2020-0001","dateAdded":"2024-01-01"}]}"#,
+    )
+    .unwrap();
+    set_mtime(&kev, 300);
+    src.refresh().await;
+    let st = src.status().kev;
+    assert_eq!(st.version.as_deref(), Some("v1"));
+    assert!(st.note.contains("no usable date"), "{}", st.note);
+}
+
+#[tokio::test]
+async fn a_path_that_is_not_a_regular_file_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let c = Config {
+        kev_file: Some(dir.path().to_owned()),
+        ..Config::default()
+    };
+    let (clk, _) = clock(T0);
+    let src = intel_source(&c, clk);
+    src.refresh().await;
+    let st = src.status().kev;
+    assert_eq!(st.state, FeedState::Unknown);
+    assert!(st.note.contains("not a regular file"), "{}", st.note);
+    // The refresh guard was released: a later call runs again.
+    let file = dir.path().join("later.json");
+    std::fs::write(&file, kev_doc("v1", T0, &["CVE-2021-44228"])).unwrap();
+    let c = Config {
+        kev_file: Some(file),
+        ..Config::default()
+    };
+    let (clk, _) = clock(T0);
+    let src = intel_source(&c, clk);
+    src.refresh().await;
+    assert_eq!(src.status().kev.state, FeedState::Current);
+}
+
+#[tokio::test]
+async fn a_refused_url_feed_waits_the_whole_ttl_but_a_network_failure_does_not() {
+    let m = Mock::start().await;
+    m.route("/kev.json", 200, &kev_doc("v1", T0, &["CVE-2021-44228"]));
+    let mut c = config(&m);
+    c.kev.url = format!("{}/kev.json", m.url());
+    let ttl = c.intel_ttl_secs as i64;
+    let (clk, now) = clock(T0);
+    let src = intel_source(&c, clk);
+    src.refresh().await;
+    assert_eq!(m.count("GET /kev.json"), 1);
+
+    m.route("/kev.json", 200, "{ not json");
+    now.store(T0 + ttl + 1, Ordering::SeqCst);
+    src.refresh().await;
+    assert_eq!(m.count("GET /kev.json"), 2);
+    assert!(src.status().kev.note.contains("refused"));
+    now.store(T0 + ttl + 600, Ordering::SeqCst);
+    src.refresh().await;
+    assert_eq!(
+        m.count("GET /kev.json"),
+        2,
+        "a refused feed is not asked for again soon"
+    );
+    now.store(T0 + 2 * ttl + 2, Ordering::SeqCst);
+    src.refresh().await;
+    assert_eq!(m.count("GET /kev.json"), 3);
+}
+
+#[tokio::test]
+async fn the_background_loop_refreshes_at_start_and_again_and_stops_on_shutdown() {
+    let dir = tempfile::tempdir().unwrap();
+    let kev = dir.path().join("kev.json");
+    std::fs::write(&kev, kev_doc("v1", T0 - 3600, &["CVE-2021-44228"])).unwrap();
+    let c = Config {
+        kev_file: Some(kev.clone()),
+        ..Config::default()
+    };
+    let (clk, now) = clock(T0);
+    let src = intel_source(&c, clk);
+    let stop = tokio_util::sync::CancellationToken::new();
+    let task = tokio::spawn({
+        let (src, stop) = (src.clone(), stop.clone());
+        async move { src.run(&stop, Duration::from_millis(10)).await }
+    });
+    // The bounds below only end a test that would hang.
+    let until = |what: &'static str, ok: Box<dyn Fn() -> bool>| async move {
+        tokio::time::timeout(Duration::from_secs(60), async {
+            while !ok() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("{what}"));
+    };
+
+    let s = src.clone();
+    until(
+        "loaded at start",
+        Box::new(move || s.status().kev.version.as_deref() == Some("v1")),
+    )
+    .await;
+
+    // A refused file does not stop the loop, and the next good file is picked up.
+    now.store(T0 + 600, Ordering::SeqCst);
+    std::fs::write(&kev, "{ not json").unwrap();
+    let s = src.clone();
+    until(
+        "refusal noticed",
+        Box::new(move || s.status().kev.note.contains("refused")),
+    )
+    .await;
+    assert_eq!(kev_listed(&src, "CVE-2021-44228"), Feed::Listed(()));
+    std::fs::write(&kev, kev_doc("v2", T0 + 500, &["CVE-2020-0001"])).unwrap();
+    let s = src.clone();
+    until(
+        "new file read",
+        Box::new(move || s.status().kev.version.as_deref() == Some("v2")),
+    )
+    .await;
+    assert_eq!(src.status().kev.note, "");
+
+    stop.cancel();
+    tokio::time::timeout(Duration::from_secs(60), task)
+        .await
+        .expect("the loop stops on shutdown")
+        .unwrap();
 }
