@@ -1,6 +1,6 @@
 # Dependency snapshots
 
-Status: design, not built. Roadmap row 22 (`docs/ROADMAP-NEXT.md:68`). `node_modules` snapshots
+Status: design, not built. Roadmap row 22 (`docs/ROADMAP.md`). `node_modules` snapshots
 are listed as out of scope in `docs/SPEC.md:52`; the owner decided on 2026-11-13 to build them, with
 this design first. The SPEC entry moves from the out-of-scope list to a new section when unit 13
 lands.
@@ -563,7 +563,7 @@ Each unit has tests and updates the docs it names. Acceptance runs from the work
 13. **Worktrees and SPEC.** `crates/asc/src/cli/worktree.rs`: restore after `NoReflink` or
     `LockfilesDiffer`. Tests: a worktree on a volume without reflink gets a restored root. Docs:
     `docs/WORKTREES.md` "Installed dependencies", `docs/SPEC.md` (remove `node_modules` snapshots
-    from the out-of-scope list, add the section), `docs/ROADMAP-NEXT.md` row 22.
+    from the out-of-scope list, add the section), `docs/ROADMAP.md` row 22.
     `cargo test -q -j 4 -p asc worktree::deps`
 
 Order: 1, 2, 3, 6, 4, 5, 7, 9, 12, 8, 10, 13, 11. Units 1 to 9 give a working CI path; 11 is the

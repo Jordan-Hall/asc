@@ -7,7 +7,7 @@ not collide. The protocol is in `proto/asc/v1` (new files only; nothing existing
 
 Rules for every unit:
 
-- A feature is "available" in the README table of the hub, and in `docs/STATUS.md` here, only when its code, its tests and its docs
+- A feature is "available" in the README table of the hub, and in `docs/ROADMAP.md` here, only when its code, its tests and its docs
   are in. A feature page below says what "done" means for it.
 - No scaffold survives. A service is served or it is not mounted (the router answers `UNIMPLEMENTED` for a method nobody serves), and
   `cargo test -p asc-rpc --test scaffold_registry` keeps the RPC index below in step with the protos and fails if a scaffold list returns.
@@ -550,9 +550,10 @@ A client calls it with the user's own credential.
 - **Hub comments.** `Review.AddComment` takes `external_id` (the hub's own comment id, at most 128 bytes of `[A-Za-z0-9._:/-]`): mirroring
   the same id twice stores it once, and an id never names a comment of another change (`ALREADY_EXISTS`). `ReviewComment.external_id`
   returns it. New audit actions: `review.comment.added`, `review.thread.resolved`, `review.requested`. Migration `0570`.
-- **Not built yet** (rows of `docs/asc/feature-gaps/review.md` in the hub): suggested changes and apply-as-vN, the review brief and
-  provenance, approval carry-over, agent plan/permission/pause/checkpoint/limit RPCs, spend and monthly budgets, gate statistics and
-  overrides, the merge queue server, and the settings/repo/shell rows. See `gaps-review-asc.md`.
+- **Built since** (rows of `docs/asc/feature-gaps/review.md` in the hub): suggested changes and apply-as-vN, the review brief and
+  provenance, approval carry-over, agent plan/permission/pause/checkpoint/limit RPCs, spend, gate statistics and overrides, the merge
+  queue server, and the settings/repo/shell rows (`asc-serve/src/review/`, `queue/`, `agents/`). Monthly budgets are row 68 of
+  `docs/ROADMAP.md`.
 
 ## 17. TSRX in code intelligence
 

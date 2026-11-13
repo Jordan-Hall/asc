@@ -1,6 +1,6 @@
 # First-class conflicts
 
-Status: design, decided 2026-11-13 (roadmap row 16, docs/ROADMAP-NEXT.md). Nothing here is built.
+Status: design, decided 2026-11-13 (roadmap row 16, docs/ROADMAP.md). Nothing here is built.
 It replaces the "jj-style first-class conflicts" entry of the out-of-scope list in SPEC §0.
 
 ## Why

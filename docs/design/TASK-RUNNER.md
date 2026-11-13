@@ -1,6 +1,6 @@
 # Task runner (`asc run`)
 
-Status: design, 2026-11-13. Roadmap row 24 (`docs/ROADMAP-NEXT.md`). Decided on 2026-11-13: asc gets
+Status: design, 2026-11-13. Roadmap row 24 (`docs/ROADMAP.md`). Decided on 2026-11-13: asc gets
 a task runner, as an optional module that is installed and set up separately from the core `asc`
 binary. Nothing here is built yet. SPEC §0 lists "`asc run` task execution" as out of scope for the
 core; this document keeps it out of the core and puts it in a module.

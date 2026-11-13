@@ -18,7 +18,7 @@
 - **Built-in project graph and `asc affected`.** asc detects Rust (Cargo), Python (uv, pyproject, requirements), .NET (sln, csproj) and Bun/Node workspaces itself, as derived data per changeset, and computes affected projects (lockfile-aware, with per-project input hashes) locally or on the server. Output formats include JSON, a turbo filter, an nx project list and an Actions matrix.
 - **API-first CI, Scion-style efficiency.** Diffs, merge bases, logs, blame and `Affected` run on the server. A CI plan job needs one RPC and no checkout. Fetches are want-only and resumable, clients keep a bounded history window and ask the server for older history, every cache tier speaks the same RPCs (`asc serve --role cache`), seed snapshots warm cold machines, and a benchmark gate holds asc faster than git. Turbo hashes a virtual checkout without reading any files, and the turbo remote cache, Actions caches and artifacts live in the same object store. ASC's Actions fork (`asc/actions`) makes CI use asc with no workflow edits.
 - **Stacked changes and stacked PRs.** New verbs (`asc create`, `modify`, `absorb`, `restack`, `sync`, `submit`, `sl`, `undo`, …) give Graphite/Sapling/jj-style stacks with stable change ids and an operation log, with stable change ids and no rewriting of history you already have. The Forgejo fork shows stacked PRs natively (each PR's base is its parent, becoming the trunk when the parent merges) and lands stacks atomically through a merge-when-ready queue. Blame, history, commit-graph and worktree data are served through asc's API to ASC's plugins.
-- **Forgejo, fully on asc (staged; see docs/STATUS.md).** ASC Hub, a Forgejo fork, reads and writes repositories through `asc serve`, and the compatibility bridge becomes a cache. Cutover is staged and reversible: remote mode, then mirror mode, then asc as source of truth, then Forgejo reads through asc, then Forgejo writes through asc.
+- **Forgejo, fully on asc (staged; see docs/ROADMAP.md).** ASC Hub, a Forgejo fork, reads and writes repositories through `asc serve`, and the compatibility bridge becomes a cache. Cutover is staged and reversible: remote mode, then mirror mode, then asc as source of truth, then Forgejo reads through asc, then Forgejo writes through asc.
 
 ## Install
 
@@ -69,19 +69,20 @@ asc sync                         # fetch, fast-forward trunk, drop landed change
 | `asc serve` | The storage and RPC server (gRPC, HTTP/2, optional HTTP/3), plus the git compatibility layer (see below). | [`deploy/`](deploy/README.md) |
 | ASC Hub | The ASC fork of Forgejo v16 (repository `asc/asc-hub`, image `forge.example.org/asc/asc-hub`): web UI, review, Actions, packages. It asks `asc serve` for repository data. | `docs/asc/README.md` in the ASC Hub repository |
 
-See [`docs/STATUS.md`](docs/STATUS.md) for the architecture sketch and what runs where.
+See [`docs/ROADMAP.md`](docs/ROADMAP.md) for what is built and what is left.
 
 ## Documents
 
 | File | Contents |
 |---|---|
 | [`docs/GETTING-STARTED.md`](docs/GETTING-STARTED.md) | Install, authenticate, clone, the daily loop, git compatibility |
-| [`docs/STATUS.md`](docs/STATUS.md) | What is built, what runs where, what is missing |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | What is built, what is not verified, every open row, the order of work and the decisions |
+| [`docs/OUT-OF-SCOPE.md`](docs/OUT-OF-SCOPE.md) | Each out-of-scope item, reviewed against the goals |
 | [`docs/ONBOARDING.md`](docs/ONBOARDING.md) | Editor settings, `asc doctor` findings, the optional `git` shim |
 | [`docs/CHEATSHEET.md`](docs/CHEATSHEET.md) | Common tasks and the asc command for each |
 | [`docs/RELEASING.md`](docs/RELEASING.md) | How a release is built, signed and published |
 | [`docs/SPEC.md`](docs/SPEC.md) | The authoritative design (normative) |
-| [`docs/PLAN.md`](docs/PLAN.md) | Ordered implementation units with acceptance commands (normative) |
+| [`docs/history/PLAN.md`](docs/history/PLAN.md) | The original implementation units with acceptance commands (historical) |
 | [`docs/CARRY.md`](docs/CARRY.md) | Obligations that built units created for later units |
 | [`docs/divergences.md`](docs/divergences.md), [`docs/adapter-gaps.md`](docs/adapter-gaps.md) | Where asc differs from pinned git; harness gaps |
 | [`docs/git-fidelity.md`](docs/git-fidelity.md), [`docs/git-quirks.md`](docs/git-quirks.md), [`docs/git-defects.md`](docs/git-defects.md) | The git fidelity method and the quirk decisions |
@@ -116,6 +117,6 @@ crates/asc-sim       hermetic simulation (tests)
 
 ## Status
 
-See [`docs/STATUS.md`](docs/STATUS.md). In short: the local client, stacks, `asc serve`, the compatibility transports and the release pipeline exist and a standalone staging server runs; IDE plugins are in progress; the Forgejo cutover stages are not done.
+See [`docs/ROADMAP.md`](docs/ROADMAP.md). In short: the local client, stacks, `asc serve`, the compatibility transports and the release pipeline exist and a standalone staging server runs; the IDE plugins are built and attached to each release; the Forgejo cutover stages are not done.
 
 Toolchain: Rust 1.95 (edition 2024), git 2.40 or later, and Docker for the S3 and Postgres integration tests. The virtual filesystem uses ProjFS on Windows when the `Client-ProjFS` optional feature is on and the built-in Cloud Files API otherwise, FUSE on Linux (or a loopback NFSv3 server when FUSE is missing), and the loopback NFSv3 server on macOS.

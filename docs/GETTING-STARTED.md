@@ -124,6 +124,6 @@ HTTP/3 is used when the server advertises it and falls back to HTTP/2.
 
 - Every command, with an example: [`CLI.md`](CLI.md). Every configuration key: [`CONFIG.md`](CONFIG.md).
   All docs: [`README.md`](README.md).
-- What works today and what does not: [`STATUS.md`](STATUS.md).
+- What works today and what does not: [`ROADMAP.md`](ROADMAP.md).
 - Run your own server: [`../deploy/README.md`](../deploy/README.md).
 - Something wrong: `asc doctor` and ONBOARDING section 8.

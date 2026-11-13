@@ -43,10 +43,10 @@ wins.
 | Page | What is in it |
 |---|---|
 | [`SPEC.md`](SPEC.md) | The authoritative specification. |
-| [`PLAN.md`](PLAN.md), [`PLAN-STATUS.md`](PLAN-STATUS.md), [`STATUS.md`](STATUS.md), [`CARRY.md`](CARRY.md) | The implementation plan, which units are done, the honest state, and obligations carried forward. |
+| [`ROADMAP.md`](ROADMAP.md), [`OUT-OF-SCOPE.md`](OUT-OF-SCOPE.md), [`history/PLAN.md`](history/PLAN.md), [`CARRY.md`](CARRY.md) | The one tracking document (state, open rows, order of work, decisions and naming), the review of out-of-scope items, the original plan (historical), and obligations carried forward. |
 | [`BUILDOUT.md`](BUILDOUT.md) | The contract for finishing the features ASC Hub lists as partial. |
 | [`git-fidelity.md`](git-fidelity.md), [`git-quirks.md`](git-quirks.md), [`git-defects.md`](git-defects.md), [`divergences.md`](divergences.md), [`adapter-gaps.md`](adapter-gaps.md) | How faithful asc is to git, and every place it is not. |
 | [`BENCHMARKS.md`](BENCHMARKS.md) | asc compared with git. |
 | [`SCION-TRACEABILITY.md`](SCION-TRACEABILITY.md) | The Scion checklist mapped to the spec. |
 | [`designs/`](designs), [`research/`](research), [`DECISIONS/`](DECISIONS) | Design notes, research and decision records. |
-| [`RENAME.md`](RENAME.md), [`brand/BRAND.md`](brand/BRAND.md) | Naming and brand. |
+| [`brand/BRAND.md`](brand/BRAND.md) | Brand. Naming is in `ROADMAP.md` section 5. |

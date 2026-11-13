@@ -1,4 +1,4 @@
-//! U25a: the tool trace corpus (docs/SPEC.md §17.1, docs/PLAN.md U25a).
+//! U25a: the tool trace corpus (docs/SPEC.md §17.1, docs/history/PLAN.md U25a).
 //!
 //! `tests/traces/<tool>/<case>.trace` records the git invocations that Claude Code, husky,
 //! lint-staged, commitlint, turbo and ASC's repo scripts make, at the pinned versions in

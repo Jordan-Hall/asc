@@ -1,6 +1,6 @@
 # Read-only git view
 
-Status: design, not built. Roadmap row 26 (`docs/ROADMAP-NEXT.md`), decided 2026-11-13: build it,
+Status: design, not built. Roadmap row 26 (`docs/ROADMAP.md`), decided 2026-11-13: build it,
 design first. This document changes two recorded decisions: SPEC §9.6 ("real git never operates on
 an asc workspace") and the out-of-scope entry for a full `.git` projection (SPEC §0 and the note in
 the IDE section). Nothing here changes object identity, the wire protocol or asc's own git

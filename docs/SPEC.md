@@ -50,7 +50,8 @@ Crate edges (v1.9): the dependency order is asc-core, asc-store, asc-engine, the
 - *Measured v1.x items:* logical dedup across a fork network (§3.3; deviation recorded as §19 decision 6). Segment packing of small objects and per-pack zstd dictionaries are built (docs/design/PACKED-OBJECTS.md).
 - *Built:* the daemon-side turbo cache tier: the daemon's turbo front reads a local miss through the work tree's build cache server and uploads in the background when the tier is read-write (docs/designs/build-cache.md §4.3). The path log beyond the mainline index is the derived type `pathlog.v1` (§5).
 - *Decided 2026-11-13, design written, not built yet:* jj-style first-class conflicts (`docs/design/FIRST-CLASS-CONFLICTS.md`, row 16), `node_modules` snapshots (`docs/design/DEPENDENCY-SNAPSHOTS.md`, row 22), `asc run` task execution (`docs/design/TASK-RUNNER.md`, row 24), and real git inside a workspace as a read-only view (`docs/design/GIT-VIEW.md`, row 26).
-- *On the roadmap (docs/ROADMAP-NEXT.md):* `WatchRefs` (row 18); the asc RPC protocol over SSH and `asc-authenticate` (§25.11.9, row 54); SSH user certificates and security-key (`sk-*`) keys on the `asc serve` listener (§25.11.1, row 55); workspace sync (row 12); TypeScript import-graph inference (row 56); parsing `package-lock.json`/`pnpm-lock.yaml`/`yarn.lock`/`bun.lockb` for the project graph (§12A.2, row 57); compatibility with the IDEs' built-in git (row 26); a host-level fetch proxy for CI, gated on measurement (row 58); shared `BucketRefs` across forks (row 8); the git commands marked "native in a later unit" (§11.5, row 59); a signing settings page (row 60).
+- *Built since:* `WatchRefs` (`crates/asc-serve/src/watch_refs.rs`; row 18 covers the callers that still poll), shared `BucketRefs` on one bucket (`--refs shared`, §3.3), and the git commands once marked "native in a later unit" (§11.5).
+- *On the roadmap (docs/ROADMAP.md):* the asc RPC protocol over SSH and `asc-authenticate` (§25.11.9, row 54); SSH user certificates and security-key (`sk-*`) keys on the `asc serve` listener (§25.11.1, row 55); workspace sync (row 12); TypeScript import-graph inference (row 56); parsing `package-lock.json`/`pnpm-lock.yaml`/`yarn.lock`/`bun.lockb` for the project graph (§12A.2, row 57); compatibility with the IDEs' built-in git (row 26); a host-level fetch proxy for CI, gated on measurement (row 58); shared `BucketRefs` across a fork network (row 8); a signing settings page (row 60). Items that stay out of scope are reviewed in docs/OUT-OF-SCOPE.md.
 
 ---
 
@@ -468,7 +469,7 @@ Update: in one transaction, for each update, `UPDATE refs SET target=$new, versi
 
 **`BucketRefs`** (serverless shared bucket) **[fix J1/J2: serverless multi-writer, ABA, reflog]**:
 
-- **Deferred (post-v1, unit U30, off the critical path) [audit: bucketrefs-defer]:** v1 bucket remotes use `--refs local` (single-writer) by default. Multi-writer teams use `asc serve`. `asc init --store` without `--refs` uses `local` until U30 ships. The design below is kept so U30 can be built without redesign.
+- **Built (unit U30, `crates/asc-store/src/bucketrefs.rs`, `tests/it_bucketrefs.rs`):** bucket remotes use `--refs local` (single-writer) by default; `--refs shared` (or `remote.<n>.ascRefs`) selects the multi-writer design below. Multi-writer teams can also use `asc serve`.
 - The **ref log is the truth.** Entry `rl/<ref>/<v>` (v zero-padded to 20 digits, starting at 1) holds `postcard(BucketRefEntry { old: Option<RefTarget>, new: Option<RefTarget>, op_id: [u8;16], actor: Vec<u8>, at: i64 })`. The current value is the entry with the highest `v`.
 - **CAS = create-only put** of `rl/<ref>/<v+1>` after reading entry `v` and checking that `entry_v.new == expected`. Only one writer can create a given `v+1`. On `AlreadyExists`, read the entry: if its `op_id` equals mine, the earlier attempt succeeded (a retried create), so return success. Otherwise return `RefConflict`. Version numbers never repeat, so there is no ABA.
 - `r/<ref>` holds the latest known `v` as a **hint**, written with a plain overwrite after a successful CAS. Readers start at the hint and probe `v+1, v+2, …` until a missing key. Listing refs lists `r/` and then resolves each one.
@@ -1550,7 +1551,7 @@ Where: **L** local; **L+f** local, fetching missing objects; **S** server RPC wh
 | `submodule` | `status`, `set-pin`, `edit`, `release`; `update`/`init` are no-ops with a notice (§10.6) | L |
 | `gc`, `maintenance`, `prune`, `fsck`, `count-objects`, `repack` | `gc` = cache eviction plus dehydration; `fsck` verifies `store/`/`cache/` hashes and workspaces; `repack`/`prune` print "not needed in asc" and exit 0 | L |
 | `format-patch`, `apply`, `am` | local engine | L |
-| `shortlog`, `name-rev`, `whatchanged`, `range-diff`, `cherry`, `notes show` | native in a later unit; until then git-style usage error (§11.5) | L |
+| `shortlog`, `name-rev`, `whatchanged`, `range-diff`, `cherry`, `notes show` | native (unit U24f, `crates/asc/src/cli/{shortlog,name_rev,whatchanged,range_diff,cherry,notes}.rs`) | L |
 | `filter-branch`, `filter-repo`, `replace`, `svn`, `p4`, `send-email`, `daemon`, `instaweb`, `lfs`, `notes` (write) | not available in an asc workspace: `fatal: asc: '<cmd>' is not supported in an asc workspace` (exit 129). Outside asc workspaces the shim runs real git (§11.4). `lfs`: large files are native | – |
 
 Until a command's unit lands, invoking it fails with exit 129 and `fatal: asc: '<cmd>' is not supported yet` **[audit: missing-cli-units]**.
@@ -2180,7 +2181,7 @@ ASC scale: 5,502 commits and about 50k blobs (6.99 GiB raw) import in minutes. T
 4. **Stage 2 (week ≈ 14):** deploy the fork with K01–K09. Freeze pushes for minutes, run a final mirror import, and flip `repos.mode=primary`, `forgejo_reads=git`, `bridge=eager`, `storage_backend=asc`. The existing bare repo is now the bridge. **Rollback drill on staging first:** set `storage_backend=git`, `repos.mode=mirror` (once the outbox has drained). The bridge is current and SHAs are identical.
 5. **Stage 3 (week ≈ 18):** `storage_backend=dual` for a week (zero mismatches above noise), then `asc` with `forgejo_reads=asc`.
 6. **Stage 4 (week ≈ 22):** K12–K13; bridge → `lazy`. Full storage replacement.
-7. Later: Stage 6 IDs (optional); fold nova (user decision); artefacts into asc (user decision).
+7. Later: Stage 6 IDs (optional; stays out, see docs/OUT-OF-SCOPE.md); fold nova (user decision); artefacts into asc (built: unit U75, `asc ci artifact`).
 
 ### 14.4 Ingestion invariants (normative for every importer and every server ingest path) [audit: 22-ingest-invariants]
 
@@ -2526,7 +2527,7 @@ Team assumption: 2 Rust engineers, 1 Go engineer (from week 8), and implementati
 | 9p Forgejo plugin support | 18–26 | P04–P07, P58 (after K06, K07, K14, C40, C41b) | the read-only RPC proxy, Actions REST, the `asc-ide` OAuth client, `asc-ui` islands, the inbox count | the Forgejo `go test` selectors green |
 | 10 VS Code plugin | 18–30 | P08–P35c, P44a, P47a–P47c, P49a, P50, and the `asc-ui` views P13–P23, P56 | the `asc.asc` extension for VS Code, Cursor and VSCodium | the VS Code rows of §24.3 (`VSC v1 = Y`) demonstrated on ASC; P44a budgets met; VSIX smoke test green on VSCodium and VS Code |
 | 10j JetBrains plugin | 24–34 | P36–P43b, P44b, P48, P49b, P51–P55 (after P01a–P01c and the `asc-ui` views P15, P17, P19) | one plugin for IntelliJ IDEA, Rider, RustRover, PyCharm and WebStorm | the JetBrains rows of §24.3 (`JB v1 = Y`) demonstrated; `verifyPlugin` green on 2026.1 and 2026.2; P44b budgets met |
-| Ops | ongoing | O01–O08, I27, I28, U30 | GC, release/MSI, runbooks, docs, benchmarks, observability, fuzzing, simulation; shared BucketRefs (deferred) | O05 benchmark gate green |
+| Ops | ongoing | O01–O08, I27, I28, U30 | GC, release/MSI, runbooks, docs, benchmarks, observability, fuzzing, simulation; shared BucketRefs (built, `bucketrefs.rs`) | O05 benchmark gate green |
 
 G09–G10 ship with Phase 4, and U63 uses them in Phase 6.
 
@@ -5001,7 +5002,7 @@ Units U80 to U83 (PLAN) build it: the module, view and feature flag; the upload-
 | Key types | `ssh-ed25519`, `ecdsa-sha2-nistp256`, `-nistp384`, `-nistp521`, `rsa-sha2-256` and `rsa-sha2-512` (RSA keys of at least `min_rsa_bits`, default 2048). `ssh-rsa` with SHA-1 signatures and `ssh-dss` are refused |
 | Commands | `git-upload-pack '<repo>'` and `git-receive-pack '<repo>'` only, protocol v2 fetch where the client sends `GIT_PROTOCOL=version=2`, else v0/v1; push v0/v1 |
 | Refused, always | shell, subsystem (sftp), any other exec, `pty-req`, `x11-req`, port forwarding (`direct-tcpip`, `tcpip-forward`), socket forwarding, tunnels, agent forwarding, `git-upload-archive`, `git-lfs-authenticate`, `env` other than `GIT_PROTOCOL` |
-| Not in v1 (additive) | SSH user certificates (a trusted user CA), `sk-ecdsa` and `sk-ed25519` security-key types, the asc RPC protocol over SSH and `asc-authenticate` (§25.11.9), an OpenSSH forced-command entry for operators who want `sshd` in front. The first three are rows 54 and 55 of `docs/ROADMAP-NEXT.md` |
+| Not in v1 (additive) | SSH user certificates (a trusted user CA), `sk-ecdsa` and `sk-ed25519` security-key types, the asc RPC protocol over SSH and `asc-authenticate` (§25.11.9), an OpenSSH forced-command entry for operators who want `sshd` in front. The first three are rows 54 and 55 and the forced-command entry is row 83 of `docs/ROADMAP.md` |
 
 #### 25.11.2 The SSH library: `russh`
 

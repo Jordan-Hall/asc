@@ -33,7 +33,7 @@ if [ "${1:-}" = "--self-test" ]; then
       echo "self-test: expected pass, got failure: $f"; fail=1
     fi
   done
-  for f in docs/SPEC.md docs/PLAN.md README.md; do
+  for f in docs/SPEC.md docs/history/PLAN.md README.md; do
     if [ -f "$f" ] && ! scan "$f" >/dev/null; then
       echo "self-test: $f must pass"; fail=1
     fi
@@ -43,7 +43,7 @@ if [ "${1:-}" = "--self-test" ]; then
 fi
 
 paths=()
-for p in docs/*.md README.md crates tests deploy actions .forgejo bench packaging proto build; do
+for p in docs/*.md docs/history README.md crates tests deploy actions .forgejo bench packaging proto build; do
   [ -e "$p" ] && paths+=("$p")
 done
 scan "${paths[@]}" && exit 0
