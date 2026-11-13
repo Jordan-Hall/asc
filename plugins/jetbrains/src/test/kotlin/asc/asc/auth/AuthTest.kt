@@ -200,11 +200,14 @@ class AuthTest {
     @Test fun loopbackListenerBindsLoopbackOnlyAndDeliversQuery() {
         LoopbackListener().use { l ->
             assertTrue(l.port > 0)
-            var got: String? = null
-            l.onCallback { got = it }
+            // The listener answers the browser first and delivers the query after, on its own thread.
+            val got = java.util.concurrent.atomic.AtomicReference<String?>()
+            val delivered = java.util.concurrent.CountDownLatch(1)
+            l.onCallback { got.set(it); delivered.countDown() }
             val c = URL("http://127.0.0.1:${l.port}${AuthConstants.CALLBACK_PATH}?code=c&state=s").openConnection() as HttpURLConnection
             assertEquals(200, c.responseCode)
-            assertEquals("code=c&state=s", got)
+            assertTrue(delivered.await(10, java.util.concurrent.TimeUnit.SECONDS))
+            assertEquals("code=c&state=s", got.get())
         }
     }
 
