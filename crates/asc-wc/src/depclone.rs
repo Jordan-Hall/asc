@@ -208,6 +208,20 @@ fn join(rel: &str, name: &str) -> String {
     }
 }
 
+/// Whether the volume of `dir` reflinks: a small probe file in `dir` is cloned to a second name
+/// in `dir`, and both are removed afterwards. `dir` must exist and be writable.
+pub fn volume_reflinks(dir: &Path) -> io::Result<bool> {
+    let pid = std::process::id();
+    let origin = dir.join(format!(".asc-reflink-probe-{pid}-a"));
+    let copy = dir.join(format!(".asc-reflink-probe-{pid}-b"));
+    let _ = fs::remove_file(&copy);
+    fs::write(&origin, b"asc reflink probe")?;
+    let ok = reflink_copy::reflink(&origin, &copy).is_ok();
+    let _ = fs::remove_file(&origin);
+    let _ = fs::remove_file(&copy);
+    Ok(ok)
+}
+
 /// Whether a file of `src` reflinks into `dst`: a small probe in each, removed afterwards.
 fn can_reflink(src: &Path, dst: &Path) -> io::Result<bool> {
     let pid = std::process::id();
@@ -372,6 +386,14 @@ mod tests {
             lockfiles_match(none.path(), none.path()).unwrap(),
             Ok(false)
         );
+    }
+
+    #[test]
+    fn the_volume_probe_leaves_nothing_behind() {
+        let d = tempfile::tempdir().unwrap();
+        volume_reflinks(d.path()).unwrap();
+        assert_eq!(fs::read_dir(d.path()).unwrap().count(), 0);
+        assert!(volume_reflinks(&d.path().join("missing")).is_err());
     }
 
     #[test]
