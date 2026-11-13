@@ -14,8 +14,10 @@ use tonic::{Code, Request};
 use uuid::Uuid;
 
 use super::REF_PREFIX;
+use super::config::Config;
 use super::gate::DepsGateSlot;
 use super::hub::{DepsHub, hex};
+use super::intel::IntelSource;
 use super::model::Ecosystem;
 use super::rpc::DepsRpc;
 use super::tests::{Mock, clock, config, egress_for};
@@ -42,14 +44,27 @@ fn build(
     mock: &Mock,
     server_url: Option<&str>,
 ) -> (Arc<DepsHub>, Arc<AtomicI64>, Arc<ServerMutations>) {
-    let c = config(mock);
+    build_with(f, mock, server_url, |_| {})
+}
+
+/// [`build`] with the operator settings edited first. The exploitation feeds accept the small files tests
+/// write.
+fn build_with(
+    f: &Fx,
+    mock: &Mock,
+    server_url: Option<&str>,
+    edit: impl FnOnce(&mut Config),
+) -> (Arc<DepsHub>, Arc<AtomicI64>, Arc<ServerMutations>) {
+    let mut c = config(mock);
+    edit(&mut c);
     let (clk, t) = clock(T0);
     let mutations = Arc::new(ServerMutations::new(
         f.reg.clone(),
         f.gated.hooks.clone(),
         Arc::new(ReadHooks::default()),
     ));
-    let hub = DepsHub::new(
+    let intel = IntelSource::new(egress_for(&c), &c, clk.clone()).with_min_rows(1, 1);
+    let mut hub = DepsHub::new(
         f.reg.clone(),
         mutations.clone(),
         egress_for(&c),
@@ -57,6 +72,9 @@ fn build(
         server_url.map(str::to_owned),
         clk,
     );
+    Arc::get_mut(&mut hub)
+        .expect("nothing else holds the hub yet")
+        .intel = intel;
     (hub, t, mutations)
 }
 
@@ -1213,7 +1231,11 @@ struct G {
 
 /// A gate that asks the hub (when `wired`), over the same repository.
 async fn gated(wired: bool) -> G {
-    let h = setup().await;
+    gate_of(setup().await, wired).await
+}
+
+/// A gate over `h`, asking its hub when `wired`.
+async fn gate_of(h: H, wired: bool) -> G {
     let slot = Arc::new(DepsGateSlot::default());
     if wired {
         let check: Arc<dyn super::gate::DepsCheck> = h.hub.clone();
@@ -1769,4 +1791,1221 @@ async fn scan_status_says_what_a_running_scan_has_done() {
         s.last_took_seconds, 0,
         "the clock did not move during the scan"
     );
+}
+
+// ------------------------------------------------------------------------------ KEV and EPSS
+
+const KEV_FILE: &str = r#"{"catalogVersion":"2027.01.14","dateReleased":"2027-01-14T00:00:00Z","vulnerabilities":[
+{"cveID":"CVE-2024-0001","dateAdded":"2024-03-01","dueDate":"2024-03-22","knownRansomwareCampaignUse":"Known"},
+{"cveID":"CVE-2024-0009","dateAdded":"2024-04-01","dueDate":"2024-04-22","knownRansomwareCampaignUse":"Unknown"}]}"#;
+const EPSS_FILE: &str = "#model_version:v2025.03.14,score_date:2027-01-14T00:00:00+0000\n\
+cve,epss,percentile\n\
+CVE-2024-0001,0.2,0.7\n\
+CVE-2024-0002,0.9,0.99\n\
+CVE-2024-0003,0.1,0.5\n";
+
+/// Which advisory belongs to which package: serde is KEV-listed with a low EPSS, regex is not in KEV
+/// and has the highest EPSS, itoa has a low EPSS, log has no row anywhere.
+const INTEL_PKGS: [(&str, &str, &str); 4] = [
+    ("serde", "1.0.100", "CVE-2024-0001"),
+    ("regex", "1.5.0", "CVE-2024-0002"),
+    ("itoa", "1.0.1", "CVE-2024-0003"),
+    ("log", "0.4.1", "CVE-2024-0004"),
+];
+
+struct Feeds {
+    h: H,
+    _dir: tempfile::TempDir,
+    path: String,
+}
+
+/// A hub with the feeds that are given loaded (and nothing else).
+async fn feed_hub(kev: Option<&str>, epss: Option<&str>, max_packages: Option<usize>) -> Feeds {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().to_string_lossy().into_owned();
+    let kev_path = dir.path().join("kev.json");
+    let epss_path = dir.path().join("epss.csv");
+    if let Some(k) = kev {
+        std::fs::write(&kev_path, k).unwrap();
+    }
+    if let Some(e) = epss {
+        std::fs::write(&epss_path, e).unwrap();
+    }
+    let f = fx().await;
+    let mock = Mock::start().await;
+    let (hub, clock, _) = build_with(&f, &mock, Some("https://asc.example.com"), |c| {
+        c.kev_file = kev.map(|_| kev_path.clone());
+        c.epss_file = epss.map(|_| epss_path.clone());
+        if let Some(n) = max_packages {
+            c.max_packages = n;
+        }
+    });
+    hub.intel().refresh().await;
+    let h = H {
+        f,
+        hub,
+        mock,
+        clock,
+    };
+    Feeds { h, _dir: dir, path }
+}
+
+/// A scanned repository of the four packages above, with the feeds that are given loaded.
+async fn with_feeds(kev: Option<&str>, epss: Option<&str>, max_packages: Option<usize>) -> Feeds {
+    let Feeds { h, _dir, path } = feed_hub(kev, epss, max_packages).await;
+    for (name, version, id) in INTEL_PKGS {
+        h.mock
+            .vuln(Ecosystem::CratesIo, name, version, id, "9.9.9", "HIGH");
+    }
+    let pkgs: Vec<(&str, &str)> = INTEL_PKGS.iter().map(|(n, v, _)| (*n, *v)).collect();
+    h.trunk(&[("Cargo.lock", lock(&pkgs).as_bytes())]).await;
+    h.scan("", false).await;
+    Feeds { h, _dir, path }
+}
+
+impl H {
+    async fn list(
+        &self,
+        req: wire::ListDepFindingsRequest,
+    ) -> Result<wire::ListDepFindingsResponse, tonic::Status> {
+        self.hub
+            .list_findings(
+                &ctx(BOB),
+                wire::ListDepFindingsRequest {
+                    repo: repo(),
+                    ..req
+                },
+            )
+            .await
+    }
+}
+
+fn intel_of<'a>(r: &'a wire::ListDepFindingsResponse, name: &str) -> &'a wire::DepIntel {
+    r.findings
+        .iter()
+        .find(|f| f.name == name)
+        .unwrap_or_else(|| panic!("no finding for {name}"))
+        .advisory
+        .as_ref()
+        .unwrap()
+        .intel
+        .as_ref()
+        .expect("every finding carries intel")
+}
+
+fn status_of(i: &wire::DepIntel) -> wire::DepIntelStatus {
+    wire::DepIntelStatus::try_from(i.status).unwrap()
+}
+
+fn exploited() -> wire::ListDepFindingsRequest {
+    wire::ListDepFindingsRequest {
+        sort: wire::DepFindingSort::Exploited as i32,
+        ..Default::default()
+    }
+}
+
+/// The sealed scope of a plain EXPLOITED listing of the test repository.
+fn exploited_scope() -> String {
+    let hash = super::hub::filter_hash(
+        &[],
+        &[],
+        super::store::severity_code(None),
+        "",
+        wire::DepFindingSort::Exploited,
+        false,
+    );
+    format!("Deps.ListFindings.exploited|{}|{hash:016x}", ctx(BOB).repo)
+}
+
+fn names(r: &wire::ListDepFindingsResponse) -> Vec<&str> {
+    r.findings.iter().map(|f| f.name.as_str()).collect()
+}
+
+#[tokio::test]
+async fn intel_is_listed_not_listed_or_unknown_and_never_guessed() {
+    use wire::DepIntelStatus::{Listed, NotListed, Unknown};
+    let t = with_feeds(Some(KEV_FILE), Some(EPSS_FILE), None).await;
+    let r = t.h.list(Default::default()).await.unwrap();
+    let serde = intel_of(&r, "serde");
+    assert_eq!(status_of(serde), Listed);
+    assert_eq!(serde.cve, "CVE-2024-0001");
+    assert!(serde.kev && serde.kev_ransomware);
+    assert_eq!(
+        (serde.kev_added.as_str(), serde.kev_due.as_str()),
+        ("2024-03-01", "2024-03-22")
+    );
+    assert!((serde.epss - 0.2).abs() < 1e-9 && (serde.epss_percentile - 0.7).abs() < 1e-9);
+    assert!(
+        serde.epss_date.starts_with("2027-01-14"),
+        "{}",
+        serde.epss_date
+    );
+    let regex = intel_of(&r, "regex");
+    assert_eq!(status_of(regex), Listed, "an EPSS row alone lists it");
+    assert!(!regex.kev && (regex.epss - 0.9).abs() < 1e-9);
+    let log = intel_of(&r, "log");
+    assert_eq!(
+        status_of(log),
+        NotListed,
+        "every configured feed is loaded and has no row"
+    );
+    assert_eq!((log.epss, log.kev), (0.0, false));
+
+    // The feeds age out: nothing is known then, and nothing is called clean.
+    t.h.clock.fetch_add(8 * 86_400, Ordering::SeqCst);
+    let r = t.h.list(Default::default()).await.unwrap();
+    for name in ["serde", "regex", "itoa", "log"] {
+        let i = intel_of(&r, name);
+        assert_eq!(status_of(i), Unknown, "{name} after the feeds went stale");
+        assert!(!i.kev && i.epss == 0.0);
+    }
+    assert_eq!(
+        r.kev_feed.as_ref().unwrap().state,
+        wire::DepFeedState::Unknown as i32
+    );
+    assert_eq!(r.open_exploited, 0, "an untrusted KEV counts nothing");
+}
+
+#[tokio::test]
+async fn a_feed_that_is_off_or_not_loaded_gives_unknown() {
+    use wire::DepIntelStatus::{Listed, NotListed, Unknown};
+    // Neither feed configured.
+    let none = with_feeds(None, None, None).await;
+    let r = none.h.list(Default::default()).await.unwrap();
+    for name in ["serde", "log"] {
+        assert_eq!(status_of(intel_of(&r, name)), Unknown);
+    }
+    for feed in [&r.kev_feed, &r.epss_feed] {
+        assert_eq!(
+            feed.as_ref().unwrap().state,
+            wire::DepFeedState::Unconfigured as i32
+        );
+    }
+    // Only KEV configured and loaded: the advisories it does not list are not listed.
+    let kev_only = with_feeds(Some(KEV_FILE), None, None).await;
+    let r = kev_only.h.list(Default::default()).await.unwrap();
+    assert_eq!(status_of(intel_of(&r, "regex")), NotListed);
+    assert_eq!(status_of(intel_of(&r, "serde")), Listed);
+    // EPSS configured, but its file is not there: unknown, not clean.
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("epss.csv");
+    let f = fx().await;
+    let mock = Mock::start().await;
+    let (hub, _, _) = build_with(&f, &mock, None, |c| c.epss_file = Some(missing.clone()));
+    hub.intel().refresh().await;
+    let adv = super::model::Advisory {
+        id: "CVE-2024-0004".into(),
+        aliases: vec![],
+        summary: String::new(),
+        severity: None,
+        cvss: 0.0,
+        fixed: vec![],
+        url: String::new(),
+        affected: vec![],
+    };
+    assert_eq!(status_of(&hub.intel_view().of(&adv)), Unknown);
+}
+
+#[tokio::test]
+async fn the_feeds_are_reported_without_a_url_or_path() {
+    let t = with_feeds(Some(KEV_FILE), Some(EPSS_FILE), None).await;
+    let r = t.h.list(Default::default()).await.unwrap();
+    let kev = r.kev_feed.as_ref().unwrap();
+    assert_eq!(kev.state, wire::DepFeedState::Current as i32);
+    assert_eq!(kev.version, "2027.01.14");
+    assert_eq!((kev.count, kev.loaded_at, kev.age_seconds), (2, T0, 0));
+    let epss = r.epss_feed.as_ref().unwrap();
+    assert_eq!(epss.state, wire::DepFeedState::Current as i32);
+    assert_eq!((epss.version.as_str(), epss.count), ("v2025.03.14", 3));
+    t.h.clock.fetch_add(90, Ordering::SeqCst);
+    let r = t.h.list(Default::default()).await.unwrap();
+    assert_eq!(r.kev_feed.as_ref().unwrap().age_seconds, 90);
+    let text = format!("{r:?}");
+    assert!(
+        !text.contains(&t.path) && !text.contains("kev.json"),
+        "{text}"
+    );
+    assert_eq!(r.open_exploited, 1);
+}
+
+#[tokio::test]
+async fn the_exploited_order_is_kev_then_epss_then_cvss_and_pages_over_two_calls() {
+    let t = with_feeds(Some(KEV_FILE), Some(EPSS_FILE), None).await;
+    let all = t.h.list(exploited()).await.unwrap();
+    assert_eq!(names(&all), ["serde", "regex", "itoa", "log"]);
+    assert!(all.next_page_token.is_empty());
+    let newest = t.h.list(Default::default()).await.unwrap();
+    let ids: Vec<u64> = newest.findings.iter().map(|f| f.id).collect();
+    assert!(
+        ids.windows(2).all(|w| w[0] > w[1]),
+        "newest stays the default, by id: {ids:?}"
+    );
+    let newest_names: Vec<String> = names(&newest).iter().map(|n| (*n).to_owned()).collect();
+
+    let first =
+        t.h.list(wire::ListDepFindingsRequest {
+            limit: 3,
+            ..exploited()
+        })
+        .await
+        .unwrap();
+    assert_eq!(names(&first), ["serde", "regex", "itoa"]);
+    assert!(!first.next_page_token.is_empty());
+    let second =
+        t.h.list(wire::ListDepFindingsRequest {
+            limit: 3,
+            page_token: first.next_page_token.clone(),
+            ..exploited()
+        })
+        .await
+        .unwrap();
+    assert_eq!(names(&second), ["log"]);
+    assert!(second.next_page_token.is_empty());
+
+    // The default order still pages by id.
+    let n1 =
+        t.h.list(wire::ListDepFindingsRequest {
+            limit: 3,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(names(&n1), newest_names[..3]);
+    let n2 =
+        t.h.list(wire::ListDepFindingsRequest {
+            limit: 3,
+            page_token: n1.next_page_token,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(names(&n2), newest_names[3..]);
+}
+
+#[tokio::test]
+async fn a_bad_or_foreign_page_token_is_refused() {
+    let t = with_feeds(Some(KEV_FILE), Some(EPSS_FILE), None).await;
+    let page = |sort: i32, token: &str| wire::ListDepFindingsRequest {
+        limit: 2,
+        sort,
+        page_token: token.to_owned(),
+        ..Default::default()
+    };
+    let exp = wire::DepFindingSort::Exploited as i32;
+    let new = wire::DepFindingSort::Newest as i32;
+    let newest_token = t.h.list(page(new, "")).await.unwrap().next_page_token;
+    let exploited_token = t.h.list(page(exp, "")).await.unwrap().next_page_token;
+    assert!(!newest_token.is_empty() && !exploited_token.is_empty());
+    for (sort, token) in [
+        (exp, newest_token.as_str()),
+        (new, exploited_token.as_str()),
+        (exp, "not a token"),
+        (exp, "AAAA"),
+    ] {
+        let e = t.h.list(page(sort, token)).await.unwrap_err();
+        assert_eq!(e.code(), Code::InvalidArgument, "{sort} {token}");
+    }
+    // A token that is genuine but names an offset that is not a page of the list.
+    let who = ctx(BOB).principal.id.clone();
+    let scope = exploited_scope();
+    for payload in ["0", "-1", "01", "", "1x", "+1", " 1"] {
+        let token = crate::pagetoken::seal(&scope, &who, payload);
+        let e = t.h.list(page(exp, &token)).await.unwrap_err();
+        assert_eq!(e.code(), Code::InvalidArgument, "payload {payload:?}");
+    }
+    // The same token for another caller is refused too.
+    let other = crate::pagetoken::seal(&scope, "user:someone-else", "2");
+    assert_eq!(
+        t.h.list(page(exp, &other)).await.unwrap_err().code(),
+        Code::InvalidArgument
+    );
+    // And a good offset is accepted.
+    let good = crate::pagetoken::seal(&scope, &who, "2");
+    assert_eq!(
+        names(&t.h.list(page(exp, &good)).await.unwrap()),
+        ["itoa", "log"]
+    );
+}
+
+#[tokio::test]
+async fn an_offset_at_or_past_the_end_is_an_empty_last_page() {
+    let t = with_feeds(Some(KEV_FILE), Some(EPSS_FILE), None).await;
+    let who = ctx(BOB).principal.id.clone();
+    let scope = exploited_scope();
+    for payload in ["4", "5", "99", "18446744073709551615"] {
+        let token = crate::pagetoken::seal(&scope, &who, payload);
+        let r =
+            t.h.list(wire::ListDepFindingsRequest {
+                page_token: token,
+                ..exploited()
+            })
+            .await
+            .unwrap_or_else(|e| panic!("{payload}: {e}"));
+        assert!(r.findings.is_empty(), "{payload}");
+        assert!(r.next_page_token.is_empty(), "{payload}");
+        assert_eq!(r.counts_by_state["open"], 4, "the totals still come");
+    }
+    // A token that overflows an offset is still refused.
+    let token = crate::pagetoken::seal(&scope, &who, "18446744073709551616");
+    let e =
+        t.h.list(wire::ListDepFindingsRequest {
+            page_token: token,
+            ..exploited()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Code::InvalidArgument);
+}
+
+#[tokio::test]
+async fn only_exploited_without_a_usable_kev_feed_is_a_failed_precondition_that_names_the_state() {
+    // Not configured.
+    let none = with_feeds(None, Some(EPSS_FILE), None).await;
+    let only = wire::ListDepFindingsRequest {
+        only_exploited: true,
+        ..Default::default()
+    };
+    let e = none.h.list(only.clone()).await.unwrap_err();
+    assert_eq!(e.code(), Code::FailedPrecondition);
+    assert!(
+        e.message().contains("KEV") && e.message().contains("not configured"),
+        "{}",
+        e.message()
+    );
+    // The sort alone still answers: it only orders.
+    let r = none.h.list(exploited()).await.unwrap();
+    assert_eq!(r.findings.len(), 4);
+    // Configured and loaded, then too old.
+    let t = with_feeds(Some(KEV_FILE), Some(EPSS_FILE), None).await;
+    t.h.list(only.clone()).await.unwrap();
+    t.h.clock.fetch_add(8 * 86_400, Ordering::SeqCst);
+    let e = t.h.list(only).await.unwrap_err();
+    assert_eq!(e.code(), Code::FailedPrecondition);
+    assert!(e.message().contains("too old"), "{}", e.message());
+    assert!(
+        !e.message().contains(&t.path) && !e.message().contains("kev.json"),
+        "{}",
+        e.message()
+    );
+}
+
+#[tokio::test]
+async fn the_feed_status_and_the_data_of_one_view_always_agree() {
+    let t = feed_hub(Some(KEV_FILE), Some(EPSS_FILE), None).await;
+    let stale = 7 * 86_400;
+    for step in [0, 1, stale - 1, stale, stale + 1, stale + 2, 3 * stale] {
+        t.h.clock.store(T0 + step, Ordering::SeqCst);
+        let v = t.h.hub.intel_view();
+        assert_eq!(
+            v.kev_usable(),
+            v.kev.state == super::intel::FeedState::Current,
+            "KEV at +{step}"
+        );
+        assert_eq!(
+            v.intel.epss.is_some(),
+            v.epss.state == super::intel::FeedState::Current,
+            "EPSS at +{step}"
+        );
+        let (intel, status) = t.h.hub.intel().snapshot();
+        assert_eq!(
+            intel.kev.is_some(),
+            status.kev.state == super::intel::FeedState::Current
+        );
+    }
+}
+
+#[tokio::test]
+async fn only_the_in_memory_orders_take_a_scan_slot() {
+    use std::time::Duration;
+    let t = with_feeds(Some(KEV_FILE), Some(EPSS_FILE), None).await;
+    let first =
+        t.h.list(wire::ListDepFindingsRequest {
+            limit: 1,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(!first.next_page_token.is_empty());
+    // Hold every slot, as running scans would.
+    let mut held = Vec::new();
+    for _ in 0..t.h.hub.cfg.max_concurrent_scans {
+        held.push(t.h.hub.permit().await.unwrap());
+    }
+    let wait = Duration::from_millis(300);
+    // The default order and the plain filters need none after the first page (the first one counts what KEV
+    // lists, which reads many rows, so it queues).
+    let r = tokio::time::timeout(
+        wait,
+        t.h.list(wire::ListDepFindingsRequest {
+            limit: 1,
+            page_token: first.next_page_token.clone(),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("a later NEWEST page does not queue")
+    .unwrap();
+    assert_eq!(r.open_exploited, 0, "only the first page counts");
+    assert!(
+        tokio::time::timeout(wait, t.h.list(Default::default()))
+            .await
+            .is_err(),
+        "the first NEWEST page queues for its count"
+    );
+    // Sorting by exploitation, or keeping only what KEV lists, queues like a scan.
+    assert!(
+        tokio::time::timeout(wait, t.h.list(exploited()))
+            .await
+            .is_err()
+    );
+    assert!(
+        tokio::time::timeout(
+            wait,
+            t.h.list(wire::ListDepFindingsRequest {
+                only_exploited: true,
+                ..Default::default()
+            })
+        )
+        .await
+        .is_err()
+    );
+    drop(held);
+    assert_eq!(t.h.list(exploited()).await.unwrap().findings.len(), 4);
+}
+
+#[tokio::test]
+async fn a_page_token_is_bound_to_the_filters_it_was_issued_under() {
+    let t = with_feeds(Some(KEV_FILE), Some(EPSS_FILE), None).await;
+    let first =
+        t.h.list(wire::ListDepFindingsRequest {
+            limit: 1,
+            ..exploited()
+        })
+        .await
+        .unwrap();
+    let token = first.next_page_token;
+    assert!(!token.is_empty());
+    // The same filters continue.
+    let r =
+        t.h.list(wire::ListDepFindingsRequest {
+            limit: 1,
+            page_token: token.clone(),
+            ..exploited()
+        })
+        .await
+        .unwrap();
+    assert_eq!(r.findings.len(), 1);
+    // Other filters, a flag or a name refuse it.
+    for other in [
+        wire::ListDepFindingsRequest {
+            name: "serde".into(),
+            ..exploited()
+        },
+        wire::ListDepFindingsRequest {
+            only_exploited: true,
+            ..exploited()
+        },
+        wire::ListDepFindingsRequest {
+            states: vec![wire::DepFindingState::Dismissed as i32],
+            ..exploited()
+        },
+        wire::ListDepFindingsRequest {
+            ecosystems: vec!["crates.io".into()],
+            ..exploited()
+        },
+        wire::ListDepFindingsRequest {
+            min_severity: wire::DepSeverity::High as i32,
+            ..exploited()
+        },
+    ] {
+        let e =
+            t.h.list(wire::ListDepFindingsRequest {
+                page_token: token.clone(),
+                ..other
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), Code::InvalidArgument);
+    }
+}
+
+#[test]
+fn the_cut_says_when_it_cut() {
+    let mut rows: Vec<u32> = (0..5).collect();
+    assert!(!super::hub::cut(&mut rows, 5));
+    assert_eq!(rows.len(), 5);
+    let mut rows: Vec<u32> = (0..6).collect();
+    assert!(super::hub::cut(&mut rows, 5));
+    assert_eq!(rows, [0, 1, 2, 3, 4]);
+    let mut rows: Vec<u32> = Vec::new();
+    assert!(!super::hub::cut(&mut rows, 0));
+}
+
+#[tokio::test]
+async fn a_list_that_fits_is_not_marked_truncated_and_the_count_is_for_the_first_page() {
+    let t = with_feeds(Some(KEV_FILE), Some(EPSS_FILE), None).await;
+    let r = t.h.list(exploited()).await.unwrap();
+    assert!(!r.truncated);
+    assert_eq!(r.open_exploited, 1);
+    let r =
+        t.h.list(wire::ListDepFindingsRequest {
+            limit: 1,
+            ..exploited()
+        })
+        .await
+        .unwrap();
+    assert_eq!(r.open_exploited, 1, "the first page counts");
+    let later =
+        t.h.list(wire::ListDepFindingsRequest {
+            limit: 1,
+            page_token: r.next_page_token,
+            ..exploited()
+        })
+        .await
+        .unwrap();
+    assert_eq!(later.open_exploited, 0, "a later page does not");
+    assert!(!later.truncated);
+}
+
+// ------------------------------------------------------------------------------ who may see which repository
+
+/// Tokens as a forge-backed authorizer would answer them: a person who has no access to a repository is
+/// refused the same way whether it is private or does not exist.
+struct Scoped {
+    inner: StaticTokens,
+    /// The only repository `CAROL` may name.
+    carol_repo: &'static str,
+}
+
+const CAROL: &str = "44:carol";
+
+#[async_trait::async_trait]
+impl asc_rpc::auth::Authorizer for Scoped {
+    async fn authorize(
+        &self,
+        token: Option<&BearerToken>,
+        repo: &str,
+        access: Access,
+    ) -> Result<asc_rpc::auth::Principal, asc_rpc::auth::AuthError> {
+        let p = self.inner.authorize(token, repo, access).await?;
+        if p.id == CAROL && repo != self.carol_repo {
+            return Err(asc_rpc::auth::AuthError::Forbidden);
+        }
+        Ok(p)
+    }
+}
+
+#[tokio::test]
+async fn a_person_without_access_gets_one_answer_for_a_private_repository_and_a_missing_one() {
+    let t = with_feeds(Some(KEV_FILE), Some(EPSS_FILE), None).await;
+    let auth = Arc::new(Scoped {
+        inner: StaticTokens::new()
+            .with_token("bob-r", BOB, Access::Read)
+            .with_token("carol-r", CAROL, Access::Read),
+        carol_repo: "somewhere/else",
+    });
+    let svc = DepsRpc::new(t.h.hub.clone(), auth, ServerInfo::default());
+    let named = |name: &str| {
+        Some(wire::RepoRef {
+            name: name.into(),
+            id_mode: IdMode::Asc.to_wire(),
+        })
+    };
+    // Bob reads what exists.
+    let ok = svc
+        .sbom(call(
+            wire::SbomRequest {
+                repo: repo(),
+                ..Default::default()
+            },
+            "bob-r",
+            false,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(ok.components, 4);
+    let mut answers = Vec::new();
+    // "o/r" exists and carol may not read it; "no/such" does not exist.
+    for name in ["o/r", "no/such"] {
+        let sbom = svc
+            .sbom(call(
+                wire::SbomRequest {
+                    repo: named(name),
+                    ..Default::default()
+                },
+                "carol-r",
+                false,
+            ))
+            .await
+            .unwrap_err();
+        let plain = svc
+            .list_findings(call(
+                wire::ListDepFindingsRequest {
+                    repo: named(name),
+                    ..Default::default()
+                },
+                "carol-r",
+                false,
+            ))
+            .await
+            .unwrap_err();
+        let sorted = svc
+            .list_findings(call(
+                wire::ListDepFindingsRequest {
+                    repo: named(name),
+                    sort: wire::DepFindingSort::Exploited as i32,
+                    only_exploited: true,
+                    ..Default::default()
+                },
+                "carol-r",
+                false,
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(sbom.code(), plain.code(), "{name}");
+        assert_eq!(sorted.code(), plain.code(), "{name}");
+        assert_eq!(sbom.message(), plain.message(), "{name}");
+        assert_eq!(sorted.message(), plain.message(), "{name}");
+        answers.push((sbom.code(), sbom.message().to_owned()));
+    }
+    assert_eq!(answers[0], answers[1], "private and missing look alike");
+    assert_eq!(answers[0].0, Code::PermissionDenied);
+}
+
+// ------------------------------------------------------------------------------ the gate on exploitation
+
+/// A gate over a repository whose hub has the given feeds, and nothing scanned. The directory holds the
+/// feed files and must outlive the test.
+async fn gate_feeds(kev: Option<&str>, epss: Option<&str>) -> (G, tempfile::TempDir) {
+    let Feeds { h, _dir, .. } = feed_hub(kev, epss, None).await;
+    (gate_of(h, true).await, _dir)
+}
+
+fn files_adding(extra: &[(&str, &str)]) -> Vec<(&'static str, Vec<u8>)> {
+    let mut all = vec![("regex", "1.5.0")];
+    all.extend_from_slice(extra);
+    vec![("Cargo.lock", lock(&all).into_bytes())]
+}
+
+async fn land_adding(
+    g: &G,
+    base: ChangesetId,
+    extra: &[(&str, &str)],
+) -> Result<(), tonic::Status> {
+    let files = files_adding(extra);
+    let files: Vec<(&str, &[u8])> = files.iter().map(|(p, b)| (*p, b.as_slice())).collect();
+    let cs = g.change(base, &files).await;
+    g.land(cs).await.map(|_| ())
+}
+
+fn advisory(h: &H, name: &str, version: &str, id: &str, sev: &str) {
+    h.mock
+        .vuln(Ecosystem::CratesIo, name, version, id, "9.9.9", sev);
+}
+
+#[tokio::test]
+async fn a_kev_listed_advisory_blocks_a_landing_that_adds_it() {
+    let (g, _keep) = gate_feeds(Some(KEV_FILE), Some(EPSS_FILE)).await;
+    advisory(&g.h, "serde", "1.0.100", "CVE-2024-0001", "LOW");
+    advisory(&g.h, "log", "0.4.1", "CVE-2024-0004", "CRITICAL");
+    let a = g.base("[deps]\nblock_exploited = true\n").await;
+    let files = files_adding(&[("serde", "1.0.100")]);
+    let files: Vec<(&str, &[u8])> = files.iter().map(|(p, b)| (*p, b.as_slice())).collect();
+    let bad = g.change(a, &files).await;
+    let e = g.land(bad).await.unwrap_err();
+    assert_eq!(code(&e), "POLICY_DENIED");
+    let lines = paths(&e);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("crates.io serde 1.0.100 CVE-2024-0001")
+                && l.contains("known exploited")),
+        "{lines:?}"
+    );
+    let text = lines.join("\\n");
+    assert!(
+        !text.contains("kev.json") && !text.contains("epss.csv") && !text.contains("http"),
+        "{text}"
+    );
+    assert_eq!(g.h.f.tip().await, a, "nothing landed");
+    // Severity alone does not block: only the new key is set, and log is not on the list.
+    land_adding(&g, a, &[("log", "0.4.1")]).await.unwrap();
+}
+
+#[tokio::test]
+async fn an_epss_score_at_the_threshold_blocks_and_one_below_passes() {
+    // serde has the score 0.9, log has 0.1.
+    let kev = None;
+    for (threshold, serde_blocked) in [("0.9", true), ("0.95", false)] {
+        let (g, _keep) = gate_feeds(kev, Some(EPSS_FILE)).await;
+        advisory(&g.h, "serde", "1.0.100", "CVE-2024-0002", "LOW");
+        advisory(&g.h, "log", "0.4.1", "CVE-2024-0003", "LOW");
+        let a = g
+            .base(&format!("[deps]\nepss_threshold = {threshold}\n"))
+            .await;
+        let r = land_adding(&g, a, &[("serde", "1.0.100")]).await;
+        if serde_blocked {
+            let e = r.unwrap_err();
+            assert_eq!(code(&e), "POLICY_DENIED");
+            let lines = paths(&e);
+            assert!(
+                lines
+                    .iter()
+                    .any(|l| l.contains("serde 1.0.100 CVE-2024-0002") && l.contains("EPSS 0.900")),
+                "{lines:?}"
+            );
+            // Below the threshold passes.
+            let tip = g.h.f.tip().await;
+            land_adding(&g, tip, &[("log", "0.4.1")]).await.unwrap();
+        } else {
+            r.unwrap();
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_feed_that_is_missing_or_stale_refuses_and_names_the_feed() {
+    // Neither feed configured; the policy needs both. block_unknown does not matter.
+    let (g, _keep) = gate_feeds(None, None).await;
+    advisory(&g.h, "serde", "1.0.100", "CVE-2024-0001", "LOW");
+    let a = g
+        .base("[deps]\nblock_exploited = true\nepss_threshold = 0.5\nblock_unknown = false\n")
+        .await;
+    let e = land_adding(&g, a, &[("serde", "1.0.100")])
+        .await
+        .unwrap_err();
+    assert_eq!(code(&e), "POLICY_DENIED");
+    let lines = paths(&e);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("KEV feed is not configured")),
+        "{lines:?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("EPSS feed is not configured")),
+        "{lines:?}"
+    );
+    // A change that adds nothing with an advisory is not judged by a feed, so it lands.
+    land_adding(&g, a, &[("log", "0.4.1")]).await.unwrap();
+
+    // Loaded, then too old.
+    let (g, _keep) = gate_feeds(Some(KEV_FILE), Some(EPSS_FILE)).await;
+    advisory(&g.h, "log", "0.4.1", "CVE-2024-0004", "LOW");
+    let a = g
+        .base("[deps]\nblock_exploited = true\nepss_threshold = 0.5\n")
+        .await;
+    land_adding(&g, a, &[("log", "0.4.1")]).await.unwrap();
+    let tip = g.h.f.tip().await;
+    g.h.clock.fetch_add(8 * 86_400, Ordering::SeqCst);
+    let e = land_adding(&g, tip, &[("log", "0.4.1"), ("itoa", "1.0.1")]).await;
+    // `log` is already on trunk and `itoa` has no advisory: nothing is judged.
+    e.unwrap();
+    advisory(&g.h, "serde", "1.0.100", "CVE-2024-0009", "LOW");
+    let tip = g.h.f.tip().await;
+    let e = land_adding(
+        &g,
+        tip,
+        &[("log", "0.4.1"), ("itoa", "1.0.1"), ("serde", "1.0.100")],
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(code(&e), "POLICY_DENIED");
+    let lines = paths(&e);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("KEV feed is not loaded, or its copy is too old")),
+        "{lines:?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("EPSS feed is not loaded, or its copy is too old")),
+        "{lines:?}"
+    );
+    let text = lines.join("\\n");
+    assert!(
+        !text.contains("kev.json") && !text.contains("http"),
+        "{text}"
+    );
+
+    // Only the feed the policy names is needed: KEV is stale, the policy asks for EPSS alone.
+    let (g, _keep) = gate_feeds(None, Some(EPSS_FILE)).await;
+    advisory(&g.h, "serde", "1.0.100", "CVE-2024-0003", "LOW");
+    let a = g.base("[deps]\nepss_threshold = 0.5\n").await;
+    land_adding(&g, a, &[("serde", "1.0.100")]).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_dismissed_advisory_does_not_block_on_exploitation() {
+    let (g, _keep) = gate_feeds(Some(KEV_FILE), Some(EPSS_FILE)).await;
+    advisory(&g.h, "serde", "1.0.100", "CVE-2024-0001", "LOW");
+    let a = g.base("[deps]\nblock_exploited = true\n").await;
+    assert!(land_adding(&g, a, &[("serde", "1.0.100")]).await.is_err());
+    let adv = match g
+        .h
+        .hub
+        .osv
+        .lookup(
+            &[super::osv::Query {
+                eco: Ecosystem::CratesIo,
+                name: "serde".into(),
+                version: "1.0.100".into(),
+            }],
+            false,
+        )
+        .await
+        .lookups
+        .remove(0)
+    {
+        super::model::Lookup::Known(mut a) => a.remove(0),
+        other => panic!("{other:?}"),
+    };
+    let entry = g.h.f.e.clone();
+    let pool = g.h.f.reg.pool().clone();
+    let rows = super::store::record_scan(
+        &pool,
+        entry.key.0,
+        &super::store::Scan {
+            found: &[super::store::NewFinding {
+                ecosystem: "crates.io".into(),
+                name: "serde".into(),
+                version: "1.0.100".into(),
+                path: "Cargo.lock".into(),
+                direct: true,
+                advisory: adv,
+                fixed_in: "9.9.9".into(),
+            }],
+            unjudged: &Default::default(),
+            ecosystems: &Default::default(),
+            complete: false,
+        },
+        1,
+    )
+    .await
+    .unwrap();
+    super::store::set_state(
+        &pool,
+        entry.key.0,
+        rows[0].id,
+        super::store::State::Dismissed,
+        1,
+        "ok",
+        "x",
+        2,
+        None,
+    )
+    .await
+    .unwrap();
+    land_adding(&g, a, &[("serde", "1.0.100")]).await.unwrap();
+}
+
+#[tokio::test]
+async fn without_the_new_keys_the_gate_is_what_it_was() {
+    // No `[deps]` at all: nothing is judged, with or without feeds, however exploited the advisory.
+    let (g, _keep) = gate_feeds(None, None).await;
+    advisory(&g.h, "serde", "1.0.100", "CVE-2024-0001", "CRITICAL");
+    let a = g.base("").await;
+    land_adding(&g, a, &[("serde", "1.0.100")]).await.unwrap();
+    // The severity gate alone does not look at the feeds: a KEV-listed moderate advisory passes a "high"
+    // gate, and a missing feed does not refuse.
+    let (g, _keep) = gate_feeds(None, None).await;
+    advisory(&g.h, "serde", "1.0.100", "CVE-2024-0001", "MODERATE");
+    let a = g
+        .base(
+            "[deps]\nblock_severity = \"high\"
+",
+        )
+        .await;
+    land_adding(&g, a, &[("serde", "1.0.100")]).await.unwrap();
+    // A zero threshold and `block_exploited = false` are off.
+    let (g, _keep) = gate_feeds(None, None).await;
+    advisory(&g.h, "serde", "1.0.100", "CVE-2024-0001", "MODERATE");
+    let a = g
+        .base("[deps]\nblock_exploited = false\nepss_threshold = 0\n")
+        .await;
+    land_adding(&g, a, &[("serde", "1.0.100")]).await.unwrap();
+}
+
+#[tokio::test]
+async fn the_exploitation_keys_and_the_severity_gate_work_together_or_apart() {
+    let (g, _keep) = gate_feeds(Some(KEV_FILE), Some(EPSS_FILE)).await;
+    advisory(&g.h, "serde", "1.0.100", "CVE-2024-0001", "HIGH");
+    advisory(&g.h, "log", "0.4.1", "CVE-2024-0004", "CRITICAL");
+    advisory(&g.h, "itoa", "1.0.1", "CVE-2024-0003", "LOW");
+    let a = g
+        .base("[deps]\nblock_severity = \"critical\"\nblock_exploited = true\n")
+        .await;
+    // High and on KEV: below the severity bar, refused by the new key alone.
+    let e = land_adding(&g, a, &[("serde", "1.0.100")])
+        .await
+        .unwrap_err();
+    let lines = paths(&e);
+    assert!(
+        !lines.iter().any(|l| l.contains("advisories at or above")),
+        "{lines:?}"
+    );
+    assert!(
+        lines.iter().any(|l| l.contains("known exploited")),
+        "{lines:?}"
+    );
+    // Critical and not on KEV: refused by the severity bar alone.
+    let e = land_adding(&g, a, &[("log", "0.4.1")]).await.unwrap_err();
+    let lines = paths(&e);
+    assert!(
+        lines[0].contains("advisories at or above critical"),
+        "{lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|l| l.contains("known exploited")),
+        "{lines:?}"
+    );
+    // Neither: passes.
+    land_adding(&g, a, &[("itoa", "1.0.1")]).await.unwrap();
+}
+
+#[tokio::test]
+async fn both_gates_report_when_one_advisory_trips_both() {
+    let (g, _keep) = gate_feeds(Some(KEV_FILE), Some(EPSS_FILE)).await;
+    advisory(&g.h, "serde", "1.0.100", "CVE-2024-0001", "CRITICAL");
+    let a = g
+        .base("[deps]\nblock_severity = \"high\"\nblock_exploited = true\n")
+        .await;
+    let e = land_adding(&g, a, &[("serde", "1.0.100")])
+        .await
+        .unwrap_err();
+    let lines = paths(&e);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("advisories at or above high")),
+        "{lines:?}"
+    );
+    assert!(
+        lines.iter().any(|l| l.contains("treats as exploited")),
+        "{lines:?}"
+    );
+    assert!(
+        lines.iter().any(|l| l.contains("(known exploited)")),
+        "{lines:?}"
+    );
+}
+
+#[tokio::test]
+async fn only_exploited_keeps_what_kev_lists_and_open_exploited_ignores_dismissed() {
+    let t = with_feeds(Some(KEV_FILE), Some(EPSS_FILE), None).await;
+    let only = wire::ListDepFindingsRequest {
+        only_exploited: true,
+        ..Default::default()
+    };
+    let r = t.h.list(only.clone()).await.unwrap();
+    assert_eq!(names(&r), ["serde"], "an EPSS row alone is not KEV");
+    assert_eq!(r.open_exploited, 1);
+    let both =
+        t.h.list(wire::ListDepFindingsRequest {
+            only_exploited: true,
+            ..exploited()
+        })
+        .await
+        .unwrap();
+    assert_eq!(names(&both), ["serde"]);
+    let id = r.findings[0].id;
+    t.h.hub
+        .dismiss(
+            &ctx(ALICE),
+            wire::DismissDepFindingRequest {
+                repo: repo(),
+                id,
+                reason: wire::DepDismissReason::Tolerable as i32,
+                note: String::new(),
+            },
+        )
+        .await
+        .unwrap();
+    let r = t.h.list(only).await.unwrap();
+    assert_eq!(
+        names(&r),
+        ["serde"],
+        "the filter still shows the dismissed finding"
+    );
+    assert_eq!(state_of(&r.findings[0]), wire::DepFindingState::Dismissed);
+    assert_eq!(r.open_exploited, 0, "a dismissed finding is not open");
+}
+
+// ------------------------------------------------------------------------------ Sbom
+
+fn sbom_req(rev: &str, ecosystems: &[&str]) -> wire::SbomRequest {
+    wire::SbomRequest {
+        repo: repo(),
+        rev: rev.into(),
+        ecosystems: ecosystems.iter().map(|e| (*e).to_owned()).collect(),
+    }
+}
+
+#[tokio::test]
+async fn an_sbom_lists_the_components_of_a_revision_and_sends_nothing_anywhere() {
+    let h = setup().await;
+    let cs = h
+        .trunk(&[(
+            "Cargo.lock",
+            lock(&[("serde", "1.0.100"), ("regex", "1.5.0")]).as_bytes(),
+        )])
+        .await;
+    let before = h.mock.hits();
+    let r = h.hub.sbom(&ctx(BOB), sbom_req("", &[])).await.unwrap();
+    assert_eq!(r.scanned.as_ref(), cs.as_bytes());
+    assert!(!r.truncated);
+    assert!(r.notes.is_empty(), "{:?}", r.notes);
+    let doc: serde_json::Value = serde_json::from_slice(&r.document).unwrap();
+    assert_eq!(doc["bomFormat"], "CycloneDX");
+    assert_eq!(doc["specVersion"], "1.6");
+    let comps = doc["components"].as_array().unwrap();
+    assert_eq!(comps.len(), r.components as usize);
+    let purls: Vec<&str> = comps.iter().filter_map(|c| c["purl"].as_str()).collect();
+    assert!(purls.contains(&"pkg:cargo/serde@1.0.100"), "{purls:?}");
+    assert!(purls.contains(&"pkg:cargo/regex@1.5.0"), "{purls:?}");
+    // The same revision gives the same bytes, named by id and with its ecosystem.
+    let again = h
+        .hub
+        .sbom(&ctx(BOB), sbom_req(&hex(cs.as_bytes()), &["crates.io"]))
+        .await
+        .unwrap();
+    assert_eq!(again.document, r.document);
+    assert_eq!(
+        h.mock.hits(),
+        before,
+        "no advisory source, registry or feed was asked"
+    );
+    // No scan was recorded.
+    assert!(h.findings(&[]).await.findings.is_empty());
+}
+
+#[tokio::test]
+async fn an_sbom_refuses_an_unknown_ecosystem_and_an_unknown_revision() {
+    let h = setup().await;
+    h.trunk(&[("Cargo.lock", lock(&[("serde", "1.0.100")]).as_bytes())])
+        .await;
+    let e = h
+        .hub
+        .sbom(&ctx(BOB), sbom_req("", &["cobol"]))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Code::InvalidArgument);
+    let e = h
+        .hub
+        .sbom(&ctx(BOB), sbom_req("no-such-rev", &[]))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Code::NotFound);
+}
+
+#[tokio::test]
+async fn an_sbom_needs_read_access_to_the_repository() {
+    let h = setup().await;
+    h.trunk(&[("Cargo.lock", lock(&[("serde", "1.0.100")]).as_bytes())])
+        .await;
+    let svc = DepsRpc::new(h.hub.clone(), tokens(), ServerInfo::default());
+    for token in ["bob-r", "bob-w", "alice-w"] {
+        let ok = svc
+            .sbom(call(sbom_req("", &[]), token, false))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(ok.components, 1, "{token}");
+    }
+    let e = svc.sbom(Request::new(sbom_req("", &[]))).await.unwrap_err();
+    assert!(
+        matches!(e.code(), Code::Unauthenticated | Code::PermissionDenied),
+        "{e}"
+    );
+    let e = svc
+        .sbom(call(sbom_req("", &[]), "unknown-token", false))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(e.code(), Code::Unauthenticated | Code::PermissionDenied),
+        "{e}"
+    );
+}
+
+#[tokio::test]
+async fn an_sbom_flags_a_truncated_list() {
+    let t = with_feeds(None, None, Some(2)).await;
+    let r = t.h.hub.sbom(&ctx(BOB), sbom_req("", &[])).await.unwrap();
+    assert!(r.truncated, "four packages exceed a limit of two");
+    assert_eq!(r.components, 2);
+    let doc: serde_json::Value = serde_json::from_slice(&r.document).unwrap();
+    assert_eq!(doc["components"].as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn an_incomplete_scan_refuses_the_exploitation_gate_whatever_block_unknown_says() {
+    // The advisory lookup fails.
+    let (g, _keep) = gate_feeds(Some(KEV_FILE), Some(EPSS_FILE)).await;
+    let a = g
+        .base("[deps]\nblock_exploited = true\nblock_unknown = false\n")
+        .await;
+    g.h.mock.with(|s| s.fail_osv = true);
+    let e = land_adding(&g, a, &[("serde", "1.0.100")])
+        .await
+        .unwrap_err();
+    assert_eq!(code(&e), "POLICY_DENIED");
+    let lines = paths(&e);
+    assert!(
+        lines.iter().any(|l| l.contains("lookup failed")),
+        "{lines:?}"
+    );
+    assert!(
+        lines.iter().any(|l| l.contains("serde 1.0.100")),
+        "{lines:?}"
+    );
+    // The same with the severity key alone is accepted, as before.
+    let (g, _keep) = gate_feeds(Some(KEV_FILE), Some(EPSS_FILE)).await;
+    let a = g
+        .base("[deps]\nblock_severity = \"high\"\nblock_unknown = false\n")
+        .await;
+    g.h.mock.with(|s| s.fail_osv = true);
+    land_adding(&g, a, &[("serde", "1.0.100")]).await.unwrap();
+    // More packages than the gate looks up.
+    let (g, _keep) = gate_feeds(Some(KEV_FILE), Some(EPSS_FILE)).await;
+    let a = g
+        .base("[deps]\nepss_threshold = 0.5\nblock_unknown = false\n")
+        .await;
+    let names: Vec<String> = (0..=super::hub::MAX_GATE_PACKAGES)
+        .map(|i| format!("pkg{i}"))
+        .collect();
+    let extra: Vec<(&str, &str)> = names.iter().map(|n| (n.as_str(), "1.0.0")).collect();
+    let e = land_adding(&g, a, &extra).await.unwrap_err();
+    assert_eq!(code(&e), "POLICY_DENIED");
+    assert!(
+        paths(&e).iter().any(|l| l.contains("cannot be checked")),
+        "{:?}",
+        paths(&e)
+    );
+}
+
+#[tokio::test]
+async fn an_advisory_without_a_cve_alias_is_not_listed_while_both_feeds_are_current() {
+    let (g, _keep) = gate_feeds(Some(KEV_FILE), Some(EPSS_FILE)).await;
+    // The id is no CVE and the advisory has no aliases: neither feed knows it, and both are current.
+    advisory(&g.h, "serde", "1.0.100", "RUSTSEC-2024-9999", "CRITICAL");
+    let a = g
+        .base("[deps]\nblock_exploited = true\nepss_threshold = 0.1\n")
+        .await;
+    land_adding(&g, a, &[("serde", "1.0.100")]).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_zero_threshold_with_block_exploited_off_means_off_at_the_gate() {
+    let (g, _keep) = gate_feeds(Some(KEV_FILE), Some(EPSS_FILE)).await;
+    advisory(&g.h, "serde", "1.0.100", "CVE-2024-0002", "CRITICAL");
+    let a = g
+        .base("[deps]\nblock_exploited = false\nepss_threshold = 0\n")
+        .await;
+    // The advisory has EPSS 0.9 and is critical; nothing is switched on.
+    land_adding(&g, a, &[("serde", "1.0.100")]).await.unwrap();
 }
