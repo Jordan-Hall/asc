@@ -199,14 +199,24 @@ pub struct Registry {
 
 impl Registry {
     /// `store_url` is the bucket root (`s3://…`, `file:///…`, `memory:///`).
+    ///
+    /// A `file:///…` store syncs each write and its directory; [`Self::with_local_fsync`] opts out.
     pub fn new(pool: AnyPool, store_url: &str) -> Result<Self, RegistryError> {
+        Self::with_local_fsync(pool, store_url, true)
+    }
+
+    /// [`Self::new`] with the sync of a `file:///…` store a choice (`store_local_fsync`).
+    pub fn with_local_fsync(
+        pool: AnyPool,
+        store_url: &str,
+        local_fsync: bool,
+    ) -> Result<Self, RegistryError> {
         let url = url::Url::parse(store_url).map_err(|e| RegistryError::Store(e.to_string()))?;
         let (store, root) = if url.scheme() == "s3" {
             asc_store::s3::open_with(&url, None).map_err(|e| RegistryError::Store(e.to_string()))?
         } else {
-            let (store, root) =
-                object_store::parse_url(&url).map_err(|e| RegistryError::Store(e.to_string()))?;
-            (Arc::from(store), root)
+            asc_store::bucket::open_url_with(&url, local_fsync)
+                .map_err(|e| RegistryError::Store(e.to_string()))?
         };
         Ok(Self {
             refs: Arc::new(SqlRefs::new(pool.clone())),
@@ -782,6 +792,19 @@ mod tests {
 
     fn name(s: &str) -> RepoName {
         RepoName::parse(s).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_file_store_syncs_unless_the_operator_opts_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = url::Url::from_directory_path(dir.path()).unwrap();
+        let pool = migrate::connect("sqlite::memory:", 1).await.unwrap();
+        let default = Registry::new(pool.clone(), url.as_str()).unwrap();
+        assert!(format!("{:?}", default.store).contains("fsync: true"));
+        let on = Registry::with_local_fsync(pool.clone(), url.as_str(), true).unwrap();
+        assert!(format!("{:?}", on.store).contains("fsync: true"));
+        let off = Registry::with_local_fsync(pool, url.as_str(), false).unwrap();
+        assert!(format!("{:?}", off.store).contains("fsync: false"));
     }
 
     #[tokio::test]

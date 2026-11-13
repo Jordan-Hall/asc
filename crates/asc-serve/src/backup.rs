@@ -468,7 +468,8 @@ fn open_registry(cfg: &ServeConfig, pool: &AnyPool) -> Result<Registry, BackupEr
         .store
         .as_deref()
         .ok_or_else(|| BackupError("`store` is required".into()))?;
-    Registry::new(pool.clone(), store).map_err(|e| BackupError(e.to_string()))
+    Registry::with_local_fsync(pool.clone(), store, cfg.store_local_fsync)
+        .map_err(|e| BackupError(e.to_string()))
 }
 
 fn vault_key_file(cfg: &ServeConfig) -> Option<PathBuf> {

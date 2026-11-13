@@ -55,8 +55,14 @@ impl BucketObjects {
     /// A bucket in a local directory (created if missing). Each write syncs the file and its
     /// directory before it returns.
     pub fn local(dir: &std::path::Path) -> Result<Self> {
+        Self::local_with(dir, true)
+    }
+
+    /// Like [`Self::local`], with the sync a choice: `fsync = false` is for a volume that already
+    /// guarantees durability and for throwaway servers; [`Self::local`] always syncs.
+    pub fn local_with(dir: &std::path::Path, fsync: bool) -> Result<Self> {
         std::fs::create_dir_all(dir).map_err(|e| Error::Url(e.to_string()))?;
-        let fs = LocalFileSystem::new_with_prefix(dir)?.with_fsync(true);
+        let fs = LocalFileSystem::new_with_prefix(dir)?.with_fsync(fsync);
         Ok(Self::new(Arc::new(fs), Path::default()).with_bucket_packs(Default::default()))
     }
 
@@ -92,13 +98,21 @@ impl BucketObjects {
 /// The store and root of a non-S3 bucket URL. A `file:` URL is opened as its directory (created
 /// if missing): `object_store`'s own parsing percent-encodes characters such as `~` in the path,
 /// so a directory like a Windows short name (`RUNNER~1`) would be written somewhere else.
+/// A `file:` store syncs each write and its directory.
 pub(crate) fn open_url(url: &url::Url) -> Result<(Arc<dyn ObjectStore>, Path)> {
+    open_url_with(url, true)
+}
+
+/// [`open_url`] with the sync of a `file:` store a choice (`local_fsync`); other schemes ignore it.
+/// `false` is for operators on a volume that already guarantees durability and for throwaway
+/// test servers.
+pub fn open_url_with(url: &url::Url, local_fsync: bool) -> Result<(Arc<dyn ObjectStore>, Path)> {
     if url.scheme() == "file" {
         let dir = url
             .to_file_path()
             .map_err(|()| Error::Url(format!("not a local path: {url}")))?;
         std::fs::create_dir_all(&dir).map_err(|e| Error::Url(e.to_string()))?;
-        let fs = LocalFileSystem::new_with_prefix(&dir)?.with_fsync(true);
+        let fs = LocalFileSystem::new_with_prefix(&dir)?.with_fsync(local_fsync);
         return Ok((Arc::new(fs), Path::default()));
     }
     let (store, root) = object_store::parse_url(url)?;
@@ -457,6 +471,55 @@ mod tests {
         assert_eq!(&b.get(&key).await.unwrap().unwrap()[..], b"durable");
         let local = BucketObjects::local(dir.path()).unwrap();
         assert!(format!("{:?}", local.store).contains("fsync: true"));
+    }
+
+    #[tokio::test]
+    async fn local_fsync_can_be_turned_off_and_still_stores() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = url::Url::from_directory_path(dir.path()).unwrap();
+        let (store, root) = open_url_with(&url, false).unwrap();
+        assert!(format!("{store:?}").contains("fsync: false"), "{store:?}");
+        let b = BucketObjects::new(store, root);
+        let key = ObjKey::File(FileId::of(b"unsynced"));
+        b.put(&key, encode_stored(b"unsynced")).await.unwrap();
+        assert_eq!(&b.get(&key).await.unwrap().unwrap()[..], b"unsynced");
+        let (store, _) = open_url_with(&url, true).unwrap();
+        assert!(format!("{store:?}").contains("fsync: true"), "{store:?}");
+        let off = BucketObjects::local_with(dir.path(), false).unwrap();
+        assert!(format!("{:?}", off.store).contains("fsync: false"));
+    }
+
+    /// `object_store::parse_url` (which the server used to open a `file:` store with) and
+    /// `open_url_with` name the same directory for a path with a space, a `~` or a `%`, so an
+    /// existing store is found where it always was and no migration is needed.
+    #[tokio::test]
+    async fn open_url_names_the_directory_parse_url_named() {
+        for name in ["with space", "RUNNER~1", "100%done"] {
+            let base = tempfile::tempdir().unwrap();
+            let dir = base.path().join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            let url = url::Url::from_directory_path(&dir).unwrap();
+            let (old, old_root) = object_store::parse_url(&url).unwrap();
+            let key = old_root.clone().join("probe");
+            old.put(&key, PutPayload::from_static(b"old"))
+                .await
+                .unwrap();
+            assert_eq!(std::fs::read(dir.join("probe")).unwrap(), b"old", "{name}");
+            let (new, new_root) = open_url_with(&url, true).unwrap();
+            let got = new.get(&new_root.clone().join("probe")).await.unwrap();
+            assert_eq!(&got.bytes().await.unwrap()[..], b"old", "{name}");
+        }
+    }
+
+    #[tokio::test]
+    async fn from_url_with_a_space_round_trips_in_the_named_directory() {
+        let base = tempfile::tempdir().unwrap();
+        let dir = base.path().join("a store");
+        let url = url::Url::from_directory_path(&dir).unwrap();
+        let b = BucketObjects::from_url(url.as_str()).unwrap();
+        let key = ObjKey::File(FileId::of(b"spaced"));
+        b.put(&key, encode_stored(b"spaced")).await.unwrap();
+        assert!(dir.join("f").join(&key.path()[2..]).exists());
     }
 
     #[tokio::test]

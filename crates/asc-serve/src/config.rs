@@ -1049,6 +1049,10 @@ pub struct ServeConfig {
     pub role: Role,
     /// Bucket URL: `s3://…`, `file:///…` or `memory:///`.
     pub store: Option<String>,
+    /// Whether a `file:///…` `store` syncs each object and its directory before a write returns.
+    /// On by default; `false` is for a volume that already guarantees it and for throwaway test
+    /// servers. Ignored for `s3://` and `memory:///`.
+    pub store_local_fsync: bool,
     /// `postgres://…` or `sqlite:…`.
     pub db: Option<String>,
     /// The upstream tier of a `cache` role.
@@ -1119,6 +1123,7 @@ impl Default for ServeConfig {
             log: LogConfig::default(),
             role: Role::Primary,
             store: None,
+            store_local_fsync: true,
             db: None,
             upstream: None,
             cache: CacheConfig::default(),
@@ -1712,6 +1717,22 @@ enabled = true
         assert_eq!(c.bucket.max_concurrency, 256);
         assert_eq!(c.mcp.max_tokens, 6000);
         assert_eq!(c.admin.listen, "127.0.0.1:9464".parse().unwrap());
+    }
+
+    #[test]
+    fn store_local_fsync_is_on_unless_turned_off() {
+        let base = "store = \"file:///srv/asc\"\ndb = \"sqlite::memory:\"\n";
+        assert!(ServeConfig::parse(base).unwrap().store_local_fsync);
+        let off = ServeConfig::parse(&format!("{base}store_local_fsync = false")).unwrap();
+        assert!(!off.store_local_fsync);
+        let on = ServeConfig::parse(&format!("{base}store_local_fsync = true")).unwrap();
+        assert!(on.store_local_fsync);
+        for bad in ["\"off\"", "\"false\"", "0", "[true]"] {
+            let err = ServeConfig::parse(&format!("{base}store_local_fsync = {bad}"))
+                .expect_err(bad)
+                .to_string();
+            assert!(err.contains("store_local_fsync"), "{bad}: {err}");
+        }
     }
 
     #[test]

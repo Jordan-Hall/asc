@@ -181,7 +181,11 @@ pub async fn open(cfg: &ServeConfig) -> Result<AdminCli, AdminCliError> {
     };
     let pool = migrate::connect(db, CLI_DB_CONNECTIONS).await?;
     migrate::ensure_current(&pool).await?;
-    let registry = Arc::new(Registry::new(pool, store)?);
+    let registry = Arc::new(Registry::with_local_fsync(
+        pool,
+        store,
+        cfg.store_local_fsync,
+    )?);
     registry.set_pack_config(
         cfg.pack
             .to_config()

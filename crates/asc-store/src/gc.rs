@@ -1407,8 +1407,7 @@ impl BucketGc {
         let (store, root): (Arc<dyn ObjectStore>, Path) = if parsed.scheme() == "s3" {
             crate::s3::open_strict(&parsed, credentials)?
         } else {
-            let (store, root) = object_store::parse_url(&parsed)?;
-            (Arc::from(store), root)
+            crate::bucket::open_url(&parsed)?
         };
         Self::connect(store, root).await
     }

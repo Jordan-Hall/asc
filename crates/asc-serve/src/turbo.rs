@@ -325,9 +325,9 @@ impl TurboState {
                 .map_err(|e| TurboError::Config(e.to_string()))?;
             (store, root, Some(s3_signer(&url)?))
         } else {
-            let (store, root) =
-                object_store::parse_url(&url).map_err(|e| TurboError::Config(e.to_string()))?;
-            (Arc::from(store), root, None)
+            let (store, root) = asc_store::bucket::open_url_with(&url, cfg.store_local_fsync)
+                .map_err(|e| TurboError::Config(e.to_string()))?;
+            (store, root, None)
         };
         let mut state = Self::new(authorizer, store, root, cfg.turbo.clone(), metrics);
         state.signer = signer;

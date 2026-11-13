@@ -49,8 +49,7 @@ pub fn open_store(url: &str) -> Result<(Arc<dyn ObjectStore>, Path), String> {
     if parsed.scheme() == "s3" {
         return asc_store::s3::open(&parsed).map_err(|e| e.to_string());
     }
-    let (store, root) = object_store::parse_url(&parsed).map_err(|e| e.to_string())?;
-    Ok((Arc::from(store), root))
+    asc_store::bucket::open_url_with(&parsed, true).map_err(|e| e.to_string())
 }
 
 /// Creates the directory behind a `file://` bucket URL; other schemes need nothing.

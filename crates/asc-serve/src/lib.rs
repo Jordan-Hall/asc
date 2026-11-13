@@ -595,7 +595,11 @@ pub async fn serve(
     let authorizer: Arc<dyn Authorizer> = Arc::new(logging::LoggingAuthorizer::new(authorizer));
     let pool = migrate::connect(db, DB_CONNECTIONS).await?;
     migrate::ensure_current(&pool).await?;
-    let registry = Arc::new(Registry::new(pool.clone(), store)?);
+    let registry = Arc::new(Registry::with_local_fsync(
+        pool.clone(),
+        store,
+        cfg.store_local_fsync,
+    )?);
     registry.set_pack_config(cfg.pack.to_config()?);
     registry.set_import_policy(cfg.import.to_policy()?);
     let metrics = Arc::new(http::Metrics::new());
