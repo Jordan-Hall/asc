@@ -1,3 +1,5 @@
+> Historical. This was the implementation plan; every unit is implemented except hub unit K15 (roadmap row 75) and the optional unit K16 (see `docs/OUT-OF-SCOPE.md`). The live document is `docs/ROADMAP.md`.
+
 # asc implementation plan
 
 Normative design: `docs/SPEC.md`. This file orders the work into **implementation units**. Each unit is small (one crate module or one Go package), owns a disjoint set of files, names its dependencies, and has **one acceptance command**. A unit is done when its acceptance command passes on a clean checkout, `cargo clippy --workspace --all-targets -- -D warnings` stays green, and no file outside the unit's owned list was changed (except `Cargo.lock`, one-line `mod`/`pub mod`/`pub use` registrations of the unit's own new files in their parent module file (`lib.rs`, `main.rs`, any `mod.rs` or `<dir>.rs`, including `cli/mod.rs`); creating a missing parent `mod.rs` that contains only such lines (the first unit to land creates it, later units add their line); and adding its own crate to `members` in the root `Cargo.toml`, which every unit may do) [audit: module-registration-exception-too-narrow].
