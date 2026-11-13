@@ -8,10 +8,18 @@ This page tells you what each one does and what it costs.
 |---|---|---|---|
 | Virtual | Not on disk at all. A file is read from the shared local store the first time a program opens it. | The daemon running, and: Windows 10 1709 or later (ProjFS when it is installed, otherwise the built-in Cloud Files API); Linux with FUSE (`/dev/fuse`, fuse3) or the NFS client; macOS with the asc FSKit module (`AscFS.app`, macOS 26 and later) or else the system NFS client (a loopback NFSv3 server, no kernel extension) | the default for `asc worktree add` where it works (`asc.worktree.mode auto`) |
 | Plain, copy | A copy-on-write clone (reflink) of the stored file where the file system can clone, else a plain copy. | everywhere | the default elsewhere; `--mode plain` or `asc.worktree.mode plain` |
-| Plain, link | A symbolic link to one read-only copy per machine, in `<asc home>/shared-blobs/<repo-id>/`. | everywhere symbolic links can be made | `asc config asc.worktree.link symlink` |
+| Plain, link | A symbolic link to one read-only copy per machine, in `<asc home>/shared-blobs/<repo-id>/`. | everywhere symbolic links can be made | `asc config asc.worktree.link symlink`; the last resort, see "Which mode to use" |
 
 Reflinks cost no space on ReFS, APFS, Btrfs and XFS. On NTFS and ext4 a plain copy is a real copy,
 so link mode is what saves the space there.
+
+## Which mode to use
+
+Use the first mode on this list that fits your machine.
+
+1. Virtual, when the machine can serve it. Nothing unchanged is on disk, and tools see ordinary files.
+2. Plain copy on a volume that clones (Dev Drive or ReFS, Btrfs, XFS, APFS). Files are ordinary files and cost no extra space.
+3. Link mode only as a last resort, on a volume that cannot clone (NTFS, ext4) where virtual mode is not available. Tools that resolve real paths (Node, bundlers, test runners) look beside the shared copy, real git reports a type change for each link, and Windows needs the right to make symbolic links. See "Limits of link mode" below.
 
 ## Choosing the mode
 
