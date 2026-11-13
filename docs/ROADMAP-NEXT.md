@@ -54,7 +54,7 @@ considered and rejected for this reason.
 
 | # | Item | What it does | Size | Status |
 |---|---|---|---|---|
-| 16 | First-class conflicts | A conflicted change can be committed and resolved later, so restack and landing never block an unattended agent. Out of scope in SPEC section 0 today Decided 2026-11-13: yes; a design comes first. | D | open |
+| 16 | First-class conflicts | A conflicted change can be committed and resolved later, so restack and landing never block an unattended agent. Out of scope in SPEC section 0 today Decided 2026-11-13: yes; a design comes first. Design: `docs/design/FIRST-CLASS-CONFLICTS.md` (17 units). | D | in progress |
 | 17 | Structural merge driver | A tree-sitter merge for the five indexed languages | S | open |
 | 18 | `WatchRefs` | A pushed notice when a ref moves, in place of polling by agents, CI and the IDE plugins. Out of scope today | S | open |
 
@@ -65,9 +65,9 @@ considered and rejected for this reason.
 | 19 | sccache adapter | Rust and C++ compile cache on the same store | S | open |
 | 20 | Bazel remote cache adapter | Also serves Buck2 and Pants | S | open |
 | 21 | Gradle, Nx and BuildKit adapters | The same pattern for three more tools | S | open |
-| 22 | `node_modules` snapshots | An install stored as a tree keyed by lockfile, mounted instead of downloaded. Out of scope today Decided 2026-11-13: yes; a design comes first. | D | open |
+| 22 | `node_modules` snapshots | An install stored as a tree keyed by lockfile, mounted instead of downloaded. Out of scope today Decided 2026-11-13: yes; a design comes first. Design: `docs/design/DEPENDENCY-SNAPSHOTS.md` (13 units). | D | in progress |
 | 23 | Virtual CI checkout on Windows and macOS | `asc ci checkout --mode virtual` is documented for Linux runners only | S | open |
-| 24 | Task runner (`asc run`) | asc has the graph, the hashes and the cache. Out of scope today Decided 2026-11-13: yes, as an optional module that is installed and set up separately; a design comes first. | D | open |
+| 24 | Task runner (`asc run`) | asc has the graph, the hashes and the cache. Out of scope today Decided 2026-11-13: yes, as an optional module that is installed and set up separately; a design comes first. Design: `docs/design/TASK-RUNNER.md` (17 units). | D | in progress |
 | 25 | asc's CI builds its tests once | One job compiles and archives the test binaries; four shards run the archive (was three shards each compiling for 5 to 7 minutes). The rust jobs now finish in about 11 to 14 minutes depending on the artifact download; the longest job is `projfs` (12 minutes) Decided 2026-11-13: keep this layout and cut the `projfs` job next. | S | done |
 ## 6. Vulnerability awareness
 
@@ -96,7 +96,7 @@ own server and sends no repository data to a third party.
 
 | # | Item | What it does | Size | Status |
 |---|---|---|---|---|
-| 26 | Read-only git view | Enough for `git status`, `git diff` and `git log` inside an asc workspace, so tools that run git keep working Decided 2026-11-13: yes; a design comes first. | D | open |
+| 26 | Read-only git view | Enough for `git status`, `git diff` and `git log` inside an asc workspace, so tools that run git keep working Decided 2026-11-13: yes; a design comes first. Design: `docs/design/GIT-VIEW.md` (12 units). | D | in progress |
 | 27 | File locking for binary files | Only for teams with large binary assets | D | skip |
 | 35 | Merge queue with speculative CI | Not built by decision: post-merge testing (SPEC section 12.6) | | skip |
 
@@ -111,13 +111,13 @@ From a review of the hub's asc pages on 2026-11-13 (routes, templates and styles
 | 44 | Worktrees view | A page listing the live virtual worktrees of a repository and who holds them | D | open |
 | 45 | Commit-cloud view | All branchless work by user and agent, with restore | D | open |
 | 46 | Affected projects and cache hits on a change | Shown inline with the checks of a change | S | open |
-| 47 | Land a stack in one click | The stack view shows each change's status and has a "land stack" action | S | open |
-| 48 | Action palette and key help | The palette runs actions (restack, land, rerun, open agent) as well as search; `?` shows the keys | S | open |
+| 47 | Land a stack in one click | The stack view shows each change's status and has a "land stack" action Done: lands bottom-first through the single-change path, behind a dry-run page and a digest of members and heads. | S | done |
+| 48 | Action palette and key help | The palette runs actions (restack, land, rerun, open agent) as well as search; `?` shows the keys | S | done |
 | 49 | API and webhook reference page | Generated from the RPC schema | S | open |
 | 50 | Repository templates | Templates in the create flow | D | open |
 | 51 | Own pages for repo home, diff and issues | Rebuilt in the asc design system, with the loose `asc-*.css` files folded into it, so no page is the upstream forge's template with a new skin | D | open |
 | 52 | SBOM download | On the dependency page (the server side is row 32); the owner-wide security page is row 37 | S | after 32 |
-| 53 | `projfs` CI job under 8 minutes | It is the longest job (12 minutes: 5 building, 4 testing) | S | open |
+| 53 | `projfs` CI job under 8 minutes | It is the longest job (12 minutes: 5 building, 4 testing) The test step no longer calls cargo a second time (it rebuilt two crates for about four minutes); the timing is to be confirmed from a CI run. | S | in progress |
 
 ## Order of work
 
