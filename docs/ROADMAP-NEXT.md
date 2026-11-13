@@ -67,7 +67,7 @@ considered and rejected for this reason.
 | 22 | `node_modules` snapshots | An install stored as a tree keyed by lockfile, mounted instead of downloaded. Out of scope today | D | decision |
 | 23 | Virtual CI checkout on Windows and macOS | `asc ci checkout --mode virtual` is documented for Linux runners only | S | open |
 | 24 | Task runner (`asc run`) | asc has the graph, the hashes and the cache. Out of scope today | D | decision |
-| 25 | asc's CI builds its tests once | Each of three shards compiles the same binaries for 5 to 7 minutes | S | in progress |
+| 25 | asc's CI builds its tests once | One job compiles and archives the test binaries; four shards run the archive (was three shards each compiling for 5 to 7 minutes). The rust jobs now finish in about 11 to 14 minutes depending on the artifact download; the longest job is `projfs` (12 minutes) | S | done |
 
 ## 6. Vulnerability awareness
 
