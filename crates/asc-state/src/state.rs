@@ -55,7 +55,8 @@ pub struct StateDb {
 }
 
 impl StateDb {
-    /// Opens `<home>/state.db` in WAL mode with `busy_timeout = 5000`, applying the migrations.
+    /// Opens `<home>/state.db` in WAL mode with `synchronous = FULL` and `busy_timeout = 5000` on
+    /// every connection, applying the migrations.
     pub async fn open(home: &AscHome) -> Result<Self> {
         sqlx::any::install_default_drivers();
         let path = home.state_db().to_string_lossy().replace('\\', "/");
@@ -68,10 +69,13 @@ impl StateDb {
             .max_connections(8)
             .after_connect(|conn, _| {
                 Box::pin(async move {
+                    // `synchronous = FULL`, never the faster `NORMAL`: this database holds the
+                    // machine's refs, the journal and the workspace records a ref names, none of
+                    // it rebuildable, so a write acknowledged to a command must survive power loss.
                     for pragma in [
                         "PRAGMA busy_timeout = 5000",
                         "PRAGMA journal_mode = WAL",
-                        "PRAGMA synchronous = NORMAL",
+                        "PRAGMA synchronous = FULL",
                     ] {
                         sqlx::query(pragma).execute(&mut *conn).await?;
                     }

@@ -54,6 +54,11 @@ fn migrator(b: Backend) -> Migrator {
 /// no longer block the writer (or fail with "database is locked" while it commits), and a writer
 /// waits for another writer instead of failing at once. The mode is stored in the file, so every
 /// process that opens it, the CLI included, sees the same one. A memory database is left alone.
+///
+/// Every connection to a file sets `synchronous = FULL` explicitly. This database is the server's
+/// source of truth (refs, changesets, the landing queue, tokens, audit rows), not a cache, so a
+/// commit acknowledged to a caller must survive power loss. WAL with `NORMAL` could lose the last
+/// commits after a power cut; there is no rebuildable database here that may use `NORMAL`.
 pub async fn connect(url: &str, max_connections: u32) -> Result<AnyPool, sqlx::Error> {
     sqlx::any::install_default_drivers();
     let file_db =
@@ -72,6 +77,9 @@ pub async fn connect(url: &str, max_connections: u32) -> Result<AnyPool, sqlx::E
                         .execute(&mut *conn)
                         .await?;
                 }
+                sqlx::query("PRAGMA synchronous = FULL")
+                    .execute(&mut *conn)
+                    .await?;
                 Ok(())
             })
         });
@@ -266,6 +274,41 @@ mod tests {
                 .await
                 .unwrap_or_else(|e| panic!("{q}: {e}"));
         }
+    }
+
+    #[tokio::test]
+    async fn the_server_database_is_wal_with_synchronous_full_on_every_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("sqlite:{}/d.db?mode=rwc", dir.path().display());
+        let pool = connect(&url, 3).await.unwrap();
+        // Hold three connections at once so each one is checked, not one reused.
+        let mut held = Vec::new();
+        for _ in 0..3 {
+            held.push(pool.acquire().await.unwrap());
+        }
+        for conn in &mut held {
+            let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
+                .fetch_one(&mut **conn)
+                .await
+                .unwrap();
+            assert_eq!(mode, "wal");
+            // 2 is FULL; NORMAL is 1.
+            let sync: i64 = sqlx::query_scalar("PRAGMA synchronous")
+                .fetch_one(&mut **conn)
+                .await
+                .unwrap();
+            assert_eq!(sync, 2);
+        }
+        drop(held);
+        // A read-only handle on the same file is also FULL.
+        let ro = connect(&format!("sqlite:{}/d.db?mode=ro", dir.path().display()), 1)
+            .await
+            .unwrap();
+        let sync: i64 = sqlx::query_scalar("PRAGMA synchronous")
+            .fetch_one(&ro)
+            .await
+            .unwrap();
+        assert_eq!(sync, 2);
     }
 
     #[tokio::test]
