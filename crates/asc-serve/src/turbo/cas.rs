@@ -29,6 +29,7 @@ use object_store::ObjectStoreExt;
 use object_store::path::Path as StorePath;
 use serde::Deserialize;
 
+use super::stats::Event;
 use super::{
     ArtifactHash, BATCH_CONCURRENCY, Caller, MAX_ITEMS, RepoQuery, Scope, TOUCH_AFTER_SECS,
     TurboError, TurboState, now_secs, read_json,
@@ -379,26 +380,32 @@ pub(super) async fn get_entry(
 ) -> Result<Response, TurboError> {
     check_id(&key)?;
     let caller = s.gate(&headers, &q, Access::Read).await?;
-    let p = s
-        .find_entry(&caller, &key)
-        .await?
-        .ok_or(TurboError::NotFound)?;
+    let get = method != Method::HEAD;
+    let miss = |s: &TurboState| {
+        if get {
+            s.record(&caller, &headers, Event::Miss);
+        }
+        TurboError::NotFound
+    };
+    let Some(p) = s.find_entry(&caller, &key).await? else {
+        return Err(miss(&s));
+    };
     let mut h = HeaderMap::new();
     h.insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("application/json"),
     );
-    if method == Method::HEAD {
+    if !get {
         return Ok((StatusCode::OK, h, Body::empty()).into_response());
     }
     let got = match s.store.get(&p).await {
         Ok(g) => g,
-        Err(object_store::Error::NotFound { .. }) => return Err(TurboError::NotFound),
+        Err(object_store::Error::NotFound { .. }) => return Err(miss(&s)),
         Err(e) => return Err(e.into()),
     };
     let modified = got.meta.last_modified.timestamp();
     if got.meta.size as usize > MAX_ENTRY {
-        return Err(TurboError::NotFound);
+        return Err(miss(&s));
     }
     let body = got.bytes().await?;
     // A used entry is rewritten once a day, so its retention counts from its last use.
@@ -407,6 +414,15 @@ pub(super) async fn get_entry(
     {
         tracing::debug!(event = "turbo.touch_failed", error = %e);
     }
+    // An entry carries no duration, so a hit saves no counted time.
+    s.record(
+        &caller,
+        &headers,
+        Event::Hit {
+            bytes: body.len() as u64,
+            saved_ms: 0,
+        },
+    );
     Ok((StatusCode::OK, h, Body::from(body)).into_response())
 }
 
@@ -437,5 +453,6 @@ pub(super) async fn put_entry(
     s.store
         .put(&s.ac_path(&caller, &caller.scope, &key), body.into())
         .await?;
+    s.record(&caller, &headers, Event::Put);
     Ok(StatusCode::CREATED.into_response())
 }

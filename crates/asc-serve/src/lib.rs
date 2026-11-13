@@ -1031,6 +1031,10 @@ pub async fn serve(
         .deps
         .get()
         .map(|h| tokio::spawn(h.clone().run_intel(intel_stop.clone())));
+    // Cache counts are written every 30 s and once more at shutdown (started after the last step that can fail).
+    let cache_stats_stop = tokio_util::sync::CancellationToken::new();
+    let cache_stats_task =
+        turbo.spawn_stats_flusher(registry.pool().clone(), cache_stats_stop.clone());
     let served = server
         .add_routes(routes)
         .serve_with_shutdown(cfg.listen, async move {
@@ -1042,6 +1046,9 @@ pub async fn serve(
     if let Some(t) = intel_task {
         t.abort();
     }
+    // The flusher does one last flush (it gives up after 5 s) and ends; this wait is bounded to 10 s.
+    cache_stats_stop.cancel();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(10), cache_stats_task).await;
     // The indexing workers commit what they buffered before the rest stops.
     if let Some(i) = indexers {
         i.stop().await;

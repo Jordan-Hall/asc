@@ -26,6 +26,7 @@ use object_store::{ObjectStore, ObjectStoreExt, WriteMultipart};
 use serde::{Deserialize, Serialize};
 
 mod cas;
+mod stats;
 
 use crate::config::{ServeConfig, TurboConfig};
 use crate::http::Metrics;
@@ -243,6 +244,9 @@ pub struct Meta {
     pub at: i64,
 }
 
+/// The longest task duration kept or counted as time saved: one week, in milliseconds.
+const MAX_DURATION_MS: u64 = 604_800_000;
+
 fn now_secs() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -284,6 +288,8 @@ pub struct TurboState {
     path_rules: OnceLock<Arc<crate::pathrules::PathRulesSlot>>,
     /// Hits and misses reported by turbo, by scope kind.
     events: [[AtomicU64; 2]; 3],
+    /// Cache use not yet written to `cache_daily` and `cache_by_rev`.
+    stats: stats::Recorder,
 }
 
 impl TurboState {
@@ -305,6 +311,7 @@ impl TurboState {
             scope_source: OnceLock::new(),
             path_rules: OnceLock::new(),
             events: Default::default(),
+            stats: stats::Recorder::default(),
         }
     }
 
@@ -661,6 +668,28 @@ impl TurboState {
         })
     }
 
+    /// Counts one authorised request for the repository the gate resolved, and for the change
+    /// version in `x-asc-rev` when it is valid. Constant time; never fails the request.
+    fn record(&self, caller: &Caller, headers: &HeaderMap, ev: stats::Event) {
+        self.stats.record(
+            &caller.slug.repo_name(),
+            now_secs(),
+            stats::rev_of(headers),
+            ev,
+        );
+    }
+
+    /// Writes the cache counts to `pool` every 30 seconds, prunes old rows hourly, and flushes
+    /// once more when `stop` is cancelled (the task ends after that flush).
+    pub fn spawn_stats_flusher(
+        self: &Arc<Self>,
+        pool: sqlx::AnyPool,
+        stop: tokio_util::sync::CancellationToken,
+    ) -> tokio::task::JoinHandle<()> {
+        let me = self.clone();
+        tokio::spawn(async move { me.stats.run(pool, stop, now_secs).await })
+    }
+
     fn count_event(&self, scope: &Scope, source: &str, hit: bool) {
         let source = match source {
             "LOCAL" => "local",
@@ -802,20 +831,34 @@ async fn get_artifact(
 ) -> Result<Response, TurboError> {
     let hash = ArtifactHash::parse(&hash)?;
     let caller = s.gate(&headers, &q, Access::Read).await?;
-    let found = s.find(&caller, &hash).await?.ok_or(TurboError::NotFound)?;
+    let get = method != Method::HEAD;
+    let Some(found) = s.find(&caller, &hash).await? else {
+        if get {
+            s.record(&caller, &headers, stats::Event::Miss);
+        }
+        return Err(TurboError::NotFound);
+    };
     let out = artifact_headers(&found.meta);
-    if method == Method::HEAD {
+    if !get {
         return Ok((StatusCode::OK, out, Body::empty()).into_response());
     }
-    let stream = s
-        .store
-        .get(&found.data)
-        .await
-        .map_err(|e| match e {
-            object_store::Error::NotFound { .. } => TurboError::NotFound,
-            e => e.into(),
-        })?
-        .into_stream();
+    let stream = match s.store.get(&found.data).await {
+        Ok(g) => g.into_stream(),
+        Err(object_store::Error::NotFound { .. }) => {
+            s.record(&caller, &headers, stats::Event::Miss);
+            return Err(TurboError::NotFound);
+        }
+        Err(e) => return Err(e.into()),
+    };
+    s.record(
+        &caller,
+        &headers,
+        stats::Event::Hit {
+            bytes: found.meta.size,
+            // Metadata stored before the cap at PUT may hold more.
+            saved_ms: found.meta.duration.min(MAX_DURATION_MS),
+        },
+    );
     Ok((StatusCode::OK, out, Body::from_stream(stream)).into_response())
 }
 
@@ -838,7 +881,8 @@ async fn put_artifact(
     let data = s.data_path(&caller.slug, &caller.scope, &hash);
     let duration = opaque_header(&headers, "x-artifact-duration")?
         .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(0);
+        .unwrap_or(0)
+        .min(MAX_DURATION_MS);
     let tag = opaque_header(&headers, "x-artifact-tag")?;
     let sha = opaque_header(&headers, "x-asc-sha")?;
     let dirty_hash = opaque_header(&headers, "x-asc-dirty-hash")?;
@@ -867,6 +911,7 @@ async fn put_artifact(
         at: now_secs(),
     };
     s.write_meta(&meta_path, &meta).await?;
+    s.record(&caller, &headers, stats::Event::Put);
     let url = format!("{}/{}", caller.slug.dir(), hash.as_str());
     Ok((
         StatusCode::ACCEPTED,
@@ -1719,6 +1764,303 @@ mod tests {
             .send(&s)
             .await;
         assert_eq!(st, StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    async fn stats_pool(s: &Arc<TurboState>) -> (sqlx::AnyPool, crate::registry::Ns) {
+        let p = crate::migrate::connect("sqlite::memory:", 1).await.unwrap();
+        crate::migrate::migrate(&p).await.unwrap();
+        let ns = crate::registry::Ns::random();
+        sqlx::query("INSERT INTO repos (name, ns, created) VALUES ('acme/web', $1, 0)")
+            .bind(ns.as_bytes().to_vec())
+            .execute(&p)
+            .await
+            .unwrap();
+        s.stats.know("acme/web", ns);
+        (p, ns)
+    }
+
+    async fn stats_of(
+        s: &Arc<TurboState>,
+        p: &sqlx::AnyPool,
+        ns: crate::registry::Ns,
+    ) -> crate::ci::cache_stats::Counters {
+        s.stats.flush(p, now_secs(), Duration::from_secs(20)).await;
+        crate::ci::cache_stats::summary(p, ns, 0, now_secs() + 86_400)
+            .await
+            .unwrap()
+            .0
+    }
+
+    #[tokio::test]
+    async fn artifact_hits_misses_and_puts_are_counted_and_head_is_not() {
+        let (s, _) = state();
+        let (p, ns) = stats_pool(&s).await;
+        put(&s, "ci-secret", "aa", b"12345", None).await;
+        call("GET", &art("aa"), Some("ci-secret")).send(&s).await;
+        call("GET", &art("aa"), Some("ci-secret")).send(&s).await;
+        let (st, _, _) = call("GET", &art("zz"), Some("ci-secret")).send(&s).await;
+        assert_eq!(st, StatusCode::NOT_FOUND);
+        call("HEAD", &art("aa"), Some("ci-secret")).send(&s).await;
+        call("HEAD", &art("zz"), Some("ci-secret")).send(&s).await;
+        let uri = format!("/v8/artifacts?slug={SLUG}");
+        call("POST", &uri, Some("ci-secret"))
+            .body(r#"{"hashes":["aa","bb"]}"#)
+            .send(&s)
+            .await;
+        let uri = format!("/v8/artifacts/events?slug={SLUG}");
+        call("POST", &uri, Some("ci-secret"))
+            .header("content-type", "application/json")
+            .body(r#"[{"sessionId":"s","source":"REMOTE","event":"HIT","hash":"aa"}]"#)
+            .send(&s)
+            .await;
+        let c = stats_of(&s, &p, ns).await;
+        assert_eq!(
+            (c.hits, c.misses, c.puts, c.bytes_served, c.saved_ms),
+            (2, 1, 1, 10, 2468)
+        );
+    }
+
+    #[tokio::test]
+    async fn entry_hits_misses_and_puts_are_counted_and_head_is_not() {
+        let (s, _) = state();
+        let (p, ns) = stats_pool(&s).await;
+        let key = "a".repeat(64);
+        let uri = format!("/v8/asc/ac/{key}?slug={SLUG}");
+        let body = r#"{"tool":"vite","outputs":[]}"#;
+        let (st, _, _) = call("PUT", &uri, Some("ci-secret"))
+            .body(body)
+            .send(&s)
+            .await;
+        assert_eq!(st, StatusCode::CREATED);
+        call("GET", &uri, Some("ci-secret")).send(&s).await;
+        call("HEAD", &uri, Some("ci-secret")).send(&s).await;
+        let other = format!("/v8/asc/ac/{}?slug={SLUG}", "b".repeat(64));
+        let (st, _, _) = call("GET", &other, Some("ci-secret")).send(&s).await;
+        assert_eq!(st, StatusCode::NOT_FOUND);
+        call("HEAD", &other, Some("ci-secret")).send(&s).await;
+        let c = stats_of(&s, &p, ns).await;
+        assert_eq!(
+            (c.hits, c.misses, c.puts, c.bytes_served, c.saved_ms),
+            (1, 1, 1, body.len() as u64, 0)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_request_is_not_counted() {
+        let (s, _) = state();
+        s.stats.know("acme/web", crate::registry::Ns::random());
+        put(&s, "ci-secret", "aa", b"12345", None).await;
+        let key = "a".repeat(64);
+        let before = s.stats.totals();
+        assert_eq!(before.puts, 1);
+        for (m, uri, tok) in [
+            ("GET", art("aa"), None),
+            ("GET", art("aa"), Some("wrong")),
+            ("GET", art("zz"), Some("wrong")),
+            ("PUT", art("bb"), Some("ro-secret")),
+            (
+                "PUT",
+                format!("/v8/asc/ac/{key}?slug={SLUG}"),
+                Some("ro-secret"),
+            ),
+            (
+                "GET",
+                "/v8/artifacts/aa?slug=bad".to_string(),
+                Some("ci-secret"),
+            ),
+        ] {
+            let (st, _, _) = call(m, &uri, tok).body("x").send(&s).await;
+            assert!(st.is_client_error(), "{m} {uri}: {st}");
+        }
+        assert_eq!(s.stats.totals(), before);
+    }
+
+    #[tokio::test]
+    async fn the_duration_is_capped_at_put_and_again_at_a_hit() {
+        let (s, _) = state();
+        let (p, ns) = stats_pool(&s).await;
+        let (st, _, _) = call("PUT", &art("aa"), Some("ci-secret"))
+            .header("x-artifact-duration", "99999999999999")
+            .body(b"12345".to_vec())
+            .send(&s)
+            .await;
+        assert!(st.is_success());
+        let (_, h, _) = call("GET", &art("aa"), Some("ci-secret")).send(&s).await;
+        assert_eq!(
+            h["x-artifact-duration"],
+            MAX_DURATION_MS.to_string().as_str()
+        );
+        // Metadata written before the cap existed.
+        let slug = Slug::parse(SLUG).unwrap();
+        let hash = ArtifactHash::parse("bb").unwrap();
+        s.store
+            .put(
+                &s.data_path(&slug, &Scope::Trusted, &hash),
+                b"x".to_vec().into(),
+            )
+            .await
+            .unwrap();
+        let meta = Meta {
+            duration: u64::MAX / 2,
+            tag: None,
+            sha: None,
+            dirty_hash: None,
+            size: 1,
+            at: now_secs(),
+        };
+        s.write_meta(&s.meta_path(&slug, &Scope::Trusted, &hash), &meta)
+            .await
+            .unwrap();
+        call("GET", &art("bb"), Some("ci-secret")).send(&s).await;
+        let c = stats_of(&s, &p, ns).await;
+        assert_eq!((c.hits, c.saved_ms), (2, 2 * MAX_DURATION_MS));
+    }
+
+    #[tokio::test]
+    async fn unknown_repository_names_take_no_daily_key() {
+        let (s, _) = state();
+        for i in 0..50 {
+            let uri = format!("/v8/artifacts/aa?slug=junk.r{i}");
+            call("GET", &uri, Some("ci-secret")).send(&s).await;
+            call("PUT", &uri, Some("ci-secret"))
+                .body("x")
+                .send(&s)
+                .await;
+        }
+        assert_eq!(s.stats.sizes(), (0, 0));
+        // The flusher learns that none of them exists.
+        let (p, _) = stats_pool(&s).await;
+        s.stats.refresh_names(&p).await;
+        call("GET", "/v8/artifacts/aa?slug=junk.r1", Some("ci-secret"))
+            .send(&s)
+            .await;
+        assert_eq!(s.stats.sizes(), (0, 0));
+    }
+
+    #[tokio::test]
+    async fn a_miss_is_counted_when_the_metadata_exists_but_the_object_is_gone() {
+        let (s, _) = state();
+        let (p, ns) = stats_pool(&s).await;
+        put(&s, "ci-secret", "aa", b"12345", None).await;
+        let slug = Slug::parse(SLUG).unwrap();
+        let hash = ArtifactHash::parse("aa").unwrap();
+        s.store
+            .delete(&s.data_path(&slug, &Scope::Trusted, &hash))
+            .await
+            .unwrap();
+        let (st, _, _) = call("GET", &art("aa"), Some("ci-secret")).send(&s).await;
+        assert_eq!(st, StatusCode::NOT_FOUND);
+        let c = stats_of(&s, &p, ns).await;
+        assert_eq!((c.hits, c.misses, c.puts, c.bytes_served), (0, 1, 1, 0));
+    }
+
+    #[tokio::test]
+    async fn with_two_rev_headers_the_first_counts() {
+        let (s, _) = state();
+        let (p, ns) = stats_pool(&s).await;
+        for cs in [1u8, 2] {
+            sqlx::query(
+                "INSERT INTO change_versions (ns, change, v, cs, parent_change, at, actor, op_id)                  VALUES ($1, $2, 1, $3, NULL, 0, 'x', $4)",
+            )
+            .bind(ns.as_bytes().to_vec())
+            .bind(vec![cs; 16])
+            .bind(vec![cs; 32])
+            .bind(vec![cs; 16])
+            .execute(&p)
+            .await
+            .unwrap();
+        }
+        put(&s, "ci-secret", "aa", b"12345", None).await;
+        call("GET", &art("aa"), Some("ci-secret"))
+            .header("x-asc-rev", "01".repeat(32))
+            .header("x-asc-rev", "02".repeat(32))
+            .send(&s)
+            .await;
+        stats_of(&s, &p, ns).await;
+        let got = |cs: u8| {
+            let p = p.clone();
+            async move {
+                crate::ci::cache_stats::for_rev(&p, ns, &[cs; 32])
+                    .await
+                    .unwrap()
+                    .map(|c| c.hits)
+            }
+        };
+        assert_eq!((got(1).await, got(2).await), (Some(1), None));
+    }
+
+    #[tokio::test]
+    async fn only_a_valid_rev_header_that_resolves_in_the_same_repository_is_written() {
+        let (s, _) = state();
+        let (p, ns) = stats_pool(&s).await;
+        let other = crate::registry::Ns::random();
+        sqlx::query("INSERT INTO repos (name, ns, created) VALUES ('acme/other', $1, 0)")
+            .bind(other.as_bytes().to_vec())
+            .execute(&p)
+            .await
+            .unwrap();
+        for (ns, cs) in [(ns, 1u8), (other, 2u8)] {
+            sqlx::query(
+                "INSERT INTO change_versions (ns, change, v, cs, parent_change, at, actor, op_id)                  VALUES ($1, $2, 1, $3, NULL, 0, 'x', $4)",
+            )
+            .bind(ns.as_bytes().to_vec())
+            .bind(vec![3u8; 16])
+            .bind(vec![cs; 32])
+            .bind(vec![4u8; 16])
+            .execute(&p)
+            .await
+            .unwrap();
+        }
+        let rev = |b: u8| format!("{b:02x}").repeat(32);
+        put(&s, "ci-secret", "aa", b"12345", None).await;
+        for r in [
+            rev(1),
+            rev(2),
+            rev(3),
+            "A".repeat(64),
+            "zz".to_owned(),
+            "01".repeat(31),
+        ] {
+            let (st, _, _) = call("GET", &art("aa"), Some("ci-secret"))
+                .header("x-asc-rev", r)
+                .send(&s)
+                .await;
+            assert_eq!(st, StatusCode::OK);
+        }
+        assert_ne!(s.stats.sizes(), (0, 0));
+        let c = stats_of(&s, &p, ns).await;
+        assert_eq!(c.hits, 6);
+        let by_rev = crate::ci::cache_stats::for_rev(&p, ns, &[1; 32])
+            .await
+            .unwrap();
+        assert_eq!(by_rev.map(|c| c.hits), Some(1));
+        for cs in [[2u8; 32], [3; 32]] {
+            assert_eq!(
+                crate::ci::cache_stats::for_rev(&p, ns, &cs).await.unwrap(),
+                None
+            );
+        }
+        assert_eq!(
+            crate::ci::cache_stats::for_rev(&p, other, &[2; 32])
+                .await
+                .unwrap(),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn the_flusher_writes_once_more_at_shutdown() {
+        let (s, _) = state();
+        let (p, ns) = stats_pool(&s).await;
+        let stop = tokio_util::sync::CancellationToken::new();
+        let task = s.spawn_stats_flusher(p.clone(), stop.clone());
+        put(&s, "ci-secret", "aa", b"12345", None).await;
+        stop.cancel();
+        task.await.unwrap();
+        let (c, _) = crate::ci::cache_stats::summary(&p, ns, 0, now_secs() + 86_400)
+            .await
+            .unwrap();
+        assert_eq!(c.puts, 1);
     }
 
     #[tokio::test]
