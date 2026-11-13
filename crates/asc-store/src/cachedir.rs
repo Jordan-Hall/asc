@@ -25,6 +25,8 @@ use crate::objects::{Error, Objects, Result, decode_verified, max_decoded, slice
 const TOUCH_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
 /// Eviction stops once the cache is at or below this share of the limit.
 const EVICT_TARGET_PERCENT: u128 = 80;
+/// Directory under the root that holds the assembled copies of large files.
+const ASSEMBLED_DIR: &str = "assembled";
 /// Codec byte of `get_stored` output: the file holds raw decoded data.
 const RAW: u8 = 0;
 
@@ -258,6 +260,8 @@ impl Inner {
             total += meta.len();
             files.push((meta.modified()?, meta.len(), path));
         }
+        // Assembled large-file copies a plain checkout keeps (`assembled/<h2>/<hex>`).
+        collect_assembled(&self.root.join(ASSEMBLED_DIR), &mut files, &mut total)?;
         // Whole packs a bucket keeps here (`pack/<id>.pack`) count as one file each.
         for (at, len, path) in crate::pack::cache::list(&self.root)? {
             total += len;
@@ -274,13 +278,68 @@ impl Inner {
                 break;
             }
             // A file that cannot be removed is skipped and not counted as freed.
-            if remove_if_present(&path).is_ok() {
+            if remove_evictable(&path).is_ok() {
                 total -= len;
                 freed += len;
             }
         }
         Ok(freed)
     }
+}
+
+/// Adds every regular file below `dir` (the assembled copies) to `files` and `total`.
+fn collect_assembled(
+    dir: &Path,
+    files: &mut Vec<(SystemTime, u64, PathBuf)>,
+    total: &mut u64,
+) -> io::Result<()> {
+    let rd = match fs::read_dir(dir) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    for entry in rd {
+        let entry = entry?;
+        let path = entry.path();
+        let kind = match entry.file_type() {
+            Ok(k) => k,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e),
+        };
+        if kind.is_dir() {
+            collect_assembled(&path, files, total)?;
+        } else if kind.is_file() {
+            match entry.metadata() {
+                Ok(meta) => {
+                    *total += meta.len();
+                    files.push((meta.modified()?, meta.len(), path));
+                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Removes an evicted file. Assembled copies are read-only, so the attribute is cleared
+/// first; an emptied fan-out directory under `assembled/` is removed too, ignoring failure.
+fn remove_evictable(path: &Path) -> io::Result<()> {
+    if let Ok(m) = fs::metadata(path) {
+        let mut perms = m.permissions();
+        if perms.readonly() {
+            #[allow(clippy::permissions_set_readonly_false)]
+            perms.set_readonly(false);
+            let _ = fs::set_permissions(path, perms);
+        }
+    }
+    remove_if_present(path)?;
+    if let Some(dir) = path.parent()
+        && dir.parent().is_some_and(|up| up.ends_with(ASSEMBLED_DIR))
+    {
+        let _ = fs::remove_dir(dir);
+    }
+    Ok(())
 }
 
 /// Opens for reading; on Windows other handles may delete or replace the file meanwhile.
@@ -765,6 +824,94 @@ pub(crate) mod tests {
         assert_eq!(c.evict_to(350).await.unwrap(), 300);
         assert!(!pack.exists());
         assert_eq!(c.has_many(&[key]).await.unwrap(), [true]);
+    }
+
+    fn put_assembled(
+        root: &Path,
+        name: &str,
+        len: usize,
+        age_secs: u64,
+        read_only: bool,
+    ) -> PathBuf {
+        let dir = root.join(ASSEMBLED_DIR).join("ab");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(name);
+        fs::write(&path, vec![1u8; len]).unwrap();
+        let f = OpenOptions::new().write(true).open(&path).unwrap();
+        f.set_modified(SystemTime::now() - Duration::from_secs(age_secs))
+            .unwrap();
+        drop(f);
+        if read_only {
+            let mut perms = fs::metadata(&path).unwrap().permissions();
+            perms.set_readonly(true);
+            fs::set_permissions(&path, perms).unwrap();
+        }
+        path
+    }
+
+    #[tokio::test]
+    async fn assembled_files_count_toward_the_total() {
+        let tmp = tempfile::tempdir().unwrap();
+        let c = open_in(tmp.path(), "cache");
+        let data = vec![5u8; 100];
+        let key = file_key(&data);
+        c.put(&key, encode_stored(&data)).await.unwrap();
+        let big = put_assembled(&c.inner.root, "aa", 300, 1000, true);
+        // Objects alone (100) are under 350; with the assembled copy (400) they are not.
+        assert_eq!(c.evict_to(350).await.unwrap(), 300);
+        assert!(!big.exists());
+        assert!(!c.inner.root.join(ASSEMBLED_DIR).join("ab").exists());
+        assert_eq!(c.has_many(&[key]).await.unwrap(), [true]);
+        assert_eq!(c.evict_to(350).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn eviction_is_oldest_first_across_objects_and_assembled_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let c = open_in(tmp.path(), "cache");
+        let data = vec![6u8; 100];
+        let key = file_key(&data);
+        c.put(&key, encode_stored(&data)).await.unwrap();
+        let f = OpenOptions::new()
+            .write(true)
+            .open(c.inner.path(&key))
+            .unwrap();
+        f.set_modified(SystemTime::now() - Duration::from_secs(500))
+            .unwrap();
+        drop(f);
+        let oldest = put_assembled(&c.inner.root, "01", 100, 900, false);
+        let newest = put_assembled(&c.inner.root, "02", 100, 100, false);
+        // 300 bytes held, limit 150: evict down to 120, oldest first.
+        assert_eq!(c.evict_to(150).await.unwrap(), 200);
+        assert!(!oldest.exists());
+        assert_eq!(c.has_many(&[key]).await.unwrap(), [false]);
+        assert!(newest.exists());
+    }
+
+    #[tokio::test]
+    async fn a_read_only_assembled_file_is_removed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let c = open_in(tmp.path(), "cache");
+        let big = put_assembled(&c.inner.root, "cc", 100, 10, true);
+        assert!(fs::metadata(&big).unwrap().permissions().readonly());
+        assert_eq!(c.evict_to(50).await.unwrap(), 100);
+        assert!(!big.exists());
+    }
+
+    #[tokio::test]
+    async fn an_unrelated_file_is_neither_counted_nor_removed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let c = open_in(tmp.path(), "cache");
+        let stray = c.inner.root.join("notes.txt");
+        fs::write(&stray, vec![0u8; 1000]).unwrap();
+        let deep = c.inner.root.join("other");
+        fs::create_dir_all(&deep).unwrap();
+        fs::write(deep.join("x"), vec![0u8; 1000]).unwrap();
+        let big = put_assembled(&c.inner.root, "dd", 100, 10, false);
+        assert_eq!(c.evict_to(150).await.unwrap(), 0);
+        assert!(big.exists());
+        assert_eq!(c.evict_to(50).await.unwrap(), 100);
+        assert!(stray.exists() && deep.join("x").exists());
     }
 
     #[tokio::test]
