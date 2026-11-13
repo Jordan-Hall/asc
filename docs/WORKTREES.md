@@ -76,6 +76,10 @@ Plain worktrees, cloned `node_modules` and build cache restores cost no space on
 can reflink. Keep the repository, its worktrees and the asc home on the same such volume: a reflink
 cannot cross volumes.
 
+Files over 4 MiB are clones there too. asc keeps one assembled copy of each large file per machine,
+inside the cache directory, and clones every plain worktree's file from it. On a volume that cannot
+clone, asc makes no assembled copy, so each worktree writes its own as before.
+
 | System | Volume | How to get one |
 |---|---|---|
 | Windows 11 | Dev Drive (ReFS) | Settings, System, Storage, Disks and volumes, Create Dev Drive; or `Format-Volume -DriveLetter E -DevDrive` on a new partition or VHDX |

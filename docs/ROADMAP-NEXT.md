@@ -37,7 +37,7 @@ considered and rejected for this reason.
 | 7 | Cold-read benchmark | Latency of reading a full-depth chain (seven links) from a store with request latency, recorded in `docs/BENCHMARKS.md`, before deltas are enabled anywhere | S | done |
 | 8 | Fork deduplication | Forks share objects instead of copying them | D | open |
 | 9 | Large-file chunk pairing | Chunks are 65 MB of the 192.6 MB dash store; git packs the same files in 50 MB | S | open |
-| 10 | Reflink files over 4 MiB | One assembled copy per machine, cloned into each plain worktree | S | open |
+| 10 | Reflink files over 4 MiB | One assembled copy per machine, cloned into each plain worktree | S | in progress |
 
 ## 3. Worktrees and the working copy
 
