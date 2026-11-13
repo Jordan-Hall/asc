@@ -481,11 +481,11 @@ async fn write_path<O: Objects, R: Refs>(
                 Some(area) if *kind != Kind::Symlink => {
                     match link_shared(wc, area, *kind, *file, *size, *git, &tmp).await {
                         Ok(true) => Ok(()),
-                        Ok(false) => materialise(wc, *kind, *file, *size, &tmp).await,
+                        Ok(false) => materialise(wc, *kind, *file, *size, &tmp, true).await,
                         Err(e) => Err(e),
                     }
                 }
-                _ => materialise(wc, *kind, *file, *size, &tmp).await,
+                _ => materialise(wc, *kind, *file, *size, &tmp, true).await,
             };
             if let Err(e) = made {
                 let _ = fs::remove_file(&tmp);
@@ -523,6 +523,7 @@ async fn materialise<O: Objects, R: Refs>(
     file: FileId,
     size: u64,
     tmp: &Path,
+    assemble: bool,
 ) -> Result<()> {
     if kind == Kind::Symlink {
         let target = wc
@@ -556,10 +557,59 @@ async fn materialise<O: Objects, R: Refs>(
                 fs::write(tmp, &data).map_err(io_at(tmp))?;
             }
         }
+    } else if assemble && wc.shared.is_none() {
+        let assembled = assembled_path(wc.store, file);
+        // Reflink only: a byte copy from the assembled file would be a full private copy.
+        let cloned =
+            assembled_usable(&assembled, size) && reflink_copy::reflink(&assembled, tmp).is_ok();
+        if !cloned {
+            // `File::create` in `write_chunked` replaces anything a failed clone left at `tmp`.
+            write_chunked(wc.store, file, tmp).await?;
+            publish_assembled(tmp, &assembled);
+        }
     } else {
         write_chunked(wc.store, file, tmp).await?;
     }
     set_mode(tmp, kind == Kind::Exec).map_err(io_at(tmp))
+}
+
+/// Where the one assembled copy of the large file `file` lives: inside the cache directory, so
+/// it goes with the cache, under a two-character fan-out like the object store.
+fn assembled_path(store: &StoreSet, file: FileId) -> PathBuf {
+    let hex = file.to_string();
+    store
+        .cache
+        .root()
+        .join("assembled")
+        .join(&hex[..2])
+        .join(&hex)
+}
+
+/// Whether `assembled` is a regular file of `size` bytes. Content is trusted on length plus the
+/// read-only mark set when it was published: the same trust the reflink from the store's loose
+/// file has. It is never hard-linked, so a worktree edit cannot reach it.
+fn assembled_usable(assembled: &Path, size: u64) -> bool {
+    fs::metadata(assembled).is_ok_and(|m| m.is_file() && m.len() == size)
+}
+
+/// Offers the finished large file `tmp` as the assembled copy: a clone into a temporary name,
+/// made read-only and renamed into place. Where the volume cannot clone nothing is left behind,
+/// so such a volume never stores the file twice. Failure is ignored: the checkout is correct
+/// without the copy.
+fn publish_assembled(tmp: &Path, assembled: &Path) {
+    let Some(fan) = assembled.parent() else {
+        return;
+    };
+    if fs::create_dir_all(fan).is_err() {
+        return;
+    }
+    let part = temp_beside(assembled);
+    let published = reflink_copy::reflink(tmp, &part).is_ok()
+        && make_read_only(&part).is_ok()
+        && fs::rename(&part, assembled).is_ok();
+    if !published {
+        remove_sealed(&part);
+    }
 }
 
 /// Writes `file` to `tmp` as a regular file with the line endings a checkout under `smudge`
@@ -573,7 +623,7 @@ async fn materialise_smudged<O: Objects, R: Refs>(
     smudge: Smudge,
     tmp: &Path,
 ) -> Result<()> {
-    materialise(wc, kind, file, size, tmp).await?;
+    materialise(wc, kind, file, size, tmp, false).await?;
     let mut stats = crate::eol::Stats::default();
     for_each_piece(tmp, |piece| {
         stats.feed(piece);
@@ -649,7 +699,7 @@ async fn link_shared<O: Objects, R: Refs>(
             fs::create_dir_all(fan).map_err(io_at(fan))?;
             let part = temp_beside(&target);
             let sealed = async {
-                materialise(wc, kind, file, size, &part).await?;
+                materialise(wc, kind, file, size, &part, false).await?;
                 shared::seal(&part, exec).map_err(io_at(&part))?;
                 // Another checkout may have sealed the same blob meanwhile: either copy will do.
                 match fs::rename(&part, &target) {
@@ -667,6 +717,12 @@ async fn link_shared<O: Objects, R: Refs>(
     Ok(shared::make_link(&target, tmp).is_ok())
 }
 
+fn make_read_only(path: &Path) -> io::Result<()> {
+    let mut perms = fs::metadata(path)?.permissions();
+    perms.set_readonly(true);
+    fs::set_permissions(path, perms)
+}
+
 /// Removes a part-written or sealed (read-only) file, ignoring failure.
 #[allow(clippy::permissions_set_readonly_false)] // Windows only: clears the read-only attribute.
 fn remove_sealed(path: &Path) {
@@ -678,8 +734,16 @@ fn remove_sealed(path: &Path) {
     let _ = fs::remove_file(path);
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Calls to `write_chunked` on this thread (tests count reassemblies).
+    static CHUNKED_WRITES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Streams the verified chunks of a chunked file into `tmp`.
 async fn write_chunked(store: &StoreSet, file: FileId, tmp: &Path) -> Result<()> {
+    #[cfg(test)]
+    CHUNKED_WRITES.with(|c| c.set(c.get() + 1));
     let list_bytes = store
         .get(&ObjKey::ChunkList(file))
         .await?
@@ -942,6 +1006,81 @@ mod tests {
             let m = fs::metadata(fx.root.join("run.sh")).unwrap();
             assert_ne!(m.permissions().mode() & 0o111, 0);
         }
+    }
+
+    fn large() -> Vec<u8> {
+        let n = usize::try_from(CHUNK_THRESHOLD).unwrap() + (1 << 20);
+        (0..n)
+            .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+            .collect()
+    }
+
+    /// Checks `to` out of an empty tree, then out again after removing it.
+    async fn check_out_twice(fx: &Fixture, to: TreeId, name: &str) -> (Vec<u8>, Vec<u8>, usize) {
+        let wc = fx.wc();
+        checkout(&wc, fx.empty(), to, Mode::Safe).await.unwrap();
+        let first = fx.read(name);
+        checkout(&wc, to, fx.empty(), Mode::Safe).await.unwrap();
+        let before = CHUNKED_WRITES.with(std::cell::Cell::get);
+        checkout(&wc, fx.empty(), to, Mode::Safe).await.unwrap();
+        let writes = CHUNKED_WRITES.with(std::cell::Cell::get) - before;
+        (first, fx.read(name), writes)
+    }
+
+    fn assembled_files(fx: &Fixture) -> Vec<PathBuf> {
+        let dir = fx.store.cache.root().join("assembled");
+        let mut found = Vec::new();
+        for fan in fs::read_dir(dir).into_iter().flatten() {
+            for f in fs::read_dir(fan.unwrap().path()).unwrap() {
+                found.push(f.unwrap().path());
+            }
+        }
+        found
+    }
+
+    #[tokio::test]
+    async fn a_large_file_checked_out_twice_has_the_same_content() {
+        let fx = Fixture::new();
+        let data = large();
+        let to = fx.tree(&[("big.bin", F, &data)]).await;
+        let (first, second, _) = check_out_twice(&fx, to, "big.bin").await;
+        assert!(first == data && second == data);
+    }
+
+    #[tokio::test]
+    async fn a_large_file_is_reassembled_once_where_the_volume_clones() {
+        let fx = Fixture::new();
+        let data = large();
+        let to = fx.tree(&[("big.bin", F, &data)]).await;
+        let probe_src = fx._dir.path().join("probe-src");
+        fs::write(&probe_src, b"x").unwrap();
+        let clones = reflink_copy::reflink(&probe_src, fx._dir.path().join("probe-dst")).is_ok();
+        let (first, second, writes) = check_out_twice(&fx, to, "big.bin").await;
+        assert!(first == data && second == data);
+        let found = assembled_files(&fx);
+        if clones {
+            assert_eq!(found.len(), 1, "{found:?}");
+            assert_eq!(fs::metadata(&found[0]).unwrap().len(), data.len() as u64);
+            assert!(fs::metadata(&found[0]).unwrap().permissions().readonly());
+            assert_eq!(writes, 0);
+        } else {
+            assert!(found.is_empty(), "{found:?}");
+            assert_eq!(writes, 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn an_assembled_copy_of_the_wrong_length_is_ignored() {
+        let fx = Fixture::new();
+        let data = large();
+        let to = fx.tree(&[("big.bin", F, &data)]).await;
+        let wc = fx.wc();
+        let ing = asc_core::content::ingest(io::Cursor::new(data.clone())).unwrap();
+        let bad = assembled_path(&fx.store, ing.file);
+        fs::create_dir_all(bad.parent().unwrap()).unwrap();
+        fs::write(&bad, b"short").unwrap();
+        checkout(&wc, fx.empty(), to, Mode::Safe).await.unwrap();
+        assert!(fx.read("big.bin") == data);
     }
 
     /// Every file is checked out with CRLF line endings.

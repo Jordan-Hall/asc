@@ -97,6 +97,11 @@ impl CacheDir {
         }
     }
 
+    /// The directory this cache keeps its files in.
+    pub fn root(&self) -> &Path {
+        &self.inner.root
+    }
+
     /// Path of the content file of `id` if it is present, for reflink, ProjFS and passthrough.
     pub fn content_path(&self, id: FileId) -> Option<PathBuf> {
         let p = self.inner.path(&ObjKey::File(id));
