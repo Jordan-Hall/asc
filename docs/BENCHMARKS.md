@@ -64,3 +64,40 @@ Choosing the delta level: over all 22,704 same-path pairs of every commit, the d
 level 3, 56 MB at 6, 24.6 MB at 9, 23.7 MB at 12 and 21.6 MB at 19, with encode times of 5.8 s, 9.9 s,
 16.5 s, 37.9 s and 198 s and decode under 1 s at every level. Level 9 is the knee.
 
+## Cold read of a delta chain
+
+`cargo run -p asc-store --example delta_cold_read` stores a file of 4 KiB, 64 KiB and 1 MiB whole
+(depth 0), then stores each next version, a 48-byte edit of the one before, as a delta on it, up to
+depth 7 (the pass refuses to extend a chain past `MAX_DELTA_DEPTH` = 8 links, so depth 7 is the
+deepest the example can build). An in-memory object store is wrapped in a decorator that really sleeps
+20 ms before every request and counts requests and bytes returned. Each read uses a fresh
+`BucketObjects`, so nothing is cached in process; the table is the median of five reads of the top of
+the chain. The example prints every depth from 0 to 7; this table shows depths 0, 1, 3 and 7. The
+time is wall time and includes decode and verification, and the Windows timer rounds each sleep up, so
+the 1 request rows read 11 to 22 ms above 20 ms.
+
+| size | depth | requests | bytes fetched | time at 20 ms |
+|---|---|---|---|---|
+| 4 KiB | 0 | 1 | 1,356 | 32 ms |
+| 4 KiB | 1 | 2 | 1,428 | 64 ms |
+| 4 KiB | 3 | 4 | 1,585 | 125 ms |
+| 4 KiB | 7 | 8 | 1,887 | 251 ms |
+| 64 KiB | 0 | 1 | 18,598 | 31 ms |
+| 64 KiB | 1 | 2 | 18,674 | 62 ms |
+| 64 KiB | 3 | 4 | 18,846 | 124 ms |
+| 64 KiB | 7 | 8 | 19,173 | 232 ms |
+| 1 MiB | 0 | 1 | 285,036 | 42 ms |
+| 1 MiB | 1 | 2 | 285,218 | 95 ms |
+| 1 MiB | 3 | 4 | 285,601 | 206 ms |
+| 1 MiB | 7 | 8 | 286,363 | 430 ms |
+
+A full value is one request. A chain of depth N is N + 1 requests, one per link, made one after the
+other because the base is only known once the delta is read, so a cold read costs N + 1 round trips
+and the bytes fetched barely change (the deltas are small). A depth-seven chain took 232 to 430 ms where
+the full value took 31 to 42 ms, about eight times as long.
+
+For a cold checkout that reads many files one after another from a remote store, every chained file
+adds up to seven round trips: at 20 ms, 1,000 files at depth seven is about 160 s of waiting that
+parallel reads or a local cache must hide. Deltas are cheap in space and costly in latency, so the
+decision to enable them should weigh this against the saving above.
+

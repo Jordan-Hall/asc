@@ -34,7 +34,7 @@ considered and rejected for this reason.
 |---|---|---|---|---|
 | 5 | Cold-only deltas | Only history past a set age or distance from every tip may become a delta | D | decision |
 | 6 | Never serve a delta | A written rule and a test: every read path, cache and client receives full values | S | done |
-| 7 | Cold-read benchmark | Latency of reading a depth-eight chain from an S3-compatible store, recorded in `docs/BENCHMARKS.md`, before deltas are enabled anywhere | S | open |
+| 7 | Cold-read benchmark | Latency of reading a full-depth chain (seven links) from a store with request latency, recorded in `docs/BENCHMARKS.md`, before deltas are enabled anywhere | S | done |
 | 8 | Fork deduplication | Forks share objects instead of copying them | D | open |
 | 9 | Large-file chunk pairing | Chunks are 65 MB of the 192.6 MB dash store; git packs the same files in 50 MB | S | open |
 | 10 | Reflink files over 4 MiB | One assembled copy per machine, cloned into each plain worktree | S | open |
@@ -67,7 +67,7 @@ considered and rejected for this reason.
 | 22 | `node_modules` snapshots | An install stored as a tree keyed by lockfile, mounted instead of downloaded. Out of scope today | D | decision |
 | 23 | Virtual CI checkout on Windows and macOS | `asc ci checkout --mode virtual` is documented for Linux runners only | S | open |
 | 24 | Task runner (`asc run`) | asc has the graph, the hashes and the cache. Out of scope today | D | decision |
-| 25 | asc's CI builds its tests once | Each of three shards compiles the same binaries for 5 to 7 minutes | S | open |
+| 25 | asc's CI builds its tests once | Each of three shards compiles the same binaries for 5 to 7 minutes | S | in progress |
 
 ## 6. Vulnerability awareness
 
