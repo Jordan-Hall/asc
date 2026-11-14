@@ -688,6 +688,9 @@ A client calls it with the user's own credential.
   not exist, is not public, or the hub cannot be asked (no hub, no token, transport error, any status but 200, an unreadable answer). Errors are not cached; a refusal
   and an answer are kept for 30 and 60 seconds. There is no email and no avatar in the answer, and none is added. Every call is audited (`agent.profile.read`:
   login and whether it was allowed, never the values).
+- Agents get the same profile through the sandbox tool `get_person {login}`. It returns one JSON object with the shared fields only, never email. A run may make
+  20 valid lookups; `Agents.GetPerson` called with that run's agent token counts toward the same 20 (`ResourceExhausted` after). Malformed logins use no slot.
+  Output is masked for secrets and truncated like every tool result, and each lookup is audited as `agent.profile.read` with the run's starter as actor.
 
 ## 24. Insights
 
