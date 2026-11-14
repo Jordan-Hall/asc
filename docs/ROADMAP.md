@@ -70,7 +70,7 @@ In flight: rows 42 and 46 (the cache statistics store and recorder have landed; 
 |---|---|---|---|---|
 | 1 | Server scrub | A slow, resumable job re-reads stored objects, checks hashes (delta bases first), reports, and repairs from a second copy | D | open |
 | 2 | Object-lock mode | Optional bucket versioning or object lock with a delete delay, so a GC fault or a leaked key cannot destroy history | D | open |
-| 4 | Backup chain check | Backup verifies that every delta chain restores | S | open |
+| 4 | Backup chain check | Backup verifies that every delta chain restores | S | done 2026-11-14 |
 
 ### Storage size
 
