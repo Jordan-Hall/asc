@@ -909,26 +909,20 @@ impl AgentService {
             .env
             .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
             .await?;
-        if msg.login.is_empty() || msg.login.len() > 64 {
-            return Err(Status::invalid_argument("a login is 1 to 64 characters"));
-        }
-        let profile = match self.hub.profiles.get() {
-            Some(p) => p.get(&msg.login).await,
-            None => None,
-        };
-        self.hub
-            .audit(
-                "agent.profile.read",
-                &ctx.principal.id,
-                crate::review::acting::relayed(&ctx).then_some("host"),
-                ctx.repo.as_str(),
-                &msg.login,
-                &[
-                    ("login", msg.login.clone()),
-                    ("allowed", profile.is_some().to_string()),
-                ],
-            )
-            .await;
+        let run = self.hub.run_of_principal(&ctx.principal.id).await;
+        let profile = super::super::profile::read_profile(
+            &self.hub,
+            &ctx.principal.id,
+            crate::review::acting::relayed(&ctx).then_some("host"),
+            ctx.repo.as_str(),
+            &msg.login,
+            run,
+        )
+        .await
+        .map_err(|e| match e {
+            super::super::profile::Refused::Login => Status::invalid_argument(e.text()),
+            super::super::profile::Refused::Cap => Status::resource_exhausted(e.text()),
+        })?;
         Ok(Response::new(match profile {
             Some(p) => wire::GetAgentPersonResponse {
                 allowed: true,

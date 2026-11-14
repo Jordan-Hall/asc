@@ -147,6 +147,23 @@ pub(crate) fn example_of(glob: &str) -> String {
         .join("/")
 }
 
+/// Removes what the hub keeps for a live run when the run's task ends.
+struct RunEntries {
+    hub: Arc<AgentsHub>,
+    id: u64,
+}
+
+impl Drop for RunEntries {
+    fn drop(&mut self) {
+        self.hub
+            .live
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.id);
+        self.hub.forget_person_calls(self.id);
+    }
+}
+
 impl AgentsHub {
     // -------------------------------------------------------------------------- creating
 
@@ -814,6 +831,11 @@ impl AgentsHub {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(id, live.clone());
+        // Dropped on every way out of this function, a panic included.
+        let _forget = RunEntries {
+            hub: self.clone(),
+            id,
+        };
         let running = RunRow {
             state: RunState::Running,
             ..run.clone()
@@ -1559,6 +1581,8 @@ impl AgentsHub {
                         scope_refusals: &mut refusals,
                         pool: &core.pool,
                         ns: entry.ns.as_bytes().to_vec(),
+                        hub: self,
+                        actor: &run.created_by,
                     };
                     tools.run(call).await
                 };
@@ -1743,6 +1767,8 @@ impl AgentsHub {
                 scope_refusals: refusals,
                 pool: &self.core.pool,
                 ns: entry.ns.as_bytes().to_vec(),
+                hub: self,
+                actor: &run.created_by,
             };
             tools.commit_message(&message).await
         };

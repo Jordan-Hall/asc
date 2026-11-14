@@ -167,6 +167,12 @@ pub fn specs(commands: &[String]) -> Vec<ToolSpec> {
                 "required": ["message"]}),
         ),
         spec(
+            "get_person",
+            "Look up the profile (name, description, location, website, pronouns) of a person by login, for example to address them. Only a person who shares a profile with agents is returned; there is no email. At most 20 lookups per run.",
+            json!({"type": "object", "properties": {"login": {"type": "string", "description": "the person's login, 1 to 64 characters"}},
+                "required": ["login"]}),
+        ),
+        spec(
             "ask_user",
             "Ask the person who started this run a question and wait for the answer. Use it when the task is ambiguous; do not guess.",
             json!({"type": "object", "properties": {"question": {"type": "string"}}, "required": ["question"]}),
@@ -224,6 +230,10 @@ pub struct ToolCtx<'a> {
     pub scope_refusals: &'a mut u32,
     pub pool: &'a sqlx::AnyPool,
     pub ns: Vec<u8>,
+    /// The agent services, to look people up.
+    pub hub: &'a super::AgentsHub,
+    /// Who the run acts as in the audit log (the person who started it).
+    pub actor: &'a str,
 }
 
 /// One commit of the run.
@@ -313,6 +323,17 @@ impl ToolCtx<'_> {
             "status" => self.status().await,
             "diff" => self.diff(m).await,
             "commit" => self.commit(m).await,
+            "get_person" => {
+                let (content, error) = super::profile::person_tool(
+                    self.hub,
+                    self.run_id,
+                    self.actor,
+                    self.repo,
+                    &call.input,
+                )
+                .await;
+                Ok(Outcome::Result { content, error })
+            }
             "ask_user" => {
                 let q = text(m, "question");
                 match q {

@@ -26,6 +26,7 @@ pub mod errors;
 pub mod gate;
 pub mod inproc;
 pub mod mask;
+pub mod profile;
 pub mod register;
 pub mod repo;
 pub mod rpc;
@@ -109,6 +110,8 @@ pub struct AgentsHub {
     pub runners: Arc<runners::Runners>,
     /// Where an agent's request for the profile of a person is answered; without it every request is refused.
     pub(crate) profiles: OnceLock<Arc<crate::profile::AgentProfiles>>,
+    /// How many `get_person` calls each live run made (see [`profile::MAX_PERSON_CALLS`]).
+    pub(crate) person_calls: Mutex<HashMap<u64, u32>>,
 }
 
 impl AgentsHub {
@@ -185,6 +188,7 @@ impl AgentsHub {
             sandbox,
             inproc: OnceLock::new(),
             profiles: OnceLock::new(),
+            person_calls: Mutex::new(HashMap::new()),
             live: Mutex::new(HashMap::new()),
             wake: Notify::new(),
             permits,
