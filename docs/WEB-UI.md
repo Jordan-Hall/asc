@@ -78,6 +78,14 @@ A single key manager (`web/src/lib/keys.ts`) owns all shortcuts; it ignores keys
 
 A chord expires after 1.5 s. Every shortcut also has a visible control. Focus is managed on route change (the page heading receives focus and is announced through a polite live region).
 
+### Agent queue, cloud drafts and templates
+
+These are hub pages on ASC Hub. They are not in the `/ui` route table above.
+
+- **Agent queue** (`/-/asc/agents/queue`, signed in). Lists pending agent requests and live runs. It covers up to 50 repositories that the person can read and that have the agents feature on. Request text from another person's run is hidden unless the viewer is a site admin. Hidden requests show no decide buttons. Decide buttons need repository write. They post to the existing per-repository decide action.
+- **Cloud workspaces** (`/{owner}/{repo}/asc/cloud`, signed in, code read, asc-backed). With repository write, the page lists every cloud workspace. Otherwise it lists only the person's own. A person can restore their own discarded drafts. Restore is a POST with a CSRF check. The server takes the owner from the session, and asc checks it again.
+- **New repository from a template** (asc-backed hub). The "Start from" choice lists up to 50 repositories marked as templates that the person can read. The server checks read access again on submit. The API answers 403 when the template cannot be read.
+
 ## 4. Data loading and caching
 
 ### 4.1 Transport

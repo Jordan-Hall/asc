@@ -146,11 +146,11 @@ From a review of the hub's asc pages on 2026-11-13 (routes, templates and styles
 | # | Item | What it does | Size | Status |
 |---|---|---|---|---|
 | 42 | Cache and storage insights | CI time saved by the cache, cache hit rate, and storage used and saved, on the Insights page | S | open |
-| 43 | Agent proposals inbox and live map | One queue of agent proposals to approve or reject, and a live view of which agent works on what | S | open |
+| 43 | Agent proposals inbox and live map | One queue of agent proposals to approve or reject, and a live view of which agent works on what | S | done |
 | 44 | Worktrees view | A page listing the live virtual worktrees of a repository and who holds them | D | open |
-| 45 | Commit-cloud view | All branchless work by user and agent, with restore | D | open |
+| 45 | Commit-cloud view | All branchless work by user and agent, with restore | D | done |
 | 46 | Affected projects and cache hits on a change | Shown inline with the checks of a change | S | open |
-| 50 | Repository templates | Templates in the create flow | D | open |
+| 50 | Repository templates | Templates in the create flow | D | done |
 | 51 | Own pages for repo home, diff and issues | Rebuilt in the asc design system, with the loose `asc-*.css` files folded in, so no page is the upstream forge's template with a new skin | D | open |
 | 52 | SBOM download | On the dependency page (the server side is row 32) | S | done |
 | 75 | Hub integration matrix over both storage backends | The hub's integration tests run with git storage and with asc storage (plan unit K15, `FORGEJO_TEST_STORAGE_BACKEND`). **Check first** | S | open |
