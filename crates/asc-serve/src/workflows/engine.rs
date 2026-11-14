@@ -569,6 +569,12 @@ impl WorkflowsHub {
                     }
                 }
                 if dead {
+                    // A step cancelled by the stop makes its dependants "dead" too; they are
+                    // cancelled with the run below, not skipped. The stop is always set before a
+                    // step can end as cancelled, so reading it here, after the steps, is enough.
+                    if live.stop.is_cancelled() {
+                        continue;
+                    }
                     if self
                         .store
                         .step_state(
