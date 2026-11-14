@@ -25,7 +25,9 @@ wins.
 |---|---|
 | [`plugin-api.md`](plugin-api.md), [`plugin-api-stack.md`](plugin-api-stack.md), [`plugin-api-additions.md`](plugin-api-additions.md) | The Workspace RPCs the VS Code and JetBrains plugins use. |
 | [`WEB-UI.md`](WEB-UI.md) | The web app: routes, what each screen reads, keyboard, security headers. |
-| [`CI-INSIGHTS.md`](CI-INSIGHTS.md) | CI failure groups, flaky tests and quarantine. |
+| [`CI-INSIGHTS.md`](CI-INSIGHTS.md) | CI failure groups, flaky tests and quarantine, and where build cache use is shown. |
+| [`DEPENDENCIES.md`](DEPENDENCIES.md) | Dependency scanning: findings, KEV and EPSS, SBOM, status, update proposals, blocking policy. |
+| [`ci/build-cache.md`](ci/build-cache.md) | The Rust build cache in CI and its use statistics. |
 
 ## Run a server
 

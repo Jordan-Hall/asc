@@ -230,7 +230,8 @@ All take `--json` and `--remote <name\|url>`. The scope is `--rev <rev>`, `--cha
 | `ci artifact download` | Downloads an artifact into `--path` (default: the current directory). | `asc ci artifact download build-logs --path ./logs` |
 | `ci artifact list` | Lists artifact names, newest first, optionally those starting with a prefix. | `asc ci artifact list build-` |
 | `deps scan` | Reads the dependency files of a revision, looks the packages up and records the findings. `--rev`, `--ecosystem`, `--refresh`. | `asc deps scan --ecosystem cargo` |
-| `deps findings` | Lists the findings. `--state`, `--ecosystem`, `--severity`, `--package`. | `asc deps findings --severity high` |
+| `deps findings` | Lists the findings. `--state`, `--ecosystem`, `--severity`, `--package`, `--sort newest\|exploited`, `--exploited` (only findings on the KEV list), `--limit`, `--page`. | `asc deps findings --sort exploited` |
+| `deps sbom` | Writes the CycloneDX 1.6 bill of materials of a revision to standard output, or to `--out FILE` (`--force` replaces it). `--rev`, `--ecosystem`. | `asc deps sbom --out sbom.cdx.json` |
 | `deps updates` | Lists the updates that are available. `--security` only security fixes, `--ignored` also ignored ones. | `asc deps updates --security` |
 | `deps propose` | Records updates as changes on `agent/deps` refs. `--max-kind patch\|minor\|major`, `--max-groups`, `--dry-run`. | `asc deps propose --security --dry-run` |
 | `deps dismiss`, `reopen` | Dismisses a finding with a reason (`not-used`, `tolerable`, `inaccurate`, `fix-started`), or reopens it. | `asc deps dismiss 12 --reason not-used` |

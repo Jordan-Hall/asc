@@ -18,6 +18,10 @@
 - **Built-in project graph and `asc affected`.** asc detects Rust (Cargo), Python (uv, pyproject, requirements), .NET (sln, csproj) and Bun/Node workspaces itself, as derived data per changeset, and computes affected projects (lockfile-aware, with per-project input hashes) locally or on the server. Output formats include JSON, a turbo filter, an nx project list and an Actions matrix.
 - **API-first CI, Scion-style efficiency.** Diffs, merge bases, logs, blame and `Affected` run on the server. A CI plan job needs one RPC and no checkout. Fetches are want-only and resumable, clients keep a bounded history window and ask the server for older history, every cache tier speaks the same RPCs (`asc serve --role cache`), seed snapshots warm cold machines, and a benchmark gate holds asc faster than git. Turbo hashes a virtual checkout without reading any files, and the turbo remote cache, Actions caches and artifacts live in the same object store. ASC's Actions fork (`asc/actions`) makes CI use asc with no workflow edits.
 - **Stacked changes and stacked PRs.** New verbs (`asc create`, `modify`, `absorb`, `restack`, `sync`, `submit`, `sl`, `undo`, …) give Graphite/Sapling/jj-style stacks with stable change ids and an operation log, with stable change ids and no rewriting of history you already have. The Forgejo fork shows stacked PRs natively (each PR's base is its parent, becoming the trunk when the parent merges) and lands stacks atomically through a merge-when-ready queue. Blame, history, commit-graph and worktree data are served through asc's API to ASC's plugins.
+- **Dependency scanning.** asc reads the manifests and lockfiles of trunk, looks up known vulnerabilities (OSV), and can mark and sort the exploited ones with KEV and EPSS. It exports a CycloneDX SBOM, proposes update changes, and a repository can block landings on a policy. Details: [`docs/DEPENDENCIES.md`](docs/DEPENDENCIES.md).
+- **CI insights and build cache statistics.** The server groups CI failures, finds flaky tests and counts how the build cache is used (hits, misses, bytes served, time saved) for each repository and change. ASC Hub shows these on Insights and on pull request checks. Details: [`docs/CI-INSIGHTS.md`](docs/CI-INSIGHTS.md) and [`docs/ci/build-cache.md`](docs/ci/build-cache.md).
+- **Your own storage and keys.** A user, an organization or a repository can keep objects in its own S3-compatible bucket and store its own AI provider keys: [`docs/BYOS.md`](docs/BYOS.md).
+- **Agents.** `asc mcp` gives an agent the repository as tools ([`docs/mcp.md`](docs/mcp.md)). `asc serve` runs agent runs and workflows, and ASC Hub shows them.
 - **Forgejo, fully on asc (staged; see docs/ROADMAP.md).** ASC Hub, a Forgejo fork, reads and writes repositories through `asc serve`, and the compatibility bridge becomes a cache. Cutover is staged and reversible: remote mode, then mirror mode, then asc as source of truth, then Forgejo reads through asc, then Forgejo writes through asc.
 
 ## Install
@@ -78,9 +82,17 @@ See [`docs/ROADMAP.md`](docs/ROADMAP.md) for what is built and what is left.
 | [`docs/GETTING-STARTED.md`](docs/GETTING-STARTED.md) | Install, authenticate, clone, the daily loop, git compatibility |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | What is built, what is not verified, every open row, the order of work and the decisions |
 | [`docs/OUT-OF-SCOPE.md`](docs/OUT-OF-SCOPE.md) | Each out-of-scope item, reviewed against the goals |
+| [`docs/README.md`](docs/README.md) | The index of every page in `docs/` |
 | [`docs/ONBOARDING.md`](docs/ONBOARDING.md) | Editor settings, `asc doctor` findings, the optional `git` shim |
 | [`docs/CHEATSHEET.md`](docs/CHEATSHEET.md) | Common tasks and the asc command for each |
 | [`docs/RELEASING.md`](docs/RELEASING.md) | How a release is built, signed and published |
+| [`docs/DEPENDENCIES.md`](docs/DEPENDENCIES.md) | Dependency scanning, KEV and EPSS, SBOM, status and policy |
+| [`docs/CI-INSIGHTS.md`](docs/CI-INSIGHTS.md), [`docs/ci/build-cache.md`](docs/ci/build-cache.md) | CI failure groups, flaky tests, the Rust build cache and its use statistics |
+| [`docs/BYOS.md`](docs/BYOS.md) | Keeping objects in a bucket you own |
+| [`docs/WORKTREES.md`](docs/WORKTREES.md) | Extra worktrees without duplicate files |
+| [`docs/WEB-UI.md`](docs/WEB-UI.md) | The web app served by `asc serve` |
+| [`docs/BUILDOUT.md`](docs/BUILDOUT.md) | The contract for the hub features that need `asc serve` |
+| [`docs/mcp.md`](docs/mcp.md) | `asc mcp`: the tools an agent can call (generated) |
 | [`docs/SPEC.md`](docs/SPEC.md) | The authoritative design (normative) |
 | [`docs/history/PLAN.md`](docs/history/PLAN.md) | The original implementation units with acceptance commands (historical) |
 | [`docs/CARRY.md`](docs/CARRY.md) | Obligations that built units created for later units |
@@ -108,11 +120,14 @@ crates/asc-rpc       gRPC protocol (proto/asc/v1), server/client, retries and li
 crates/asc-wc        workspaces, status, switch, plain mode, worktrees
 crates/asc-vfs       ProjFS, Cloud Files and FUSE providers, submodule composition
 crates/asc-serve     asc serve: refs, land, smart HTTP, SSH, indexes, cache role, Projects, turbo cache
+crates/asc-buildcache the machine-wide content-addressed build cache
 crates/asc-ci        asc ci checkout/affected/changed/warm/cache/artifact
 crates/asc-codeintel code intelligence: doc model, chunking, secret scanner
 crates/asc-embed     embedding runtime for code intelligence (server only; asc.exe never links it)
-crates/asc-mcp       MCP protocol layer (skeleton; the MCP track is in progress)
+crates/asc-mcp       the MCP server behind `asc mcp` and the generator of docs/mcp.md
 crates/asc-sim       hermetic simulation (tests)
+packages/            TypeScript: asc-client-ts (generated client), asc-ui, asc-build-cache, fixtures
+web/                 the web app that `asc serve` hosts (docs/WEB-UI.md)
 ```
 
 ## Status

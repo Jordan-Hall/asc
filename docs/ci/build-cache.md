@@ -105,3 +105,26 @@ These rules apply to any runner that runs jobs in containers or in its own work 
 asc cache status          # store, lower stores (read only), server tier, hit rate per tool
 asc cache status --json   # the same, with "lower": [...]
 ```
+
+## Cache use statistics
+
+`asc serve` counts how the build cache is used, so a repository can show what the cache saves. It keeps five
+counters: hits, misses, puts, bytes served and saved milliseconds. They are kept per repository and day, and per
+change version.
+
+- A read of an artifact or an entry that finds it is a hit. A read that finds nothing is a miss. A write is a put.
+  A `HEAD` request and a refused request count for nothing.
+- Saved milliseconds are not an estimate. The client measures how long each task ran and sends it as
+  `x-artifact-duration` when it uploads the artifact. Each hit adds the stored value. The server keeps at most one
+  week (604,800,000 ms) per artifact.
+- The client sends `x-asc-rev`, the change version id as 64 lowercase hex characters, on cache reads and writes.
+  The server then also counts the request for that change version. A missing or malformed value counts for the
+  repository only and never fails the request. `asc cache push --rev <commit>` sets it for an upload, and the build's
+  own HEAD is used otherwise.
+- The server adds the counts in memory and writes them to the database every 30 seconds. A request for a repository
+  that the server has not looked up yet is not counted. Daily rows are kept for 180 days. Change rows are kept for
+  30 days after their last update, at most 2,000 per repository. A namespace purge by an administrator clears them.
+
+Read them with `CiInsights.CacheSummary` (feature `ci-cache.v1`). The request, the response and the access rule are in
+[`../BUILDOUT.md`](../BUILDOUT.md), section 8. The hub shows the numbers on a repository's Insights page and on the
+checks of a pull request.

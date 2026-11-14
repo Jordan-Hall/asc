@@ -80,6 +80,50 @@ from the OSV ecosystem name, such as `crates.io` or `npm`, to a count). Counts a
 version) triples, so a package named by several files counts once, and the per-ecosystem counts add up to the total.
 A scan recorded before these fields existed has the total and an empty map.
 
+## Exploited vulnerabilities
+
+Two public feeds say which advisories matter most: CISA's Known Exploited Vulnerabilities catalog (KEV) and the EPSS
+scores, the estimated chance that a vulnerability is exploited soon. Both are off until the operator configures them.
+The server downloads the whole public file with no query string, so nothing about any repository leaves it. Matching
+is local, by CVE id (the advisory id or one of its aliases).
+
+```toml
+[deps]
+kev_file = "/var/lib/asc/kev.json"      # or [deps.kev] url = "https://..."; not both
+epss_file = "/var/lib/asc/epss.csv"     # or [deps.epss] url = "https://..."; not both
+intel_ttl_secs = 21600                  # fetch again after this long (default 6 hours; 60 to 2592000)
+intel_stale_secs = 604800               # trust an unrefreshable feed this long (default 7 days)
+```
+
+The KEV file is JSON and the EPSS file is CSV, each plain or gzip. A file is read again when it changes. The URLs follow
+the same rules as every other scanner URL (see "Server config"). A background loop keeps the feeds fresh. A feed that
+was never loaded, cannot be refreshed past `intel_stale_secs`, or parses to too few rows is **unknown**, which is not
+the same as "not listed". Each advisory carries what the feeds say now; it is filled on read and never stored.
+
+`ListFindings` takes `sort = EXPLOITED` (KEV-listed first, then by EPSS score, then by CVSS; the default `NEWEST` is
+stable) and `only_exploited`, which fails with `FAILED_PRECONDITION` when the KEV feed is not usable. Both look at the
+newest 10,000 findings and set `truncated` when there are more. The response also gives `open_exploited`, the state of
+each feed (`kev_feed`, `epss_feed`) and `open_by_severity`. In the CLI:
+
+```text
+asc deps findings --sort exploited       # KEV-listed first, then by EPSS
+asc deps findings --exploited            # only findings that KEV lists
+```
+
+## SBOM
+
+`DepsService/Sbom` returns a CycloneDX 1.6 JSON bill of materials of the dependencies of one revision. It reads the
+revision like `Scan` and has the same limits. The document is at most 12 MiB. When more manifests or packages exist
+than the limits allow, the response says `truncated` and lists up to 20 notes. The document is deterministic.
+
+```text
+asc deps sbom [--rev REV] [--ecosystem E]... [--out FILE [--force]]
+```
+
+Without `--out` the document goes to standard output. `--out` refuses an existing file unless `--force` is given. When
+standard output is a terminal, the command refuses a document that holds control characters. It takes `--remote` and
+`--token-env` like the other subcommands.
+
 ## Progress
 
 `ScanStatus` says what the newest running scan of a repository is doing, so a client can draw a progress bar
@@ -271,6 +315,8 @@ reason = "pinned by the vendor"
 [deps]
 block_severity = "high"   # low | moderate | high | critical; absent: the policy never blocks on advisories
 block_unknown = true      # default: refuse when the advisory lookup failed
+block_exploited = true    # refuse a landing that adds a dependency with an advisory on the KEV list
+epss_threshold = 0.5      # refuse one whose advisory has an EPSS score at or above this (0 = off, the default)
 ```
 
 An update of a protected ref that **changes a dependency file** is checked: the packages it adds (present in
@@ -281,11 +327,17 @@ dependency files or 2,000 new versions in one update are refused as too many to 
 the server (`[deps] enabled = false`) such an update is refused too, because it cannot be checked. Updates that
 touch no dependency file ask nothing of the network.
 
+`block_exploited` and `epss_threshold` work on their own, without `block_severity`. They fail closed: when the KEV or
+EPSS feed is missing or stale, or the scan of the update is incomplete (a file that cannot be read, too many packages,
+a failed lookup), the update is refused whatever `block_unknown` says.
+
 ## `asc deps`
 
 ```text
 asc deps scan [--rev REV] [--ecosystem E]... [--refresh]     # exit 1: findings, 2: not every lookup answered
-asc deps findings [--state S]... [--severity S] [--package NAME] [--limit N] [--page TOKEN]
+asc deps findings [--state S]... [--severity S] [--package NAME] [--sort newest|exploited] [--exploited]
+                  [--limit N] [--page TOKEN]
+asc deps sbom [--rev REV] [--ecosystem E]... [--out FILE [--force]]
 asc deps updates [--rev REV] [--security] [--ignored]
 asc deps propose [--security] [--max-kind K] [--max-groups N] [--dry-run] [ecosystem:name]...
 asc deps dismiss <id> --reason not-used|tolerable|inaccurate|fix-started [--note TEXT]
@@ -306,24 +358,55 @@ All take `--remote` (a configured remote or the repository URL) and `--json`. `-
 credential from the environment variable `NAME` and needs `--remote` to be an https URL; it is for scheduled
 workflows, whose secrets cannot be named `ASC_*`.
 
+## Status
+
+`DepsService/Status` gives one security status of a repository: `CLEAN`, `FINDINGS` or `UNKNOWN`. Anyone who can read
+the repository may ask. It reads what is stored and starts no scan. The rules, in order:
+
+1. No recorded trunk scan: `UNKNOWN`, reason `not scanned`.
+2. The last scan did not match every package: `UNKNOWN`, reason `lookup partial`.
+3. The last scan is older than twice the shortest gap of the repository's `schedule` cron (48 hours when there is no
+   schedule): `UNKNOWN`, reason `stale`.
+4. Any open finding: `FINDINGS`. A dismissed or fixed finding does not count.
+5. Otherwise `CLEAN`.
+
+A repository is never `CLEAN` when the answer is unknown. The response also carries the open findings counted by
+severity (`critical`, `high`, `moderate`, `low`, `unknown`), when the trunk scan ran (`scanned_at`) and the changeset it
+read (`scanned`). `moves` lists the package versions with open findings and the version that closes them: the highest
+fixed version among their findings, or empty when there is no fix yet. There are at most 100 moves, sorted by
+ecosystem, name and version.
+
+With `change` set to the head changeset of a change, the status is what that change adds to trunk. It is `FINDINGS`
+with `moves` when the change adds a vulnerable package version, and trunk's own status when the change touches no
+dependency file. The answer for a change is kept in memory for ten minutes and nothing is recorded. The code is in
+`crates/asc-serve/src/deps/status.rs`. There is no `asc deps` subcommand for it.
+
+## Own dependencies
+
+`asc_core::self_deps::packages()` lists the registry packages that asc was built against, as sorted `(name, version)`
+pairs. `crates/asc-core/build.rs` reads the workspace `Cargo.lock` at build time and keeps the packages whose source is
+a registry. The lock covers more than one binary links, so a check can report too many packages but not miss one. An
+empty list means the lock was not available when asc was built, and a caller must treat that as unknown, not clean.
+Nothing reads the list yet. The server and CLI advisory check (roadmap row 33) is built on it.
+
 ## Who may call
 
 | Call | Needs |
 |---|---|
-| `ListFindings`, `ListUpdates`, `GetConfig`, `ScanStatus` | read |
+| `ListFindings`, `ListUpdates`, `GetConfig`, `ScanStatus`, `Sbom`, `Status` | read |
 | `Scan`, `ProposeUpdate`, `SetConfig`, `Dismiss` | write, and a maintainer of the policy or an administrator |
 
 Agent credentials reach none of them (every service an agent token is not named for is closed to it).
 
 ## Hub dependency page
 
-The hub shows the dependency findings at `/{owner}/{repo}/asc/deps`. Findings sort exploited first. Entries on CISA's Known Exploited Vulnerabilities (KEV) list come first. Then they sort by EPSS score, then by CVSS. A sort control switches the order.
+The hub shows the dependency findings at `/{owner}/{repo}/asc/deps`, with "findings", "updates" and "config" views. Findings sort exploited first. Entries on CISA's Known Exploited Vulnerabilities (KEV) list come first. Then they sort by EPSS score, then by CVSS. A sort control switches the order.
 
 A finding on the KEV list shows a KEV mark. Each finding also shows an EPSS percentage pill. An EPSS score of 0 shows no pill.
 
 When the KEV or EPSS mirror is older than its freshness limit, the page shows a stale-feed notice.
 
-The "SBOM" button downloads the bill of materials for the revision on the page. It calls the `DepsService/Sbom` RPC, in CycloneDX or SPDX format. The server allows two downloads at a time per instance. The file name comes from the repository and the revision. The route supports HEAD requests. With dependency features off, the route returns 404.
+The "SBOM" button downloads the CycloneDX 1.6 bill of materials of trunk from `/{owner}/{repo}/asc/deps/sbom`. It calls the `DepsService/Sbom` RPC. The hub serves two downloads at a time; another gets 429 with `Retry-After`. A document over the hub's size limit gets 502. A partial document is named `...-sbom-partial.cdx.json` and carries the header `X-Asc-Sbom-Partial`. The route supports HEAD requests. With the dependency or exploit-feed features off on the server, the route returns 404.
 
 ## Server config
 

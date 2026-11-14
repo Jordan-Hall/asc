@@ -61,3 +61,11 @@ flaky_window_runs = 100
 ```
 
 Bounds: 5,000 cases per report, 16 MiB per report, test names 512 bytes, notes 1 KiB.
+
+## Build cache use
+
+`CiInsights.CacheSummary` (feature `ci-cache.v1`) returns the build cache's hits, misses, puts, bytes served and measured
+time saved, per day and per change version, for a repository the caller may read. It has the same access rule and error
+mapping as `FlakyHistory`. What is counted, how the client supplies `x-asc-rev` and `x-artifact-duration`, and the
+retention are in [`ci/build-cache.md`](ci/build-cache.md#cache-use-statistics). The request and response are in
+[`BUILDOUT.md`](BUILDOUT.md), section 8. The storage is in `crates/asc-serve/src/ci/cache_stats.rs` (migration 0613).
