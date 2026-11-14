@@ -173,6 +173,8 @@ impl Fx {
 fn on() -> DeltaSettings {
     DeltaSettings {
         enabled: true,
+        // These tests are about the delta mechanics: the newest version may be a delta too.
+        hot_guard: false,
         ..DeltaSettings::default()
     }
 }
