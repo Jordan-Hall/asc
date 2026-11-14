@@ -154,10 +154,9 @@ From a review of the hub's asc pages on 2026-11-13 (routes, templates and styles
 | 51 | Own pages for repo home, diff and issues | Rebuilt in the asc design system, with the loose `asc-*.css` files folded in, so no page is the upstream forge's template with a new skin | D | open |
 | 52 | SBOM download | On the dependency page (the server side is row 32) | S | done |
 | 75 | Hub integration matrix over both storage backends | The hub's integration tests run with git storage and with asc storage (plan unit K15, `FORGEJO_TEST_STORAGE_BACKEND`). **Check first** | S | open |
-| 80 | Pull mirrors stored in asc | Pull mirrors and wiki pull mirrors write into an asc repository; today the mirror service has no asc path | S | open |
+| 80 | Pull mirrors stored in asc | Pull mirrors and wiki pull mirrors write into an asc repository; today the mirror service has no asc path. Owner confirmed in scope 2026-11-14; a mirror follows the instance rule for new repositories | S | open |
 | 81 | Signed commits from web edits | A web edit on a branch that requires signatures cannot be signed today. Decided 2026-11-14: (a) the server signs web edits with an instance key. | S | open |
 | 84 | Issue counts per state and due dates | The hub's issue pages show counts per state and due dates (hub `UI-COVERAGE.md`) | S | open |
-| 87 | Mirrors stored in asc | A pull mirror can be asc-stored: each sync imports the outside repository's history into asc the way a one-time migration does (hub `services/repository/migrate_asc.go`, `ascsync.ImportHistory`). Today mirrors are always git-stored (`newRepoStorageBackend` in hub `services/repository/create.go`) | D | open |
 | 88 | Move a git-stored repository to asc | An owner action converts an existing git-stored repository to asc storage in place, keeping its name, issues, pull requests and settings; history is imported in the background with the same steps as a migration. Today the only path is an import into a new repository | D | open |
 
 ### Server and accounts
@@ -227,7 +226,7 @@ Rows 64, 69 and 73, and the R2 half of row 85, wait for the owner (section 4).
 | 2026-10-26 | The product is named ASC, Agent Source Control (naming table below) | this section |
 | 2026-11-10 | One token system per server, chosen by `[auth] provider` | `docs/DECISIONS/0002-one-token-system-per-server.md` |
 | 2026-11-12 | Full objects where speed matters: deltas are cold-storage compaction only | the principle above |
-| 2026-11-14 | Web edits on signed branches are signed by the server with an instance key (row 81); the IDE plugins get a signing settings page (row 60); mirrors stored in asc (row 87) and in-place move to asc (row 88) are in scope | rows 60, 81, 87, 88 |
+| 2026-11-14 | Web edits on signed branches are signed by the server with an instance key (row 81); the IDE plugins get a signing settings page (row 60); mirrors stored in asc (row 80, which row 87 duplicated) and in-place move to asc (row 88) are in scope | rows 60, 80, 81, 88 |
 | 2026-11-13 | Row 5: deltas for cold history only | row 5 |
 | 2026-11-13 | Row 16: first-class conflicts, design first | row 16 |
 | 2026-11-13 | Row 22: `node_modules` snapshots, design first | row 22 |

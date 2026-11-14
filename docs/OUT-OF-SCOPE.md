@@ -130,7 +130,7 @@ Sources searched: `docs/SPEC.md` (including "Not built in v1" and section 25.11.
 | Migration of git repositories into asc | hub `WHY.md` (lines 38, 50), `ARCHITECTURE.md`, `ASC-NATIVE-UI.md`, `asc-stage4-writer.md` | already built | Hub `services/repository/migrate_asc.go`, `docs/asc/MIGRATION-IMPORT.md`. The hub documents were corrected 2026-11-14 | |
 | A dedicated audit page | hub `WHY.md` line 50 | already built | Hub `templates/repo/asc_audit.tmpl`, with admin and org pages. Read only here | |
 | Pull mirrors and wiki pull mirrors into asc | hub `asc-stage4-writer.md` "Not done yet" | bring in | Mirrors are a common way to adopt a new host | 80 |
-| Mirrors stored in asc | hub `WHY.md`, `ARCHITECTURE.md`, `asc-stage4-writer.md` | bring in | Owner decision 2026-11-14 | 87 |
+| Mirrors stored in asc | hub `WHY.md`, `ARCHITECTURE.md`, `asc-stage4-writer.md` | bring in | Owner decision 2026-11-14 | 80 |
 | In-place move of a git-stored repository to asc | hub `WHY.md`, `ARCHITECTURE.md`, `asc-stage4-writer.md` | bring in | Owner decision 2026-11-14 | 88 |
 | Signed asc commits from web edits | hub `WHY.md`; `asc-stage4-writer.md` | bring in | Owner decision 2026-11-14: the server signs web edits with an instance key | 81 |
 | Issue counts per state and due dates | hub `UI-COVERAGE.md` | bring in | Board fidelity | 84 |
