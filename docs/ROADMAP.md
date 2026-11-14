@@ -155,8 +155,10 @@ From a review of the hub's asc pages on 2026-11-13 (routes, templates and styles
 | 52 | SBOM download | On the dependency page (the server side is row 32) | S | done |
 | 75 | Hub integration matrix over both storage backends | The hub's integration tests run with git storage and with asc storage (plan unit K15, `FORGEJO_TEST_STORAGE_BACKEND`). **Check first** | S | open |
 | 80 | Pull mirrors stored in asc | Pull mirrors and wiki pull mirrors write into an asc repository; today the mirror service has no asc path | S | open |
-| 81 | Signed commits from web edits | A web edit on a branch that requires signatures cannot be signed today | S | decision |
+| 81 | Signed commits from web edits | A web edit on a branch that requires signatures cannot be signed today. Decided 2026-11-14: (a) the server signs web edits with an instance key. | S | open |
 | 84 | Issue counts per state and due dates | The hub's issue pages show counts per state and due dates (hub `UI-COVERAGE.md`) | S | open |
+| 87 | Mirrors stored in asc | A pull mirror can be asc-stored: each sync imports the outside repository's history into asc the way a one-time migration does (hub `services/repository/migrate_asc.go`, `ascsync.ImportHistory`). Today mirrors are always git-stored (`newRepoStorageBackend` in hub `services/repository/create.go`) | D | open |
+| 88 | Move a git-stored repository to asc | An owner action converts an existing git-stored repository to asc storage in place, keeping its name, issues, pull requests and settings; history is imported in the background with the same steps as a migration. Today the only path is an import into a new repository | D | open |
 
 ### Server and accounts
 
@@ -177,7 +179,7 @@ From a review of the hub's asc pages on 2026-11-13 (routes, templates and styles
 | 57 | Lockfile parsing for the project graph | The project graph reads the npm, pnpm, yarn and bun lockfiles. **Check first**: the dependency service already parses lockfiles (`crates/asc-serve/src/deps/lock/`), so the row is to reuse them | S | open |
 | 58 | Host-level fetch proxy for CI | One proxy per CI host serves object fetches to all jobs on it. Build only if a measurement shows a gain | S | open, gated on measurement |
 | 59 | Remaining git commands | `shortlog`, `name-rev`, `whatchanged`, `range-diff`, `cherry` and `notes` run natively. **Check first**: these are built (`crates/asc/src/cli/{shortlog,name_rev,whatchanged,range_diff,cherry,notes}.rs`); the row is to confirm against the compat suite and close | S | open |
-| 60 | Signing settings page | A settings page in the IDE plugins for the signing keys that `asc config` holds. Today the plugins show a "signed" badge only | S | decision |
+| 60 | Signing settings page | A settings page in the IDE plugins for the signing keys that `asc config` holds. Today the plugins show a "signed" badge only. Decided 2026-11-14: (a) build the page. | S | open |
 | 61 | One token system | The standalone token store (`authz/token_store.rs`) and the hub's tokens become one system. **Check first**: `docs/DECISIONS/0002-one-token-system-per-server.md` already allows one system per server | S | open |
 | 62 | Native credential store | The CLI stores credentials in the operating system's store. **Check first**: `crates/asc/src/credential.rs` has an asc keystore for when no helper is set | S | open |
 | 63 | Packed objects on by default | `[pack] enabled` defaults to true, after a measurement on a real history | S | open |
@@ -206,17 +208,15 @@ From a review of the hub's asc pages on 2026-11-13 (routes, templates and styles
 9. Brought into scope: 57, 59, 70 to 72, 74, then 55, 56, 58, 54. Rows 61 to 63 and 65 to 68 follow in table order.
 10. Server and accounts: 77, 82, 83, then 78.
 
-Rows 60, 64, 69, 73 and 81, and the R2 half of row 85, wait for the owner (section 4).
+Rows 64, 69 and 73, and the R2 half of row 85, wait for the owner (section 4).
 
 ## 4. Blocked on the owner
 
 | Row | What is needed | Options |
 |---|---|---|
-| 60 | Whether the IDE plugins get a signing settings page | (a) build the page; (b) keep `asc config` as the only way to set signing |
 | 64 | A Developer ID signing identity with the FSKit entitlement | (a) the owner provides the identity; (b) FSKit stays CI-built and ad hoc |
 | 69 | Publisher accounts and tokens for VS Code Marketplace, Open VSX and JetBrains Marketplace | (a) the owner provides them; (b) the plugins stay release attachments |
 | 73 | An AWS S3 bucket and a real AI provider key | (a) the owner provides them; (b) Garage stays the only real store tested |
-| 81 | How web edits meet a signature requirement | (a) the server signs web edits with an instance key; (b) web edits stay unsigned and branches that require signatures refuse them; (c) leave web edits out of signed branches without a new rule |
 | 85 | A Cloudflare R2 account for one recorded run | (a) the owner provides it; (b) only MinIO is added |
 
 ## 5. Decisions
@@ -227,6 +227,7 @@ Rows 60, 64, 69, 73 and 81, and the R2 half of row 85, wait for the owner (secti
 | 2026-10-26 | The product is named ASC, Agent Source Control (naming table below) | this section |
 | 2026-11-10 | One token system per server, chosen by `[auth] provider` | `docs/DECISIONS/0002-one-token-system-per-server.md` |
 | 2026-11-12 | Full objects where speed matters: deltas are cold-storage compaction only | the principle above |
+| 2026-11-14 | Web edits on signed branches are signed by the server with an instance key (row 81); the IDE plugins get a signing settings page (row 60); mirrors stored in asc (row 87) and in-place move to asc (row 88) are in scope | rows 60, 81, 87, 88 |
 | 2026-11-13 | Row 5: deltas for cold history only | row 5 |
 | 2026-11-13 | Row 16: first-class conflicts, design first | row 16 |
 | 2026-11-13 | Row 22: `node_modules` snapshots, design first | row 22 |

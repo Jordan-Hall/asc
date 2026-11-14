@@ -127,10 +127,12 @@ Sources searched: `docs/SPEC.md` (including "Not built in v1" and section 25.11.
 | CLI for the account services | merged gap list | bring in | A standalone server without the hub has no client for them; forge-neutral | 82 |
 | Teams as an asc concept | merged gap list | stays out | Teams belong to the forge; asc sees owner and repository grants | |
 | Hub integration matrix over both backends (plan unit K15) | `docs/history/PLAN.md` K15; hub `asc-stage4-writer.md` | bring in | The hub's tests must prove both storage backends | 75 |
-| Migration of git repositories into asc | hub `WHY.md` (lines 38, 50), `ARCHITECTURE.md`, `ASC-NATIVE-UI.md`, `asc-stage4-writer.md` | already built | Hub `services/repository/migrate_asc.go`, `docs/asc/MIGRATION-IMPORT.md`. The hub documents are read only here and stay stale | |
+| Migration of git repositories into asc | hub `WHY.md` (lines 38, 50), `ARCHITECTURE.md`, `ASC-NATIVE-UI.md`, `asc-stage4-writer.md` | already built | Hub `services/repository/migrate_asc.go`, `docs/asc/MIGRATION-IMPORT.md`. The hub documents were corrected 2026-11-14 | |
 | A dedicated audit page | hub `WHY.md` line 50 | already built | Hub `templates/repo/asc_audit.tmpl`, with admin and org pages. Read only here | |
 | Pull mirrors and wiki pull mirrors into asc | hub `asc-stage4-writer.md` "Not done yet" | bring in | Mirrors are a common way to adopt a new host | 80 |
-| Signed asc commits from web edits | hub `WHY.md`; `asc-stage4-writer.md` | bring in | Needs the owner's decision on who signs | 81 |
+| Mirrors stored in asc | hub `WHY.md`, `ARCHITECTURE.md`, `asc-stage4-writer.md` | bring in | Owner decision 2026-11-14 | 87 |
+| In-place move of a git-stored repository to asc | hub `WHY.md`, `ARCHITECTURE.md`, `asc-stage4-writer.md` | bring in | Owner decision 2026-11-14 | 88 |
+| Signed asc commits from web edits | hub `WHY.md`; `asc-stage4-writer.md` | bring in | Owner decision 2026-11-14: the server signs web edits with an instance key | 81 |
 | Issue counts per state and due dates | hub `UI-COVERAGE.md` | bring in | Board fidelity | 84 |
 | Private, Internal and Public visibility | hub `UI-COVERAGE.md` | stays out | The hub has one private flag; asc follows the platform's visibility. A third level changes the upstream forge's data model | |
 | The hub calls the remaining RPCs | status audit | already on the roadmap | | 65 |
