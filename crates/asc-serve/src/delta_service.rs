@@ -9,7 +9,7 @@
 //! records the base in `delta_bases` before it writes, and GC then keeps every recorded base as a
 //! strict root.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use asc_core::codec::decode_envelope;
@@ -31,6 +31,61 @@ use crate::registry::RepoEntry;
 const CHUNK_THRESHOLD: u64 = 4 * 1024 * 1024;
 /// Mainline rows read per query.
 const PAGE: i64 = 200;
+/// Most distinct ref targets read as tips. Beyond it the hot set is unknown, so the pass does
+/// nothing for that repository rather than delta what a tip may hold.
+const MAX_TIPS: usize = 50_000;
+/// Decoded tip directories remembered per pass; the memo is cleared when it fills.
+const MAX_TIP_TREES: usize = 4096;
+
+/// Whether `pos` is at least `distance` mainline positions behind `newest`. A row landed after
+/// `newest` was read (`pos > newest`) is never far.
+fn far(newest: i64, pos: i64, distance: u64) -> bool {
+    newest.saturating_sub(pos).max(0) as u64 >= distance
+}
+
+/// The directories of the ref tips' trees read so far this pass (a tree id names its content, so
+/// one entry serves every tip and path that reaches it).
+#[derive(Default)]
+struct TipTrees(HashMap<TreeId, Option<Tree>>);
+
+impl TipTrees {
+    /// The entry at `path` under `root`; `None` when absent, below a file or unreadable.
+    async fn entry_at(
+        &mut self,
+        entry: &RepoEntry,
+        root: TreeId,
+        path: &RepoPath,
+    ) -> Result<Option<Entry>, GcError> {
+        let mut dir = root;
+        let mut comps = path.components().peekable();
+        while let Some(comp) = comps.next() {
+            if !self.0.contains_key(&dir) {
+                if self.0.len() >= MAX_TIP_TREES {
+                    self.0.clear();
+                }
+                let tree = match entry.objects.get(&ObjKey::Tree(dir)).await? {
+                    Some(b) => decode_envelope::<Tree>(&b).ok(),
+                    None => None,
+                };
+                self.0.insert(dir, tree);
+            }
+            let (Some(Some(tree)), Ok(name)) = (self.0.get(&dir), Name::new(comp)) else {
+                return Ok(None);
+            };
+            let Some(e) = tree.get(&name).cloned() else {
+                return Ok(None);
+            };
+            if comps.peek().is_none() {
+                return Ok(Some(e));
+            }
+            if e.kind != Kind::Dir {
+                return Ok(None);
+            }
+            dir = TreeId::from_bytes(e.id);
+        }
+        Ok(None)
+    }
+}
 
 /// `[delta]`: delta storage. Off unless `enabled`.
 #[derive(Clone, Debug, Deserialize)]
@@ -44,6 +99,18 @@ pub struct DeltaSettings {
     pub min_size: ByteSize,
     /// Most changesets one pass reads per repository; the rest wait for the next pass.
     pub max_changesets: usize,
+    /// A changeset becomes a delta candidate once it is this many mainline positions behind its
+    /// ref's newest (or `cold_age` has passed). Tip versions stay whole for fast reads.
+    pub cold_distance: u64,
+    /// A changeset also becomes a candidate once its committer time is this old.
+    pub cold_age: Secs,
+    /// Leaves what any ref's tip holds whole (branches, stacks, tags and each land branch's newest
+    /// mainline row). Not a setting: tests of the delta mechanics turn it off so the newest
+    /// version of their fixtures can be a delta too. The tips are read once per pass, so a ref
+    /// that moves during the pass is not seen (a revert that makes old content hot again costs
+    /// only a slower read), and an object skipped as hot is not revisited: the cursor has moved on.
+    #[serde(skip)]
+    pub(crate) hot_guard: bool,
 }
 
 impl Default for DeltaSettings {
@@ -53,6 +120,9 @@ impl Default for DeltaSettings {
             interval: Secs(3600),
             min_size: ByteSize(1024),
             max_changesets: 5000,
+            cold_distance: 1000,
+            cold_age: Secs(90 * 86_400),
+            hot_guard: true,
         }
     }
 }
@@ -69,6 +139,12 @@ impl DeltaSettings {
         }
         if !(1..=1_000_000).contains(&self.max_changesets) {
             return bad("max_changesets must be 1 to 1000000");
+        }
+        if self.cold_distance > 10_000_000 {
+            return bad("cold_distance must be 0 to 10000000");
+        }
+        if self.cold_age.0 > 3650 * 86_400 {
+            return bad("cold_age must be 0 to 3650d");
         }
         Ok(())
     }
@@ -95,6 +171,8 @@ pub struct DeltaReport {
     pub chunks: u64,
     /// Objects whose delta would not save half.
     pub no_gain: u64,
+    /// Objects left whole because the same content is still at a land branch's tip.
+    pub hot: u64,
     /// Objects skipped for another reason (packed, already a delta, base unusable).
     pub skipped: u64,
     /// Stored bytes of the written objects before and after.
@@ -305,10 +383,72 @@ pub async fn pass(
         .await
         .map_err(|e| sql("mainline", e))?;
     let mut budget = s.max_changesets as u64;
+    // The trees at every ref's tip and at each land branch's newest row, read once: what they
+    // hold is hot.
+    let mut tip_ids: HashSet<[u8; 32]> = HashSet::new();
+    let mut newest: HashMap<String, i64> = HashMap::new();
+    for r in &refs {
+        let row = sqlx::query(
+            "SELECT pos, cs FROM mainline WHERE ns = $1 AND ref = $2 ORDER BY pos DESC LIMIT 1",
+        )
+        .bind(ns.clone())
+        .bind(r.clone())
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| sql("mainline", e))?;
+        let Some(row) = row else { continue };
+        newest.insert(
+            r.clone(),
+            row.try_get("pos").map_err(|e| sql("mainline", e))?,
+        );
+        let cs: Vec<u8> = row.try_get("cs").map_err(|e| sql("mainline", e))?;
+        let cs: [u8; 32] = cs
+            .as_slice()
+            .try_into()
+            .map_err(|_| sql("mainline", "a changeset id is not 32 bytes"))?;
+        tip_ids.insert(cs);
+    }
+    let mut tips: Vec<TreeId> = Vec::new();
+    if s.hot_guard {
+        let targets: Vec<Vec<u8>> =
+            sqlx::query_scalar("SELECT DISTINCT target FROM refs WHERE repo_id = $1 LIMIT $2")
+                .bind(entry.key.0)
+                .bind(i64::try_from(MAX_TIPS + 1).unwrap_or(i64::MAX))
+                .fetch_all(pool)
+                .await
+                .map_err(|e| sql("refs", e))?;
+        if targets.len() > MAX_TIPS {
+            return Ok(rep);
+        }
+        tip_ids.extend(
+            targets
+                .iter()
+                .filter_map(|t| <[u8; 32]>::try_from(t.as_slice()).ok()),
+        );
+        let mut roots: HashSet<TreeId> = HashSet::new();
+        for id in tip_ids {
+            if let Some(c) = changeset(entry, ChangesetId::from_bytes(id)).await?
+                && roots.insert(c.root)
+            {
+                tips.push(c.root);
+            }
+        }
+    }
+    let mut trees = TipTrees::default();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64);
     // Side-branch changesets already read this pass, over every merge and ref.
     let mut seen = HashSet::new();
     // Values and chains read this pass: the parent's tree or file is often the next plan's base.
     let mut cache = PlanCache::default();
+    let ctx = Ctx {
+        pool,
+        entry,
+        s,
+        purged: &purged,
+        tips: &tips,
+    };
     'refs: for r in refs {
         let mut at: i64 =
             sqlx::query_scalar("SELECT pos FROM delta_cursor WHERE ns = $1 AND ref = $2")
@@ -318,14 +458,17 @@ pub async fn pass(
                 .await
                 .map_err(|e| sql("delta_cursor", e))?
                 .unwrap_or(-1);
-        while budget > 0 {
+        let newest = newest.get(&r).copied().unwrap_or(at);
+        let mut hot_row = false;
+        while budget > 0 && !hot_row {
             let rows = sqlx::query(
                 "SELECT pos, cs FROM mainline WHERE ns = $1 AND ref = $2 AND pos > $3 \
-                 ORDER BY pos LIMIT $4",
+                 AND pos <= $4 ORDER BY pos LIMIT $5",
             )
             .bind(ns.clone())
             .bind(r.clone())
             .bind(at)
+            .bind(newest)
             .bind(PAGE.min(budget as i64))
             .fetch_all(pool)
             .await
@@ -341,11 +484,21 @@ pub async fn pass(
                     .try_into()
                     .map_err(|_| sql("mainline", "a changeset id is not 32 bytes"))?;
                 let cs = ChangesetId::from_bytes(cs);
+                // The mainline is read oldest first, so the first row still hot ends the ref's
+                // pass; the cursor stays before it.
+                let cold = far(newest, pos, s.cold_distance)
+                    || match changeset(entry, cs).await? {
+                        Some(c) => now.saturating_sub(c.committer.time()) >= s.cold_age.0 as i64,
+                        None => true,
+                    };
+                if !cold {
+                    hot_row = true;
+                    break;
+                }
                 // The first changeset of a pass has the whole budget; a merge whose side history
                 // is larger than that is read as far as the budget goes and then passed.
                 let fresh = budget == s.max_changesets as u64;
-                let parents =
-                    one_changeset(pool, entry, s, cs, &purged, &mut rep, &mut cache).await?;
+                let parents = one_changeset(&ctx, cs, &mut rep, &mut cache, &mut trees).await?;
                 if parents.len() > 1 {
                     let merged = parents[1..].to_vec();
                     let walk = Walk {
@@ -354,9 +507,16 @@ pub async fn pass(
                         s,
                         r: &r,
                         purged: &purged,
+                        tips: &tips,
                     };
                     let done = walk
-                        .run(merged, &mut seen, &mut budget, &mut rep, &mut cache)
+                        .run(
+                            merged,
+                            &mut seen,
+                            &mut budget,
+                            &mut rep,
+                            (&mut cache, &mut trees),
+                        )
                         .await?;
                     if !done && !fresh {
                         // The cursor stays before the merge; the next pass starts with it.
@@ -372,6 +532,17 @@ pub async fn pass(
         }
     }
     Ok(rep)
+}
+
+/// What one changeset's delta writes read: the pool, the repository, the settings, the purged
+/// bases and the land branches' tip roots.
+#[derive(Clone, Copy)]
+struct Ctx<'a> {
+    pool: &'a AnyPool,
+    entry: &'a RepoEntry,
+    s: &'a DeltaSettings,
+    purged: &'a HashSet<ObjKey>,
+    tips: &'a [TreeId],
 }
 
 /// New-file bases tried per file.
@@ -408,6 +579,7 @@ struct Walk<'a> {
     s: &'a DeltaSettings,
     r: &'a str,
     purged: &'a HashSet<ObjKey>,
+    tips: &'a [TreeId],
 }
 
 impl Walk<'_> {
@@ -419,7 +591,7 @@ impl Walk<'_> {
         seen: &mut HashSet<ChangesetId>,
         budget: &mut u64,
         rep: &mut DeltaReport,
-        cache: &mut PlanCache,
+        (cache, trees): (&mut PlanCache, &mut TipTrees),
     ) -> Result<bool, GcError> {
         let (pool, entry) = (self.pool, self.entry);
         let ns = entry.ns.as_bytes().to_vec();
@@ -446,7 +618,22 @@ impl Walk<'_> {
             }
             *budget -= 1;
             rep.side += 1;
-            todo.extend(one_changeset(pool, entry, self.s, id, self.purged, rep, cache).await?);
+            todo.extend(
+                one_changeset(
+                    &Ctx {
+                        pool,
+                        entry,
+                        s: self.s,
+                        purged: self.purged,
+                        tips: self.tips,
+                    },
+                    id,
+                    rep,
+                    cache,
+                    trees,
+                )
+                .await?,
+            );
         }
         Ok(true)
     }
@@ -458,14 +645,19 @@ impl Walk<'_> {
 /// each new chunk of a large file against the old version's chunk at the same place. Returns its
 /// parents (none when the changeset is missing).
 async fn one_changeset(
-    pool: &AnyPool,
-    entry: &RepoEntry,
-    s: &DeltaSettings,
+    ctx: &Ctx<'_>,
     id: ChangesetId,
-    purged: &HashSet<ObjKey>,
     rep: &mut DeltaReport,
     cache: &mut PlanCache,
+    trees: &mut TipTrees,
 ) -> Result<Vec<ChangesetId>, GcError> {
+    let Ctx {
+        pool,
+        entry,
+        s,
+        purged,
+        tips,
+    } = *ctx;
     let Some(cs) = changeset(entry, id).await? else {
         return Ok(Vec::new());
     };
@@ -486,6 +678,8 @@ async fn one_changeset(
         pool,
         entry,
         purged,
+        tips,
+        trees,
         rep,
         cache,
     };
@@ -525,9 +719,14 @@ async fn one_changeset(
         if olds.iter().any(|o| o.id == *file.as_bytes()) {
             continue;
         }
+        let probe = Some((Some(path), file.as_bytes()));
         if *size > CHUNK_THRESHOLD {
             if let Some(old) = olds.first().filter(|o| o.size > CHUNK_THRESHOLD) {
-                d.chunks(*file, FileId::from_bytes(old.id)).await?;
+                if d.is_hot(Some(path), file.as_bytes()).await? {
+                    d.rep.hot += 1;
+                } else {
+                    d.chunks(*file, FileId::from_bytes(old.id)).await?;
+                }
             }
             continue;
         }
@@ -539,11 +738,15 @@ async fn one_changeset(
                 .map(|o| ObjKey::File(FileId::from_bytes(o.id)))
                 .collect()
         };
-        d.try_best(ObjKey::File(*file), &bases).await?;
+        d.try_best(ObjKey::File(*file), &bases, probe).await?;
     }
     if cs.root != parent.root {
-        d.try_one(ObjKey::Tree(cs.root), ObjKey::Tree(parent.root))
-            .await?;
+        d.try_one(
+            ObjKey::Tree(cs.root),
+            ObjKey::Tree(parent.root),
+            Some((None, cs.root.as_bytes())),
+        )
+        .await?;
     }
     for dir in &dirs {
         let (Some(new), Some(old)) = (
@@ -554,17 +757,24 @@ async fn one_changeset(
         };
         if new.kind == Kind::Dir && old.kind == Kind::Dir && new.id != old.id {
             let (n, o) = (TreeId::from_bytes(new.id), TreeId::from_bytes(old.id));
-            d.try_one(ObjKey::Tree(n), ObjKey::Tree(o)).await?;
+            d.try_one(ObjKey::Tree(n), ObjKey::Tree(o), Some((Some(dir), &new.id)))
+                .await?;
         }
     }
     Ok(cs.parents.clone())
 }
+
+/// What a tip must not hold for an object to become a delta: its path (`None`: the root) and id.
+type Probe<'p> = (Option<&'p RepoPath>, &'p [u8; 32]);
 
 /// The delta writes of one changeset.
 struct Deltas<'a> {
     pool: &'a AnyPool,
     entry: &'a RepoEntry,
     purged: &'a HashSet<ObjKey>,
+    /// Roots of the ref tips.
+    tips: &'a [TreeId],
+    trees: &'a mut TipTrees,
     rep: &'a mut DeltaReport,
     cache: &'a mut PlanCache,
 }
@@ -580,7 +790,8 @@ impl Deltas<'_> {
             return Ok(());
         };
         for (c, o) in pair_chunks(&new, &old) {
-            self.try_one(ObjKey::Chunk(c), ObjKey::Chunk(o)).await?;
+            self.try_one(ObjKey::Chunk(c), ObjKey::Chunk(o), None)
+                .await?;
         }
         Ok(())
     }
@@ -643,14 +854,47 @@ impl Deltas<'_> {
             .collect())
     }
 
+    /// Whether a land branch's tip holds the same content at `path` (`None`: the root): the same
+    /// file id, or the same tree id for a directory.
+    async fn is_hot(&mut self, path: Option<&RepoPath>, id: &[u8; 32]) -> Result<bool, GcError> {
+        for tip in self.tips {
+            let Some(path) = path else {
+                if tip.as_bytes() == id {
+                    return Ok(true);
+                }
+                continue;
+            };
+            if self
+                .trees
+                .entry_at(self.entry, *tip, path)
+                .await?
+                .is_some_and(|e| &e.id == id)
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// Stores `key` as a delta against `base` when that saves half.
-    async fn try_one(&mut self, key: ObjKey, base: ObjKey) -> Result<(), GcError> {
-        self.try_best(key, &[base]).await
+    async fn try_one(
+        &mut self,
+        key: ObjKey,
+        base: ObjKey,
+        probe: Option<Probe<'_>>,
+    ) -> Result<(), GcError> {
+        self.try_best(key, &[base], probe).await
     }
 
     /// Stores `key` as a delta against whichever of `bases` gives the smallest one, when that
-    /// saves half.
-    async fn try_best(&mut self, key: ObjKey, bases: &[ObjKey]) -> Result<(), GcError> {
+    /// saves half. With a `probe`, an object the ref tips hold is left whole; the tips are asked
+    /// only once the cheap tests have passed.
+    async fn try_best(
+        &mut self,
+        key: ObjKey,
+        bases: &[ObjKey],
+        probe: Option<Probe<'_>>,
+    ) -> Result<(), GcError> {
         let bases: Vec<ObjKey> = bases
             .iter()
             .copied()
@@ -662,15 +906,26 @@ impl Deltas<'_> {
         let (Some(kind), Some(id)) = (row_kind(&key), key.delta_id()) else {
             return Ok(());
         };
+        let hot = match probe {
+            Some((path, hid)) => self.is_hot(path, hid).await?,
+            None => false,
+        };
         let rep = &mut *self.rep;
         rep.candidates += 1;
-        let planned = match self
-            .entry
-            .objects
-            .plan_best(key, &bases, self.cache)
-            .await?
-        {
+        let outcome = if hot {
+            Err(Skip::Hot)
+        } else {
+            self.entry
+                .objects
+                .plan_best(key, &bases, self.cache)
+                .await?
+        };
+        let planned = match outcome {
             Ok(p) => p,
+            Err(Skip::Hot) => {
+                rep.hot += 1;
+                return Ok(());
+            }
             Err(Skip::NoGain) => {
                 rep.no_gain += 1;
                 return Ok(());
@@ -832,10 +1087,12 @@ mod tests {
             pool: reg.pool(),
             entry: &entry,
             purged: &purged,
+            tips: &[],
+            trees: &mut TipTrees::default(),
             rep: &mut rep,
             cache: &mut cache,
         };
-        d.try_one(b, base).await.unwrap();
+        d.try_one(b, base, None).await.unwrap();
         assert_eq!((rep.candidates, rep.skipped, rep.written), (1, 1, 0));
         let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM delta_bases")
             .fetch_one(reg.pool())
@@ -859,9 +1116,233 @@ mod tests {
         assert!(s(|s| s.min_size = ByteSize(1)));
         assert!(s(|s| s.min_size = ByteSize(CHUNK_THRESHOLD + 1)));
         assert!(s(|s| s.max_changesets = 0));
+        assert!(s(|s| s.cold_distance = 10_000_001));
+        assert!(s(|s| s.cold_age = Secs(3650 * 86_400 + 1)));
+        assert!(!s(|s| s.cold_distance = 0));
+        assert!(!s(|s| s.cold_age = Secs(0)));
+        assert_eq!(DeltaSettings::default().cold_distance, 1000);
+        assert_eq!(DeltaSettings::default().cold_age, Secs(90 * 86_400));
         let t: DeltaSettings = toml::from_str("enabled = true\ninterval = \"15m\"").unwrap();
         assert!(t.enabled);
+        assert!(t.hot_guard);
         assert_eq!(t.interval(), Duration::from_secs(900));
         assert!(toml::from_str::<DeltaSettings>("enable = true").is_err());
+    }
+}
+
+#[cfg(test)]
+mod cold_tests {
+    use super::*;
+    use crate::ingest::testutil::{registry, repo, tree};
+    use asc_core::sig::Signature;
+    use asc_engine::commit::{NewChangeset, PathPolicy};
+
+    const DAY: i64 = 86_400;
+
+    /// The files one changeset writes and its committer time.
+    type Step = (Vec<(&'static str, Vec<u8>)>, i64);
+
+    fn now() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+    }
+
+    /// A source file of about 90 KiB; `edit` changes one line.
+    fn version(edit: usize) -> Vec<u8> {
+        (0..3000)
+            .map(|i| match i == edit {
+                true => format!("fn edited_{i}() -> u32 {{ {i} }}\n"),
+                false => format!("fn item_{i}() -> u32 {{ {} }}\n", i * 3),
+            })
+            .collect::<String>()
+            .into_bytes()
+    }
+
+    /// A changeset committed at `time` that writes `files` over its first parent.
+    async fn commit_at(
+        e: &RepoEntry,
+        parent: Option<ChangesetId>,
+        files: &[(&str, &[u8])],
+        time: i64,
+    ) -> ChangesetId {
+        let engine = e.backend.engine();
+        let base = match parent {
+            Some(p) => engine.get_changeset(p).await.unwrap().root,
+            None => asc_engine::Engine::<
+                asc_store::bucket::BucketObjects,
+                asc_store::sqlrefs::SqlRefs,
+            >::empty_tree_id(),
+        };
+        let root = tree(e, base, files).await;
+        let sig = Signature::new(b"A".to_vec(), b"a@x".to_vec(), time, 0).unwrap();
+        engine
+            .create_changeset(
+                NewChangeset {
+                    parents: parent.into_iter().collect(),
+                    author: sig.clone(),
+                    committer: sig,
+                    message: b"m".to_vec(),
+                    extra: Vec::new(),
+                    root,
+                    copies: Vec::new(),
+                },
+                PathPolicy::Native { windows_safe: true },
+            )
+            .await
+            .unwrap()
+    }
+
+    /// `master` of `steps` (files, time), one changeset each, in the mainline.
+    async fn history(
+        reg: &crate::registry::Registry,
+        e: &RepoEntry,
+        steps: &[Step],
+    ) -> Vec<ChangesetId> {
+        let ns = e.ns.as_bytes().to_vec();
+        let mut out: Vec<ChangesetId> = Vec::new();
+        for (pos, (files, time)) in steps.iter().enumerate() {
+            let files: Vec<(&str, &[u8])> = files.iter().map(|(p, b)| (*p, b.as_slice())).collect();
+            let cs = commit_at(e, out.last().copied(), &files, *time).await;
+            sqlx::query("INSERT INTO mainline (ns, ref, pos, cs) VALUES ($1, $2, $3, $4)")
+                .bind(ns.clone())
+                .bind("refs/heads/master")
+                .bind(pos as i64)
+                .bind(cs.as_bytes().to_vec())
+                .execute(reg.pool())
+                .await
+                .unwrap();
+            out.push(cs);
+        }
+        out
+    }
+
+    async fn cursor(reg: &crate::registry::Registry) -> Option<i64> {
+        sqlx::query_scalar("SELECT pos FROM delta_cursor")
+            .fetch_optional(reg.pool())
+            .await
+            .unwrap()
+    }
+
+    async fn rows(reg: &crate::registry::Registry) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM delta_bases")
+            .fetch_one(reg.pool())
+            .await
+            .unwrap()
+    }
+
+    fn on(distance: u64) -> DeltaSettings {
+        DeltaSettings {
+            enabled: true,
+            cold_distance: distance,
+            ..DeltaSettings::default()
+        }
+    }
+
+    fn three(time: i64) -> Vec<Step> {
+        (0..3)
+            .map(|i| {
+                (
+                    vec![("f", version(if i == 0 { usize::MAX } else { i }))],
+                    time,
+                )
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_recent_changeset_is_left_full() {
+        let reg = registry().await;
+        let e = repo(&reg).await;
+        history(&reg, &e, &three(now())).await;
+        let rep = pass(reg.pool(), &e, &on(1000)).await.unwrap();
+        assert_eq!((rep.changesets, rep.candidates, rep.written), (0, 0, 0));
+        assert_eq!((rows(&reg).await, cursor(&reg).await), (0, Some(-1)));
+    }
+
+    #[tokio::test]
+    async fn a_changeset_past_the_distance_is_planned_and_the_cursor_stops_at_the_first_hot_row() {
+        let reg = registry().await;
+        let e = repo(&reg).await;
+        history(&reg, &e, &three(now())).await;
+        // Newest is 2: position 0 is 2 behind, 1 is 1 behind (hot).
+        let rep = pass(reg.pool(), &e, &on(2)).await.unwrap();
+        assert_eq!((rep.changesets, rep.written), (1, 0));
+        assert_eq!(cursor(&reg).await, Some(0));
+        // Resumes from there: position 1 is now cold, position 2 (the tip) is not.
+        let rep = pass(reg.pool(), &e, &on(1)).await.unwrap();
+        assert_eq!((rep.changesets, rep.written), (1, 1), "{rep:?}");
+        assert_eq!(cursor(&reg).await, Some(1));
+        assert_eq!(rows(&reg).await, 1);
+    }
+
+    #[tokio::test]
+    async fn a_changeset_past_the_age_is_planned() {
+        let reg = registry().await;
+        let e = repo(&reg).await;
+        let old = now() - 100 * DAY;
+        history(&reg, &e, &three(old)).await;
+        // Within the distance, but past the 90 day age.
+        let rep = pass(reg.pool(), &e, &on(1000)).await.unwrap();
+        assert_eq!(rep.changesets, 3);
+        assert_eq!(rep.written, 1, "{rep:?}");
+        // The tip's own version stays whole.
+        assert_eq!(rep.hot, 2, "{rep:?}");
+    }
+
+    #[tokio::test]
+    async fn a_file_and_a_directory_still_at_the_tip_are_skipped() {
+        let reg = registry().await;
+        let e = repo(&reg).await;
+        let old = now() - 100 * DAY;
+        let steps = vec![
+            (vec![("d/f", version(usize::MAX))], old),
+            (vec![("d/f", version(1))], old),
+            (vec![("z", b"z".to_vec())], old),
+        ];
+        history(&reg, &e, &steps).await;
+        let rep = pass(reg.pool(), &e, &on(1000)).await.unwrap();
+        assert_eq!(rows(&reg).await, 0, "{rep:?}");
+        // The file d/f, its directory d, and the tip's own root.
+        assert_eq!((rep.hot, rep.written), (3, 0), "{rep:?}");
+    }
+
+    #[tokio::test]
+    async fn a_non_land_branch_tip_keeps_its_content_whole() {
+        let reg = registry().await;
+        let e = repo(&reg).await;
+        let old = now() - 100 * DAY;
+        let steps: Vec<Step> = (0..4)
+            .map(|i| {
+                (
+                    vec![("f", version(if i == 0 { usize::MAX } else { i }))],
+                    old,
+                )
+            })
+            .collect();
+        let ids = history(&reg, &e, &steps).await;
+        // A branch outside the mainline table, at the second changeset.
+        sqlx::query("INSERT INTO refs (repo_id, name, target, version) VALUES ($1, $2, $3, 1)")
+            .bind(e.key.0)
+            .bind("refs/heads/topic")
+            .bind(ids[1].as_bytes().to_vec())
+            .execute(reg.pool())
+            .await
+            .unwrap();
+        let rep = pass(reg.pool(), &e, &on(1000)).await.unwrap();
+        // Version 1 (file and root) and the mainline tip (file and root) are hot; only version 2
+        // becomes a delta.
+        assert_eq!((rep.written, rep.hot), (1, 4), "{rep:?}");
+        assert_eq!(rows(&reg).await, 1);
+    }
+
+    #[test]
+    fn a_row_landed_after_the_snapshot_is_never_far() {
+        assert!(far(10, 0, 10));
+        assert!(!far(10, 1, 10));
+        // `newest` was read before this row landed: no wrap to a huge distance.
+        assert!(!far(2, 5, 1));
+        assert!(!far(i64::MIN, i64::MAX, 1));
     }
 }

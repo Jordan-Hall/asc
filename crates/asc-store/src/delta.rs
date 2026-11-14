@@ -28,6 +28,9 @@ pub enum Skip {
     BadBase,
     /// The delta would not be under half of the stored size.
     NoGain,
+    /// The same content is still at a land branch's tip, where reads should find it whole. Never
+    /// returned by the planner; the delta pass reports it for such objects.
+    Hot,
 }
 
 /// A delta ready to store: the object, its base and the codec `2` bytes.

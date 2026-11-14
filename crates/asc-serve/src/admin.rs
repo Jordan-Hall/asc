@@ -3039,6 +3039,7 @@ mod tests {
         }
         let settings = crate::delta_service::DeltaSettings {
             enabled: true,
+            hot_guard: false,
             ..Default::default()
         };
         let rep = crate::delta_service::pass(f.registry.pool(), &e, &settings)
