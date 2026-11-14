@@ -47,6 +47,20 @@ Codec `2` is added to the stored value (`codec u8 ‖ data`, SPEC §3.1):
 collection lock (`GcService`, the same PostgreSQL advisory lock as GC), so a collection never runs
 while a delta is being written.
 
+0. Cold history only. A `mainline` row is read only when it is cold: at least `cold_distance`
+   positions behind its ref's newest row, or committed at least `cold_age` ago. The newest position of
+   each ref is read once at the start of the pass and the page query stops there (`pos <= newest`), so a
+   row that lands during the pass waits for the next one and can never look far behind. The pass stops
+   a ref at its first row that is not cold, and the cursor stays before it.
+   - Hot guard: the tips of every ref in the `refs` table (branches, stacks, tags) and each land
+     branch's newest mainline row are read once per pass. An object (file, directory tree or root
+     tree) that any tip holds at the same path with the same id is left whole and counted as `hot`.
+     Decoded tip directories are kept per pass, keyed by tree id, and the tips are asked only after
+     the cheap tests (a base exists, the row kind can be a delta) have passed. A repository with more
+     than 50,000 distinct ref targets gets no pass, because its hot set is unknown.
+   - The tips are read once per pass, so a ref that moves during the pass is not seen (a revert that
+     makes old content hot again costs a slower read, nothing else). An object skipped as hot is not
+     revisited: the cursor has moved past its changeset.
 1. For each land branch, read `mainline` rows after the branch's `delta_cursor` (at most
    `max_changesets` per pass).
 2. For each `Change::Write` of a changeset that is not a symlink and has `size ≥ min_size`, the
@@ -150,7 +164,11 @@ enabled = false        # run the pass; reads resolve deltas regardless
 interval = "1h"        # 1m to 7d
 min_size = "1KiB"      # smaller files are left alone; 64B to 4MiB
 max_changesets = 5000  # per repository per pass; 1 to 1000000
+cold_distance = 1000   # mainline positions behind the newest; 0 to 10000000
+cold_age = "90d"       # committer age; 0 to 3650d
 ```
+
+A changeset is planned when it is past either bound.
 
 ## Operation
 

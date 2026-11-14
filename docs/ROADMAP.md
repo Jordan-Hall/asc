@@ -76,7 +76,7 @@ In flight: rows 42 and 46 (the cache statistics store and recorder have landed; 
 
 | # | Item | What it does | Size | Status |
 |---|---|---|---|---|
-| 5 | Cold-only deltas | Only history past a set age or distance from every tip may become a delta. Decided 2026-11-13: yes, cold history only | D | open |
+| 5 | Cold-only deltas | Only history past a set age or distance from every tip may become a delta. Decided 2026-11-13: yes, cold history only | D | done 2026-11-14 |
 | 8 | Fork deduplication | Forks share objects instead of copying them. Shared `BucketRefs` exist for one bucket (`--refs shared`); the row covers sharing objects and refs across a fork network (SPEC section 3.3) | D | open |
 | 9 | Large-file chunk pairing | Chunks are 65 MB of the 192.6 MB benchmark store; git packs the same files in 50 MB | S | open |
 
