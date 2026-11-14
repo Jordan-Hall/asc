@@ -606,6 +606,171 @@ pub fn verify(dir: &Path) -> Result<u64, BackupError> {
     Ok(count)
 }
 
+/// Reads every delta of the backup's objects through the normal read path (chains and packs
+/// resolved, every key id checked) and returns how many it read. A backup without objects has none.
+/// On a PostgreSQL backup (no readable pack index) a delta whose base is not a loose object, in a
+/// namespace that holds pack files, is counted as unchecked and does not fail.
+///
+/// The index lists the objects as `ns/<namespace>/<key path>`; the entries that are not an object
+/// key (pack files, indexes) are not read by key. Packed bases are found through the pack index
+/// in a scratch copy of the backup's SQLite database. A damaged base fails and the error names the
+/// delta, as does a missing base on SQLite or on PostgreSQL when the namespace holds no pack.
+pub async fn verify_chains(dir: &Path) -> Result<ChainReport, BackupError> {
+    use asc_store::bucket::BucketObjects;
+    use asc_store::key::ObjKey;
+    use asc_store::objects::Objects as _;
+    use object_store::local::LocalFileSystem;
+
+    let index = dir.join(OBJECT_INDEX);
+    if !index.exists() {
+        return Ok(ChainReport::default());
+    }
+    let entries = parse_index(&std::fs::read_to_string(&index)?)?;
+    if entries.is_empty() {
+        return Ok(ChainReport::default());
+    }
+    let fs: std::sync::Arc<dyn ObjectStore> = std::sync::Arc::new(
+        LocalFileSystem::new_with_prefix(dir.join(OBJECTS_DIR))
+            .map_err(|e| BackupError(format!("objects: {e}")))?,
+    );
+    let postgres = read_manifest(dir)?.db_kind == "postgres";
+    // The backup is never written to: SQLite is read from a scratch copy.
+    let scratch = tempfile::tempdir()?;
+    let pool = if postgres {
+        None
+    } else {
+        let sqlite = dir.join(DB_SQLITE);
+        if !sqlite.is_file() {
+            return fail("the backup has no db.sqlite, so its packs cannot be read");
+        }
+        let copy = scratch.path().join(DB_SQLITE);
+        std::fs::copy(&sqlite, &copy)?;
+        Some(migrate::connect(&format!("sqlite:{}?mode=ro", copy.display()), 1).await?)
+    };
+    // Namespaces whose objects include pack files.
+    let packed: std::collections::BTreeSet<&str> = entries
+        .iter()
+        .filter_map(|(_, _, rel)| {
+            let mut p = rel.splitn(4, '/');
+            match (p.next(), p.next(), p.next()) {
+                (Some("ns"), Some(ns), Some("pack")) => Some(ns),
+                _ => None,
+            }
+        })
+        .collect();
+    let mut open: BTreeMap<String, BucketObjects> = BTreeMap::new();
+    let mut report = ChainReport::default();
+    let outcome: Result<(), BackupError> = async {
+        for (_, _, rel) in &entries {
+            let mut parts = rel.splitn(3, '/');
+            let (Some("ns"), Some(ns), Some(rest)) = (parts.next(), parts.next(), parts.next())
+            else {
+                continue;
+            };
+            let Some(key) = ObjKey::parse(rest) else {
+                continue;
+            };
+            let mut head = Vec::new();
+            std::io::Read::read_to_end(
+                &mut std::io::Read::take(std::fs::File::open(dir.join(OBJECTS_DIR).join(rel))?, 64),
+                &mut head,
+            )?;
+            if asc_store::codec::delta_base(&head).is_none() {
+                continue;
+            }
+            if !open.contains_key(ns) {
+                let mut objects = BucketObjects::new(fs.clone(), ObjPath::from(format!("ns/{ns}")));
+                if let (Some(pool), Some(id)) = (&pool, parse_ns(ns)) {
+                    let idx =
+                        std::sync::Arc::new(crate::pack_sql::SqlPackIndex::new(pool.clone(), id));
+                    objects =
+                        objects.with_packs(std::sync::Arc::new(asc_store::pack::PackLayer::new(
+                            idx,
+                            asc_store::pack::PackConfig::default(),
+                        )));
+                }
+                open.insert(ns.to_owned(), objects);
+            }
+            let objects = &open[ns];
+            match objects.get(&key).await {
+                Ok(Some(_)) => report.resolved += 1,
+                Ok(None) => return fail(format!("delta {rel} cannot be read from the backup")),
+                Err(e) => {
+                    // Without a pack index, a base that is not a loose file may be in a pack.
+                    if postgres
+                        && packed.contains(ns)
+                        && base_not_loose(objects, dir, ns, key).await
+                    {
+                        report.unchecked += 1;
+                    } else {
+                        return fail(format!("delta {rel} does not resolve in the backup: {e}"));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+    .await;
+    if let Some(pool) = pool {
+        pool.close().await;
+    }
+    outcome?;
+    Ok(report)
+}
+
+/// The restore-test text for deltas that could not be checked; empty when there are none.
+fn unchecked_note(r: &ChainReport) -> String {
+    if r.unchecked == 0 {
+        return String::new();
+    }
+    format!(
+        ", {} not checked (base in a pack, PostgreSQL backup)",
+        r.unchecked
+    )
+}
+
+/// What [`verify_chains`] found.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ChainReport {
+    /// Deltas read back through their whole chain.
+    pub resolved: u64,
+    /// Deltas whose chain leaves the loose objects (a base in a pack) in a backup with no
+    /// readable pack index.
+    pub unchecked: u64,
+}
+
+/// Whether the chain of `key` reaches a base that is not a loose file of the backup.
+async fn base_not_loose(
+    objects: &asc_store::bucket::BucketObjects,
+    dir: &Path,
+    ns: &str,
+    key: asc_store::key::ObjKey,
+) -> bool {
+    let mut cur = key;
+    for _ in 0..=asc_store::codec::MAX_DELTA_DEPTH {
+        let Ok(Some(base)) = objects.delta_base_of(cur).await else {
+            return false;
+        };
+        let file = dir.join(OBJECTS_DIR).join("ns").join(ns).join(base.path());
+        if !file.is_file() {
+            return true;
+        }
+        cur = base;
+    }
+    false
+}
+
+/// The namespace a `ns/<hex>` directory names.
+fn parse_ns(hex: &str) -> Option<crate::registry::Ns> {
+    if hex.len() != 32 || !hex.is_ascii() {
+        return None;
+    }
+    let bytes: Option<Vec<u8>> = (0..16)
+        .map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).ok())
+        .collect();
+    crate::registry::Ns::from_bytes(&bytes?)
+}
+
 /// Restores the backup in `dir` into a scratch area and checks what comes out: the restore a
 /// real one would do, without touching the server. Returns what was checked, in one line.
 ///
@@ -620,6 +785,8 @@ pub async fn restore_test(dir: &Path, key: Option<&[u8; 32]>) -> Result<String, 
     let objects = tokio::task::spawn_blocking(move || verify(&d))
         .await
         .map_err(|e| BackupError(e.to_string()))??;
+    let chains = verify_chains(dir).await?;
+    let unchecked = unchecked_note(&chains);
     let m = read_manifest(dir)?;
     if m.vault_key == "sealed" {
         let Some(key) = key else {
@@ -681,8 +848,9 @@ pub async fn restore_test(dir: &Path, key: Option<&[u8; 32]>) -> Result<String, 
     };
     drop(scratch);
     Ok(format!(
-        "Restore test passed: {db} in a scratch copy, {} files and {objects} objects match",
-        m.files.len()
+        "Restore test passed: {db} in a scratch copy, {} files and {objects} objects match, {} delta chains resolve{unchecked}",
+        m.files.len(),
+        chains.resolved
     ))
 }
 
@@ -693,6 +861,7 @@ pub async fn restore(cfg: &ServeConfig, opts: &RestoreOptions) -> Result<String,
     };
     // Nothing is touched before the whole backup has been checked.
     let objects_checked = verify(&opts.from)?;
+    verify_chains(&opts.from).await?;
     let m = read_manifest(&opts.from)?;
     let backup_key = opts.key_file.as_deref().map(load_backup_key).transpose()?;
     if m.vault_key == "sealed" && backup_key.is_none() {
@@ -917,6 +1086,341 @@ mod tests {
         assert_eq!(get("PGDATABASE"), Some("asc_hub"));
         assert_eq!(get("PGSSLMODE"), Some("require"));
         assert!(pg_env("postgres://h").is_err());
+    }
+
+    mod chains {
+        use std::sync::Arc;
+
+        use asc_core::id::FileId;
+        use asc_store::bucket::BucketObjects;
+        use asc_store::codec::encode_stored;
+        use asc_store::key::ObjKey;
+        use asc_store::objects::Objects as _;
+        use object_store::local::LocalFileSystem;
+
+        use super::*;
+
+        const NS: &str = "000102030405060708090a0b0c0d0e0f";
+
+        fn version(edit: usize) -> Vec<u8> {
+            (0..400)
+                .map(|i| {
+                    if i == edit {
+                        format!(
+                            "fn edited_{i}() -> u32 {{ {i} }}
+"
+                        )
+                    } else {
+                        format!(
+                            "fn item_{i}() -> u32 {{ {} }}
+",
+                            i * 3
+                        )
+                    }
+                })
+                .collect::<String>()
+                .into_bytes()
+        }
+
+        fn local(dir: &Path) -> BucketObjects {
+            std::fs::create_dir_all(dir.join(OBJECTS_DIR)).unwrap();
+            let fs = LocalFileSystem::new_with_prefix(dir.join(OBJECTS_DIR)).unwrap();
+            BucketObjects::new(Arc::new(fs), ObjPath::from(format!("ns/{NS}")))
+        }
+
+        fn files(dir: &Path, out: &mut Vec<String>, root: &Path) {
+            for e in std::fs::read_dir(dir).unwrap() {
+                let p = e.unwrap().path();
+                if p.is_dir() {
+                    files(&p, out, root);
+                } else {
+                    let rel = p.strip_prefix(root).unwrap();
+                    out.push(rel.to_string_lossy().replace('\\', "/"));
+                }
+            }
+        }
+
+        /// An empty migrated `db.sqlite` in `dir`, and the local bucket under it.
+        async fn site(dir: &Path) -> BucketObjects {
+            let url = format!("sqlite:{}?mode=rwc", dir.join(DB_SQLITE).display());
+            let pool = migrate::connect(&url, 1).await.unwrap();
+            migrate::migrate(&pool).await.unwrap();
+            pool.close().await;
+            local(dir)
+        }
+
+        /// The index and manifest a backup of `kind` has, over what is in `dir`.
+        fn finish(dir: &Path, kind: &str) {
+            index(dir);
+            let text = std::fs::read_to_string(dir.join(OBJECT_INDEX)).unwrap();
+            let mut entries = Vec::new();
+            for f in [DB_SQLITE, OBJECT_INDEX] {
+                if dir.join(f).is_file() {
+                    let (bytes, sha256) = digest_file(&dir.join(f)).unwrap();
+                    entries.push(FileEntry {
+                        path: f.to_owned(),
+                        bytes,
+                        sha256,
+                    });
+                }
+            }
+            let m = Manifest {
+                format: FORMAT,
+                created: 1,
+                asc_version: "test".into(),
+                db_kind: kind.to_owned(),
+                vault_key: "none".into(),
+                objects: text.lines().count() as u64,
+                object_bytes: 0,
+                files: entries,
+            };
+            std::fs::write(dir.join(MANIFEST), serde_json::to_vec(&m).unwrap()).unwrap();
+        }
+
+        /// Fails when a check left a journal file in the backup.
+        fn assert_untouched(dir: &Path) {
+            for e in std::fs::read_dir(dir).unwrap() {
+                let n = e.unwrap().file_name().to_string_lossy().into_owned();
+                assert!(
+                    !(n.ends_with("-wal") || n.ends_with("-shm") || n.ends_with("-journal")),
+                    "{n}"
+                );
+            }
+        }
+
+        /// Writes `objects.idx` for what is under `objects/`.
+        fn index(dir: &Path) {
+            let root = dir.join(OBJECTS_DIR);
+            let mut rels = Vec::new();
+            files(&root, &mut rels, &root);
+            let text: String = rels
+                .iter()
+                .map(|r| {
+                    let (bytes, sha) = digest_file(&root.join(r)).unwrap();
+                    format!("{sha} {bytes} {r}\n")
+                })
+                .collect();
+            std::fs::write(dir.join(OBJECT_INDEX), text).unwrap();
+        }
+
+        /// Stores `v1` whole and `v2` as a delta against it; returns both keys.
+        async fn pair(b: &BucketObjects) -> (ObjKey, ObjKey) {
+            let (v1, v2) = (version(usize::MAX), version(10));
+            let base = ObjKey::File(FileId::of(&v1));
+            let file = ObjKey::File(FileId::of(&v2));
+            b.put(&base, encode_stored(&v1)).await.unwrap();
+            b.put(&file, encode_stored(&v2)).await.unwrap();
+            let p = b.plan_delta(file, base).await.unwrap().unwrap();
+            b.store_delta(&p).await.unwrap();
+            (base, file)
+        }
+
+        #[tokio::test]
+        async fn a_backup_with_deltas_resolves_every_chain() {
+            let t = tempfile::tempdir().unwrap();
+            let b = site(t.path()).await;
+            pair(&b).await;
+            finish(t.path(), "sqlite");
+            assert_eq!(verify_chains(t.path()).await.unwrap().resolved, 1);
+            assert_untouched(t.path());
+        }
+
+        #[tokio::test]
+        async fn a_damaged_base_fails_naming_the_delta() {
+            let t = tempfile::tempdir().unwrap();
+            let b = site(t.path()).await;
+            let (base, file) = pair(&b).await;
+            let victim = t
+                .path()
+                .join(OBJECTS_DIR)
+                .join(format!("ns/{NS}/{}", base.path()));
+            let mut bytes = std::fs::read(&victim).unwrap();
+            let last = bytes.len() - 1;
+            bytes[last] ^= 0xff;
+            std::fs::write(&victim, bytes).unwrap();
+            finish(t.path(), "sqlite");
+            let e = verify_chains(t.path()).await.unwrap_err().0;
+            assert!(e.contains(&file.path()), "{e}");
+            assert!(e.contains("does not resolve"), "{e}");
+        }
+
+        #[tokio::test]
+        async fn a_missing_base_fails_when_the_pack_index_is_readable() {
+            let t = tempfile::tempdir().unwrap();
+            let b = site(t.path()).await;
+            let (base, file) = pair(&b).await;
+            std::fs::remove_file(
+                t.path()
+                    .join(OBJECTS_DIR)
+                    .join(format!("ns/{NS}/{}", base.path())),
+            )
+            .unwrap();
+            finish(t.path(), "sqlite");
+            let e = verify_chains(t.path()).await.unwrap_err().0;
+            assert!(e.contains(&file.path()), "{e}");
+        }
+
+        #[tokio::test]
+        async fn a_backup_without_objects_skips_the_check() {
+            let t = tempfile::tempdir().unwrap();
+            assert_eq!(
+                verify_chains(t.path()).await.unwrap(),
+                ChainReport::default()
+            );
+            std::fs::write(t.path().join(OBJECT_INDEX), "").unwrap();
+            assert_eq!(
+                verify_chains(t.path()).await.unwrap(),
+                ChainReport::default()
+            );
+        }
+
+        /// A backup whose delta has lost its base file; returns the delta, the base path and bytes.
+        async fn without_base(dir: &Path, kind: &str) -> (ObjKey, std::path::PathBuf, Vec<u8>) {
+            let b = local(dir);
+            let (base, file) = pair(&b).await;
+            let loose = dir
+                .join(OBJECTS_DIR)
+                .join(format!("ns/{NS}/{}", base.path()));
+            let saved = std::fs::read(&loose).unwrap();
+            std::fs::remove_file(&loose).unwrap();
+            finish(dir, kind);
+            (file, loose, saved)
+        }
+
+        #[tokio::test]
+        async fn a_postgres_backup_leaves_a_packed_base_unchecked_but_not_a_damaged_one() {
+            let t = tempfile::tempdir().unwrap();
+            let (file, loose, saved) = without_base(t.path(), "postgres").await;
+            // The namespace holds a pack, so the base may be in it.
+            let pack = t
+                .path()
+                .join(OBJECTS_DIR)
+                .join(format!("ns/{NS}/pack/x.pack"));
+            std::fs::create_dir_all(pack.parent().unwrap()).unwrap();
+            std::fs::write(&pack, b"pack").unwrap();
+            finish(t.path(), "postgres");
+            let r = verify_chains(t.path()).await.unwrap();
+            assert_eq!(
+                r,
+                ChainReport {
+                    resolved: 0,
+                    unchecked: 1
+                }
+            );
+            assert!(
+                unchecked_note(&r).ends_with(", 1 not checked (base in a pack, PostgreSQL backup)")
+            );
+            assert_eq!(unchecked_note(&ChainReport::default()), "");
+            assert_untouched(t.path());
+            // A loose base that is damaged still fails.
+            let mut bad = saved;
+            let last = bad.len() - 1;
+            bad[last] ^= 0xff;
+            std::fs::write(&loose, bad).unwrap();
+            finish(t.path(), "postgres");
+            let e = verify_chains(t.path()).await.unwrap_err().0;
+            assert!(e.contains(&file.path()), "{e}");
+        }
+
+        #[tokio::test]
+        async fn a_postgres_backup_with_no_pack_in_the_namespace_fails_on_a_missing_base() {
+            let t = tempfile::tempdir().unwrap();
+            let (file, _, _) = without_base(t.path(), "postgres").await;
+            let e = verify_chains(t.path()).await.unwrap_err().0;
+            assert!(e.contains(&file.path()), "{e}");
+        }
+
+        #[tokio::test]
+        async fn a_sqlite_backup_without_its_database_fails() {
+            let t = tempfile::tempdir().unwrap();
+            without_base(t.path(), "sqlite").await;
+            let e = verify_chains(t.path()).await.unwrap_err().0;
+            assert!(e.contains("db.sqlite"), "{e}");
+        }
+
+        #[tokio::test]
+        async fn a_restore_refuses_a_broken_chain_before_it_changes_anything() {
+            let t = tempfile::tempdir().unwrap();
+            let bk = t.path().join("bk");
+            std::fs::create_dir_all(&bk).unwrap();
+            let b = site(&bk).await;
+            let (base, _) = pair(&b).await;
+            let victim = bk
+                .join(OBJECTS_DIR)
+                .join(format!("ns/{NS}/{}", base.path()));
+            let mut bytes = std::fs::read(&victim).unwrap();
+            let last = bytes.len() - 1;
+            bytes[last] ^= 0xff;
+            std::fs::write(&victim, bytes).unwrap();
+            // The digests match the damaged file: only the chain check can see the damage.
+            finish(&bk, "sqlite");
+            assert!(verify(&bk).is_ok());
+            let live = t.path().join("live");
+            std::fs::create_dir_all(&live).unwrap();
+            let cfg = ServeConfig {
+                db: Some(format!("sqlite:{}/asc.db?mode=rwc", live.display())),
+                store: Some(format!("file://{}/bucket", live.display())),
+                ..ServeConfig::default()
+            };
+            let e = restore(
+                &cfg,
+                &RestoreOptions {
+                    from: bk.clone(),
+                    ..RestoreOptions::default()
+                },
+            )
+            .await
+            .unwrap_err()
+            .0;
+            assert!(e.contains("does not resolve"), "{e}");
+            assert_eq!(
+                std::fs::read_dir(&live).unwrap().count(),
+                0,
+                "the target is untouched"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_base_inside_a_pack_resolves_through_the_backup_index() {
+            use asc_store::pack::{PackConfig, layer::PackLayer};
+
+            let t = tempfile::tempdir().unwrap();
+            let url = format!("sqlite:{}?mode=rwc", t.path().join(DB_SQLITE).display());
+            let pool = migrate::connect(&url, 1).await.unwrap();
+            migrate::migrate(&pool).await.unwrap();
+            let ns = parse_ns(NS).unwrap();
+            let cfg = PackConfig {
+                enabled: true,
+                min_batch: 1,
+                negative_ttl: std::time::Duration::ZERO,
+                ..PackConfig::default()
+            };
+            let layer = Arc::new(PackLayer::new(
+                Arc::new(crate::pack_sql::SqlPackIndex::new(pool.clone(), ns)),
+                cfg,
+            ));
+            // The delta is made over loose objects, then the base moves into a pack.
+            let (base, file) = pair(&local(t.path())).await;
+            let (v1, _) = (version(usize::MAX), ());
+            let packed = local(t.path()).with_packs(layer);
+            packed
+                .put_many(vec![
+                    (base, encode_stored(&v1)),
+                    (ObjKey::File(FileId::of(b"x")), encode_stored(b"x")),
+                ])
+                .await
+                .unwrap();
+            let loose = t
+                .path()
+                .join(OBJECTS_DIR)
+                .join(format!("ns/{NS}/{}", base.path()));
+            std::fs::remove_file(&loose).unwrap();
+            assert!(!loose.exists(), "the base is read from its pack");
+            assert!(packed.get(&file).await.unwrap().is_some());
+            pool.close().await;
+            finish(t.path(), "sqlite");
+            assert_eq!(verify_chains(t.path()).await.unwrap().resolved, 1);
+        }
     }
 
     #[cfg(unix)]
