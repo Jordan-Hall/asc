@@ -315,6 +315,16 @@ workflows, whose secrets cannot be named `ASC_*`.
 
 Agent credentials reach none of them (every service an agent token is not named for is closed to it).
 
+## Hub dependency page
+
+The hub shows the dependency findings at `/{owner}/{repo}/asc/deps`. Findings sort exploited first. Entries on CISA's Known Exploited Vulnerabilities (KEV) list come first. Then they sort by EPSS score, then by CVSS. A sort control switches the order.
+
+A finding on the KEV list shows a KEV mark. Each finding also shows an EPSS percentage pill. An EPSS score of 0 shows no pill.
+
+When the KEV or EPSS mirror is older than its freshness limit, the page shows a stale-feed notice.
+
+The "SBOM" button downloads the bill of materials for the revision on the page. It calls the `DepsService/Sbom` RPC, in CycloneDX or SPDX format. The server allows two downloads at a time per instance. The file name comes from the repository and the revision. The route supports HEAD requests. With dependency features off, the route returns 404.
+
 ## Server config
 
 See `deploy/asc-serve.toml.example`. Every URL is judged by the network guard (https only unless the operator's

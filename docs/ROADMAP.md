@@ -44,7 +44,7 @@ What is not verified:
 - Packs and deltas are off by default (row 63). On the benchmark history the store is 192.6 MB against git's 161 MB pack (`docs/BENCHMARKS.md`).
 - The standalone token store is a second token system (row 61). There is no native operating-system credential store (row 62).
 
-In flight: rows 28 and 32 (the RPC, the landing gate, the CLI, the hub page and the docs; the KEV and EPSS feeds, the SBOM RPC and `asc deps sbom` have landed), rows 42 and 46 (the cache statistics store has landed; the hub Insights page and the inline view on a change remain).
+In flight: rows 42 and 46 (the cache statistics store and recorder have landed; the hub Insights page and the inline view on a change remain), rows 4, 5, 36 and 79 (first units in progress).
 
 ## 2. Rows
 
@@ -117,11 +117,11 @@ The dependency service (`crates/asc-serve/src/deps/`, `docs/DEPENDENCIES.md`) re
 
 | # | Item | What it does | Size | Status |
 |---|---|---|---|---|
-| 28 | Exploited-in-the-wild ranking | CISA's Known Exploited Vulnerabilities list and EPSS scores beside CVSS, from mirrored files. The feeds, the exploited-first sort and the KEV and EPSS gate have landed | S | open |
+| 28 | Exploited-in-the-wild ranking | CISA's Known Exploited Vulnerabilities list and EPSS scores beside CVSS, from mirrored files. The feeds, the exploited-first sort and the KEV and EPSS gate have landed | S | done |
 | 29 | Re-scan trunk on new advisories | What has landed is checked again when advisories change, with a notice. Today scans run only on request and at landing | S | open |
 | 30 | Reachability | A finding is marked "used" only when the code index shows the package or symbol is referenced. `deps/imports.rs` collects imports, but nothing reads the set | D | open |
 | 31 | Images and CI actions | Dockerfile base images and pinned CI actions are scanned as well as language packages | S | open |
-| 32 | SBOM per revision | CycloneDX or SPDX for any changeset. The SBOM RPC and `asc deps sbom` have landed | S | open |
+| 32 | SBOM per revision | CycloneDX or SPDX for any changeset. The SBOM RPC and `asc deps sbom` have landed | S | done |
 | 33 | Advisories against asc itself | The server and the CLI tell the operator when the running version has an advisory | S | open |
 | 34 | Cache and artifact marking | Build-cache entries and CI artifacts built with a dependency that later got an advisory are flagged | D | open |
 | 36 | One security status | Each repository and each change has one status (clean, findings, unknown) with the versions to move to | S | open |
@@ -152,7 +152,7 @@ From a review of the hub's asc pages on 2026-11-13 (routes, templates and styles
 | 46 | Affected projects and cache hits on a change | Shown inline with the checks of a change | S | open |
 | 50 | Repository templates | Templates in the create flow | D | open |
 | 51 | Own pages for repo home, diff and issues | Rebuilt in the asc design system, with the loose `asc-*.css` files folded in, so no page is the upstream forge's template with a new skin | D | open |
-| 52 | SBOM download | On the dependency page (the server side is row 32) | S | after 32 |
+| 52 | SBOM download | On the dependency page (the server side is row 32) | S | done |
 | 75 | Hub integration matrix over both storage backends | The hub's integration tests run with git storage and with asc storage (plan unit K15, `FORGEJO_TEST_STORAGE_BACKEND`). **Check first** | S | open |
 | 80 | Pull mirrors stored in asc | Pull mirrors and wiki pull mirrors write into an asc repository; today the mirror service has no asc path | S | open |
 | 81 | Signed commits from web edits | A web edit on a branch that requires signatures cannot be signed today | S | decision |
@@ -162,7 +162,7 @@ From a review of the hub's asc pages on 2026-11-13 (routes, templates and styles
 
 | # | Item | What it does | Size | Status |
 |---|---|---|---|---|
-| 77 | Administrator read of one person's usage | A site administrator can read one person's usage. **Check first**: read `usage/` | S | open |
+| 77 | Administrator read of one person's usage | A site administrator can read one person's usage. **Check first**: read `usage/` | S | done |
 | 78 | Live restore | A restore runs while the server stays up: read-only mode while it runs, and no manual restart after | D | open |
 | 82 | CLI for the account services | A standalone server without the hub can drive the account services (sessions, export, usage, org, backups) from `asc serve` subcommands; today the hub is the only client | S | open |
 | 83 | OpenSSH forced-command entry | An entry point for a system OpenSSH `command=` line, so an operator can serve asc behind sshd (SPEC section 25.11.1) | S | open |
@@ -195,7 +195,7 @@ From a review of the hub's asc pages on 2026-11-13 (routes, templates and styles
 
 ## 3. Order of work
 
-1. Safety and the delta rule: 3, 6, 7, 28, 32, then 1 and 2.
+1. Safety and the delta rule: 3, 6, 7, then 1 and 2 (28 and 32 are done).
 2. Disk: 10, 14, 15.
 3. Agents: 11, then 16, 17, 18, then 76 and 79.
 4. CI reach: 19, 20, 23, 25, then 85.
