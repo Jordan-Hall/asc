@@ -944,6 +944,37 @@ impl DepsHub {
         })
     }
 
+    /// The security status of the repository: the trunk scan's freshness and completeness, the open
+    /// findings and the moves that close them (docs/DEPENDENCIES.md "Status"). Reads only.
+    pub async fn status(&self, ctx: &CallCtx) -> Result<super::status::RepoStatus, Status> {
+        let entry = self.entry(ctx).await?;
+        let trunk = self.trunk(&entry).await?;
+        let loaded = self.repo_config(&entry, trunk).await?;
+        let pool = self.registry.pool();
+        let filter = store::Filter {
+            states: vec![State::Open],
+            ..store::Filter::default()
+        };
+        let mut open = store::list(pool, entry.key.0, &filter, 0, MAX_SORTED)
+            .await
+            .map_err(sql)?;
+        cut(&mut open, MAX_SORTED);
+        let by_severity = store::open_by_severity(pool, entry.key.0)
+            .await
+            .map_err(sql)?
+            .into_iter()
+            .map(|(k, v)| (k.to_owned(), v))
+            .collect();
+        let last = store::last_scan(pool, entry.key.0).await.map_err(sql)?;
+        Ok(super::status::repo_status(
+            &open,
+            by_severity,
+            last.as_ref(),
+            self.now(),
+            super::status::stale_after(loaded.config.schedule.as_deref()),
+        ))
+    }
+
     pub async fn dismiss(
         &self,
         ctx: &CallCtx,

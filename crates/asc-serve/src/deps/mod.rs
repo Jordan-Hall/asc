@@ -49,6 +49,7 @@ pub mod safe;
 pub mod sbom;
 pub mod scan;
 pub mod settings;
+pub mod status;
 pub mod store;
 pub mod sumdb;
 pub mod updates;
