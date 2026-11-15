@@ -17,9 +17,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io::Write;
-use std::process::{ExitCode, Stdio};
+use std::process::ExitCode;
 
-use async_trait::async_trait;
 use bytes::Bytes;
 use asc_core::change::RewriteOp;
 use asc_core::content::Body;
@@ -30,7 +29,7 @@ use asc_engine::change::{self, ChangeRows, Recorder, RewriteSink as _};
 use asc_engine::commit::PathPolicy;
 use asc_engine::merge::MergeOptions;
 use asc_engine::stack::absorb::{self, AbsorbPlan, Decision, FileEdit, MAX_FILE_BYTES};
-use asc_engine::stack::restack::{CommitSigner, SignError, TxnMeta};
+use asc_engine::stack::restack::{CommitSigner, TxnMeta};
 use asc_git::projection::Head;
 use asc_state::state::stage::{self, StageSet};
 use asc_state::state::workspaces;
@@ -38,7 +37,7 @@ use asc_store::refs::{Expect, RefTxn, RefUpdate};
 use asc_wc::{SafeRoot, status};
 use serde::Serialize;
 
-use super::restack::{followers, register};
+use super::restack::{Gpg, followers, register};
 use super::sl::{LStacks, Local, clean, fatal, stack_err};
 use crate::cli::add::{self, convert};
 use crate::cli::common::{CliError, Ctx, Result, StagingAfterMove, WsCtx};
@@ -52,8 +51,6 @@ use crate::native::NativeSpec;
 use crate::stack::json::{VERSION, line};
 use crate::stack::opstate;
 
-/// Longest signature the signing program may return.
-const MAX_SIGNATURE: usize = 64 * 1024;
 /// Longest subject printed.
 const SUBJECT_MAX: usize = 200;
 /// Most lines of one hunk `-p` prints.
@@ -457,48 +454,6 @@ async fn offer(ctx: &Ctx, ws: &WsCtx, head_root: TreeId) -> Result<Offer> {
 }
 
 // ---------------------------------------------------------------- signing
-
-/// Signs with git's signing program (`gpg.program`, default `gpg`), as `commit -S` does.
-struct Gpg<'a> {
-    ctx: &'a Ctx,
-    key: String,
-}
-
-#[async_trait]
-impl CommitSigner for Gpg<'_> {
-    async fn sign(&self, payload: &[u8]) -> std::result::Result<Vec<u8>, SignError> {
-        let program = self
-            .ctx
-            .config
-            .get("gpg.program")
-            .unwrap_or_else(|| "gpg".to_owned());
-        let mut cmd = self
-            .ctx
-            .child(self.ctx.shell())
-            .map_err(|e| SignError(e.to_string()))?;
-        cmd.args(["-c", "exec \"$@\"", "sh"])
-            .arg(&program)
-            .args(["--status-fd=2", "-bsau"])
-            .arg(&self.key)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped());
-        let payload = payload.to_vec();
-        let out = tokio::task::spawn_blocking(move || -> std::io::Result<std::process::Output> {
-            let mut child = cmd.spawn()?;
-            if let Some(mut pipe) = child.stdin.take() {
-                let _ = pipe.write_all(&payload);
-            }
-            child.wait_with_output()
-        })
-        .await
-        .map_err(|e| SignError(e.to_string()))?
-        .map_err(|e| SignError(e.to_string()))?;
-        if !out.status.success() || out.stdout.is_empty() || out.stdout.len() > MAX_SIGNATURE {
-            return Err(SignError("gpg failed to sign the data".into()));
-        }
-        Ok(out.stdout)
-    }
-}
 
 fn signer(ctx: &Ctx) -> Result<Option<Gpg<'_>>> {
     if !crate::cli::signing::sign_by_default(&ctx.config) {

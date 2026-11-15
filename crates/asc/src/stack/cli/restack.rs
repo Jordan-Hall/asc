@@ -51,8 +51,6 @@ use crate::stack::opstate::{self, RefFollow, StackOp};
 
 /// Most refs read when looking for the branches that follow a rewrite.
 const MAX_REFS: usize = 100_000;
-/// Longest signature the signing program may return.
-const MAX_SIGNATURE: usize = 64 * 1024;
 
 #[derive(clap::Parser, Debug)]
 #[command(name = "restack", disable_help_flag = true, disable_version_flag = true)]
@@ -155,38 +153,18 @@ pub(crate) fn rebase_paused(ws: &WsCtx) -> bool {
 
 // ---------------------------------------------------------------- signing
 
-/// Signs with git's signing program (`gpg.program`, default `gpg`), as `commit -S` does.
-struct Gpg<'a> {
-    ctx: &'a Ctx,
-    key: String,
+/// Signs as `commit -S` does: through `signing::sign_payload`, so `gpg.format` (openpgp, x509, ssh) is honoured.
+pub(crate) struct Gpg<'a> {
+    pub(crate) ctx: &'a Ctx,
+    pub(crate) key: String,
 }
 
 #[async_trait]
 impl CommitSigner for Gpg<'_> {
     async fn sign(&self, payload: &[u8]) -> std::result::Result<Vec<u8>, SignError> {
-        let program = self.ctx.config.get("gpg.program").unwrap_or_else(|| "gpg".to_owned());
-        let mut cmd = self.ctx.child(self.ctx.shell()).map_err(|e| SignError(e.to_string()))?;
-        cmd.args(["-c", "exec \"$@\"", "sh"])
-            .arg(&program)
-            .args(["--status-fd=2", "-bsau"])
-            .arg(&self.key)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped());
-        let payload = payload.to_vec();
-        let out = tokio::task::spawn_blocking(move || -> std::io::Result<std::process::Output> {
-            let mut child = cmd.spawn()?;
-            if let Some(mut pipe) = child.stdin.take() {
-                let _ = pipe.write_all(&payload);
-            }
-            child.wait_with_output()
-        })
-        .await
-        .map_err(|e| SignError(e.to_string()))?
-        .map_err(|e| SignError(e.to_string()))?;
-        if !out.status.success() || out.stdout.is_empty() || out.stdout.len() > MAX_SIGNATURE {
-            return Err(SignError("gpg failed to sign the data".into()));
-        }
-        Ok(out.stdout)
+        crate::cli::signing::sign_payload(self.ctx, payload, Some(&self.key), "")
+            .await
+            .map_err(|e| SignError(e.trim_start_matches("error: ").to_owned()))
     }
 }
 

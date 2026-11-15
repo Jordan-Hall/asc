@@ -10,25 +10,23 @@
 //!
 //! The helpers [`rewrite`], [`move_refs`] and [`reparent_above`] are shared with `asc modify`.
 
-use std::io::Write;
 use std::path::Path;
-use std::process::{ExitCode, Stdio};
+use std::process::ExitCode;
 
-use async_trait::async_trait;
 use asc_core::change::RewriteOp;
 use asc_core::git::{EXTRA_GIT_GPGSIG, export_commit, tree_oid};
 use asc_core::id::{ChangesetId, GitOid, RefTarget, TreeId};
 use asc_engine::change::{self, Recorder, RewriteSink as _};
 use asc_engine::commit::{NewChangeset, PathPolicy};
 use asc_engine::derive::Gen;
-use asc_engine::stack::restack::{CommitSigner, SignError};
+use asc_engine::stack::restack::CommitSigner;
 use asc_git::projection::Head;
 use asc_state::state::tables::cs_gen;
 use asc_store::refs::{Expect, RefTxn, RefUpdate, Refs as _};
 use uuid::Uuid;
 
 use super::info::resolve_change;
-use super::restack::{self, Flow};
+use super::restack::{self, Flow, Gpg};
 use super::sl::{Local, clean, fatal, stack_err};
 use crate::cli::common::{CliError, Ctx, Result, StagingAfterMove, WsCtx};
 use crate::cli::conflict;
@@ -41,8 +39,6 @@ use crate::stack::opstate::{self, RefFollow, StackOp};
 const MAX_REFS: usize = 100_000;
 /// Most rounds of [`reparent_above`] (one per chain).
 const MAX_ROUNDS: usize = 64;
-/// Longest signature the signing program may return.
-const MAX_SIGNATURE: usize = 64 * 1024;
 /// Longest message accepted (a bound on untrusted input).
 const MAX_MESSAGE: usize = 1024 * 1024;
 
@@ -101,41 +97,6 @@ pub(crate) async fn draft(
         Ok((cs, _)) => Ok(cs),
         Err(CliError::Raw(msg, 1)) => Err(CliError::Fatal(format!("{msg} ({verb} rewrites draft changes only)"))),
         Err(e) => Err(e),
-    }
-}
-
-/// Signs with git's signing program (`gpg.program`, default `gpg`), as `commit -S` does.
-struct Gpg<'a> {
-    ctx: &'a Ctx,
-    key: String,
-}
-
-#[async_trait]
-impl CommitSigner for Gpg<'_> {
-    async fn sign(&self, payload: &[u8]) -> std::result::Result<Vec<u8>, SignError> {
-        let program = self.ctx.config.get("gpg.program").unwrap_or_else(|| "gpg".to_owned());
-        let mut cmd = self.ctx.child(self.ctx.shell()).map_err(|e| SignError(e.to_string()))?;
-        cmd.args(["-c", "exec \"$@\"", "sh"])
-            .arg(&program)
-            .args(["--status-fd=2", "-bsau"])
-            .arg(&self.key)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped());
-        let payload = payload.to_vec();
-        let out = tokio::task::spawn_blocking(move || -> std::io::Result<std::process::Output> {
-            let mut child = cmd.spawn()?;
-            if let Some(mut pipe) = child.stdin.take() {
-                let _ = pipe.write_all(&payload);
-            }
-            child.wait_with_output()
-        })
-        .await
-        .map_err(|e| SignError(e.to_string()))?
-        .map_err(|e| SignError(e.to_string()))?;
-        if !out.status.success() || out.stdout.is_empty() || out.stdout.len() > MAX_SIGNATURE {
-            return Err(SignError("gpg failed to sign the data".into()));
-        }
-        Ok(out.stdout)
     }
 }
 
