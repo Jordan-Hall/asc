@@ -14,8 +14,10 @@
 use std::sync::Arc;
 
 use asc_core::policy::{Kind, Who};
-use asc_rpc::auth::{Access, AuthInterceptor, Authorizer};
-use asc_rpc::server::{CallCtx, MAX_MESSAGE, ServerInfo, wire};
+use asc_rpc::IdMode;
+use asc_rpc::auth::{Access, AdminProof, AuthInterceptor, Authorizer, Credential, Principal};
+use asc_rpc::forwarded::{Claim, Role};
+use asc_rpc::server::{CallCtx, MAX_MESSAGE, RepoName, ServerInfo, wire};
 use asc_rpc::services::deps_service_server::{DepsService, DepsServiceServer};
 use tonic::service::interceptor::InterceptedService;
 use tonic::{Code, Request, Response, Status};
@@ -23,6 +25,7 @@ use tonic::{Code, Request, Response, Status};
 use super::hub::{DepsHub, MAX_STATUSES};
 use super::status::{RepoStatus, Verdict};
 use crate::agents::repo::PolicyState;
+use crate::authz::claim::{HostCall, classify, subject};
 use crate::review::{Env, handle_of};
 
 pub struct DepsRpc {
@@ -95,6 +98,62 @@ fn status_wire(s: RepoStatus) -> wire::DepStatusResponse {
     }
 }
 
+/// Longest owner name.
+const MAX_OWNER: usize = 64;
+
+/// The claim subject of the owner of a `Statuses` call, or `None` for a call without an owner. The
+/// owner and its kind are checked, and every repository must be one of that owner's (compared lower
+/// case); this holds whoever the caller is, so a claim for one owner never reaches another's.
+fn owner_subject(req: &wire::DepStatusesRequest) -> Result<Option<String>, Status> {
+    let kind = wire::OwnerKind::try_from(req.kind).unwrap_or(wire::OwnerKind::Unspecified);
+    if req.owner.is_empty() && kind == wire::OwnerKind::Unspecified {
+        return Ok(None);
+    }
+    let owner = req.owner.to_ascii_lowercase();
+    let owner_ok = !owner.is_empty()
+        && owner.len() <= MAX_OWNER
+        && !owner.starts_with(['.', '-'])
+        && owner
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'));
+    if !owner_ok {
+        return Err(Status::invalid_argument(
+            "an owner is 1 to 64 characters of [A-Za-z0-9._-]",
+        ));
+    }
+    let subject = match kind {
+        wire::OwnerKind::Org => subject::org(&owner),
+        wire::OwnerKind::User => subject::user(&owner),
+        _ => return Err(Status::invalid_argument("the owner is a user or an org")),
+    };
+    for repo in &req.repos {
+        let name = RepoName::parse(&repo.name)?;
+        let lower = name.as_str().to_ascii_lowercase();
+        if lower.split_once('/').map(|(o, _)| o) != Some(owner.as_str()) {
+            return Err(Status::invalid_argument(
+                "every repository is one of the owner's",
+            ));
+        }
+    }
+    Ok(Some(subject))
+}
+
+/// The context of one repository of a call made on a verified owner claim: the person of the claim
+/// acts, with the claim as the whole of the authority.
+fn claimed_context(claim: &Claim, repo: &wire::RepoRef) -> Result<CallCtx, Status> {
+    Ok(CallCtx {
+        repo: RepoName::parse(&repo.name)?,
+        id_mode: IdMode::from_wire(repo.id_mode)
+            .map_err(|e| Status::invalid_argument(e.to_string()))?,
+        principal: Principal {
+            id: claim.user.clone(),
+        },
+        op_id: None,
+        client: None,
+        admin: AdminProof::default().with_forwarded(Some(claim.clone())),
+    })
+}
+
 #[tonic::async_trait]
 impl DepsService for DepsRpc {
     async fn scan(
@@ -157,13 +216,39 @@ impl DepsService for DepsRpc {
         if msg.repos.len() > MAX_STATUSES {
             return Err(Status::invalid_argument("too many repositories"));
         }
+        // With an owner, the host service's read claim for the owner covers every repository of it.
+        let claim = match owner_subject(&msg)? {
+            None => None,
+            Some(subject) => {
+                let id = self
+                    .env
+                    .authorizer
+                    .authenticate(ext.get::<Credential>())
+                    .await
+                    .map(|p| p.id)
+                    .unwrap_or_default();
+                match classify(&*self.env.authorizer, &id, &meta, &subject) {
+                    HostCall::Person(c) if c.allows(Role::Read) => Some(c),
+                    HostCall::Person(_) | HostCall::Refused => {
+                        return Err(Status::permission_denied(
+                            "the claim the host service forwarded does not cover this call",
+                        ));
+                    }
+                    HostCall::System | HostCall::NotHost => None,
+                }
+            }
+        };
         let mut allowed = Vec::with_capacity(msg.repos.len());
         for repo in msg.repos {
-            match self
-                .env
-                .context(&meta, &ext, Some(&repo), Access::Read, false)
-                .await
-            {
+            let made = match &claim {
+                Some(c) => claimed_context(c, &repo),
+                None => {
+                    self.env
+                        .context(&meta, &ext, Some(&repo), Access::Read, false)
+                        .await
+                }
+            };
+            match made {
                 Ok(ctx) => allowed.push((repo, ctx)),
                 // Not readable and not there look alike: the repository is left out.
                 Err(e) if matches!(e.code(), Code::PermissionDenied | Code::NotFound) => {}

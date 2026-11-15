@@ -1,6 +1,7 @@
 syntax = "proto3";
 package asc.v1;
 
+import "asc/v1/common.proto";
 import "asc/v1/options.proto";
 import "asc/v1/repo.proto";
 
@@ -26,7 +27,7 @@ service DepsService {
   rpc ScanStatus(DepScanStatusRequest) returns (DepScanStatusResponse);          // repo read; what a running Scan has done
   rpc Sbom(SbomRequest) returns (SbomResponse);                                  // repo read; a CycloneDX bill of materials of a revision
   rpc Status(DepStatusRequest) returns (DepStatusResponse);                      // repo read; one security status of the repository or of a change
-  rpc Statuses(DepStatusesRequest) returns (DepStatusesResponse);                // repo read per repo; the repository status of up to 100 repositories
+  rpc Statuses(DepStatusesRequest) returns (DepStatusesResponse);                // repo read per repo, or owner read on the host service's owner claim; the repository status of up to 100 repositories
 }
 
 enum DepSeverity {
@@ -408,8 +409,15 @@ message DepStatusResponse {
 // checked per repository. A repository the caller cannot read, or that does not exist, is left out (no error, and
 // the two cannot be told apart). The answer follows the order of the request. At most 100 repositories; more is
 // INVALID_ARGUMENT.
+//
+// `owner` and `kind` (USER or ORG) name the one owner every repository belongs to: the host service signs a read claim
+// for that owner (`org:<owner>` or `user:<owner>`, lower case), not for each repository, so a call made on such a claim
+// needs them. Both are checked: an owner is 1 to 64 characters of [A-Za-z0-9._-] and a repository of another owner is
+// INVALID_ARGUMENT. A call without an owner (and with `kind` UNSPECIFIED) is decided per repository as before.
 message DepStatusesRequest {
   repeated RepoRef repos = 1;
+  string owner = 2;
+  OwnerKind kind = 3;
 }
 message DepStatusesResponse {
   repeated DepRepoStatus statuses = 1;
