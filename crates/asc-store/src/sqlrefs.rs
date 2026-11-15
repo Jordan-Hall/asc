@@ -279,8 +279,17 @@ mod tests {
             .join("refs.db")
             .to_string_lossy()
             .replace('\\', "/");
+        // Eight writers wait on one write lock; a slow runner can pass sqlx's 5 s default.
         let pool = AnyPoolOptions::new()
             .max_connections(8)
+            .after_connect(|c, _| {
+                Box::pin(async move {
+                    sqlx::query("PRAGMA busy_timeout = 60000")
+                        .execute(c)
+                        .await
+                        .map(|_| ())
+                })
+            })
             .connect(&format!("sqlite:{path}?mode=rwc"))
             .await
             .unwrap();
