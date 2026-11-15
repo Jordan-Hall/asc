@@ -19,8 +19,8 @@
     <directoryIndexExcludePolicy implementation="asc.asc.vcs.AscIndexExcludePolicy"/>
     <postStartupActivity implementation="asc.asc.vcs.AscHydrationWatch"/>
     <postStartupActivity implementation="asc.asc.ui.AscAuthStartup"/>
-    <applicationConfigurable parentId="project.propVCSSupport.Mappings" id="asc.asc.signing"
-                             instance="asc.asc.ui.AscSigningConfigurable" displayName="asc Signing"/>
+    <projectConfigurable parentId="project.propVCSSupport.Mappings" id="asc.asc.signing"
+                         instance="asc.asc.ui.AscSigningConfigurable" displayName="asc Signing"/>
     <notificationGroup id="asc" displayType="BALLOON"/>
     <statusBarWidgetFactory id="asc.asc.status" implementation="asc.asc.ui.AscStatusBarWidgetFactory"/>
     <toolWindow id="asc" anchor="bottom" icon="/icons/asc.svg" canCloseContents="false"

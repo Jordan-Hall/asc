@@ -11,7 +11,9 @@ import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.components.service
 import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
 import com.intellij.openapi.options.Configurable
-import com.intellij.openapi.project.ProjectManager
+import com.intellij.openapi.options.ConfigurationException
+import com.intellij.openapi.progress.ProgressManager
+import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.ui.TextFieldWithBrowseButton
 import com.intellij.ui.components.JBCheckBox
@@ -103,9 +105,21 @@ object SigningCli {
     fun scopeFor(requested: SigningScope, hasRoot: Boolean): SigningScope =
         if (hasRoot) requested else SigningScope.GLOBAL
 
-    /** `asc config <scope> <key> <value>`; the value is one argv element, so no quoting matters. */
+    /** `asc config <scope> -- <key> <value>`; the value is one argv element and `--` ends the options. */
     fun configArgs(scope: SigningScope, key: String, value: String): List<String> =
-        listOf("config", scope.flag, key, value)
+        listOf("config", scope.flag, "--", key, value)
+
+    private val absPath = Regex("^(/|[A-Za-z]:[\\/]|\\\\\\\\)")
+
+    /** The problem with a key file value, or null when it is acceptable: absolute, printable, bounded, never an option. */
+    fun keyPathProblem(value: String): String? = when {
+        value.isEmpty() -> "The key file is empty."
+        value.length > 1024 -> "The key path is longer than 1024 characters."
+        value.startsWith("-") -> "The key path must not start with \"-\"."
+        !absPath.containsMatchIn(value) -> "The key path must be absolute."
+        value.any { it.code < 0x20 || it.code == 0x7f } -> "The key path contains a control character."
+        else -> null
+    }
 
     /** One config call for each field that differs from `current`, in a fixed order. */
     fun changes(current: SigningForm, wanted: SigningForm, scope: SigningScope): List<List<String>> {
@@ -155,7 +169,7 @@ object SigningCli {
 }
 
 /** Settings > Version Control > asc Signing: the key, format and sign-by-default switches, over the `asc` CLI. */
-class AscSigningConfigurable : Configurable {
+class AscSigningConfigurable(private val project: Project) : Configurable {
     private val formats = listOf("openpgp", "ssh", "x509")
     private val statusLabel = JBLabel("Reading the signing status...")
     private val resultLabel = JBLabel("")
@@ -214,14 +228,21 @@ class AscSigningConfigurable : Configurable {
         val calls = SigningCli.changes(before, form(), scope()).map { SigningCli.withRoot(r, it) }
         if (calls.isEmpty()) return
         val now = form()
-        ApplicationManager.getApplication().executeOnPooledThread {
-            val failed = calls.any { run(it) == null }
-            ApplicationManager.getApplication().invokeLater({
-                if (!failed) loaded = now
-                resultLabel.text = if (failed) "Could not save: asc config failed." else "Saved."
-                refresh()
-            }, ModalityState.any())
+        if (before.keyPath != now.keyPath && now.keyPath.isNotBlank()) {
+            SigningCli.keyPathProblem(now.keyPath)?.let { throw ConfigurationException(it, "asc Signing") }
         }
+        // Run here, under the Settings dialog's own modal wait, so a failure reaches the user as an error.
+        var failed = false
+        ProgressManager.getInstance().runProcessWithProgressSynchronously({
+            failed = calls.any { run(it) == null }
+        }, "Saving asc signing settings", true, project)
+        if (failed) {
+            refresh()
+            throw ConfigurationException("asc config failed; the signing settings were not saved.", "asc Signing")
+        }
+        loaded = now
+        resultLabel.text = "Saved."
+        refresh()
     }
 
     override fun reset() {
@@ -268,10 +289,8 @@ class AscSigningConfigurable : Configurable {
         }
     }
 
-    /** The first asc root of an open project, so a local scope has a repository to write to. */
-    private fun root(): String? = ProjectManager.getInstance().openProjects.firstNotNullOfOrNull { p ->
-        AscToolWindowFactory.ascRoots(p).firstOrNull()
-    }
+    /** The first asc root of this page's own project, so a local scope has a repository to write to. */
+    private fun root(): String? = AscToolWindowFactory.ascRoots(project).firstOrNull()
 
     /** Stdout when asc exits 0, else null. Never on the EDT. */
     private fun run(args: List<String>): String? = execute(args)?.takeIf { it.first == 0 }?.second
@@ -286,7 +305,7 @@ class AscSigningConfigurable : Configurable {
             .withEnvironment("GIT_TERMINAL_PROMPT", "0")
             .withEnvironment("GCM_INTERACTIVE", "never")
         return try {
-            val out = CapturingProcessHandler(cmd).runProcess(60_000)
+            val out = CapturingProcessHandler(cmd).runProcess(150_000)
             if (out.isTimeout) null else out.exitCode to out.stdout
         } catch (_: Exception) {
             null

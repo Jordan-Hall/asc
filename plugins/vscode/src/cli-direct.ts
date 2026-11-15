@@ -94,6 +94,8 @@ export const CACHE_LS_MAX = 5000;
 export const CACHE_RM_MAX = 200;
 /** A warm or a setup moves data or writes files: they get longer than a read. */
 const SLOW_MS = 300_000;
+/** A signing self-test may wait on a pinentry or a hardware key. */
+export const SIGNING_TEST_MS = 150_000;
 
 const TOOL = /^[a-z0-9][a-z0-9-]{0,31}$/;
 const KEY = /^[0-9a-f]{4,64}$/;
@@ -153,7 +155,7 @@ export function cliArgv(call: CliCall): string[] | null {
         (SIGNING_CONFIG_KEYS as readonly string[]).includes(call.key) &&
         typeof call.value === "string" &&
         signingValueOk(call.key, call.value)
-        ? ["config", `--${call.scope}`, call.key, call.value]
+        ? ["config", `--${call.scope}`, "--", call.key, call.value]
         : null;
     default:
       return null;
@@ -162,6 +164,7 @@ export function cliArgv(call: CliCall): string[] | null {
 
 /** The time limit of `call`: the default, or longer for a verb that moves data. */
 export function callTimeout(call: CliCall, fallback: number): number {
+  if (call.kind === "signing-test") return Math.max(fallback, SIGNING_TEST_MS);
   return call.kind === "cache-warm" || call.kind === "cache-setup" || call.kind === "cache-gc"
     ? Math.max(fallback, SLOW_MS)
     : fallback;
@@ -191,6 +194,10 @@ const KEEP = [
   "XDG_CACHE_HOME",
   "XDG_RUNTIME_DIR",
   "SSH_AUTH_SOCK",
+  "GNUPGHOME",
+  "GPG_TTY",
+  "DISPLAY",
+  "WAYLAND_DISPLAY",
   "ASC_HOME",
   "ASC_REMOTE",
   "ASC_SERVER",
