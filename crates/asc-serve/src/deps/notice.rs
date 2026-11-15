@@ -157,12 +157,15 @@ pub async fn status_changed(
         }
     };
     let d = decide(old, status.verdict, grew_high);
-    if let Err(e) = store::set_notified(pool, repo_id, d.status, d.unknown_runs).await {
-        tracing::warn!(event = "deps.notice", repo, error = %e, "status not stored");
+    // Queue first and store after: a notice that could not be queued is tried again by the next scan.
+    if d.send
+        && let Err(e) = notify::record(pool, repo, event(repo, status)).await
+    {
+        tracing::warn!(event = "deps.notice", repo, error = %e, "notice not queued");
         return;
     }
-    if d.send {
-        notify::emit(pool, repo, event(repo, status)).await;
+    if let Err(e) = store::set_notified(pool, repo_id, d.status, d.unknown_runs).await {
+        tracing::warn!(event = "deps.notice", repo, error = %e, "status not stored");
     }
 }
 
@@ -327,5 +330,24 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(w, 1);
+    }
+
+    #[tokio::test]
+    async fn a_notice_that_could_not_be_queued_is_tried_again_by_the_next_scan() {
+        let pool = setup().await;
+        status_changed(&pool, "acme/api", 1, &st(Verdict::Clean, 0), false).await;
+        sqlx::query("ALTER TABLE notify_events RENAME TO notify_events_off")
+            .execute(&pool)
+            .await
+            .unwrap();
+        status_changed(&pool, "acme/api", 1, &st(Verdict::Findings, 2), false).await;
+        assert_eq!(store::notified(&pool, 1).await.unwrap(), (CLEAN, 0));
+        sqlx::query("ALTER TABLE notify_events_off RENAME TO notify_events")
+            .execute(&pool)
+            .await
+            .unwrap();
+        status_changed(&pool, "acme/api", 1, &st(Verdict::Findings, 2), false).await;
+        assert_eq!(notes(&pool).await.len(), 1);
+        assert_eq!(store::notified(&pool, 1).await.unwrap(), (FINDINGS, 0));
     }
 }
