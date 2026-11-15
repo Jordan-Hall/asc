@@ -47,7 +47,7 @@ Why 2.55.0:
 - It is the newest 2.55 release. `sha256sums.asc` lists no 2.55.x maintenance tarball. 2.56.0 exists upstream; moving to it is a deliberate bump (below), not a drift.
 - The tarball is the one thing that can be hashed on every platform. Git for Windows carries its own patches (`.windows.N`), so the Windows oracle is pinned separately by its asset hash, and the two are expected to agree on every scenario. If they disagree, that is an adapter gap (`A-n`) or a quirk of the Windows build, recorded as such.
 
-Today nothing enforces this. `RealGit` accepts any git from 2.40 up and compares only major and minor (`crates/asc-git/src/realgit.rs`, `MIN_VERSION`), CI uses whatever the runner ships (`ppa:git-core/ppa` on Linux, the runner's own on Windows) and `deploy/Dockerfile.serve` uses Debian trixie's 2.47. That drift is `A-3`. Q02 closes it.
+`build/git-oracle/oracle.sh` enforces the pin. It builds the hashed tarball on Linux and macOS and unpacks the hashed MinGit asset on Windows, and the CI jobs that compare against git (Linux, Windows and `macos-workspace`) put that oracle first on `PATH` with `ASC_ORACLE_STRICT=1`, so a runner's own git (Homebrew ships a newer one on macOS) never stands in for it. `RealGit` still accepts any git from 2.40 up for users (`crates/asc-git/src/realgit.rs`, `MIN_VERSION`), and `deploy/Dockerfile.serve` uses Debian trixie's 2.47. That remaining drift is `A-3`.
 
 The 2.40 floor stays: it is what asc needs to run against a user's git. The pin is what asc is tested against.
 
