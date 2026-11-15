@@ -29,6 +29,13 @@ QyNTUxOQAAACCRkhzaJp495y3mienZIIjlMtZ+HDFEaMv5asll5INH8QAAAJgydzP/Mncz
 /wAAAAtzc2gtZWQyNTUxOQAAACCRkhzaJp495y3mienZIIjlMtZ+HDFEaMv5asll5INH8Q
 AAAECpoW5XdhH47VXvdSeyliHgbAaC7LpHrnBPd3PuxHjogZGSHNomnj3nLeaJ6dkgiOUy
 1n4cMURoy/lqyWXkg0fxAAAADmFzYy10ZXN0LWFsaWNlAQIDBAUGBw==";
+/// A server key that was in use before a rotation.
+const OLD_SERVER_BODY: &str =
+    "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+QyNTUxOQAAACDc4MIp5Jp97ND2AKdB+3CLT27Es7GI8F6YiochGsD+8wAAAJi9fQYAvX0G
+AAAAAAtzc2gtZWQyNTUxOQAAACDc4MIp5Jp97ND2AKdB+3CLT27Es7GI8F6YiochGsD+8w
+AAAEBwBHrLKykx5xKQDPIaG0GGYW+DGf9rv1XR42H97Xisgdzgwinkmn3s0PYAp0H7cItP
+bsSzsYjwXpiKhyEawP7zAAAAE2FzYy10ZXN0LXNlcnZlci1vbGQBAg==";
 const ALICE_PUB: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJGSHNomnj3nLeaJ6dkgiOUy1n4cMURoy/lqyWXkg0fx asc-test-alice";
 const MALLORY_PUB: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH63dZRlOJN5uHTCaUhCBYfg/yLFsDYL2VaxBhiVbAKB asc-test-mallory";
 
@@ -1017,4 +1024,210 @@ async fn signing_defaults_need_a_user_and_hide_other_users() {
         .await
         .unwrap_err();
     assert_eq!(e.code(), Code::PermissionDenied);
+}
+
+// ------------------------------------------------------------------------------ web edits
+
+#[test]
+fn web_edits_default_to_the_server_and_an_unknown_value_stops_the_server() {
+    use super::WebEdits;
+    assert_eq!(Config::default().web_edits, WebEdits::Server);
+    let parse = |text: &str| toml::from_str::<Config>(text);
+    assert_eq!(parse("").unwrap().web_edits, WebEdits::Server);
+    assert_eq!(
+        parse("web_edits = \"server\"").unwrap().web_edits,
+        WebEdits::Server
+    );
+    assert_eq!(
+        parse("web_edits = \"refuse\"").unwrap().web_edits,
+        WebEdits::Refuse
+    );
+    for bad in ["\"Server\"", "\"sign\"", "\"\"", "true", "1"] {
+        assert!(parse(&format!("web_edits = {bad}")).is_err(), "{bad}");
+    }
+    const BASE: &str = "store = \"memory:///\"
+db = \"sqlite::memory:\"
+";
+    // Through the whole configuration file, so the server refuses to start with a clear error.
+    let e =
+        crate::config::ServeConfig::parse(&format!("{BASE}[signing]\nweb_edits = \"always\"\n"))
+            .unwrap_err();
+    let shown = e.to_string();
+    assert!(
+        shown.contains("always") && shown.contains("refuse") && shown.contains("server"),
+        "{shown}"
+    );
+    let ok =
+        crate::config::ServeConfig::parse(&format!("{BASE}[signing]\nweb_edits = \"refuse\"\n"))
+            .unwrap();
+    assert_eq!(ok.signing.web_edits, WebEdits::Refuse);
+    assert_eq!(
+        crate::config::ServeConfig::parse(BASE)
+            .unwrap()
+            .signing
+            .web_edits,
+        WebEdits::Server
+    );
+}
+
+#[tokio::test]
+async fn sign_server_v1_is_advertised_only_when_the_server_would_sign_web_edits() {
+    use super::WebEdits;
+    let dir = tempfile::tempdir().unwrap();
+    let server = server_signer(&dir, "server_key", ALICE_BODY);
+    let features = |web_edits, key: Option<Arc<ServerSigner>>| async move {
+        let cfg = Config {
+            web_edits,
+            ..Config::default()
+        };
+        svc_with(cfg, key).await.hub.web_edit_features()
+    };
+    let on = features(WebEdits::Server, Some(server.clone())).await;
+    assert_eq!(on, ["sign.server.v1"]);
+    assert_eq!(on, [super::WEB_EDIT_FEATURE]);
+    assert!(features(WebEdits::Refuse, Some(server)).await.is_empty());
+    assert!(features(WebEdits::Server, None).await.is_empty());
+    assert!(features(WebEdits::Refuse, None).await.is_empty());
+}
+
+/// A `Commit` by the host service onto `refs/heads/master` (which names `tip`), through the gate.
+async fn host_commit(
+    m: &crate::mutations::ServerMutations,
+    tip: ChangesetId,
+    name: &str,
+    sign: bool,
+) -> Result<ChangesetId, tonic::Status> {
+    use asc_core::id::RefTarget;
+    use asc_rpc::WireId as _;
+    use asc_rpc::server::MutationsHandler as _;
+    let who = wire::Signature {
+        name: bytes::Bytes::from_static(b"Al"),
+        email: bytes::Bytes::from_static(b"al@x"),
+        time: 1_700_000_000,
+        tz_min: 0,
+    };
+    m.commit(
+        &crate::policy::tests::ctx(HOST_SERVICE_PRINCIPAL),
+        wire::CommitRequest {
+            repo: repo_ref(),
+            parent: "master".into(),
+            ops: vec![wire::FileOp {
+                path: bytes::Bytes::copy_from_slice(name.as_bytes()),
+                op: Some(wire::file_op::Op::PutContent(bytes::Bytes::from_static(
+                    b"web edit",
+                ))),
+                mode: 0,
+            }],
+            message: bytes::Bytes::from_static(b"web edit\n"),
+            author: Some(who.clone()),
+            committer: Some(who),
+            update_ref: "refs/heads/master".into(),
+            expect: Some(wire::RefTarget::from(&RefTarget::Changeset(tip))),
+            sign,
+        },
+    )
+    .await
+    .map(|r| ChangesetId::from_slice(&r.id).unwrap())
+}
+
+fn web_mutations(s: &Svc) -> crate::mutations::ServerMutations {
+    let m = crate::mutations::ServerMutations::new(
+        s.f.reg.clone(),
+        s.f.gated.hooks.clone(),
+        Arc::new(crate::read::ReadHooks::default()),
+    );
+    m.set_web_signing(s.hub.clone());
+    m
+}
+
+async fn require_signed_trunk(s: &Svc) -> ChangesetId {
+    let a = commit(
+        &s.f.e,
+        &[],
+        &[
+            (
+                asc_core::policy::POLICY_PATH,
+                policy_text("[signing]\nrequire_signed = true\n").as_bytes(),
+            ),
+            ("x", b"1"),
+        ],
+    )
+    .await;
+    s.f.set_master(a).await;
+    a
+}
+
+#[tokio::test]
+async fn a_signed_branch_takes_a_server_signed_web_edit_and_refuses_an_unsigned_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = server_signer(&dir, "server_key", ALICE_BODY);
+    let s = svc_with(Config::default(), Some(server)).await;
+    let m = web_mutations(&s);
+    let a = require_signed_trunk(&s).await;
+    // An unsigned web edit is refused, and the trunk stays where it was.
+    let e = host_commit(&m, a, "y", false).await.unwrap_err();
+    assert_eq!(code(&e), "UNSIGNED_CHANGE", "{e:?}");
+    assert_eq!(s.f.tip().await, a);
+    // The server's signature counts as signed: the edit lands and its verdict is the server's.
+    let b = host_commit(&m, a, "y", true).await.unwrap();
+    assert_eq!(s.f.tip().await, b);
+    let v = s.verify(&b).await;
+    assert_eq!(v.status, V::Valid as i32, "{}", v.reason);
+    assert_eq!(v.key_id, super::SERVER_KEY_ID);
+    assert_eq!(v.signer, super::SERVER_SIGNER);
+    // The next edit, unsigned again, is refused.
+    let e = host_commit(&m, b, "z", false).await.unwrap_err();
+    assert_eq!(code(&e), "UNSIGNED_CHANGE", "{e:?}");
+    assert_eq!(s.f.tip().await, b);
+}
+
+#[tokio::test]
+async fn a_server_that_refuses_web_edits_leaves_a_signed_branch_without_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = server_signer(&dir, "server_key", ALICE_BODY);
+    let cfg = Config {
+        web_edits: super::WebEdits::Refuse,
+        ..Config::default()
+    };
+    let s = svc_with(cfg, Some(server)).await;
+    let m = web_mutations(&s);
+    let a = require_signed_trunk(&s).await;
+    let e = host_commit(&m, a, "y", true).await.unwrap_err();
+    assert_eq!(code(&e), "UNSIGNED_CHANGE");
+    assert_eq!(paths(&e), ["this server does not sign web edits"]);
+    assert_eq!(s.f.tip().await, a);
+}
+
+#[tokio::test]
+async fn after_a_key_rotation_an_old_server_signature_is_judged_as_an_older_server_key() {
+    use super::verify::Verifier;
+    let dir = tempfile::tempdir().unwrap();
+    let old = server_signer(&dir, "old_key", OLD_SERVER_BODY);
+    let s = svc_with(Config::default(), Some(old.clone())).await;
+    let m = web_mutations(&s);
+    let a = commit(&s.f.e, &[], &[("x", b"1")]).await;
+    s.f.set_master(a).await;
+    let b = host_commit(&m, a, "y", true).await.unwrap();
+    // Under the key that signed it, the edit is valid.
+    assert_eq!(s.verify(&b).await.status, V::Valid as i32);
+    // The operator rotates the server key: the same row is now an older server key, not a good
+    // one, and it is not mistaken for an unsigned change.
+    let new = server_signer(&dir, "new_key", ALICE_BODY);
+    let rotated = Verifier::new(s.f.reg.pool().clone(), Some(new));
+    let v = rotated
+        .verdict(s.f.e.key.0, s.f.e.ns.as_bytes(), &b)
+        .await
+        .unwrap();
+    assert_eq!(v.status, V::UnknownKey, "{}", v.reason);
+    assert!(!v.is_valid());
+    assert_eq!(v.key_id, super::SERVER_KEY_ID);
+    assert_eq!(v.fingerprint, old.public_key().fingerprint());
+    assert!(v.reason.contains("not the one in use now"), "{}", v.reason);
+    // Without any server key the verdict is the same.
+    let none = Verifier::new(s.f.reg.pool().clone(), None);
+    let v = none
+        .verdict(s.f.e.key.0, s.f.e.ns.as_bytes(), &b)
+        .await
+        .unwrap();
+    assert_eq!(v.status, V::UnknownKey);
 }
