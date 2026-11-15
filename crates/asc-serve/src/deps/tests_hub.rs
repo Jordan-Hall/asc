@@ -3543,7 +3543,10 @@ mod statuses_tests {
         svc: &DepsRpc,
         names: &[&str],
     ) -> Result<wire::DepStatusesResponse, tonic::Status> {
-        let req = wire::DepStatusesRequest { repos: refs(names) };
+        let req = wire::DepStatusesRequest {
+            repos: refs(names),
+            ..Default::default()
+        };
         svc.statuses(call(req, "reader", false))
             .await
             .map(tonic::Response::into_inner)
@@ -3596,6 +3599,151 @@ mod statuses_tests {
         assert_eq!(names, ["o/r", "o/clean"]);
         // Only unreadable ones: an empty answer, not an error.
         assert!(ask(&svc, &["o/hidden"]).await.unwrap().statuses.is_empty());
+    }
+
+    // ---- the owner claim of the hub's security page
+
+    use crate::review::tests_acting::claimkit::{self, host};
+    use asc_rpc::forwarded::{ForwardedVerifier, Role};
+
+    /// The world, plus a repository of another owner and a service that trusts the hub's claims.
+    async fn claim_world() -> (H, DepsRpc, ForwardedVerifier) {
+        let (h, _) = world().await;
+        extra(&h, "y/z", &[("serde", "1.0.100")], true).await;
+        let (a, v) = claimkit::authorizer();
+        let svc = DepsRpc::new(h.hub.clone(), a, ServerInfo::default());
+        (h, svc, v)
+    }
+
+    fn owned(owner: &str, kind: wire::OwnerKind, names: &[&str]) -> wire::DepStatusesRequest {
+        wire::DepStatusesRequest {
+            repos: refs(names),
+            owner: owner.into(),
+            kind: kind as i32,
+        }
+    }
+
+    fn named(r: &wire::DepStatusesResponse) -> Vec<&str> {
+        r.statuses
+            .iter()
+            .map(|s| s.repo.as_ref().unwrap().name.as_str())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn an_owner_claim_covers_the_repositories_of_that_owner_only() {
+        let (_h, svc, v) = claim_world().await;
+        let org = wire::OwnerKind::Org;
+        let ok = svc
+            .statuses(host(
+                &v,
+                owned("o", org, &["o/r", "o/missing", "o/clean", "o/new"]),
+                "42:alice",
+                Role::Read,
+                "org:o",
+                false,
+            ))
+            .await
+            .unwrap()
+            .into_inner();
+        // The claim is the whole authority; a repository that does not exist is left out.
+        assert_eq!(named(&ok), ["o/r", "o/clean", "o/new"]);
+        assert_eq!(verdict(&ok.statuses[0]), wire::DepStatus::Findings);
+        assert_eq!(verdict(&ok.statuses[1]), wire::DepStatus::Clean);
+        // A user's repositories are asked on the user's claim, and the owner is compared lower case.
+        let user = svc
+            .statuses(host(
+                &v,
+                owned("O", wire::OwnerKind::User, &["o/r"]),
+                "42:alice",
+                Role::Read,
+                "user:o",
+                false,
+            ))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(named(&user), ["o/r"]);
+        // A repository of another owner in the list is refused, not looked at.
+        let e = svc
+            .statuses(host(
+                &v,
+                owned("o", org, &["o/r", "y/z"]),
+                "42:alice",
+                Role::Read,
+                "org:o",
+                false,
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), Code::InvalidArgument);
+        // The owner and its kind are required once either is given.
+        for bad in [
+            owned("o", wire::OwnerKind::Unspecified, &["o/r"]),
+            owned("o", wire::OwnerKind::Repo, &["o/r"]),
+            owned("", org, &["o/r"]),
+            owned("o/x", org, &["o/x/r"]),
+        ] {
+            let e = svc
+                .statuses(host(&v, bad, "42:alice", Role::Read, "org:o", false))
+                .await
+                .unwrap_err();
+            assert_eq!(e.code(), Code::InvalidArgument);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_claim_for_one_owner_is_no_claim_for_another() {
+        let (_h, svc, v) = claim_world().await;
+        // Signed for o, sent with owner y (whose repository exists): refused.
+        let e = svc
+            .statuses(host(
+                &v,
+                owned("y", wire::OwnerKind::Org, &["y/z"]),
+                "42:alice",
+                Role::Admin,
+                "org:o",
+                false,
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), Code::PermissionDenied);
+        // Signed for a repository, for an owner of the other kind or for the instance: refused.
+        for subject in ["o/r", "user:o", "instance", "org:y"] {
+            let e = svc
+                .statuses(host(
+                    &v,
+                    owned("o", wire::OwnerKind::Org, &["o/r"]),
+                    "42:alice",
+                    Role::Admin,
+                    subject,
+                    false,
+                ))
+                .await
+                .unwrap_err();
+            assert_eq!(e.code(), Code::PermissionDenied, "{subject}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_forged_or_unsigned_claim_fails_and_never_becomes_system_work() {
+        let (_h, svc, v) = claim_world().await;
+        let ask = || owned("o", wire::OwnerKind::Org, &["o/r"]);
+        let theirs = ForwardedVerifier::new(vec![9u8; 32]).unwrap();
+        let forged = host(&theirs, ask(), "42:alice", Role::Read, "org:o", false);
+        let e = svc.statuses(forged).await.unwrap_err();
+        assert_eq!(e.code(), Code::PermissionDenied);
+        let mut unsigned = host(&v, ask(), "42:alice", Role::Read, "org:o", false);
+        unsigned.metadata_mut().remove(asc_rpc::forwarded::MAC);
+        let e = svc.statuses(unsigned).await.unwrap_err();
+        assert_eq!(e.code(), Code::PermissionDenied);
+        // A claim with a changed person does not verify either.
+        let mut changed = host(&v, ask(), "42:alice", Role::Read, "org:o", false);
+        changed
+            .metadata_mut()
+            .insert(asc_rpc::forwarded::USER, "43:mallory".parse().unwrap());
+        let e = svc.statuses(changed).await.unwrap_err();
+        assert_eq!(e.code(), Code::PermissionDenied);
     }
 
     #[tokio::test]
