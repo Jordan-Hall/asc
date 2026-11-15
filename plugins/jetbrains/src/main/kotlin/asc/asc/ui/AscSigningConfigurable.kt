@@ -109,13 +109,16 @@ object SigningCli {
     fun configArgs(scope: SigningScope, key: String, value: String): List<String> =
         listOf("config", scope.flag, "--", key, value)
 
-    private val absPath = Regex("^(/|[A-Za-z]:[\\/]|\\\\\\\\)")
+    // A local absolute path: `/x`, `C:\x` or `C:/x`. Network paths are refused below.
+    private val absPath = Regex("""^(/|[A-Za-z]:[\\/])""")
+    private val networkPath = Regex("""^[\\/]{2}""")
 
-    /** The problem with a key file value, or null when it is acceptable: absolute, printable, bounded, never an option. */
+    /** The problem with a key file value, or null when it is acceptable: local, absolute, printable, bounded, never an option. */
     fun keyPathProblem(value: String): String? = when {
         value.isEmpty() -> "The key file is empty."
         value.length > 1024 -> "The key path is longer than 1024 characters."
         value.startsWith("-") -> "The key path must not start with \"-\"."
+        networkPath.containsMatchIn(value) -> "The key path must be on this computer, not a network (UNC) path."
         !absPath.containsMatchIn(value) -> "The key path must be absolute."
         value.any { it.code < 0x20 || it.code == 0x7f } -> "The key path contains a control character."
         else -> null

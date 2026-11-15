@@ -48,7 +48,9 @@ class AscSigningConfigurableTest {
     @Test fun keyPathMustBeAnAbsolutePathNeverAnOption() {
         assertNull(SigningCli.keyPathProblem("/home/u/.ssh/id"))
         assertNull(SigningCli.keyPathProblem("C:\\keys\\id"))
-        assertNull(SigningCli.keyPathProblem("\\\\host\\share\\id"))
+        assertNull(SigningCli.keyPathProblem("D:/keys/id"))
+        assertNotNull(SigningCli.keyPathProblem("\\\\host\\share\\id"))
+        assertNotNull(SigningCli.keyPathProblem("//host/share/id"))
         assertNotNull(SigningCli.keyPathProblem("--file=/x"))
         assertNotNull(SigningCli.keyPathProblem("-/x"))
         assertNotNull(SigningCli.keyPathProblem("relative/key"))
