@@ -150,10 +150,8 @@ impl ServerMutations {
             wire::MergeStyle::try_from(req.style).map_err(|_| invalid("unknown merge style"))?;
         check_update_ref(&req.update_ref)?;
         check_message(&req.message)?;
-        if req.sign {
-            // Signing needs a server key (SPEC §8.5 step 5: there is no server signature).
-            return Err(Status::unimplemented("this server does not sign commits"));
-        }
+        // SPEC §8.5 step 5: the server signs what it merges with its own key, for the host only.
+        let web_signer = self.web_signer(ctx, req.sign)?;
         if req.head.is_empty() || req.head.len() > MAX_STRING || req.base.len() > MAX_STRING {
             return Err(invalid("a merge names a base and a head"));
         }
@@ -283,6 +281,11 @@ impl ServerMutations {
             } => {
                 let (author, committer) =
                     signed.ok_or_else(|| internal("merge", &"a new changeset has no signature"))?;
+                let committer = if web_signer.is_some() {
+                    crate::mutations::server_committer(&committer)
+                } else {
+                    committer
+                };
                 let message = if req.message.is_empty() {
                     message
                 } else {
@@ -299,6 +302,9 @@ impl ServerMutations {
                         copies: Vec::new(),
                     })
                     .await?;
+                if let Some(signing) = &web_signer {
+                    self.sign_web_edit(signing, o.entry.key.0, id).await?;
+                }
                 let pairs = rewritten.pairs(id);
                 self.publish_merge(&o, ctx, &req, base, id, &pairs, op)
                     .await?;
@@ -1615,7 +1621,8 @@ mod tests {
                 edit(|q| q.message = Bytes::from(vec![b'm'; MAX_MESSAGE_BYTES + 1])),
                 "InvalidArgument",
             ),
-            ("sign", edit(|q| q.sign = true), "Unimplemented"),
+            // The caller is no host service: it cannot ask the server to vouch for a merge.
+            ("sign", edit(|q| q.sign = true), "PermissionDenied"),
             (
                 "ref name",
                 edit(|q| q.update_ref = "refs/heads/..".into()),
@@ -1676,6 +1683,93 @@ mod tests {
         }
         assert_eq!(graph_rows(&f).await, 0);
         assert_eq!(count(&f, "SELECT COUNT(*) FROM ref_log").await, 0);
+    }
+
+    #[tokio::test]
+    async fn the_host_gets_a_server_signed_merge_and_a_refusal_when_the_server_does_not_sign() {
+        use crate::authz::identity::HOST_SERVICE_PRINCIPAL;
+        use crate::signing::rpc::Signing;
+        use crate::signing::tests::{ALICE_BODY, server_signer};
+        use crate::signing::{Config, SERVER_KEY_ID, SERVER_SIGNER, WebEdits};
+
+        let dir = tempfile::tempdir().unwrap();
+        let server = server_signer(&dir, "server_key", ALICE_BODY);
+        let host = ctx_as(HOST_SERVICE_PRINCIPAL);
+        let signed_req = |ours, t1| wire::MergeRequest {
+            sign: true,
+            ..req(ours, t1, wire::MergeStyle::Merge)
+        };
+        let hub = |f: &Fx, web_edits| {
+            let cfg = Config {
+                web_edits,
+                ..Config::default()
+            };
+            Arc::new(Signing::new(f.registry.clone(), cfg, Some(server.clone())))
+        };
+
+        // `server`: the merge is signed by the server, which is also its committer.
+        let f = fx().await;
+        let signing = hub(&f, WebEdits::Server);
+        f.m.set_web_signing(signing.clone());
+        let r = root(&f).await;
+        let ours = make(&f, &[r], "ours", &[("f.txt", Some(&with_line(1, "ONE")))]).await;
+        let t1 = make(
+            &f,
+            &[r],
+            "t1",
+            &[(
+                "g.txt",
+                Some(
+                    "G
+",
+                ),
+            )],
+        )
+        .await;
+        let merged = f.m.merge_inner(&host, signed_req(ours, t1)).await.unwrap();
+        let merged = result_of(&merged);
+        let v = signing
+            .verifier()
+            .verdict(f.entry.key.0, f.entry.ns.as_bytes(), &merged)
+            .await
+            .unwrap();
+        assert_eq!(v.status, wire::VerificationStatus::Valid, "{}", v.reason);
+        assert_eq!(
+            (v.key_id.as_str(), v.signer.as_str()),
+            (SERVER_KEY_ID, SERVER_SIGNER)
+        );
+        let stored = cs(&f, merged).await;
+        assert_eq!(stored.author.name(), &sig().name[..]);
+        assert_eq!(stored.committer.name(), SERVER_SIGNER.as_bytes());
+        assert!(stored.extra.is_empty());
+
+        // `refuse`: UNSIGNED_CHANGE, and nothing is merged.
+        let g = fx().await;
+        g.m.set_web_signing(hub(&g, WebEdits::Refuse));
+        let r = root(&g).await;
+        let ours = make(&g, &[r], "ours", &[("f.txt", Some(&with_line(1, "ONE")))]).await;
+        let t1 = make(
+            &g,
+            &[r],
+            "t1",
+            &[(
+                "g.txt",
+                Some(
+                    "G
+",
+                ),
+            )],
+        )
+        .await;
+        let rows = graph_rows(&g).await;
+        let e =
+            g.m.merge_inner(&host, signed_req(ours, t1))
+                .await
+                .unwrap_err();
+        assert_eq!(code(&e), "UNSIGNED_CHANGE", "{e:?}");
+        assert_eq!(e.code(), tonic::Code::FailedPrecondition);
+        assert_eq!(graph_rows(&g).await, rows);
+        assert_eq!(count(&g, "SELECT COUNT(*) FROM change_signatures").await, 0);
     }
 
     #[tokio::test]

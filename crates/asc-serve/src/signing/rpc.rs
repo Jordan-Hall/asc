@@ -93,6 +93,20 @@ impl Signing {
         &self.cfg
     }
 
+    /// Whether the server signs web edits: `web_edits = "server"` and a server key is loaded.
+    pub fn signs_web_edits(&self) -> bool {
+        self.cfg.web_edits == super::WebEdits::Server && self.verifier.server().is_some()
+    }
+
+    /// What `Version.features` adds for web-edit signing; empty unless [`Self::signs_web_edits`].
+    pub fn web_edit_features(&self) -> Vec<String> {
+        if self.signs_web_edits() {
+            vec![super::WEB_EDIT_FEATURE.to_owned()]
+        } else {
+            Vec::new()
+        }
+    }
+
     /// The handle of the user a principal acts as, or `PERMISSION_DENIED`.
     fn handle(principal_id: &str) -> Result<String, Status> {
         handle_of(principal_id)

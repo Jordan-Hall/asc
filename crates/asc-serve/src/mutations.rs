@@ -222,6 +222,9 @@ pub struct ServerMutations {
     pipeline: Arc<PipelineHooks>,
     hooks: Arc<ReadHooks>,
     refs: ServerRefs,
+    /// Set at start-up when the server signs web edits (`[signing] web_edits = "server"` with a
+    /// server key); unset, a request with `sign` is refused.
+    web_signing: std::sync::OnceLock<Arc<crate::signing::rpc::Signing>>,
 }
 
 /// One repository opened for one call.
@@ -247,6 +250,58 @@ impl ServerMutations {
             pipeline,
             hooks,
             refs,
+            web_signing: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// Lets `Commit` and `Merge` sign web edits with the server key of `signing`. Called once, only
+    /// when the server signs web edits.
+    pub fn set_web_signing(&self, signing: Arc<crate::signing::rpc::Signing>) {
+        if self.web_signing.set(signing).is_err() {
+            tracing::warn!("the web edit signer was already set");
+        }
+    }
+
+    /// What a request with `sign` needs: the host service credential (a person's own credential
+    /// cannot ask the server to vouch for an edit) and a server that signs web edits. `None` when
+    /// `sign` is not set.
+    pub(crate) fn web_signer(
+        &self,
+        ctx: &CallCtx,
+        sign: bool,
+    ) -> Result<Option<Arc<crate::signing::rpc::Signing>>, Status> {
+        if !sign {
+            return Ok(None);
+        }
+        if !crate::authz::identity::is_host_service(&ctx.principal.id) {
+            return Err(Status::permission_denied(
+                "signing a web edit needs the host service credential",
+            ));
+        }
+        match self.web_signing.get() {
+            Some(s) if s.signs_web_edits() => Ok(Some(s.clone())),
+            _ => Err(rpc(RpcError::UnsignedChange(info(vec![
+                "this server does not sign web edits".into(),
+            ])))),
+        }
+    }
+
+    /// Signs the changeset `id` of repository `repo_id` with the server key and stores the signature, before the
+    /// changeset is published, so that a branch that requires signed changes sees it.
+    pub(crate) async fn sign_web_edit(
+        &self,
+        signing: &crate::signing::rpc::Signing,
+        repo_id: i64,
+        id: ChangesetId,
+    ) -> Result<(), Status> {
+        match signing
+            .verifier()
+            .attest(repo_id, &id, crate::review::now())
+            .await
+            .map_err(|e| internal("signing", &e))?
+        {
+            Some(()) => Ok(()),
+            None => Err(internal("signing", &"the server key could not sign")),
         }
     }
 
@@ -509,6 +564,18 @@ fn signatures(
     Ok((author, committer))
 }
 
+/// The committer of a web edit the server signs: the server itself, at the time the host gave.
+/// The author stays the person; nobody is impersonated.
+pub(crate) fn server_committer(given: &Signature) -> Signature {
+    Signature::new(
+        crate::signing::SERVER_SIGNER.as_bytes().to_vec(),
+        b"asc-server@invalid".to_vec(),
+        given.time(),
+        given.tz_min(),
+    )
+    .expect("the server identity is clean")
+}
+
 fn check_message(m: &[u8]) -> Result<(), Status> {
     if m.len() > MAX_MESSAGE_BYTES {
         return Err(invalid("message is too long"));
@@ -747,14 +814,17 @@ impl ServerMutations {
         let o = self.open(ctx).await?;
         check_update_ref(&req.update_ref)?;
         check_message(&req.message)?;
-        if req.sign {
-            // Signing needs a server key (SPEC §8.5 step 5: there is no server signature).
-            return Err(Status::unimplemented("this server does not sign commits"));
-        }
+        // SPEC §8.5 step 5: the server signs a web edit with its own key, for the host only.
+        let web_signer = self.web_signer(ctx, req.sign)?;
         if req.ops.len() > MAX_OPS {
             return Err(invalid("too many operations"));
         }
         let (author, committer) = signatures(req.author.as_ref(), req.committer.as_ref(), None)?;
+        let committer = if web_signer.is_some() {
+            server_committer(&committer)
+        } else {
+            committer
+        };
         let expect = match req.expect.as_ref() {
             Some(t) => wire::ref_update::Expect::Value(wire::RefTarget::clone(t)),
             None => wire::ref_update::Expect::Absent(true),
@@ -796,6 +866,9 @@ impl ServerMutations {
                 copies: planned.copies,
             })
             .await?;
+        if let Some(signing) = &web_signer {
+            self.sign_web_edit(signing, o.entry.key.0, id).await?;
+        }
         if req.update_ref.is_empty() {
             // The fence is held; this is the whole of the work.
             self.ingest_commit(&o, id).await?;
@@ -2213,7 +2286,8 @@ mod commit_rpc {
             r
         };
         let cases: Vec<(&str, wire::CommitRequest, &str)> = vec![
-            ("sign", edit(|r| r.sign = true), "Unimplemented"),
+            // The caller is no host service: it cannot ask the server to vouch for an edit.
+            ("sign", edit(|r| r.sign = true), "PermissionDenied"),
             (
                 "no signature",
                 edit(|r| {
@@ -2979,5 +3053,128 @@ new file mode 100644
                 .await
                 .unwrap_err();
         assert_eq!(code(&e), "MIRROR_MODE");
+    }
+}
+
+/// `sign` on `Commit` (SPEC section 8.5 step 5): the host service asks the server to sign a web
+/// edit with its own key.
+#[cfg(test)]
+mod web_sign {
+    use asc_rpc::server::status_rpc_error;
+    use asc_rpc::server::wire::VerificationStatus as V;
+
+    use super::fx::*;
+    use super::*;
+    use crate::authz::identity::HOST_SERVICE_PRINCIPAL;
+    use crate::signing::rpc::Signing;
+    use crate::signing::tests::{ALICE_BODY, server_signer};
+    use crate::signing::{Config, SERVER_KEY_ID, SERVER_SIGNER, ServerSigner, WebEdits};
+
+    fn commit_req(sign: bool) -> wire::CommitRequest {
+        wire::CommitRequest {
+            repo: repo_ref(),
+            ops: vec![put("a", b"1")],
+            message: Bytes::from_static(
+                b"edit
+",
+            ),
+            author: Some(sig()),
+            committer: Some(sig()),
+            sign,
+            ..wire::CommitRequest::default()
+        }
+    }
+
+    fn hub(f: &Fx, web_edits: WebEdits, server: Option<Arc<ServerSigner>>) -> Arc<Signing> {
+        let cfg = Config {
+            web_edits,
+            ..Config::default()
+        };
+        Arc::new(Signing::new(f.registry.clone(), cfg, server))
+    }
+
+    #[tokio::test]
+    async fn the_host_gets_a_server_signed_commit_with_the_server_as_committer() {
+        let f = fx().await;
+        let dir = tempfile::tempdir().unwrap();
+        let server = server_signer(&dir, "server_key", ALICE_BODY);
+        let signing = hub(&f, WebEdits::Server, Some(server.clone()));
+        f.m.set_web_signing(signing.clone());
+        let host = ctx_as(HOST_SERVICE_PRINCIPAL);
+        let ns = f.entry.ns.as_bytes().to_vec();
+
+        let signed = f.m.commit_inner(&host, commit_req(true)).await.unwrap();
+        let cs = id(&signed.id);
+        let v = signing
+            .verifier()
+            .verdict(f.entry.key.0, &ns, &cs)
+            .await
+            .unwrap();
+        assert_eq!(v.status, V::Valid, "{}", v.reason);
+        assert_eq!(v.key_id, SERVER_KEY_ID);
+        assert_eq!(v.signer, SERVER_SIGNER);
+        assert_eq!(v.fingerprint, server.public_key().fingerprint());
+        // The author stays the person; the committer is the server, at the time the host gave.
+        let stored = f.entry.backend.engine().get_changeset(cs).await.unwrap();
+        assert_eq!(stored.author.name(), b"Al");
+        assert_eq!(stored.committer.name(), SERVER_SIGNER.as_bytes());
+        assert_eq!(stored.committer.time(), sig().time);
+        // Nothing of the signature is in the changeset, so a git export carries no gpgsig.
+        assert!(stored.extra.is_empty());
+
+        // Without `sign` the host's commit stays unsigned and keeps its committer.
+        let plain = f.m.commit_inner(&host, commit_req(false)).await.unwrap();
+        let plain = id(&plain.id);
+        let v = signing
+            .verifier()
+            .verdict(f.entry.key.0, &ns, &plain)
+            .await
+            .unwrap();
+        assert_eq!(v.status, V::Unsigned);
+        let stored = f.entry.backend.engine().get_changeset(plain).await.unwrap();
+        assert_eq!(stored.committer.name(), b"Al");
+    }
+
+    #[tokio::test]
+    async fn a_server_that_does_not_sign_web_edits_refuses_with_unsigned_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = server_signer(&dir, "server_key", ALICE_BODY);
+        let host = ctx_as(HOST_SERVICE_PRINCIPAL);
+        // `refuse` with a key, `server` without one, and no signing set up at all.
+        for (what, setup) in [
+            ("refuse", Some((WebEdits::Refuse, Some(server)))),
+            ("no key", Some((WebEdits::Server, None))),
+            ("unset", None),
+        ] {
+            let f = fx().await;
+            if let Some((web_edits, key)) = setup {
+                f.m.set_web_signing(hub(&f, web_edits, key));
+            }
+            let e = f.m.commit_inner(&host, commit_req(true)).await.unwrap_err();
+            assert_eq!(code(&e), "UNSIGNED_CHANGE", "{what}: {e:?}");
+            assert_eq!(e.code(), tonic::Code::FailedPrecondition, "{what}");
+            let named = status_rpc_error(&e).unwrap().info().paths.clone();
+            assert_eq!(named, ["this server does not sign web edits"], "{what}");
+            assert_eq!(graph_rows(&f).await, 0, "{what}");
+        }
+    }
+
+    #[tokio::test]
+    async fn only_the_host_service_may_ask_for_a_signature() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = server_signer(&dir, "server_key", ALICE_BODY);
+        for web_edits in [WebEdits::Server, WebEdits::Refuse] {
+            let f = fx().await;
+            f.m.set_web_signing(hub(&f, web_edits, Some(server.clone())));
+            for who in ["alice", "7:mallory", "pat:alice"] {
+                let e =
+                    f.m.commit_inner(&ctx_as(who), commit_req(true))
+                        .await
+                        .unwrap_err();
+                assert_eq!(e.code(), tonic::Code::PermissionDenied, "{who}: {e:?}");
+            }
+            assert_eq!(graph_rows(&f).await, 0);
+            assert_eq!(count(&f, "SELECT COUNT(*) FROM change_signatures").await, 0);
+        }
     }
 }

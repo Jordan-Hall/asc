@@ -356,6 +356,10 @@ pub fn register(
         signing,
         server,
     ));
+    // Only a server that would sign a web edit takes the `sign` flag of `Commit` and `Merge`.
+    if signing_hub.signs_web_edits() {
+        mutations.set_web_signing(signing_hub.clone());
+    }
     let policy_hub = Arc::new(
         rpc::PolicyHub::new(registry.clone(), policies.clone(), mutations.clone())
             .with_pathrules(ext.pathrules.clone()),

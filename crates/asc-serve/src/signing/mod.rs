@@ -25,6 +25,15 @@
 //! a branch requires signed changes, the changesets a land rewrites from changesets that were `VALID`
 //! (the rewrite keeps the content the author signed and the server attests to that). Such a
 //! signature has `key_id = server` and verdict `VALID` with signer `asc-server`.
+//!
+//! # Web edits
+//!
+//! `[signing] web_edits = "server"` (the default) lets the host application ask for `sign` on
+//! `Commit` and `Merge`: the server then signs the new changeset with its key (`key_id = server`),
+//! stores that signature beside the changeset and names itself as the committer. The author stays
+//! the person the host forwarded; the signature says only that this server made the edit. Only the
+//! host service credential may ask. `"refuse"` answers such a request `UNSIGNED_CHANGE`. The
+//! server advertises [`WEB_EDIT_FEATURE`] exactly when it would sign.
 
 pub mod rpc;
 pub mod store;
@@ -38,6 +47,9 @@ use serde::Deserialize;
 
 /// What `Version.features` adds for the `Signing` service.
 pub const FEATURE: &str = "signing.v1";
+/// What `Version.features` adds when the server signs web edits (`web_edits = "server"` and a server
+/// key is loaded).
+pub const WEB_EDIT_FEATURE: &str = "sign.server.v1";
 /// The `key_id` of a signature made with the server key.
 pub const SERVER_KEY_ID: &str = "server";
 /// The signer a server signature is attributed to.
@@ -55,6 +67,17 @@ pub const DEFAULT_MAX_KEYS: usize = 32;
 /// Largest server key file, in bytes.
 const MAX_KEY_FILE: u64 = 64 * 1024;
 
+/// `[signing] web_edits`: what the server does when the host asks it to sign a web edit.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WebEdits {
+    /// Answers `UNSIGNED_CHANGE`: the server signs nothing it makes for a person.
+    Refuse,
+    /// Signs with the server key. Without a key the request is refused as with `Refuse`.
+    #[default]
+    Server,
+}
+
 /// `[signing]`.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -63,6 +86,8 @@ pub struct Config {
     pub server_key_file: Option<PathBuf>,
     /// Live signing keys one user may hold.
     pub max_keys_per_user: usize,
+    /// `"refuse"` or `"server"` (default): whether the server signs web edits with its own key.
+    pub web_edits: WebEdits,
 }
 
 impl Default for Config {
@@ -70,6 +95,7 @@ impl Default for Config {
         Self {
             server_key_file: None,
             max_keys_per_user: DEFAULT_MAX_KEYS,
+            web_edits: WebEdits::default(),
         }
     }
 }

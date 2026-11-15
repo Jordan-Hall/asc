@@ -845,8 +845,9 @@ pub async fn serve(
     features.extend(settings.features());
     features.extend(workflows::features(&workflows));
     features.extend(deps::features(&ext));
-    if ext.security.get().is_some() {
+    if let Some(security) = ext.security.get() {
         features.extend(policy::features());
+        features.extend(security.signing.web_edit_features());
     }
     #[cfg(feature = "git-compat")]
     if git_live {
