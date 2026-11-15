@@ -2,7 +2,7 @@
 # The pinned git oracle (docs/git-fidelity.md, "The pinned version"; PLAN Q02).
 #
 # Usage: oracle.sh fetch | verify | path | env | selftest
-#   fetch     Linux: download git-<GIT_VERSION>.tar.xz over https, check its sha256 BEFORE unpacking,
+#   fetch     Linux and macOS: download git-<GIT_VERSION>.tar.xz over https, check its sha256 BEFORE unpacking,
 #             build it. Windows: download the MinGit zip over https, check its sha256, unpack it.
 #             Both end by writing <root>/.oracle-hash. A repeat run is a no-op while `verify` passes.
 #   verify    Re-check the record, the pin and the binary's sha256, and that `git --version` prints
@@ -14,8 +14,9 @@
 #             deleted, and an intact one is accepted. Needs no network.
 #
 # Pins are in pins.env next to this script. The cache is ${ASC_ORACLE_CACHE:-$HOME/.cache/asc-oracle}.
-# Linux needs a C compiler, make, tar, xz, curl, and the libcurl and zlib headers (git-remote-http
-# is built so that the HTTP auth tests have a client). Windows needs curl and unzip (Git Bash has
+# Linux and macOS need a C compiler, make, tar, xz, curl, and the libcurl and zlib headers
+# (git-remote-http is built so that the HTTP auth tests have a client; the macOS SDK has them, and
+# its tar unpacks .xz). Windows needs curl and unzip (Git Bash has
 # both). Only https is used for downloads, and nothing downloaded is used before its sha256 matches.
 set -euo pipefail
 
@@ -29,16 +30,16 @@ die() {
 }
 
 case "$(uname -s)" in
-  Linux) os=linux ;;
+  Linux | Darwin) os=unix ;;
   MINGW* | MSYS* | CYGWIN*) os=windows ;;
   *)
-    echo "oracle.sh: unsupported platform $(uname -s) (Linux and Windows only)" >&2
+    echo "oracle.sh: unsupported platform $(uname -s) (Linux, macOS and Windows only)" >&2
     exit 2
     ;;
 esac
 
 cache="${ASC_ORACLE_CACHE:-$HOME/.cache/asc-oracle}"
-if [ "$os" = linux ]; then
+if [ "$os" = unix ]; then
   root="$cache/git-$GIT_VERSION"
   bin="$root/bin/git"
   want_version="$GIT_VERSION"
@@ -149,17 +150,17 @@ check() {
   }
 }
 
-fetch_linux() {
+fetch_unix() {
   local tool
   for tool in cc make tar xz curl; do
     command -v "$tool" >/dev/null 2>&1 || die "$tool is required to build git"
   done
   printf '#include <curl/curl.h>\n#include <zlib.h>\n' | cc -E -x c - >/dev/null 2>&1 ||
-    die "libcurl and zlib headers are required (Debian and Ubuntu: apt-get install libcurl4-openssl-dev zlib1g-dev)"
+    die "libcurl and zlib headers are required (Debian and Ubuntu: apt-get install libcurl4-openssl-dev zlib1g-dev; macOS: the Xcode command line tools)"
   download "$GIT_TARBALL_URL" "$cache/$GIT_TARBALL" "$GIT_TARBALL_SHA256"
   local src="$cache/src-$GIT_VERSION" jobs="${ASC_ORACLE_JOBS:-}"
   if [ -z "$jobs" ]; then
-    jobs="$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)"
+    jobs="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)"
   fi
   rm -rf -- "$src" "$root"
   mkdir -p "$src"
@@ -200,7 +201,7 @@ cmd_fetch() {
     return 0
   fi
   mkdir -p "$cache"
-  if [ "$os" = linux ]; then fetch_linux; else fetch_windows; fi
+  if [ "$os" = unix ]; then fetch_unix; else fetch_windows; fi
   check
   echo "oracle.sh: pinned git $want_version ready at $root" >&2
 }
