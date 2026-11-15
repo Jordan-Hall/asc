@@ -957,7 +957,12 @@ async fn staged_patch(ws: &WsCtx, head_root: TreeId, rows: &[stage::StageRow]) -
 }
 
 /// Signs `payload` with git's signing program (`gpg.program`, default `gpg`).
-async fn sign(ctx: &Ctx, payload: &[u8], key: Option<&str>, committer: &str) -> Result<Vec<u8>> {
+pub(crate) async fn sign(
+    ctx: &Ctx,
+    payload: &[u8],
+    key: Option<&str>,
+    committer: &str,
+) -> Result<Vec<u8>> {
     let program = ctx
         .config
         .get("gpg.program")
