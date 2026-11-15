@@ -5,6 +5,7 @@
 //! asc deps findings [--state S]... [--ecosystem E]... [--severity S] [--package NAME]
 //!                   [--sort newest|exploited] [--exploited]
 //! asc deps sbom [--rev REV] [--ecosystem E]... [--out PATH [--force]]
+//! asc deps status [--change ID] [--json]
 //! asc deps updates [--rev REV] [--ecosystem E]... [--security] [--ignored]
 //! asc deps propose [--security] [--max-kind patch|minor|major] [--dry-run] [--max-groups N] [PACKAGE]...
 //! asc deps dismiss <id> --reason not-used|tolerable|inaccurate|fix-started [--note TEXT]
@@ -26,6 +27,7 @@ mod findings;
 mod propose;
 mod sbom;
 mod scan;
+mod status;
 mod updates;
 
 use std::process::ExitCode;
@@ -70,6 +72,8 @@ pub enum Sub {
     Findings(findings::FindingsArgs),
     /// Writes a CycloneDX bill of materials of a revision, to standard output or --out.
     Sbom(sbom::SbomArgs),
+    /// Shows the security status of trunk or of a change; exit 0 clean, 1 findings, 2 unknown.
+    Status(status::StatusArgs),
     /// Lists the updates that are available.
     Updates(updates::UpdatesArgs),
     /// Records updates as changes on agent/deps refs.
@@ -118,6 +122,7 @@ pub const NATIVE: &[NativeSpec] = &[NativeSpec {
         "--exploited",
         "--out",
         "--force",
+        "--change",
     ],
     placeholders: &[],
 }];
@@ -127,6 +132,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         Sub::Scan(x) => scan::run(ctx, x).await,
         Sub::Findings(x) => findings::list(ctx, x).await,
         Sub::Sbom(x) => sbom::run(ctx, x).await,
+        Sub::Status(x) => status::run(ctx, x).await,
         Sub::Updates(x) => updates::run(ctx, x).await,
         Sub::Propose(x) => propose::run(ctx, x).await,
         Sub::Dismiss(x) => findings::dismiss(ctx, x).await,
