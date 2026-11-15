@@ -90,16 +90,22 @@ pub(crate) struct Fx {
 
 pub(crate) async fn fx_with(server: Option<Arc<crate::signing::ServerSigner>>) -> Fx {
     let reg = registry().await;
+    let signing = Arc::new(Signing::new(
+        reg.clone(),
+        crate::signing::Config::default(),
+        server,
+    ));
+    fx_over(reg, signing).await
+}
+
+/// A fixture whose gate judges signatures through `signing`, as the server's gate and its web edit
+/// signer share one hub.
+pub(crate) async fn fx_over(reg: Arc<Registry>, signing: Arc<Signing>) -> Fx {
     let e = repo(&reg).await;
     let policies = Arc::new(PolicyStore::new(reg.clone()));
     let scanner = Arc::new(Scanner::new(
         reg.clone(),
         crate::secretscan::Config::default(),
-    ));
-    let signing = Arc::new(Signing::new(
-        reg.clone(),
-        crate::signing::Config::default(),
-        server,
     ));
     let pathrules = Arc::new(crate::pathrules::PathRulesSlot::default());
     let gate = Arc::new(
@@ -2337,6 +2343,7 @@ async fn the_host_service_repairs_an_unusable_policy_only_for_a_forwarded_admini
     other.admin = other.admin.with_forwarded(Some(asc_rpc::forwarded::Claim {
         user: "7:alice".into(),
         role: asc_rpc::forwarded::Role::Admin,
+        email: String::new(),
     }));
     assert_eq!(
         code(&f.land_with(&other, fix).await.unwrap_err()),
@@ -2349,6 +2356,7 @@ async fn the_host_service_repairs_an_unusable_policy_only_for_a_forwarded_admini
         .with_forwarded(Some(asc_rpc::forwarded::Claim {
             user: "7:alice".into(),
             role: asc_rpc::forwarded::Role::Admin,
+            email: String::new(),
         }));
     f.land_with(&forwarded, fix).await.unwrap();
     assert_eq!(f.tip().await, fix);

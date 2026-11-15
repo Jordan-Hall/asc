@@ -21,7 +21,7 @@ use super::rpc::{Signing, SigningService};
 use super::{Config, ServerSigner};
 use crate::authz::identity::HOST_SERVICE_PRINCIPAL;
 use crate::ingest::testutil::commit;
-use crate::policy::tests::{ALICE, BOB, Fx, code, fx_with, paths, policy_text};
+use crate::policy::tests::{ALICE, BOB, Fx, code, fx_over, fx_with, paths, policy_text};
 
 pub(crate) const ALICE_BODY: &str =
     "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
@@ -95,8 +95,9 @@ struct Svc {
 }
 
 async fn svc_with(cfg: Config, server: Option<Arc<ServerSigner>>) -> Svc {
-    let f = fx_with(server.clone()).await;
-    let hub = Arc::new(Signing::new(f.reg.clone(), cfg, server));
+    let reg = crate::ingest::testutil::registry().await;
+    let hub = Arc::new(Signing::new(reg.clone(), cfg, server));
+    let f = fx_over(reg, hub.clone()).await;
     let svc = SigningService::new(hub.clone(), tokens(), ServerInfo::default());
     Svc { f, hub, svc }
 }
@@ -1091,6 +1092,18 @@ async fn sign_server_v1_is_advertised_only_when_the_server_would_sign_web_edits(
 }
 
 /// A `Commit` by the host service onto `refs/heads/master` (which names `tip`), through the gate.
+/// The host service acting for `7:al`, the author of `host_commit`.
+fn host_ctx() -> asc_rpc::server::CallCtx {
+    let mut ctx = crate::policy::tests::ctx(HOST_SERVICE_PRINCIPAL);
+    ctx.admin =
+        asc_rpc::auth::AdminProof::default().with_forwarded(Some(asc_rpc::forwarded::Claim {
+            user: "7:al".into(),
+            role: asc_rpc::forwarded::Role::Write,
+            email: "al@x".into(),
+        }));
+    ctx
+}
+
 async fn host_commit(
     m: &crate::mutations::ServerMutations,
     tip: ChangesetId,
@@ -1107,7 +1120,7 @@ async fn host_commit(
         tz_min: 0,
     };
     m.commit(
-        &crate::policy::tests::ctx(HOST_SERVICE_PRINCIPAL),
+        &host_ctx(),
         wire::CommitRequest {
             repo: repo_ref(),
             parent: "master".into(),
@@ -1230,4 +1243,29 @@ async fn after_a_key_rotation_an_old_server_signature_is_judged_as_an_older_serv
         .await
         .unwrap();
     assert_eq!(v.status, V::UnknownKey);
+}
+
+#[tokio::test]
+async fn the_loser_of_two_identical_signed_edits_leaves_the_winners_signature() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = server_signer(&dir, "server_key", ALICE_BODY);
+    let s = svc_with(Config::default(), Some(server)).await;
+    let m = web_mutations(&s);
+    let mut tip = require_signed_trunk(&s).await;
+    for round in 0..4 {
+        // The same edit twice at the same time: one moves the trunk, the other loses the
+        // compare-and-set. Both made the same changeset, so they share one signature row.
+        let name = format!("f{round}");
+        let (one, two) = tokio::join!(
+            host_commit(&m, tip, &name, true),
+            host_commit(&m, tip, &name, true)
+        );
+        assert_eq!(one.is_ok() as u8 + two.is_ok() as u8, 1, "{one:?} {two:?}");
+        let won = one.or(two).unwrap();
+        assert_eq!(s.f.tip().await, won);
+        let v = s.verify(&won).await;
+        assert_eq!(v.status, V::Valid as i32, "round {round}: {}", v.reason);
+        assert_eq!(v.key_id, super::SERVER_KEY_ID);
+        tip = won;
+    }
 }
