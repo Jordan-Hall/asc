@@ -253,8 +253,15 @@ mod tests {
         let actors = audit_actors(&w).await;
         assert_eq!(actors.len(), 20);
         assert!(actors.iter().all(|a| a.contains("alice")), "{actors:?}");
-        // The count is dropped with the run.
-        assert!(w.hub.person_calls.lock().unwrap().is_empty());
+        // The count is dropped with the run, once its task has ended.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !w.hub.person_calls.lock().unwrap().is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the count outlived the run"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

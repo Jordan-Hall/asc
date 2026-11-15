@@ -400,6 +400,16 @@ fn rows() -> Vec<Row> {
             REPO,
             "OOOO-",
         ),
+        // The caller's own worktree reports; every user's (`*`) needs write.
+        row(
+            "/asc.v1.Cloud/ListWorktrees",
+            &wire::ListWorktreesRequest {
+                repo: repo(),
+                ..Default::default()
+            },
+            REPO,
+            "OOOO-",
+        ),
         row(
             "/asc.v1.Cloud/ListWorkspaces",
             &wire::ListWorkspacesRequest {
