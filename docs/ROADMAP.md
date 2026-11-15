@@ -20,7 +20,7 @@ What is verified:
 
 - Release `v0.1.4` was published 2026-11-11 with every file signed and `SHA256SUMS` checked in the run. Tags `v0.1.0` to `v0.1.4` exist.
 - `scripts/install.sh` installed the published `v0.1.4` Linux archive with the signature checked, and refused it under another key (2026-11-11). The `0.1.3` self-update rehearsal updated itself to `0.1.4`.
-- CI jobs on master: `rust`, `build-cache`, `ts`, `web-e2e`, `postgres`, `garage` (v1.3.1, v2.3.0, v2.4.1), `windows`, `projfs`, `jetbrains`, `macos` and `fskit-swift`.
+- CI jobs on master: `rust`, `build-cache`, `ts`, `web-e2e`, `postgres`, `garage` (v1.3.1, v2.3.0, v2.4.1), `windows`, `projfs`, `jetbrains`, `macos`, `macos-workspace` and `fskit-swift`.
 - `asc doctor --store` ran against a Garage v2.5.0 bucket on `<staging host>` over https (recorded in `docs/BYOS.md`).
 - Packed objects, zstd dictionaries, delta storage, import batching, the path log, the rename memo, go to file and the daemon-side turbo tier are on master.
 - Every plan unit is implemented except hub unit K15 (row 75). K16 is reviewed in `docs/OUT-OF-SCOPE.md`.
@@ -32,7 +32,7 @@ What is not verified:
 - The acceptance commands of the plan audit were not run again.
 - The TSRX workflow template commands were not run against real npm packages (row 74).
 - JetBrains `verifyPlugin` runs in CI only. The MCP Inspector runs only on the Forgejo runner (`mcp-inspector.yml`).
-- The `macos` job runs the `asc-vfs` tests and the `asc` unit tests only, not the whole workspace (row 72). Fuzz and bench run only in `.forgejo/workflows`.
+- The `macos-workspace` job (row 72) is new and has not passed yet. Fuzz and bench run only in `.forgejo/workflows`.
 - The MSI is built only by the Forgejo flow (row 70).
 - `install.sh` needs `minisign` installed to check a signature, and the GitHub release is not in the installer layout (row 71).
 - SSH is not verified on a deployed server.
@@ -190,7 +190,7 @@ From a review of the hub's asc pages on 2026-11-13 (routes, templates and styles
 | 69 | IDE plugins on the marketplaces | The VS Code, Open VSX and JetBrains plugins are published | S | decision |
 | 70 | MSI from the public CI | The public release workflow builds the Windows MSI; today only the Forgejo flow does (`docs/RELEASE.md`) | S | open |
 | 71 | Installer checks signatures on its own | `install.sh` verifies the minisign signature without `minisign` installed first. **Check first**: read `scripts/install.sh` | S | open |
-| 72 | macOS test leg | CI runs the workspace tests on macOS. **Check first**: the `macos` job runs the `asc-vfs` tests and the `asc` unit tests only | S | open |
+| 72 | macOS test leg | CI runs the workspace tests on macOS. **Check first**: the `macos` job runs the `asc-vfs` tests and the `asc` unit tests only. The `macos-workspace` job now runs every other crate | S | in progress |
 | 73 | Real-provider runs | Bring-your-own storage against AWS S3, and bring-your-own AI keys against a real provider (`TestKey`) | S | decision |
 | 74 | Workflow template run for real | The TSRX check template (`asc workflow new`) runs once in CI against the real npm packages it names | S | open |
 
