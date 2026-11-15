@@ -1131,6 +1131,7 @@ Every method of the build-out services (98). A test keeps this list equal to the
 - `asc.v1.DepsService/ScanStatus` — repo read; the phase, steps and time left of a running scan
 - `asc.v1.DepsService/Sbom` — repo read; CycloneDX bill of materials of a revision
 - `asc.v1.DepsService/Status` — repo read; the security status of a repository, or of a change on it
+- `asc.v1.DepsService/Statuses` — repo read per repo; the repository status of up to 100 repositories, unreadable ones left out
 - `asc.v1.Backups/ListBackups` — site admin
 - `asc.v1.Backups/ListTargets` — site admin
 - `asc.v1.Backups/RunBackup` — site admin
