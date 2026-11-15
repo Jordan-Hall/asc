@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { type CliCall, type CliDirect, type CliResult, cliArgv } from "../src/cli-direct";
+import {
+  type CliCall,
+  type CliDirect,
+  type CliResult,
+  callTimeout,
+  childEnv,
+  cliArgv,
+} from "../src/cli-direct";
 import {
   createSigningController,
   parseSigningMessage,
@@ -37,34 +44,49 @@ describe("signing: argv of every write", () => {
     expect(w("global", "user.signingkey", "/home/a b/id.pub")).toEqual([
       "config",
       "--global",
+      "--",
       "user.signingkey",
       "/home/a b/id.pub",
     ]);
     expect(w("local", "user.signingkey", "C:\\keys\\id")).toEqual([
       "config",
       "--local",
+      "--",
       "user.signingkey",
       "C:\\keys\\id",
     ]);
-    expect(w("local", "gpg.format", "x509")).toEqual(["config", "--local", "gpg.format", "x509"]);
+    expect(w("local", "gpg.format", "x509")).toEqual(["config", "--local", "--", "gpg.format", "x509"]);
     expect(w("global", "commit.gpgsign", "true")).toEqual([
       "config",
       "--global",
+      "--",
       "commit.gpgsign",
       "true",
     ]);
     expect(w("global", "tag.gpgsign", "false")).toEqual([
       "config",
       "--global",
+      "--",
       "tag.gpgsign",
       "false",
     ]);
     expect(w("global", "gpg.ssh.allowedSignersFile", "/a/signers")).toEqual([
       "config",
       "--global",
+      "--",
       "gpg.ssh.allowedSignersFile",
       "/a/signers",
     ]);
+  });
+  test("signing-test gets 150 s, and the env keeps the gpg variables", () => {
+    expect(callTimeout({ kind: "signing-test" }, 15_000)).toBe(150_000);
+    expect(callTimeout({ kind: "signing-status" }, 15_000)).toBe(15_000);
+    const env = childEnv({ GNUPGHOME: "/g", GPG_TTY: "/dev/pts/1", DISPLAY: ":0", WAYLAND_DISPLAY: "w", SECRET: "x" });
+    expect(env.GNUPGHOME).toBe("/g");
+    expect(env.GPG_TTY).toBe("/dev/pts/1");
+    expect(env.DISPLAY).toBe(":0");
+    expect(env.WAYLAND_DISPLAY).toBe("w");
+    expect(env.SECRET).toBeUndefined();
   });
   test("read verbs", () => {
     expect(cliArgv({ kind: "signing-status" })).toEqual(["signing", "status", "--json"]);

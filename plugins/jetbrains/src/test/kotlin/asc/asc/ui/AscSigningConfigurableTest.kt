@@ -17,23 +17,23 @@ class AscSigningConfigurableTest {
     @Test fun oneArgvPerChangedField() {
         val key = "/home/u/.ssh/id_ed25519"
         assertEquals(
-            listOf(listOf("config", "--global", "user.signingkey", key)),
+            listOf(listOf("config", "--global", "--", "user.signingkey", key)),
             SigningCli.changes(base, base.copy(keyPath = key), SigningScope.GLOBAL),
         )
         assertEquals(
-            listOf(listOf("config", "--local", "gpg.format", "ssh")),
+            listOf(listOf("config", "--local", "--", "gpg.format", "ssh")),
             SigningCli.changes(base, base.copy(format = "ssh"), SigningScope.LOCAL),
         )
         assertEquals(
-            listOf(listOf("config", "--global", "commit.gpgsign", "true")),
+            listOf(listOf("config", "--global", "--", "commit.gpgsign", "true")),
             SigningCli.changes(base, base.copy(commitSign = true), SigningScope.GLOBAL),
         )
         assertEquals(
-            listOf(listOf("config", "--global", "tag.gpgsign", "true")),
+            listOf(listOf("config", "--global", "--", "tag.gpgsign", "true")),
             SigningCli.changes(base, base.copy(tagSign = true), SigningScope.GLOBAL),
         )
         assertEquals(
-            listOf(listOf("config", "--global", "tag.gpgsign", "false")),
+            listOf(listOf("config", "--global", "--", "tag.gpgsign", "false")),
             SigningCli.changes(base.copy(tagSign = true), base, SigningScope.GLOBAL),
         )
     }
@@ -41,8 +41,20 @@ class AscSigningConfigurableTest {
     @Test fun aValueWithSpacesAndMetacharactersStaysOneElement() {
         val key = "/tmp/my keys/a; rm -rf \$HOME"
         val call = SigningCli.changes(base, base.copy(keyPath = key), SigningScope.GLOBAL).single()
-        assertEquals(4, call.size)
+        assertEquals(5, call.size)
         assertEquals(key, call.last())
+    }
+
+    @Test fun keyPathMustBeAnAbsolutePathNeverAnOption() {
+        assertNull(SigningCli.keyPathProblem("/home/u/.ssh/id"))
+        assertNull(SigningCli.keyPathProblem("C:\\keys\\id"))
+        assertNull(SigningCli.keyPathProblem("\\\\host\\share\\id"))
+        assertNotNull(SigningCli.keyPathProblem("--file=/x"))
+        assertNotNull(SigningCli.keyPathProblem("-/x"))
+        assertNotNull(SigningCli.keyPathProblem("relative/key"))
+        assertNotNull(SigningCli.keyPathProblem("/a\nb"))
+        assertNotNull(SigningCli.keyPathProblem("/" + "a".repeat(1024)))
+        assertNotNull(SigningCli.keyPathProblem(""))
     }
 
     @Test fun localScopeNeedsARepository() {
