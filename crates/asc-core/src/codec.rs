@@ -8,7 +8,8 @@ use serde::{Serialize, de::DeserializeOwned};
 
 const MAGIC: [u8; 2] = *b"as";
 
-/// Envelope kinds. Kind 5 is reserved (was `FileMeta`); 6 is `ChangeMeta`; 16-63 are derived values.
+/// Envelope kinds. Kind 5 is reserved (was `FileMeta`); 6 is `ChangeMeta`; 7 is `ConflictSet`;
+/// 16-63 are derived values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum EnvelopeKind {
@@ -17,6 +18,7 @@ pub enum EnvelopeKind {
     TagRecord = 3,
     ChunkList = 4,
     ChangeMeta = 6,
+    ConflictSet = 7,
 }
 
 impl EnvelopeKind {
@@ -27,6 +29,7 @@ impl EnvelopeKind {
             3 => Self::TagRecord,
             4 => Self::ChunkList,
             6 => Self::ChangeMeta,
+            7 => Self::ConflictSet,
             _ => return None,
         })
     }
@@ -36,6 +39,9 @@ impl EnvelopeKind {
 pub trait Enveloped: Serialize + DeserializeOwned {
     const KIND: EnvelopeKind;
     const VERSION: u8 = 1;
+    /// Longest accepted envelope in bytes. [`decode_envelope`] refuses a longer input before it
+    /// reads a single length prefix, so a hostile prefix cannot ask for memory.
+    const MAX_ENVELOPE_LEN: usize = usize::MAX;
 
     /// Canonical envelope bytes.
     fn to_envelope(&self) -> Vec<u8> {
@@ -59,6 +65,8 @@ pub enum CodecError {
     UnknownVersion { kind: EnvelopeKind, version: u8 },
     #[error("unknown payload version {0}")]
     UnknownPayloadVersion(u8),
+    #[error("envelope is longer than the {max}-byte limit for its kind")]
+    TooLarge { max: usize },
     #[error("trailing bytes after payload")]
     Trailing,
     #[error("non-canonical encoding")]
@@ -75,6 +83,11 @@ pub fn encode_envelope<T: Serialize>(kind: EnvelopeKind, version: u8, value: &T)
 
 /// Decodes an envelope of type `T`, rejecting every malformed form.
 pub fn decode_envelope<T: Enveloped>(bytes: &[u8]) -> Result<T, CodecError> {
+    if bytes.len() > T::MAX_ENVELOPE_LEN {
+        return Err(CodecError::TooLarge {
+            max: T::MAX_ENVELOPE_LEN,
+        });
+    }
     let [m0, m1, kind, version, payload @ ..] = bytes else {
         return Err(CodecError::BadMagic);
     };

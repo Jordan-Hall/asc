@@ -89,6 +89,10 @@ id_newtype!(
     TagId, 32
 );
 id_newtype!(
+    /// Identity of a canonical conflict set envelope (SPEC §2.2, kind 7).
+    ConflictSetId, 32
+);
+id_newtype!(
     /// A git SHA-1 object id; never an identity inside asc.
     GitOid, 20
 );
@@ -100,6 +104,7 @@ pub mod context {
     pub const TREE: &str = "asc v1 tree";
     pub const CHANGESET: &str = "asc v1 changeset";
     pub const TAG: &str = "asc v1 tag";
+    pub const CONFLICT_SET: &str = "asc v1 conflict set";
 }
 
 pub(crate) fn derive(ctx: &str, bytes: &[u8]) -> [u8; 32] {
@@ -137,6 +142,12 @@ impl TagId {
     /// Hashes a canonical tag envelope.
     pub fn of(envelope: &[u8]) -> Self {
         Self(derive(context::TAG, envelope))
+    }
+}
+impl ConflictSetId {
+    /// Hashes a canonical conflict set envelope.
+    pub fn of(envelope: &[u8]) -> Self {
+        Self(derive(context::CONFLICT_SET, envelope))
     }
 }
 
@@ -270,6 +281,7 @@ mod tests {
                 ("tree", TreeId::of(input).to_string()),
                 ("changeset", ChangesetId::of(input).to_string()),
                 ("tag", TagId::of(input).to_string()),
+                ("conflictset", ConflictSetId::of(input).to_string()),
             ];
             for (kind, got) in cases {
                 assert_eq!(got, golden(&format!("{kind}.{name}")), "{kind}.{name}");

@@ -3,6 +3,7 @@
 pub mod change;
 pub mod change_migrate;
 pub mod codec;
+pub mod conflict;
 pub mod content;
 pub mod git;
 pub mod id;

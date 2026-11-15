@@ -6,7 +6,7 @@ use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::codec::{CodecError, EnvelopeKind, Enveloped};
-use crate::id::{ChangesetId, ChunkId, FileId, GitOid, TagId, TreeId};
+use crate::id::{ChangesetId, ChunkId, ConflictSetId, FileId, GitOid, TagId, TreeId};
 use crate::path::{Name, RepoPath};
 use crate::sig::Signature;
 
@@ -33,7 +33,13 @@ pub enum ObjectError {
     ChunkSum,
     #[error("chunk list size is not above the 4 MiB threshold")]
     ChunkSize,
+    #[error("extra key asc.conflicts is not the 32 raw bytes of a conflict set id")]
+    ConflictsValue,
 }
+
+/// `extra` key that links a conflicted changeset to its `ConflictSet`: the 32 raw bytes of the
+/// `ConflictSetId` (SPEC §2.6). A changeset with no conflict has no such key.
+pub const EXTRA_CONFLICTS: &[u8] = b"asc.conflicts";
 
 // Name and RepoPath travel as plain byte strings and are validated on decode.
 
@@ -340,6 +346,24 @@ impl TryFrom<RawChangeset> for Changeset {
 impl Changeset {
     pub fn id(&self) -> ChangesetId {
         ChangesetId::of(&self.to_envelope())
+    }
+
+    /// The conflict set this changeset records, if it has the `asc.conflicts` key. A value that is
+    /// not exactly 32 bytes is an error, never "no conflicts".
+    pub fn conflicts(&self) -> Result<Option<ConflictSetId>, ObjectError> {
+        let Some(value) = self.extra.get(&EXTRA_CONFLICTS.to_vec()) else {
+            return Ok(None);
+        };
+        let bytes: [u8; 32] = value
+            .as_slice()
+            .try_into()
+            .map_err(|_| ObjectError::ConflictsValue)?;
+        Ok(Some(ConflictSetId::from_bytes(bytes)))
+    }
+
+    /// The `extra` pair that links a changeset to `set`; the inverse of [`Changeset::conflicts`].
+    pub fn conflicts_extra(set: ConflictSetId) -> (Vec<u8>, Vec<u8>) {
+        (EXTRA_CONFLICTS.to_vec(), set.as_bytes().to_vec())
     }
 }
 
@@ -667,6 +691,25 @@ mod tests {
             size: 1,
             git: GitOid::from_bytes([5; 20]),
             copy_from: None,
+        }
+    }
+
+    #[test]
+    fn conflicts_extra_links_a_changeset_to_its_set() {
+        let mut cs = bare_changeset(vec![], vec![]);
+        assert_eq!(cs.conflicts().unwrap(), None);
+        let set = ConflictSetId::from_bytes([9; 32]);
+        cs.extra = SortedMap::new(vec![
+            (b"asc.snapshot".to_vec(), vec![]),
+            Changeset::conflicts_extra(set),
+        ])
+        .unwrap();
+        assert_eq!(cs.conflicts().unwrap(), Some(set));
+        let back = decode_envelope::<Changeset>(&cs.to_envelope()).unwrap();
+        assert_eq!(back.conflicts().unwrap(), Some(set));
+        for bad in [vec![], vec![9; 31], vec![9; 33]] {
+            cs.extra = SortedMap::new(vec![(EXTRA_CONFLICTS.to_vec(), bad)]).unwrap();
+            assert!(matches!(cs.conflicts(), Err(ObjectError::ConflictsValue)));
         }
     }
 
