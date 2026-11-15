@@ -3212,11 +3212,7 @@ mod status_tests {
         let h = setup().await;
         let t = world(&h, &[("regex", "1.5.0")]).await;
         for n in [1, 19, 21, 31, 33, 64] {
-            let e = h
-                .hub
-                .status_for(&ctx(BOB), &vec![7; n])
-                .await
-                .unwrap_err();
+            let e = h.hub.status_for(&ctx(BOB), &vec![7; n]).await.unwrap_err();
             assert_eq!(e.code(), Code::InvalidArgument, "{n} bytes: {e}");
         }
         // 32 bytes is an asc id and was looked up; 20 is the size of a git id, past the size check.
@@ -3299,10 +3295,7 @@ mod status_tests {
         assert_eq!(s.open_by_severity["high"], 1);
         assert_eq!(of(&h, add).await.unwrap(), s);
         assert_eq!(h.hub.change_cache.computed(), 1);
-        h.hub
-            .dismiss(&ctx(ALICE), dismiss_req(id))
-            .await
-            .unwrap();
+        h.hub.dismiss(&ctx(ALICE), dismiss_req(id)).await.unwrap();
         // No clock moves: the answer from memory was made before the dismissal and is not served.
         let s = of(&h, add).await.unwrap();
         assert_eq!((s.verdict, s.reason), (Verdict::Clean, Reason::None));

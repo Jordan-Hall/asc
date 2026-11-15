@@ -22,9 +22,9 @@ use super::hub::{
 use super::intel::FeedStatus;
 use super::model::{Dep, Ecosystem, Lookup};
 use super::osv::Query;
-use super::status::Move;
 use super::parse::{Format, MAX_FILE_BYTES, parse_file};
 use super::scan::distinct;
+use super::status::Move;
 use super::store::{self, NewFinding};
 use crate::registry::RepoEntry;
 use crate::review::sql;
@@ -323,11 +323,11 @@ impl DepsHub {
         }
         let _permit = self.permit().await?;
         let timeout = std::time::Duration::from_secs(self.cfg.gate_timeout_secs);
-        let report = match tokio::time::timeout(timeout, self.report_change(entry, head, base)).await
-        {
-            Ok(r) => r?,
-            Err(_) => ChangeReport::unjudged(),
-        };
+        let report =
+            match tokio::time::timeout(timeout, self.report_change(entry, head, base)).await {
+                Ok(r) => r?,
+                Err(_) => ChangeReport::unjudged(),
+            };
         self.change_cache.computed.fetch_add(1, Ordering::Relaxed);
         self.change_cache.put(key, self.now(), report.clone());
         Ok(report)
