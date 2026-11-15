@@ -180,7 +180,7 @@ All ids are 32-byte BLAKE3 outputs using **derive-key mode** with a per-kind con
 
 ### 2.2 Canonical encoding
 
-**Envelope:** `b"asc"` (0x63 0x67) ‖ `kind: u8` ‖ `version: u8` ‖ `postcard(payload)`.
+**Envelope:** `b"as"` (0x61 0x73) ‖ `kind: u8` ‖ `version: u8` ‖ `postcard(payload)`.
 
 | kind | payload | version |
 |---|---|---|
@@ -190,9 +190,28 @@ All ids are 32-byte BLAKE3 outputs using **derive-key mode** with a per-kind con
 | 4 | `ChunkList` | 1 |
 | 5 | reserved (was `FileMeta`; dropped from v1, server metadata lives in SQL and derived data) | – |
 | 6 | `ChangeMeta` (stable change identity sidecar, §20.2) | 1 |
+| 7 | `ConflictSet` (conflicted paths of one changeset, below and §2.6) | 1 |
 | 16–63 | derived values (§5) | per type |
 
 Postcard 1.x rules (normative, golden-tested): unsigned ints are LEB128 varints, signed ints are zigzag varints, `u8` is one raw byte, `bool` is one byte 0/1, `Option` is a tag byte 0/1 then the value, `Vec<T>`/`Vec<u8>` is a varint length then elements, `[u8; N]` is N raw bytes with no length, enums are a varint variant index then fields, structs are fields in declaration order. Forbidden in encoded types: `HashMap`, `f32/f64`, `String` (use `Vec<u8>` except where noted), `#[serde(skip_serializing_if)]`, `flatten`, untagged enums. Maps are `Vec<(K, V)>` sorted strictly ascending by key bytes (no duplicates); decoders MUST reject unsorted or duplicate keys, trailing bytes, unknown kinds and unknown versions. Therefore `encode(decode(b)) == b` for every accepted `b`.
+
+**`ConflictSet` (kind 7, version 1).** The payload is `entries: Vec<(RepoPath, Conflicted)>` and nothing else, so the postcard bytes are the entry count and then each entry:
+
+```rust
+pub struct Conflicted {
+    pub kind: ConflictKind,        // enum index: Content 0, AddAdd 1, ModifyDelete 2, FileDir 3, Binary 4
+    pub adds: Vec<Term>,           // 2..=8 terms; adds[0] is the destination side
+    pub removes: Vec<Term>,        // adds.len() - 1 terms
+    pub shown: Shown,              // Markers { marker_len: u8 } = variant 0, Side { index: u8 } = variant 1
+    pub from: Option<RepoPath>,    // FileDir only
+}
+pub enum Term {                    // Absent = variant 0, Leaf = variant 1
+    Absent,
+    Leaf { kind: Kind /* File|Exec|Symlink|Gitlink, never Dir */, id: [u8; 32], size: u64, git: GitOid },
+}
+```
+
+A path's value is the alternating sum `adds[0] - removes[0] + adds[1] - ... + adds[n]`. The `ConflictSetId` is the 32-byte BLAKE3 derive-key id of the envelope with context `"asc v1 conflict set"`. The decoder MUST reject, in addition to the rules above: an envelope longer than 4 MiB (`MAX_CONFLICT_SET_BYTES`, checked before the payload is read); an empty set; more than 10,000 entries (`MAX_CONFLICT_ENTRIES`); paths that are not strictly ascending by bytes; a sequence length prefix above its limit (8 for `adds` and `removes`, 10,000 for `entries`; the prefix is compared with the limit before anything is allocated); `adds.len() < 2` or `> 8` (`MAX_CONFLICT_SIDES`); `adds.len() != removes.len() + 1`; a remove equal to any add (not simplified); all adds equal (resolved); a `Leaf` of kind `Dir`; a `Gitlink` leaf with a non-zero `id` or `size`; `Shown::Markers` with `marker_len` outside 7..=32; `Shown::Side` with `index >= adds.len()` or naming an `Absent` add; `from` on any kind other than `FileDir`; and an invalid `RepoPath`. Golden bytes: `crates/asc-core/tests/golden/envelopes/conflictset.hex` and `conflictset_id.txt`. A set whose terms a store does not hold, or whose `shown` disagrees with the root tree, is refused by ingest (§2.6 rule 7), not by the decoder.
 
 ### 2.2a Versioned non-envelope encodings [audit: rolling-upgrade-encodings]
 
@@ -307,6 +326,7 @@ pub enum Change {
 | `git.commit` | raw git commit object body | Imported commit that is not canonical (§2.9). Export emits these bytes verbatim. |
 | `git.gpgsig` | signature bytes (armored) | Signature over the canonical git commit bytes without the `gpgsig` header. Rendered as the `gpgsig` header. |
 | `asc.snapshot` | empty | Snapshot changeset (stash); refused on protected refs. |
+| `asc.conflicts` | the 32 raw bytes of a `ConflictSetId` (§2.2, kind 7) | The changeset is conflicted. The `ChangesetId` covers the set through this key. A changeset with no conflict has no such key; a value that is not 32 bytes is invalid. `Changeset::conflicts()` reads it. |
 
 ### 2.7 Tags and refs
 
