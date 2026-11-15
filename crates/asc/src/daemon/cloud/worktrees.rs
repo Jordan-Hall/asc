@@ -154,9 +154,9 @@ fn ref_ok(raw: &str) -> bool {
         || raw.contains("..")
         || raw.contains("//")
         || raw.contains("@{")
-        || raw.chars().any(|c| {
-            c.is_control() || matches!(c, ' ' | '~' | '^' | ':' | '?' | '*' | '[' | '\\')
-        })
+        || raw
+            .chars()
+            .any(|c| c.is_control() || matches!(c, ' ' | '~' | '^' | ':' | '?' | '*' | '[' | '\\'))
         || raw
             .split('/')
             .any(|p| p.starts_with('.') || p.ends_with(".lock")))

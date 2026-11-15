@@ -66,7 +66,9 @@ async fn change_arg(ctx: &Ctx, word: &str) -> Result<Vec<u8>> {
         .ok_or_else(|| bad(format!("bad revision '{}'", clean_str(word))))?;
     let b = cs.as_bytes().to_vec();
     if b.len() != 20 && b.len() != 32 {
-        return Err(bad("--change must resolve to a changeset id of 20 or 32 bytes"));
+        return Err(bad(
+            "--change must resolve to a changeset id of 20 or 32 bytes",
+        ));
     }
     Ok(b)
 }
@@ -189,8 +191,10 @@ pub async fn run(ctx: &Ctx, a: StatusArgs) -> Result<ExitCode> {
     let text = if a.json {
         let t = serde_json::to_string(&to_json(&r))
             .map_err(|e| CliError::Fatal(format!("asc: {e}")))?;
-        format!("{t}
-")
+        format!(
+            "{t}
+"
+        )
     } else {
         render(&r)
     };
