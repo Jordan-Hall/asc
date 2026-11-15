@@ -865,13 +865,17 @@ impl ServerGate {
 
         // What the update adds. Without a policy only the secret scan reads it, and that stops
         // at its own limit. The scan reads no more than MAX_CHANGESETS changesets, so an update
-        // with more is refused here rather than half scanned.
-        let mut limit = if effective.is_some() {
+        // with more is refused here rather than half scanned. A history import is the exception:
+        // a whole mirror or moved repository arrives in one update per ref, so it is let through
+        // with the newest MAX_CHANGESETS changesets scanned and the gap put on the record. Only
+        // MAX_ADDED bounds it (the changeset bodies are held in memory for the path rules).
+        let history = matches!(req.mode, GateMode::History);
+        let mut limit = if effective.is_some() || history {
             MAX_ADDED
         } else {
             self.scanner.config().max_files.clamp(1, MAX_ADDED)
         };
-        if sp.enabled {
+        if sp.enabled && !history {
             limit = limit.min(MAX_CHANGESETS);
         }
         let added = self
@@ -904,7 +908,6 @@ impl ServerGate {
 
         // A history import carries history that other people already reviewed and signed
         // elsewhere. Neither can be asked of it, so both checks are skipped in that mode.
-        let history = matches!(req.mode, GateMode::History);
         if let Some(p) = &effective {
             // Path rules and the agent scope, for the pusher.
             let mut refused = Vec::new();
@@ -962,6 +965,12 @@ impl ServerGate {
                         .target(&u.name)
                         .detail("ref", &u.name)
                         .detail("changesets", added.ids.len().to_string())
+                        // An upper bound when the file or byte limit cut the scan earlier.
+                        .detail(
+                            "changesets_scanned",
+                            added.ids.len().min(MAX_CHANGESETS).to_string(),
+                        )
+                        .detail("files_scanned", report.files_scanned.to_string())
                         .detail("found", report.found.len().to_string());
                 crate::audit::store::record_best_effort(self.registry.pool(), &event).await;
             }

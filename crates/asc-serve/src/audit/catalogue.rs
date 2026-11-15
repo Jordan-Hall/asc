@@ -202,7 +202,13 @@ pub const CATALOGUE: &[ActionInfo] = &[
     a(
         "secret.scan.incomplete",
         "A history import was accepted although its secret scan stopped at a limit before it read every file.",
-        &["ref", "changesets", "found"],
+        &[
+            "ref",
+            "changesets",
+            "changesets_scanned",
+            "files_scanned",
+            "found",
+        ],
     ),
     a(
         "secret.scan.run",
