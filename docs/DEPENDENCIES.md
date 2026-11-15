@@ -431,6 +431,55 @@ A `CLEAN` answer that carries a reason also exits 2. Usage and transport errors 
 The hub shows trunk's status as a banner on the dependency page and the status of a change as the "Security" row of
 the pull checks. See "Hub dependency page" below and `docs/WEB-UI.md`.
 
+## Security overview across repositories
+
+The hub page `/{owner}/-/security` (a user or an organisation, signed in only) lists the asc-stored repositories of
+the owner whose code the viewer can read. There are at most 500. Repositories with findings come first, then the
+rest by name. The page shows 50 per page.
+
+The hub reads the statuses with `DepsService/Statuses`. One call takes up to 100 repositories. The request carries the
+`owner` and the owner kind (user or organisation). asc verifies a host claim for that owner and refuses repositories
+of another owner. A repository asc cannot find is left out. A repository whose status cannot be read shows "Not
+readable", never clean.
+
+`/{owner}/-/security/export.csv` downloads the open findings of those repositories. It is a read-only GET. The hub
+reads each repository with its own per-repo claim. The columns are:
+
+| Column | Meaning |
+|---|---|
+| `repo` | Repository name. |
+| `ecosystem` | Package ecosystem. |
+| `name` | Package name. |
+| `version` | Package version. |
+| `advisory` | Advisory id. |
+| `severity` | Severity. |
+| `fixed_in` | Version that closes the finding, empty when there is none. |
+| `first_seen` | When the finding was first seen. |
+
+The file has at most 10,000 rows. When there are more, the last line is `# truncated`. A cell that starts with `=`,
+`+`, `-`, `@`, a tab, a CR or an LF gets a leading `'`, so a spreadsheet does not run it as a formula.
+
+## Notifications
+
+asc emits the event `security_status` when the trunk dependency status of a repository changes. It fires when:
+
+- the status moves between clean and findings, in either direction;
+- the status moves from unknown to findings;
+- the status moves to unknown, but only after two consecutive unknown scans;
+- a scan raises the number of open critical and high findings.
+
+The first scan only sets the baseline, unless it opens critical or high findings. A move from unknown to clean is
+silent. The dedup key is `deps:<repo>:<status>:<scanned hex>`. The title reads "Security status of owner/repo:
+findings (2 critical)" and links to `/{owner}/{repo}/asc/deps`.
+
+The event has `"watchers": true` and an empty users list. The hub sends it to the watchers of the repository who can
+still read its code: active, not login-prohibited, and individuals (not organisations). It sends at most 500 per
+event. On a retry, the watchers already told count toward that cap. Each person's notification preferences apply, with
+the setting "Security status changed". asc stores the notified status only after the notice is queued, so a failed
+send is tried again at the next scan.
+
+Migration 0615 adds `deps_scans.status`, `deps_scans.unknown_runs` and `notify_events.watchers`.
+
 ## Own dependencies
 
 `asc_core::self_deps::packages()` lists the registry packages that asc was built against, as sorted `(name, version)`
@@ -443,7 +492,7 @@ Nothing reads the list yet. The server and CLI advisory check (roadmap row 33) i
 
 | Call | Needs |
 |---|---|
-| `ListFindings`, `ListUpdates`, `GetConfig`, `ScanStatus`, `Sbom`, `Status` | read |
+| `ListFindings`, `ListUpdates`, `GetConfig`, `ScanStatus`, `Sbom`, `Status`, `Statuses` | read |
 | `Scan`, `ProposeUpdate`, `SetConfig`, `Dismiss` | write, and a maintainer of the policy or an administrator |
 
 Agent credentials reach none of them (every service an agent token is not named for is closed to it).
