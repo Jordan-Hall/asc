@@ -5,7 +5,7 @@
 
 use std::ffi::OsString;
 use std::io::{Read, Write as _};
-use std::process::{ExitCode, Stdio};
+use std::process::ExitCode;
 
 use asc_core::codec::Enveloped as _;
 use asc_core::git::{EXTRA_GIT_GPGSIG, ObjectKind, export_tag, object_oid, render_tag};
@@ -491,50 +491,11 @@ async fn message_of(ctx: &Ctx, ws: &WsCtx, o: &Opts, name: &str) -> Result<Vec<u
     Ok(message::cleanup(&text, mode, false, comment))
 }
 
-/// Signs `payload` with git's signing program (`gpg.program`, default `gpg`).
+/// Signs `payload` as git does (`gpg.format`: openpgp, x509 or ssh); see [`super::signing::sign_payload`].
 async fn sign(ctx: &Ctx, payload: &[u8], key: Option<&str>, who: &str) -> Result<Vec<u8>> {
-    let program = ctx
-        .config
-        .get("gpg.program")
-        .unwrap_or_else(|| "gpg".to_owned());
-    let key = key
-        .map(str::to_owned)
-        .or_else(|| ctx.config.get("user.signingkey"))
-        .unwrap_or_else(|| who.to_owned());
-    let mut cmd = ctx.child(ctx.shell())?;
-    cmd.args(["-c", "exec \"$@\"", "sh"])
-        .arg(&program)
-        .args(["--status-fd=2", "-bsau"])
-        .arg(&key)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let payload = payload.to_vec();
-    let out = tokio::task::spawn_blocking(move || -> std::io::Result<std::process::Output> {
-        let mut child = cmd.spawn()?;
-        if let Some(mut pipe) = child.stdin.take() {
-            let _ = pipe.write_all(&payload);
-        }
-        child.wait_with_output()
-    })
-    .await
-    .map_err(fatal)??;
-    let mut sig = out.stdout;
-    while sig.last() == Some(&b'\n') {
-        sig.pop();
-    }
-    // The program must say it made a signature (`--status-fd`), as git insists.
-    let status = String::from_utf8_lossy(&out.stderr).into_owned();
-    let created =
-        status.starts_with("[GNUPG:] SIG_CREATED ") || status.contains("\n[GNUPG:] SIG_CREATED ");
-    if !out.status.success() || sig.is_empty() || !created {
-        let mut text = String::from("error: gpg failed to sign the data");
-        if !status.trim().is_empty() {
-            text.push_str(&format!(":\n{}", status.trim_end()));
-        }
-        text.push_str("\nerror: unable to sign the tag");
-        return Err(CliError::Raw(text, 128));
-    }
+    let mut sig = super::signing::sign_payload(ctx, payload, key, who)
+        .await
+        .map_err(|e| CliError::Raw(format!("{e}\nerror: unable to sign the tag"), 128))?;
     sig.push(b'\n');
     Ok(sig)
 }

@@ -11,7 +11,7 @@ use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::{ExitCode, Stdio};
+use std::process::ExitCode;
 
 use asc_core::change::RewriteOp;
 use asc_core::git::{ObjectKind, export_commit, tree_oid};
@@ -956,49 +956,16 @@ async fn staged_patch(ws: &WsCtx, head_root: TreeId, rows: &[stage::StageRow]) -
     Ok(out)
 }
 
-/// Signs `payload` with git's signing program (`gpg.program`, default `gpg`).
+/// Signs `payload` as git does (`gpg.format`: openpgp, x509 or ssh); see [`super::signing::sign_payload`].
 pub(crate) async fn sign(
     ctx: &Ctx,
     payload: &[u8],
     key: Option<&str>,
     committer: &str,
 ) -> Result<Vec<u8>> {
-    let program = ctx
-        .config
-        .get("gpg.program")
-        .unwrap_or_else(|| "gpg".to_owned());
-    let key = key
-        .map(str::to_owned)
-        .or_else(|| ctx.config.get("user.signingkey"))
-        .unwrap_or_else(|| committer.to_owned());
-    let mut cmd = ctx.child(ctx.shell())?;
-    cmd.args(["-c", "exec \"$@\"", "sh"])
-        .arg(&program)
-        .args(["--status-fd=2", "-bsau"])
-        .arg(&key)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped());
-    let payload = payload.to_vec();
-    let out = tokio::task::spawn_blocking(move || -> std::io::Result<std::process::Output> {
-        let mut child = cmd.spawn()?;
-        if let Some(mut pipe) = child.stdin.take() {
-            let _ = pipe.write_all(&payload);
-        }
-        child.wait_with_output()
-    })
-    .await
-    .map_err(|e| fatal(e.to_string()))??;
-    let mut sig = out.stdout;
-    while sig.last() == Some(&b'\n') {
-        sig.pop();
-    }
-    if !out.status.success() || sig.is_empty() {
-        return Err(CliError::Raw(
-            "error: gpg failed to sign the data\nfatal: failed to write commit object".to_owned(),
-            128,
-        ));
-    }
-    Ok(sig)
+    super::signing::sign_payload(ctx, payload, key, committer)
+        .await
+        .map_err(|e| CliError::Raw(format!("{e}\nfatal: failed to write commit object"), 128))
 }
 
 /// What the post-commit summary prints.

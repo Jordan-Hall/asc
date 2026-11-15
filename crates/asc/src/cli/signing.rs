@@ -10,8 +10,9 @@
 
 use std::ffi::OsString;
 use std::io::Write as _;
-use std::path::PathBuf;
-use std::process::{ExitCode, Stdio};
+use std::path::{Path, PathBuf};
+use std::process::{Command, ExitCode, Output, Stdio};
+use std::time::{Duration, Instant};
 
 use asc_core::sshsig::{self, KeyFileSigner, PublicKey};
 use serde_json::{Value, json};
@@ -171,8 +172,10 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
 
 /// The bytes `asc signing test` signs.
 const FIXED: &[u8] = b"asc signing test\n";
-/// The most bytes read from a key file.
+/// The most bytes read from a key file; a larger file is refused.
 const MAX_KEY_FILE: u64 = 64 * 1024;
+/// How long a signing program may run before it is killed.
+const SIGNER_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// The config level a value came from: the last section that sets it decides.
 fn level(
@@ -311,6 +314,57 @@ fn agent_info(probe: &Probe, mut info: KeyInfo, key: PublicKey) -> KeyInfo {
     info
 }
 
+/// A key given inline: `key::<public key>` (agent) or a bare public key line (literal).
+fn literal_key(value: &str) -> Option<(&'static str, &str)> {
+    value
+        .strip_prefix("key::")
+        .map(|k| ("agent", k))
+        .or_else(|| {
+            ["ssh-", "ecdsa-", "sk-"]
+                .iter()
+                .any(|p| value.starts_with(p))
+                .then_some(("literal", value))
+        })
+}
+
+/// A Windows network or device path (`\\host\share`, `//host/share`, `\\?\C:\k`).
+fn is_unc(value: &str) -> bool {
+    let b = value.as_bytes();
+    b.len() >= 2 && matches!(b[0], b'\\' | b'/') && matches!(b[1], b'\\' | b'/')
+}
+
+/// On Windows a key path from repository config (not trusted) may not name a network share or a
+/// device path: reading it would send the user's credentials to a host the repository picked.
+fn check_key_path(value: &str, repo_local: bool) -> std::result::Result<(), String> {
+    if cfg!(windows) && repo_local && is_unc(value) {
+        return Err("the key file path is a network or device path from repository config".into());
+    }
+    Ok(())
+}
+
+/// Reads a key file: a regular file of at most [`MAX_KEY_FILE`] bytes. A FIFO, a device (`/dev/zero`)
+/// and a directory are refused before and after the open.
+fn read_key_file(path: &Path) -> std::result::Result<String, String> {
+    use std::io::Read as _;
+    let cannot = |e: std::io::Error| format!("the key file cannot be read: {}", e.kind());
+    let regular = "the key file is not a regular file";
+    if !std::fs::metadata(path).map_err(cannot)?.is_file() {
+        return Err(regular.into());
+    }
+    let file = std::fs::File::open(path).map_err(cannot)?;
+    if !file.metadata().map_err(cannot)?.is_file() {
+        return Err(regular.into());
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_KEY_FILE + 1)
+        .read_to_end(&mut bytes)
+        .map_err(cannot)?;
+    if bytes.len() as u64 > MAX_KEY_FILE {
+        return Err("the key file is larger than 64 KiB".into());
+    }
+    String::from_utf8(bytes).map_err(|_| "the file is not an OpenSSH key".to_owned())
+}
+
 fn inspect(config: &ConfigSnapshot, probe: &Probe) -> KeyInfo {
     let Some(value) = config.get("user.signingkey").filter(|v| !v.is_empty()) else {
         return KeyInfo::new("none").fail("user.signingkey is not set");
@@ -327,16 +381,7 @@ fn inspect(config: &ConfigSnapshot, probe: &Probe) -> KeyInfo {
         }
         return info;
     }
-    let literal = value
-        .strip_prefix("key::")
-        .map(|k| ("agent", k))
-        .or_else(|| {
-            ["ssh-", "ecdsa-", "sk-"]
-                .iter()
-                .any(|p| value.starts_with(p))
-                .then_some(("literal", value.as_str()))
-        });
-    if let Some((source, line)) = literal {
+    if let Some((source, line)) = literal_key(&value) {
         let info = KeyInfo::new(source);
         return match PublicKey::parse(line) {
             Ok(k) => agent_info(probe, info, k),
@@ -348,14 +393,10 @@ fn inspect(config: &ConfigSnapshot, probe: &Probe) -> KeyInfo {
         .unwrap_or_else(|| PathBuf::from(&value));
     let mut info = KeyInfo::new("file");
     info.path = Some(path.display().to_string().replace('\\', "/"));
-    let text = std::fs::File::open(&path).and_then(|f| {
-        use std::io::Read as _;
-        let mut s = String::new();
-        f.take(MAX_KEY_FILE).read_to_string(&mut s).map(|_| s)
-    });
-    let text = match text {
+    let repo_local = level(config, "user", None, "signingkey") == Some("local");
+    let text = match check_key_path(&value, repo_local).and_then(|()| read_key_file(&path)) {
         Ok(t) => t,
-        Err(e) => return info.fail(format!("the key file cannot be read: {}", e.kind())),
+        Err(e) => return info.fail(e),
     };
     match KeyFileSigner::from_openssh(&text) {
         Ok(signer) => {
@@ -498,77 +539,244 @@ impl Drop for Scratch {
     }
 }
 
-/// Signs [`FIXED`] with the key file at `path` and verifies the armored result.
-fn sign_with_file(path: &str) -> std::result::Result<(), String> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| format!("the key file cannot be read: {}", e.kind()))?;
-    let signer = KeyFileSigner::from_openssh(&text).map_err(|e| e.to_string())?;
-    let armored = signer
-        .sign(FIXED)
-        .and_then(|s| s.armored())
-        .map_err(|e| e.to_string())?;
-    sshsig::Signature::parse(&armored)
-        .and_then(|s| s.verify(FIXED))
-        .map_err(|_| "the signature does not verify".to_owned())
+/// Runs a signing program with `input` on its stdin and collects stdout and stderr. stdin stays a
+/// pipe for the data; a pinentry or a passphrase prompt reaches the terminal on its own. The child
+/// is killed when it runs past `timeout`.
+fn run_signer_for(
+    mut cmd: Command,
+    input: Vec<u8>,
+    timeout: Duration,
+) -> std::result::Result<Output, String> {
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("the signing program cannot run: {}", e.kind()))?;
+    let stdin = child.stdin.take();
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    std::thread::spawn(move || {
+        if let Some(mut pipe) = stdin {
+            let _ = pipe.write_all(&input);
+        }
+    });
+    fn reader<R: std::io::Read + Send + 'static>(
+        pipe: Option<R>,
+    ) -> std::thread::JoinHandle<Vec<u8>> {
+        std::thread::spawn(move || {
+            let mut v = Vec::new();
+            if let Some(mut p) = pipe {
+                let _ = p.read_to_end(&mut v);
+            }
+            v
+        })
+    }
+    let out_t = reader(stdout);
+    let err_t = reader(stderr);
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(s)) => break s,
+            Ok(None) => {}
+            Err(e) => return Err(e.to_string()),
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!(
+                "the signer timed out after {} s and was stopped",
+                timeout.as_secs()
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    Ok(Output {
+        status,
+        stdout: out_t.join().unwrap_or_default(),
+        stderr: err_t.join().unwrap_or_default(),
+    })
 }
 
-/// Signs [`FIXED`] through ssh-agent (`ssh-keygen -Y sign`) and verifies the result.
-fn sign_with_agent(ctx: &Ctx, key: &PublicKey) -> std::result::Result<(), String> {
-    let dir = Scratch::new().map_err(|e| e.to_string())?;
-    let pubfile = dir.0.join("key.pub");
-    std::fs::write(&pubfile, format!("{}\n", key.line())).map_err(|e| e.to_string())?;
+/// The command that signs with OpenPGP or X.509: `<program> --status-fd=2 -bsau <key>`, as git runs it.
+fn gpg_command(
+    ctx: &Ctx,
+    program: &str,
+    key: Option<&str>,
+    who: &str,
+) -> std::result::Result<Command, String> {
+    let key = key
+        .map(str::to_owned)
+        .or_else(|| ctx.config.get("user.signingkey"))
+        .unwrap_or_else(|| who.to_owned());
+    let mut cmd = ctx.child(ctx.shell()).map_err(|e| e.to_string())?;
+    cmd.args(["-c", "exec \"$@\"", "sh"])
+        .arg(program)
+        .args(["--status-fd=2", "-bsau"])
+        .arg(key);
+    Ok(cmd)
+}
+
+/// The command that signs with SSH: `<gpg.ssh.program> -Y sign -n git -f <key>`, as git runs it. A
+/// key file is read here under the key-file limits to tell a private key (ssh-keygen signs with it)
+/// from a public key (ssh-keygen signs through the agent, `-U`); an inline public key goes to a
+/// scratch file that the returned guard removes.
+fn ssh_command(
+    ctx: &Ctx,
+    key: Option<&str>,
+) -> std::result::Result<(Command, Option<Scratch>), String> {
+    let configured = ctx.config.get("user.signingkey").filter(|v| !v.is_empty());
+    let value = key
+        .map(str::to_owned)
+        .or_else(|| configured.clone())
+        .ok_or("error: user.signingkey needs to be set for ssh signing")?;
+    let from_config = configured.as_deref() == Some(value.as_str());
     let program = ctx
         .config
         .get("gpg.ssh.program")
         .unwrap_or_else(|| "ssh-keygen".to_owned());
-    let missing = || format!("{program} is not available");
-    let mut child = ctx
-        .child(&program)
-        .map_err(|_| missing())?
-        .args(["-Y", "sign", "-n", sshsig::NAMESPACE, "-f"])
-        .arg(&pubfile)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|_| missing())?;
-    if let Some(mut pipe) = child.stdin.take() {
-        let _ = pipe.write_all(FIXED);
+    let mut cmd = ctx.child(&program).map_err(|e| e.to_string())?;
+    cmd.args(["-Y", "sign", "-n", "git"]);
+    let (file, scratch, agent) = if let Some((_, line)) = literal_key(&value) {
+        let k = PublicKey::parse(line).map_err(|e| format!("error: the key is not usable: {e}"))?;
+        let dir = Scratch::new().map_err(|e| e.to_string())?;
+        let f = dir.0.join("key.pub");
+        std::fs::write(&f, format!("{}\n", k.line())).map_err(|e| e.to_string())?;
+        (f, Some(dir), true)
+    } else {
+        let repo_local =
+            from_config && level(&ctx.config, "user", None, "signingkey") == Some("local");
+        check_key_path(&value, repo_local).map_err(|e| format!("error: {e}"))?;
+        let path = from_config
+            .then(|| ctx.config.path("user.signingkey"))
+            .flatten()
+            .unwrap_or_else(|| PathBuf::from(&value));
+        let text = read_key_file(&path).map_err(|e| format!("error: {e}"))?;
+        let private = text.contains("PRIVATE KEY") || KeyFileSigner::from_openssh(&text).is_ok();
+        if !private && PublicKey::parse(&text).is_err() {
+            return Err("error: the file is not an OpenSSH key".into());
+        }
+        (path, None, !private)
+    };
+    if agent {
+        cmd.arg("-U");
     }
-    let out = child.wait_with_output().map_err(|e| e.to_string())?;
-    if !out.status.success() {
-        return Err("ssh-agent did not sign (is the key loaded?)".to_owned());
+    cmd.arg("-f").arg(file);
+    Ok((cmd, scratch))
+}
+
+/// Signs `payload` the way git signs a commit or tag. `asc commit`, `asc tag` and `asc signing test`
+/// all use this one function. `gpg.format` picks the program: `openpgp` runs `gpg.program` (default
+/// `gpg`) and `x509` runs `gpg.x509.program` (default `gpgsm`), both as `--status-fd=2 -bsau <key>`;
+/// `ssh` makes an SSHSIG in the namespace `git` with `gpg.ssh.program` (default `ssh-keygen`). The
+/// result has no trailing newline. The error is the text for the user, without the closing line
+/// that names the object being written. A program that runs past 120 s is killed.
+pub(crate) async fn sign_payload(
+    ctx: &Ctx,
+    payload: &[u8],
+    key: Option<&str>,
+    who: &str,
+) -> std::result::Result<Vec<u8>, String> {
+    let format = format_of(&ctx.config);
+    let (cmd, _scratch, label, gpg_status) = match format.as_str() {
+        "openpgp" => {
+            let program = ctx
+                .config
+                .get("gpg.openpgp.program")
+                .or_else(|| ctx.config.get("gpg.program"))
+                .unwrap_or_else(|| "gpg".to_owned());
+            (gpg_command(ctx, &program, key, who)?, None, "gpg", true)
+        }
+        "x509" => {
+            let program = ctx
+                .config
+                .get("gpg.x509.program")
+                .unwrap_or_else(|| "gpgsm".to_owned());
+            (gpg_command(ctx, &program, key, who)?, None, "gpg", true)
+        }
+        "ssh" => {
+            let (cmd, scratch) = ssh_command(ctx, key)?;
+            (cmd, scratch, "ssh-keygen", false)
+        }
+        other => return Err(format!("fatal: invalid value for 'gpg.format': '{other}'")),
+    };
+    let payload = payload.to_vec();
+    let out = tokio::task::spawn_blocking(move || run_signer_for(cmd, payload, SIGNER_TIMEOUT))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("error: {e}"))?;
+    let mut sig = out.stdout;
+    while sig.last() == Some(&b'\n') {
+        sig.pop();
     }
-    let sig = sshsig::Signature::parse(&String::from_utf8_lossy(&out.stdout))
-        .map_err(|e| e.to_string())?;
-    if sig.key().fingerprint() != key.fingerprint() {
-        return Err("the signature is by another key".to_owned());
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    // An OpenPGP or X.509 program must say it made a signature (`--status-fd`), as git insists.
+    let made = if gpg_status {
+        stderr.starts_with("[GNUPG:] SIG_CREATED ") || stderr.contains("\n[GNUPG:] SIG_CREATED ")
+    } else {
+        sig.starts_with(b"-----BEGIN SSH SIGNATURE-----")
+    };
+    if !out.status.success() || sig.is_empty() || !made {
+        let mut text = format!("error: {label} failed to sign the data");
+        if !stderr.trim().is_empty() {
+            text.push_str(&format!(":\n{}", stderr.trim_end()));
+        }
+        return Err(text);
     }
-    sig.verify(FIXED)
-        .map_err(|_| "the signature does not verify".to_owned())
+    Ok(sig)
+}
+
+/// The first line of a signing failure, for `signing test`.
+fn short(e: &str) -> String {
+    e.lines()
+        .next()
+        .unwrap_or("")
+        .trim_start_matches("error: ")
+        .to_owned()
+}
+
+/// Signs [`FIXED`] with the code `asc commit` uses and verifies the SSHSIG in the namespace `git`
+/// with `ssh-keygen -Y check-novalidate`; the signature must name the configured key.
+async fn sign_with_ssh(ctx: &Ctx, k: &KeyInfo) -> std::result::Result<(), String> {
+    let sig = sign_payload(ctx, FIXED, None, "")
+        .await
+        .map_err(|e| short(&e))?;
+    let dir = Scratch::new().map_err(|e| e.to_string())?;
+    let sigf = dir.0.join("sig");
+    std::fs::write(&sigf, &sig).map_err(|e| e.to_string())?;
+    let program = ctx
+        .config
+        .get("gpg.ssh.program")
+        .unwrap_or_else(|| "ssh-keygen".to_owned());
+    let mut cmd = ctx.child(&program).map_err(|e| e.to_string())?;
+    cmd.args(["-Y", "check-novalidate", "-n", "git", "-s"])
+        .arg(&sigf);
+    let out = run_signer_for(cmd, FIXED.to_vec(), SIGNER_TIMEOUT)?;
+    let said = String::from_utf8_lossy(&out.stdout);
+    let fp = k.fingerprint.as_deref().unwrap_or("-");
+    if out.status.success() && said.contains(fp) {
+        Ok(())
+    } else {
+        Err("the signature does not verify".to_owned())
+    }
 }
 
 /// Signs [`FIXED`] with the code `asc commit` uses (`gpg.program`) and verifies it with the same program.
 async fn sign_with_gpg(ctx: &Ctx) -> std::result::Result<(), String> {
-    let sig = super::commit::sign(ctx, FIXED, None, "")
+    let sig = sign_payload(ctx, FIXED, None, "")
         .await
-        .map_err(|_| "the signing program failed".to_owned())?;
+        .map_err(|e| short(&e))?;
     let dir = Scratch::new().map_err(|e| e.to_string())?;
     let (sigf, data) = (dir.0.join("sig"), dir.0.join("data"));
     std::fs::write(&sigf, &sig).map_err(|e| e.to_string())?;
     std::fs::write(&data, FIXED).map_err(|e| e.to_string())?;
     let program = gpg_program(&ctx.config);
     let missing = || format!("{program} is not available");
-    let out = ctx
-        .child(&program)
-        .map_err(|_| missing())?
-        .args(["--batch", "--status-fd=1", "--verify"])
+    let mut cmd = ctx.child(&program).map_err(|_| missing())?;
+    cmd.args(["--batch", "--status-fd=1", "--verify"])
         .arg(&sigf)
-        .arg(&data)
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .map_err(|_| missing())?;
+        .arg(&data);
+    let out = run_signer_for(cmd, Vec::new(), SIGNER_TIMEOUT)?;
     if out.status.success() && String::from_utf8_lossy(&out.stdout).contains("GOODSIG") {
         Ok(())
     } else {
@@ -577,12 +785,11 @@ async fn sign_with_gpg(ctx: &Ctx) -> std::result::Result<(), String> {
 }
 
 async fn sign_and_verify(ctx: &Ctx, k: &KeyInfo) -> std::result::Result<(), String> {
-    match (k.source, &k.public) {
-        ("file", _) => sign_with_file(k.path.as_deref().unwrap_or("")),
-        (_, Some(key)) => sign_with_agent(ctx, key),
-        ("key-id", _) if format_of(&ctx.config) == "openpgp" => sign_with_gpg(ctx).await,
-        ("key-id", _) => Err("only the openpgp and ssh formats can be tested".to_owned()),
-        _ => Err("user.signingkey is not set".to_owned()),
+    match (format_of(&ctx.config).as_str(), k.source) {
+        (_, "none") => Err("user.signingkey is not set".to_owned()),
+        ("ssh", _) => sign_with_ssh(ctx, k).await,
+        ("openpgp", "key-id") => sign_with_gpg(ctx).await,
+        _ => Err("only the openpgp and ssh formats can be tested".to_owned()),
     }
 }
 
@@ -732,9 +939,76 @@ Ffc3L/LBFn13ZJ3tZW/GAAAACWVkX2FAdGVzdAECAwQ=
     }
 
     #[test]
-    fn a_key_file_signs_and_verifies() {
-        let (_dir, path) = key_file();
-        sign_with_file(&path).unwrap();
+    fn a_key_file_is_read_under_the_limits() {
+        let (dir, path) = key_file();
+        assert!(read_key_file(Path::new(&path)).is_ok());
+        let big = dir.0.join("big");
+        std::fs::write(&big, vec![b'a'; MAX_KEY_FILE as usize + 1]).unwrap();
+        assert!(
+            read_key_file(&big)
+                .unwrap_err()
+                .contains("larger than 64 KiB")
+        );
+        let exact = dir.0.join("exact");
+        std::fs::write(&exact, vec![b'a'; MAX_KEY_FILE as usize]).unwrap();
+        assert!(read_key_file(&exact).is_ok());
+        assert!(
+            read_key_file(&dir.0)
+                .unwrap_err()
+                .contains("not a regular file")
+        );
+        let c = ssh_config(&dir.0.display().to_string().replace('\\', "/"));
+        let k = no_probe(|p| inspect(&c, p));
+        assert!(!k.usable);
+        assert!(k.problem.unwrap().contains("not a regular file"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_device_and_a_fifo_are_refused() {
+        assert!(
+            read_key_file(Path::new("/dev/zero"))
+                .unwrap_err()
+                .contains("not a regular file")
+        );
+        let dir = Scratch::new().unwrap();
+        let fifo = dir.0.join("fifo");
+        assert!(
+            Command::new("mkfifo")
+                .arg(&fifo)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            read_key_file(&fifo)
+                .unwrap_err()
+                .contains("not a regular file")
+        );
+    }
+
+    #[test]
+    fn network_paths_from_repo_config_are_refused_on_windows() {
+        assert!(is_unc(r"\\host\share\k"));
+        assert!(is_unc("//host/share/k"));
+        assert!(is_unc(r"\\?\C:\k"));
+        assert!(!is_unc("C:/k") && !is_unc("/home/k") && !is_unc("k"));
+        assert!(check_key_path("//host/share/k", false).is_ok());
+        assert_eq!(
+            check_key_path("//host/share/k", true).is_err(),
+            cfg!(windows)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_signer_that_runs_too_long_is_killed() {
+        let mut cmd = Command::new("sleep");
+        cmd.arg("30");
+        let began = Instant::now();
+        let err = run_signer_for(cmd, Vec::new(), Duration::from_millis(300)).unwrap_err();
+        assert!(err.contains("timed out"), "{err}");
+        assert!(began.elapsed() < Duration::from_secs(10));
     }
 
     #[test]
@@ -743,7 +1017,6 @@ Ffc3L/LBFn13ZJ3tZW/GAAAACWVkX2FAdGVzdAECAwQ=
         let k = no_probe(|p| inspect(&c, p));
         assert!(!k.usable);
         assert!(k.problem.as_deref().unwrap().contains("cannot be read"));
-        assert!(sign_with_file("/no/such/asc-key").is_err());
         let dir = Scratch::new().unwrap();
         let junk = dir.0.join("junk");
         std::fs::write(
