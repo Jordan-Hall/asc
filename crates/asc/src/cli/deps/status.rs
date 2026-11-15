@@ -191,10 +191,7 @@ pub async fn run(ctx: &Ctx, a: StatusArgs) -> Result<ExitCode> {
     let text = if a.json {
         let t = serde_json::to_string(&to_json(&r))
             .map_err(|e| CliError::Fatal(format!("asc: {e}")))?;
-        format!(
-            "{t}
-"
-        )
+        format!("{t}\n")
     } else {
         render(&r)
     };
