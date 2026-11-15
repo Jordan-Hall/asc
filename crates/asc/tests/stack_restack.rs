@@ -450,6 +450,57 @@ fn every_rewritten_commit_is_signed_when_commit_gpgsign_is_set() {
 }
 
 #[test]
+fn a_restack_resigns_with_gpg_format_ssh_and_ssh_keygen_verifies() {
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+    let r = Repo::new(false);
+    let key = r.sb.tmp.path().join("id_restack");
+    let made = Command::new("ssh-keygen")
+        .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+        .arg(&key)
+        .output();
+    if !made.is_ok_and(|o| o.status.success()) {
+        return; // no ssh-keygen here
+    }
+    r.ok(&["config", "gpg.format", "ssh"]);
+    r.ok(&["config", "user.signingkey", &key.display().to_string().replace('\\', "/")]);
+    r.ok(&["config", "commit.gpgsign", "true"]);
+    // The openpgp program must not be reached.
+    r.ok(&["config", "gpg.program", "false"]);
+    let out = r.asc(&["restack"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    for rev in ["feature", "feature~1"] {
+        let raw = r.ok(&["cat-file", "-p", rev]);
+        let (mut sig, mut payload, mut in_sig) = (String::new(), String::new(), false);
+        for line in raw.split_inclusive('\n') {
+            if let Some(first) = line.strip_prefix("gpgsig ") {
+                in_sig = true;
+                sig.push_str(first);
+            } else if in_sig && line.starts_with(' ') {
+                sig.push_str(&line[1..]);
+            } else {
+                in_sig = false;
+                payload.push_str(line);
+            }
+        }
+        assert!(sig.starts_with("-----BEGIN SSH SIGNATURE-----"), "{rev}: {sig}");
+        let sigf = r.sb.tmp.path().join("c.sig");
+        fs::write(&sigf, &sig).unwrap();
+        let mut check = Command::new("ssh-keygen")
+            .args(["-Y", "check-novalidate", "-n", "git", "-s"])
+            .arg(&sigf)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        check.stdin.take().unwrap().write_all(payload.as_bytes()).unwrap();
+        let o = check.wait_with_output().unwrap();
+        assert!(o.status.success(), "{rev}: {}", text(&o.stderr));
+    }
+}
+
+#[test]
 fn a_failing_signer_moves_no_ref_and_exits_1() {
     let r = Repo::new(false);
     let head = r.sha("feature");
