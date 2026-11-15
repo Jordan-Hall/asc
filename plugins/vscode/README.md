@@ -38,6 +38,23 @@ process.
   them and CSS in `<style>`. Comment toggling, bracket matching and auto-closing pairs come from
   its language configuration.
 
+## Signing settings
+
+Run **ASC: Open signing settings** from the command palette. The command is also in the SCM title
+menu when the asc provider is active. The page shows:
+
+- The signing key: its source, its path or key ID, its fingerprint, the level it is set at (global,
+  local, system or command), and whether asc can use it.
+- The format (OpenPGP, SSH or X.509), and whether commits and tags are signed.
+
+Choose the key file with **Choose key file...**. The file picker opens, and the page keeps only the
+path. Key content is never shown or stored.
+
+Pick **Write to** to choose the scope: Global, or This repository. Repository scope needs an open
+asc repository. Each change runs `asc config --global` or `asc config --local` and writes
+`user.signingkey`, `gpg.format`, `commit.gpgsign` or `tag.gpgsign`. **Test signing** runs
+`asc signing test` and shows the result.
+
 ## Security
 
 - `asc` starts only in trusted workspaces. The `asc.path` setting is restricted in untrusted

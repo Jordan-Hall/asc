@@ -40,6 +40,23 @@ inert in projects that are not asc workspaces: its menus, tool window and status
   indexing would download virtual files.
 - **TSRX.** `.tsrx` files are coloured with the same TextMate grammar as the VS Code extension.
 
+## Signing settings
+
+Open **Settings > Version Control > asc Signing**. The page shows a status line with the signing
+key's source, its path, key ID or fingerprint, the format, and why the key is not usable when it is
+not.
+
+- **Key file** takes a key file (private or public). Use the browse button to pick it. The page keeps
+  only the path. Key content is never shown or stored.
+- **Format** is OpenPGP, SSH or X.509.
+- **Sign commits** and **Sign tags** set the default for each.
+- **Apply to** chooses Global or This repository. This repository needs an open asc repository;
+  without one, the page writes global settings only.
+
+Click **Apply** to save. The page writes only the fields that changed, with `asc config --global` or
+`asc config --local`, to `user.signingkey`, `gpg.format`, `commit.gpgsign` and `tag.gpgsign`.
+**Test signing** runs `asc signing test` and shows the result.
+
 ## Sign-in
 
 Sign In asks for the forge host (the hosts of the project's https remotes are offered first), then
