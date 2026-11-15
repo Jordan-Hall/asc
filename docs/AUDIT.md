@@ -18,10 +18,14 @@ agent; an IPv4 address is cut to /24 and an IPv6 address to /48), the repository
 |---|---|
 | Refs and pushes | `repo.ref.update` (one per ref, old and new value), `repo.ref.undo`, `push.refused` (a push refused by authorisation, policy, a hook, a quota or a secret) |
 | Repositories | `repo.created`, `repo.renamed`, `repo.default_branch`, `repo.deleted` |
-| Policy and security | `policy.proposed`, `policy.denied`, `secret.finding.updated`, `secret.push.blocked`, `secret.scan.run`, `signing.*` |
+| Policy and security | `policy.proposed`, `policy.denied`, `secret.finding.updated`, `secret.push.blocked`, `secret.scan.run`, `secret.scan.incomplete`, `signing.*` |
 | Credentials | `auth.token.created`, `auth.token.revoked`, `auth.ssh_key.added`, `auth.ssh_key.removed`, `agent.token.*`, `ai.key.*`, `storage.target.*`, `vault.rotated` |
 | CI | `ci.failure_group.state` |
 | The log itself | `audit.exported`, `audit.retention.pruned` |
+
+`secret.scan.incomplete` is written when a history import (a mirror sync or a move of a git repository into asc) goes through
+although the secret scan stopped at a limit. Its target is the ref. Its details are `ref`, `changesets` (added by the update),
+`changesets_scanned` (an upper bound), `files_scanned` and `found`.
 
 Tokens and SSH keys are minted by the operator tools (`asc serve token`, `asc serve ssh-key`), so their actor is
 `system:operator`; the event names the token's user and repository, which makes it visible in their scopes.

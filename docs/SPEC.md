@@ -920,7 +920,8 @@ message RepoAdminResponse { uint64 logical_size = 1; uint64 unique_size = 2; str
 
 message GitRefUpdate { string name = 1; bytes old_git = 2; bytes new_git = 3; }
 message ImportGitPushRequest { RepoRef repo = 1; string git_dir = 2; string object_dir = 3;
-  repeated string alternate_dirs = 4; repeated GitRefUpdate updates = 5; int64 pusher_id = 6; }
+  repeated string alternate_dirs = 4; repeated GitRefUpdate updates = 5; int64 pusher_id = 6;
+  bool history = 7; }   // a history import; see "History imports" after "Legacy git pushes"
 message ImportGitPushResponse { repeated RefResult results = 1; }
 // The import of the repository running now: commits turned into changesets so far (commits asc
 // already held are not counted) and its start (unix seconds). Nothing running: running false.
@@ -1136,6 +1137,13 @@ Applies only when the client explicitly asks for it: `asc push --land`, or the p
 No queue and no leader: concurrent lands race on the CAS and retry (step 8). At ASC's rate (peak about 50 per minute) this is ample.
 
 **Legacy git pushes [audit: git-push-land-tracking-refs]:** pushes that arrive through `ImportGitPush` (legacy git clients, Stage 2+) use `UPDATE_MODE_FAST_FORWARD` even on land branches, because git cannot be told about rewrites. A non-fast-forward is rejected with git's `! [rejected] <src> -> <dst> (fetch first)`.
+
+**History imports:** `ImportGitPushRequest.history` marks an update that copies another git repository's history into this one. A mirror sync does this, and so does moving a git repository into asc. Only the host's service credential may set it (the call needs `HOOK_MODE_SKIP_PRE`); any other caller gets an error. The ref log records `via = history-import`.
+- **Mirrors:** a repository in `mirror` mode refuses every write except a history import. This is how a mirror is kept in sync with its source.
+- **Forced updates:** a non-fast-forward, a moved tag and a deletion are applied. A land branch, trunk and `allow_force` do not stop them, because the source repository moved on its own.
+- **Skipped:** the review check and the signed-commit check. The history was reviewed and signed elsewhere.
+- **Kept:** path rules (and a path that is never safe to check out is still refused), size limits and quota. The changeset limit is `MAX_ADDED` (100,000) for one update.
+- **Secret scan:** a secret on trunk is recorded as a finding and never refuses the update, because refusing public history would stall the mirror for good. The scan reads the newest `secretscan::MAX_CHANGESETS` (20,000) changesets. If a limit cuts it short, the update still goes through and the audit event `secret.scan.incomplete` records the gap (`ref`, `changesets`, `changesets_scanned`, `files_scanned`, `found`).
 
 ### 8.6 Mirror mode (Stage 1)
 
