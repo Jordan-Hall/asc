@@ -283,7 +283,7 @@ and evaluated through the API and the hub shows it; every key below is parsed st
 - **Rules:** `VALID` needs a live, unexpired key of the changeset author; revocation applies to signatures submitted after it, and an
   earlier `VALID` stays explainable. Policy `[signing] require_signed = true` makes landing on trunk need `VALID` for every change; the
   queue revalidates it (section 7). Server-made commits (`Commit`/`Merge` with `sign`) are signed with `[signing] server_key_file`.
-- **Config:** `[signing] server_key_file`, `max_keys_per_user` (32). **Errors:** `UNSIGNED_CHANGE`, `SIGNATURE_INVALID`, `SIGNING_KEY_LIMIT`.
+- **Config:** `[signing] server_key_file`, `max_keys_per_user` (32), `web_edits` (`"server"` by default, or `"refuse"`). With `"server"` and a server key, `Commit`, `Merge` and `Apply` with `sign` are signed by the server key, and only for the host service credential; the server then advertises `sign.server.v1`. **Errors:** `UNSIGNED_CHANGE`, `SIGNATURE_INVALID`, `SIGNING_KEY_LIMIT`.
 - **Audit:** `signing.key.added`, `signing.key.revoked`, `signing.defaults.set` (only when the value changes),
   `signing.signature.submitted`.
 - **Defaults:** `GetSigningDefaults`/`SetSigningDefaults` keep one switch per user, `sign_by_default` (table

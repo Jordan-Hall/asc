@@ -150,7 +150,7 @@ impl ServerMutations {
             wire::MergeStyle::try_from(req.style).map_err(|_| invalid("unknown merge style"))?;
         check_update_ref(&req.update_ref)?;
         check_message(&req.message)?;
-        // SPEC §8.5 step 5: the server signs what it merges with its own key, for the host only.
+        // SPEC §8.7: the server signs what it merges with its own key, for the host only.
         let web_signer = self.web_signer(ctx, req.sign)?;
         if !req.dry_run {
             Self::sign_needs_ref(&web_signer, &req.update_ref)?;
