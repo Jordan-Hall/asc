@@ -2,6 +2,7 @@
 
 pub mod compose_plain;
 pub mod depclone;
+pub mod depsnap;
 pub mod eol;
 pub mod ignore;
 pub mod intent;

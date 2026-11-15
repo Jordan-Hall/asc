@@ -15,6 +15,7 @@ asc-store = { workspace = true }
 asc-engine = { workspace = true }
 asc-git = { workspace = true }
 asc-state = { workspace = true }
+blake3 = { workspace = true }
 futures = { workspace = true }
 ignore = { workspace = true }
 reflink-copy = { workspace = true }

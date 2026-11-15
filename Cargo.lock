@@ -679,6 +679,7 @@ dependencies = [
  "asc-state",
  "asc-store",
  "async-trait",
+ "blake3",
  "futures",
  "ignore",
  "reflink-copy",
