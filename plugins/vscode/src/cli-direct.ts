@@ -33,7 +33,47 @@ export type CliCall =
   | { kind: "cache-clear"; tool?: string }
   | { kind: "cache-warm" }
   | { kind: "cache-setup"; tool: CacheSetupTool; undo: boolean }
-  | { kind: "cache-env" };
+  | { kind: "cache-env" }
+  /** Signing status and the signing self-test (both print JSON). */
+  | { kind: "signing-status" }
+  | { kind: "signing-test" }
+  /** One signing setting written with `asc config --global|--local <key> <value>`. */
+  | { kind: "signing-config"; scope: SigningScope; key: SigningConfigKey; value: string };
+
+export const SIGNING_SCOPES = ["global", "local"] as const;
+export type SigningScope = (typeof SIGNING_SCOPES)[number];
+export const SIGNING_FORMATS = ["openpgp", "ssh", "x509"] as const;
+/** The only keys the signing page writes. */
+export const SIGNING_CONFIG_KEYS = [
+  "user.signingkey",
+  "gpg.format",
+  "commit.gpgsign",
+  "tag.gpgsign",
+  "gpg.ssh.allowedSignersFile",
+] as const;
+export type SigningConfigKey = (typeof SIGNING_CONFIG_KEYS)[number];
+
+const ABS_PATH = /^(\/|[A-Za-z]:[\\/]|\\\\)/;
+
+/** The value `key` may take; true when `value` is in range. */
+function signingValueOk(key: SigningConfigKey, value: string): boolean {
+  switch (key) {
+    case "gpg.format":
+      return (SIGNING_FORMATS as readonly string[]).includes(value);
+    case "commit.gpgsign":
+    case "tag.gpgsign":
+      return value === "true" || value === "false";
+    default: {
+      // A path from the file picker: absolute (so never an option), printable, bounded.
+      if (value.length > 1024 || !ABS_PATH.test(value)) return false;
+      for (const ch of value) {
+        const c = ch.codePointAt(0) ?? 0;
+        if (c < 0x20 || c === 0x7f) return false;
+      }
+      return true;
+    }
+  }
+}
 
 /** The tools `asc cache setup` configures. */
 export const CACHE_SETUP_TOOLS = [
@@ -104,6 +144,17 @@ export function cliArgv(call: CliCall): string[] | null {
       return ["cache", "setup", call.tool, ...(call.undo ? ["--undo"] : [])];
     case "cache-env":
       return ["cache", "env", "--shell", "json"];
+    case "signing-status":
+      return ["signing", "status", "--json"];
+    case "signing-test":
+      return ["signing", "test", "--json"];
+    case "signing-config":
+      return (SIGNING_SCOPES as readonly string[]).includes(call.scope) &&
+        (SIGNING_CONFIG_KEYS as readonly string[]).includes(call.key) &&
+        typeof call.value === "string" &&
+        signingValueOk(call.key, call.value)
+        ? ["config", `--${call.scope}`, call.key, call.value]
+        : null;
     default:
       return null;
   }

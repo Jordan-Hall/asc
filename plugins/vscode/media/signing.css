@@ -1,0 +1,6 @@
+body { font-family: var(--vscode-font-family); color: var(--vscode-foreground); padding: 1rem; }
+dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 1rem; }
+dt { color: var(--vscode-descriptionForeground); }
+dd { margin: 0; word-break: break-all; }
+fieldset { display: grid; gap: 0.5rem; margin: 1rem 0; border: 1px solid var(--vscode-panel-border); }
+button { margin-right: 0.5rem; }

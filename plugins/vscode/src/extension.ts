@@ -39,6 +39,7 @@ import { bridgeReviewApi, currentChangeRef, registerReviewComments } from "./rev
 import { registerReadOnly } from "./read-only";
 import { registerRevNav } from "./revnav";
 import { registerCommands, vscodeCommandsUi } from "./scm/commands";
+import { registerSigning } from "./views/signing";
 import { registerIgnoreCommand } from "./scm/ignore";
 import { registerScm } from "./scm/provider";
 import { bridgeRemoteApi, registerRemoteCommands } from "./scm/remote";
@@ -486,6 +487,9 @@ export function registerAll(e: FeatureEnv): Disposable {
   cmd("asc.configureAgents", async () => {
     void vscode.window.showInformationMessage(await configureAgents(e.ascPath(), roots));
   });
+
+  // Row 60c: the signing settings page.
+  subs.push(registerSigning(vscode, ctx, cli, () => roots));
 
   // P49a: hydration guard. Its only data source is `Workspace.Stats`.
   subs.push(

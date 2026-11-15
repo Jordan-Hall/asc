@@ -637,6 +637,12 @@
         "enablement": "asc.workspace"
       },
       {
+        "command": "asc.openSigningSettings",
+        "title": "Open signing settings",
+        "category": "ASC",
+        "enablement": "asc.workspace"
+      },
+      {
         "command": "asc.cache.refresh",
         "title": "Refresh build cache",
         "category": "ASC",
@@ -1034,6 +1040,11 @@
         }
       ],
       "scm/title": [
+        {
+          "command": "asc.openSigningSettings",
+          "when": "scmProvider == asc",
+          "group": "9_settings@1"
+        },
         {
           "command": "asc.stackSubmit",
           "when": "scmProvider == asc",
