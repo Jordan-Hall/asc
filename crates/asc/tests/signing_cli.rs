@@ -269,3 +269,114 @@ fn a_bad_signing_value_never_leaves_the_machine() {
     assert_eq!((s.gets, s.sets.len()), (0, 0));
     assert!(!global(&sb).contains("signbydefault"));
 }
+
+// ---- `asc signing status` and `asc signing test`: local config only, no server. ----
+
+const KEY_BODY: &str = "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+QyNTUxOQAAACBEHO7rHJ3AV+cNx9RP5Y4LKRX3Ny/ywRZ9d2Sd7WVvxgAAAJDe4Cnq3uAp
+6gAAAAtzc2gtZWQyNTUxOQAAACBEHO7rHJ3AV+cNx9RP5Y4LKRX3Ny/ywRZ9d2Sd7WVvxg
+AAAECyVlI1ETu9uLtTIPfbajG0zVEMdAsj8RUn6qUZSM/pqEQc7uscncBX5w3H1E/ljgsp
+Ffc3L/LBFn13ZJ3tZW/GAAAACWVkX2FAdGVzdAECAwQ=";
+
+fn signing(sb: &Sandbox, cwd: &Path, args: &[&str]) -> Output {
+    sb.asc(cwd)
+        .env("ASC_NO_DAEMON", "1")
+        .args(["signing"])
+        .args(args)
+        .output()
+        .expect("spawn asc")
+}
+
+fn write_key(sb: &Sandbox) -> String {
+    let path = sb.user.join("id_test");
+    std::fs::write(
+        &path,
+        format!(
+            "-----BEGIN OPENSSH PRIVATE KEY-----\n{KEY_BODY}\n-----END OPENSSH PRIVATE KEY-----\n"
+        ),
+    )
+    .unwrap();
+    path.display().to_string().replace('\\', "/")
+}
+
+fn set_global(sb: &Sandbox, cwd: &Path, key: &str, value: &str) {
+    let out = sb.run(cwd, &["config", "--global", key, value]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+}
+
+#[test]
+fn signing_status_with_no_config_is_unconfigured() {
+    let sb = Sandbox::new();
+    let cwd = sb.dir("w");
+    let out = signing(&sb, &cwd, &["status", "--json"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let v: serde_json::Value = serde_json::from_str(&text(&out.stdout)).unwrap();
+    assert_eq!(v["configured"], false);
+    assert_eq!(v["key"]["source"], "none");
+    assert_eq!(v["format"]["value"], "openpgp");
+    let human = text(&signing(&sb, &cwd, &["status"]).stdout);
+    assert!(human.contains("key: none"), "{human}");
+}
+
+#[test]
+fn signing_status_and_test_with_an_ssh_key_file() {
+    let sb = Sandbox::new();
+    let cwd = sb.dir("w");
+    let key = write_key(&sb);
+    set_global(&sb, &cwd, "user.signingkey", &key);
+    set_global(&sb, &cwd, "gpg.format", "ssh");
+    set_global(&sb, &cwd, "commit.gpgsign", "true");
+
+    let out = signing(&sb, &cwd, &["status", "--json"]);
+    let so = text(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let v: serde_json::Value = serde_json::from_str(&so).unwrap();
+    assert_eq!(v["key"]["source"], "file");
+    assert_eq!(v["key"]["path"], key.as_str());
+    assert_eq!(v["key"]["usable"], true);
+    assert_eq!(v["key"]["level"], "global");
+    assert_eq!(v["format"]["value"], "ssh");
+    assert_eq!(v["commit_sign"]["value"], true);
+    assert_eq!(v["commit_sign"]["level"], "global");
+    assert!(
+        v["key"]["fingerprint"]
+            .as_str()
+            .unwrap()
+            .starts_with("SHA256:")
+    );
+    for line in KEY_BODY.lines() {
+        assert!(!so.contains(line), "private key text in the JSON");
+    }
+
+    let out = signing(&sb, &cwd, &["test", "--json"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let t: serde_json::Value = serde_json::from_str(&text(&out.stdout)).unwrap();
+    assert_eq!(t["ok"], true);
+    assert_eq!(t["fingerprint"], v["key"]["fingerprint"]);
+    let human = text(&signing(&sb, &cwd, &["test"]).stdout);
+    assert!(
+        human.starts_with("ok: signed and verified, key SHA256:"),
+        "{human}"
+    );
+}
+
+#[test]
+fn signing_test_with_an_unusable_key_exits_1() {
+    let sb = Sandbox::new();
+    let cwd = sb.dir("w");
+    let out = signing(&sb, &cwd, &["test"]);
+    assert_eq!(out.status.code(), Some(1), "not configured");
+    assert!(
+        text(&out.stdout).starts_with("failed:"),
+        "{}",
+        text(&out.stdout)
+    );
+
+    set_global(&sb, &cwd, "gpg.format", "ssh");
+    set_global(&sb, &cwd, "user.signingkey", "/no/such/key");
+    let out = signing(&sb, &cwd, &["test", "--json"]);
+    assert_eq!(out.status.code(), Some(1));
+    let t: serde_json::Value = serde_json::from_str(&text(&out.stdout)).unwrap();
+    assert_eq!(t["ok"], false);
+    assert!(t["error"].as_str().unwrap().contains("cannot be read"));
+}
