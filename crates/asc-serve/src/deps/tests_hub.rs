@@ -3009,3 +3009,436 @@ async fn a_zero_threshold_with_block_exploited_off_means_off_at_the_gate() {
     // The advisory has EPSS 0.9 and is critical; nothing is switched on.
     land_adding(&g, a, &[("serde", "1.0.100")]).await.unwrap();
 }
+
+// ------------------------------------------------------------------------------ the status of a repository and of a change
+
+mod status_tests {
+    use super::*;
+    use crate::deps::status::{Reason, RepoStatus, Verdict};
+
+    /// Trunk with the given lockfile packages, scanned, and a high advisory for `serde` 1.0.100.
+    async fn world(h: &H, trunk_pkgs: &[(&str, &str)]) -> ChangesetId {
+        advisory(h, "serde", "1.0.100", "RUSTSEC-1", "HIGH");
+        let t = h
+            .trunk(&[
+                ("Cargo.lock", lock(trunk_pkgs).as_bytes()),
+                ("src/main.rs", b"fn main() {}"),
+            ])
+            .await;
+        h.scan("", false).await;
+        t
+    }
+
+    async fn change(h: &H, parent: ChangesetId, files: &[(&str, &[u8])]) -> ChangesetId {
+        let cs = commit(&h.f.e, &[parent], files).await;
+        h.f.ingest(cs).await;
+        cs
+    }
+
+    async fn of(h: &H, cs: ChangesetId) -> Result<RepoStatus, tonic::Status> {
+        h.hub.status_for(&ctx(BOB), cs.as_bytes()).await
+    }
+
+    fn lock_bytes(pkgs: &[(&str, &str)]) -> Vec<u8> {
+        lock(pkgs).into_bytes()
+    }
+
+    /// A change on `t` that adds a vulnerable `serde` to the lockfile.
+    async fn bad_change(h: &H, t: ChangesetId) -> ChangesetId {
+        change(
+            h,
+            t,
+            &[(
+                "Cargo.lock",
+                &lock_bytes(&[("regex", "1.5.0"), ("serde", "1.0.100")]),
+            )],
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_repository_without_a_scan_is_unknown_and_never_clean() {
+        let h = setup().await;
+        let t = h
+            .trunk(&[("Cargo.lock", lock(&[("regex", "1.5.0")]).as_bytes())])
+            .await;
+        let s = h.hub.status_for(&ctx(BOB), &[]).await.unwrap();
+        assert_eq!(s.verdict, Verdict::Unknown);
+        assert_eq!(s.reason, Reason::NotScanned);
+        assert_eq!(s.reason.text(), "not scanned");
+        assert!(s.moves.is_empty() && s.scanned.is_empty() && s.scanned_at == 0);
+        // A change that writes no dependency file has no news of its own: it says what trunk says.
+        let c = change(&h, t, &[("src/main.rs", b"fn main() { }")]).await;
+        assert_eq!(of(&h, c).await.unwrap(), s);
+    }
+
+    #[tokio::test]
+    async fn a_change_that_adds_a_vulnerable_version_has_findings_and_a_move() {
+        let h = setup().await;
+        let t = world(&h, &[("regex", "1.5.0")]).await;
+        let trunk = h.hub.status_for(&ctx(BOB), &[]).await.unwrap();
+        assert_eq!(trunk.verdict, Verdict::Clean);
+        let bad = bad_change(&h, t).await;
+        let s = of(&h, bad).await.unwrap();
+        assert_eq!(s.verdict, Verdict::Findings);
+        assert_eq!(s.reason, Reason::None);
+        assert_eq!(s.open_by_severity["high"], 1);
+        assert_eq!(s.open_by_severity["low"], 0);
+        assert_eq!(s.moves.len(), 1);
+        let m = &s.moves[0];
+        assert_eq!(
+            (m.ecosystem.as_str(), m.name.as_str(), m.from.as_str()),
+            ("crates.io", "serde", "1.0.100")
+        );
+        assert_eq!(m.to, "9.9.9");
+        // Trunk scan data is carried along, and trunk itself is still clean.
+        assert_eq!(s.scanned_at, trunk.scanned_at);
+        assert_eq!(s.scanned, trunk.scanned);
+        assert_eq!(
+            h.hub.status_for(&ctx(BOB), &[]).await.unwrap().verdict,
+            Verdict::Clean
+        );
+        // A change that adds only clean versions is clean.
+        let ok = change(
+            &h,
+            t,
+            &[(
+                "Cargo.lock",
+                &lock_bytes(&[("regex", "1.5.0"), ("log", "0.4.1")]),
+            )],
+        )
+        .await;
+        let s = of(&h, ok).await.unwrap();
+        assert_eq!((s.verdict, s.reason), (Verdict::Clean, Reason::None));
+        assert!(s.moves.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_change_that_touches_no_dependency_file_has_the_status_of_trunk() {
+        let h = setup().await;
+        // Trunk itself has the vulnerable version.
+        let t = world(&h, &[("regex", "1.5.0"), ("serde", "1.0.100")]).await;
+        let trunk = h.hub.status_for(&ctx(BOB), &[]).await.unwrap();
+        assert_eq!(trunk.verdict, Verdict::Findings);
+        assert_eq!(trunk.moves.len(), 1);
+        let c = change(&h, t, &[("src/main.rs", b"fn main() { 1; }")]).await;
+        assert_eq!(of(&h, c).await.unwrap(), trunk);
+        // Trunk as the head: nothing in between, the same answer.
+        assert_eq!(of(&h, t).await.unwrap(), trunk);
+    }
+
+    #[tokio::test]
+    async fn an_answer_is_served_from_memory_for_ten_minutes() {
+        let h = setup().await;
+        let t = world(&h, &[("regex", "1.5.0")]).await;
+        let bad = bad_change(&h, t).await;
+        let first = of(&h, bad).await.unwrap();
+        assert_eq!(h.hub.change_cache.computed(), 1);
+        assert_eq!(of(&h, bad).await.unwrap(), first);
+        assert_eq!(
+            h.hub.change_cache.computed(),
+            1,
+            "the second call did not compute"
+        );
+        // Another head is its own entry.
+        let other = change(&h, t, &[("src/main.rs", b"x")]).await;
+        of(&h, other).await.unwrap();
+        assert_eq!(h.hub.change_cache.computed(), 2);
+        assert_eq!(h.hub.change_cache.len(), 2);
+        // Within ten minutes it is still served; past them it is computed again.
+        h.clock.store(T0 + 600, Ordering::SeqCst);
+        of(&h, bad).await.unwrap();
+        assert_eq!(h.hub.change_cache.computed(), 2);
+        h.clock.store(T0 + 601, Ordering::SeqCst);
+        assert_eq!(of(&h, bad).await.unwrap(), first);
+        assert_eq!(h.hub.change_cache.computed(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_new_feed_version_drops_the_remembered_answers() {
+        let Feeds { h, _dir, path } = feed_hub(Some(KEV_FILE), None, None).await;
+        let t = world(&h, &[("regex", "1.5.0")]).await;
+        let bad = bad_change(&h, t).await;
+        let before = crate::deps::gate::intel_version(&h.hub.intel_view());
+        of(&h, bad).await.unwrap();
+        of(&h, bad).await.unwrap();
+        assert_eq!(h.hub.change_cache.computed(), 1);
+        // The catalogue is replaced by a newer one.
+        let newer = KEV_FILE.replace("2027.01.14\"", "2027.01.140\"");
+        assert_ne!(newer, KEV_FILE);
+        std::fs::write(std::path::Path::new(&path).join("kev.json"), newer).unwrap();
+        h.hub.intel().refresh().await;
+        assert_ne!(
+            crate::deps::gate::intel_version(&h.hub.intel_view()),
+            before
+        );
+        of(&h, bad).await.unwrap();
+        assert_eq!(h.hub.change_cache.computed(), 2);
+        of(&h, bad).await.unwrap();
+        assert_eq!(h.hub.change_cache.computed(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_changeset_that_is_not_in_the_repository_is_refused() {
+        let h = setup().await;
+        let t = world(&h, &[("regex", "1.5.0")]).await;
+        // A real changeset, but of another repository.
+        let other =
+            h.f.reg
+                .create(
+                    &asc_rpc::server::RepoName::parse("o/elsewhere").unwrap(),
+                    &Default::default(),
+                )
+                .await
+                .unwrap();
+        let foreign = commit(
+            &other,
+            &[],
+            &[("Cargo.lock", &lock_bytes(&[("serde", "1.0.100")]))],
+        )
+        .await;
+        let e = of(&h, foreign).await.unwrap_err();
+        assert_eq!(e.code(), Code::NotFound, "{e}");
+        // One nobody has, and one that is too long to be an id.
+        let e = h.hub.status_for(&ctx(BOB), &[7; 32]).await.unwrap_err();
+        assert_eq!(e.code(), Code::NotFound, "{e}");
+        assert_eq!(h.hub.change_cache.computed(), 0);
+        // Trunk is still answered.
+        assert_eq!(of(&h, t).await.unwrap().verdict, Verdict::Clean);
+    }
+
+    #[tokio::test]
+    async fn only_ids_of_twenty_or_thirty_two_bytes_are_taken() {
+        let h = setup().await;
+        let t = world(&h, &[("regex", "1.5.0")]).await;
+        for n in [1, 19, 21, 31, 33, 64] {
+            let e = h
+                .hub
+                .status_for(&ctx(BOB), &vec![7; n])
+                .await
+                .unwrap_err();
+            assert_eq!(e.code(), Code::InvalidArgument, "{n} bytes: {e}");
+        }
+        // 32 bytes is an asc id and was looked up; 20 is the size of a git id, past the size check.
+        let e = h.hub.status_for(&ctx(BOB), &[7; 32]).await.unwrap_err();
+        assert_eq!(e.code(), Code::NotFound, "{e}");
+        let e = h.hub.status_for(&ctx(BOB), &[7; 20]).await.unwrap_err();
+        assert_ne!(e.code(), Code::Internal, "{e}");
+        // Empty is trunk.
+        assert_eq!(
+            h.hub.status_for(&ctx(BOB), &[]).await.unwrap().verdict,
+            Verdict::Clean
+        );
+        assert_eq!(of(&h, t).await.unwrap().verdict, Verdict::Clean);
+        assert_eq!(h.hub.change_cache.computed(), 1);
+    }
+
+    fn finding(i: usize, severity: Option<DepSeverity>) -> crate::deps::store::NewFinding {
+        crate::deps::store::NewFinding {
+            ecosystem: "npm".into(),
+            name: format!("p{i:03}"),
+            version: "1.0.0".into(),
+            path: "package-lock.json".into(),
+            direct: true,
+            advisory: crate::deps::model::Advisory {
+                id: format!("A-{i}"),
+                aliases: vec![],
+                summary: "x".repeat(4000),
+                severity,
+                cvss: 0.0,
+                fixed: vec!["1.0.1".into()],
+                url: String::new(),
+                affected: vec![],
+            },
+            fixed_in: "1.0.1".into(),
+        }
+    }
+
+    #[test]
+    fn what_is_kept_of_a_change_is_counts_and_capped_moves() {
+        let found: Vec<_> = (0..150)
+            .map(|i| finding(i, (i % 2 == 0).then_some(DepSeverity::High)))
+            .collect();
+        let r = crate::deps::hub::summarize(&found, false);
+        assert!(r.touches_deps && !r.incomplete && r.has_findings());
+        assert_eq!(r.moves.len(), crate::deps::status::MAX_MOVES);
+        assert_eq!(r.open_by_severity["high"], 75);
+        assert_eq!(r.open_by_severity["unknown"], 75);
+        assert_eq!(r.open_by_severity["critical"], 0);
+        assert_eq!(r.open_by_severity.len(), 5);
+        let none = crate::deps::hub::summarize(&[], true);
+        assert!(!none.has_findings() && none.incomplete && none.moves.is_empty());
+    }
+
+    fn dismiss_req(id: u64) -> wire::DismissDepFindingRequest {
+        wire::DismissDepFindingRequest {
+            repo: repo(),
+            id,
+            reason: wire::DepDismissReason::NotUsed as i32,
+            note: String::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_dismissal_shows_in_the_answer_at_once() {
+        let h = setup().await;
+        advisory(&h, "serde", "1.0.100", "RUSTSEC-1", "HIGH");
+        let t = h
+            .trunk(&[("Cargo.lock", lock_bytes(&[("serde", "1.0.100")]).as_slice())])
+            .await;
+        let id = h.scan("", false).await.findings[0].id;
+        // A second lockfile that adds the same vulnerable version.
+        let add = change(
+            &h,
+            t,
+            &[("sub/Cargo.lock", &lock_bytes(&[("serde", "1.0.100")]))],
+        )
+        .await;
+        let s = of(&h, add).await.unwrap();
+        assert_eq!(s.verdict, Verdict::Findings);
+        assert_eq!(s.open_by_severity["high"], 1);
+        assert_eq!(of(&h, add).await.unwrap(), s);
+        assert_eq!(h.hub.change_cache.computed(), 1);
+        h.hub
+            .dismiss(&ctx(ALICE), dismiss_req(id))
+            .await
+            .unwrap();
+        // No clock moves: the answer from memory was made before the dismissal and is not served.
+        let s = of(&h, add).await.unwrap();
+        assert_eq!((s.verdict, s.reason), (Verdict::Clean, Reason::None));
+        assert_eq!(s.open_by_severity["high"], 0);
+        assert!(s.moves.is_empty());
+        assert_eq!(h.hub.change_cache.computed(), 2);
+        // Reopened: it counts again.
+        let reopen = wire::DismissDepFindingRequest {
+            reason: wire::DepDismissReason::Unspecified as i32,
+            ..dismiss_req(id)
+        };
+        h.hub.dismiss(&ctx(ALICE), reopen).await.unwrap();
+        assert_eq!(of(&h, add).await.unwrap().verdict, Verdict::Findings);
+    }
+
+    #[tokio::test]
+    async fn an_answer_that_could_not_judge_everything_is_kept_for_thirty_seconds() {
+        let h = setup().await;
+        let t = world(&h, &[("regex", "1.5.0")]).await;
+        // A lockfile nobody can read.
+        let broken = change(&h, t, &[("Cargo.lock", b"[[package]\nname =")]).await;
+        let s = of(&h, broken).await.unwrap();
+        assert_eq!(
+            (s.verdict, s.reason),
+            (Verdict::Unknown, Reason::LookupPartial)
+        );
+        assert_eq!(h.hub.change_cache.computed(), 1);
+        h.clock.store(T0 + 30, Ordering::SeqCst);
+        assert_eq!(of(&h, broken).await.unwrap(), s);
+        assert_eq!(h.hub.change_cache.computed(), 1);
+        h.clock.store(T0 + 31, Ordering::SeqCst);
+        assert_eq!(of(&h, broken).await.unwrap(), s);
+        assert_eq!(h.hub.change_cache.computed(), 2);
+    }
+
+    #[tokio::test]
+    async fn an_old_file_that_cannot_be_read_gives_no_findings_and_an_incomplete_answer() {
+        // Trunk's own lockfile does not parse, so what the change adds cannot be told (a read that fails,
+        // such as one past the size limit, takes the same branch; the engine stores no file that large).
+        let h = setup().await;
+        advisory(&h, "serde", "1.0.100", "RUSTSEC-1", "HIGH");
+        let t = h.trunk(&[("Cargo.lock", b"[[package]\nname =")]).await;
+        let c = change(
+            &h,
+            t,
+            &[("Cargo.lock", &lock_bytes(&[("serde", "1.0.100")]))],
+        )
+        .await;
+        let s = of(&h, c).await.unwrap();
+        assert_eq!(
+            (s.verdict, s.reason),
+            (Verdict::Unknown, Reason::LookupPartial)
+        );
+        assert!(s.moves.is_empty());
+    }
+
+    #[tokio::test]
+    async fn calls_for_one_change_at_once_share_one_computation() {
+        let h = setup().await;
+        let t = world(&h, &[("regex", "1.5.0")]).await;
+        let bad = bad_change(&h, t).await;
+        let (a, b, c) = tokio::join!(of(&h, bad), of(&h, bad), of(&h, bad));
+        let a = a.unwrap();
+        assert_eq!(a.verdict, Verdict::Findings);
+        assert_eq!(b.unwrap(), a);
+        assert_eq!(c.unwrap(), a);
+        assert_eq!(h.hub.change_cache.computed(), 1);
+        assert_eq!(h.hub.change_cache.in_flight(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_computation_waits_for_a_scan_permit() {
+        let f = fx().await;
+        let mock = Mock::start().await;
+        let (hub, clock, _) = build_with(&f, &mock, Some("https://asc.example.com"), |c| {
+            c.max_concurrent_scans = 1;
+        });
+        let h = H {
+            f,
+            hub,
+            mock,
+            clock,
+        };
+        let t = world(&h, &[("regex", "1.5.0")]).await;
+        let bad = bad_change(&h, t).await;
+        let held = h.hub.permit().await.unwrap();
+        let hub = h.hub.clone();
+        let task = tokio::spawn(async move { hub.status_for(&ctx(BOB), bad.as_bytes()).await });
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(!task.is_finished(), "it ran without a permit");
+        assert_eq!(h.hub.change_cache.computed(), 0);
+        // An answer from memory needs none; trunk's status needs none either.
+        assert_eq!(h.hub.change_cache.in_flight(), 1);
+        drop(held);
+        let s = task.await.unwrap().unwrap();
+        assert_eq!(s.verdict, Verdict::Findings);
+        assert_eq!(h.hub.change_cache.computed(), 1);
+        assert_eq!(h.hub.change_cache.in_flight(), 0);
+    }
+
+    #[tokio::test]
+    async fn the_rpc_needs_read_and_maps_the_status() {
+        let h = setup().await;
+        let t = world(&h, &[("regex", "1.5.0")]).await;
+        let bad = bad_change(&h, t).await;
+        let svc = DepsRpc::new(h.hub.clone(), tokens(), ServerInfo::default());
+        let req = |change: Vec<u8>| wire::DepStatusRequest {
+            repo: repo(),
+            change: change.into(),
+        };
+        let r = svc
+            .status(call(req(Vec::new()), "bob-r", false))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(r.status, wire::DepStatus::Clean as i32);
+        assert_eq!(r.reason, "");
+        assert_eq!(r.scanned_at, T0);
+        assert_eq!(r.scanned, t.as_bytes().to_vec());
+        let r = svc
+            .status(call(req(bad.as_bytes().to_vec()), "bob-r", false))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(r.status, wire::DepStatus::Findings as i32);
+        assert_eq!(r.open_by_severity["high"], 1);
+        assert_eq!(r.moves.len(), 1);
+        let m = &r.moves[0];
+        assert_eq!(
+            (m.name.as_str(), m.from.as_str(), m.to.as_str()),
+            ("serde", "1.0.100", "9.9.9")
+        );
+        let e = svc.status(Request::new(req(Vec::new()))).await.unwrap_err();
+        assert!(
+            matches!(e.code(), Code::Unauthenticated | Code::PermissionDenied),
+            "{e}"
+        );
+    }
+}

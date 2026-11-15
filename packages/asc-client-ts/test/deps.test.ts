@@ -16,10 +16,11 @@ const METHODS = [
   "GetConfig",
   "Dismiss",
   "Sbom",
+  "Status",
 ];
 
 describe("DepsService", () => {
-  test("the generated service has the nine RPCs", () => {
+  test("the generated service has the ten RPCs", () => {
     expect(DepsService.typeName).toBe("asc.v1.DepsService");
     expect(DepsService.methods.map((m) => m.name).sort()).toEqual([...METHODS].sort());
   });
