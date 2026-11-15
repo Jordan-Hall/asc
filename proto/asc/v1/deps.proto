@@ -25,6 +25,7 @@ service DepsService {
   rpc Dismiss(DismissDepFindingRequest) returns (DismissDepFindingResponse);     // repo maintainer; x-asc-op-id
   rpc ScanStatus(DepScanStatusRequest) returns (DepScanStatusResponse);          // repo read; what a running Scan has done
   rpc Sbom(SbomRequest) returns (SbomResponse);                                  // repo read; a CycloneDX bill of materials of a revision
+  rpc Status(DepStatusRequest) returns (DepStatusResponse);                      // repo read; one security status of the repository or of a change
 }
 
 enum DepSeverity {
@@ -376,4 +377,35 @@ message SbomResponse {
   bytes scanned = 3 [(asc.v1.json) = JSON_KIND_HEX];   // the changeset that was read
   bool truncated = 4;                   // more manifests or packages than the limits allow; the document is partial
   repeated string notes = 5;            // files that could not be read, at most 20
+}
+
+enum DepStatus {
+  DEP_STATUS_UNSPECIFIED = 0;
+  DEP_STATUS_UNKNOWN = 1;     // never clean: see `reason`
+  DEP_STATUS_CLEAN = 2;
+  DEP_STATUS_FINDINGS = 3;    // open findings (a repository) or added vulnerable versions (a change)
+}
+
+// One security status. Without `change` it is the trunk's: the last recorded scan and its open findings. With
+// `change` (the head changeset of a change, which must belong to the repository) it is what that change adds to
+// trunk: FINDINGS with `moves` when it adds a vulnerable package version, trunk's own status when it touches no
+// dependency file. A scan that is missing, partial or older than twice the rescan interval is UNKNOWN, never clean.
+// Nothing is recorded; a change's answer is kept in memory for ten minutes.
+message DepStatusRequest {
+  RepoRef repo = 1;
+  bytes change = 2 [(asc.v1.json) = JSON_KIND_HEX];   // optional head changeset of a change
+}
+message DepStatusResponse {
+  DepStatus status = 1;
+  map<string, uint32> open_by_severity = 2;           // "critical", "high", "moderate", "low", "unknown"
+  repeated DepMove moves = 3;                         // package moves that close the findings; at most 100
+  int64 scanned_at = 4;                               // unix seconds of the trunk scan; 0 when none
+  bytes scanned = 5 [(asc.v1.json) = JSON_KIND_HEX];  // the changeset that scan read
+  string reason = 6;                                  // why UNKNOWN: "not scanned", "lookup partial" or "stale"
+}
+message DepMove {
+  string ecosystem = 1;                               // the OSV ecosystem name
+  string name = 2;
+  string from = 3;
+  string to = 4;                                      // empty: no fixed version yet
 }

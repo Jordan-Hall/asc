@@ -48,6 +48,8 @@ pub const MAX_NOTE: usize = 1024;
 pub const MAX_SORTED: usize = 10_000;
 /// Most file notes in one `Sbom` answer.
 pub const MAX_SBOM_NOTES: usize = 20;
+/// The sizes of a changeset id `Status` takes, in bytes: a git id is 20, an asc id 32.
+const CHANGE_ID_BYTES: [usize; 2] = [20, 32];
 /// Most dependency files one landing check reads.
 pub const MAX_GATE_FILES: usize = 200;
 /// Most new package versions one landing check looks up.
@@ -68,6 +70,8 @@ pub struct DepsHub {
     pub(crate) clock: Clock,
     /// The scans running on this process, for `ScanStatus`.
     pub(crate) scans: Arc<Scans>,
+    /// What changes add to trunk, for `Status`; memory only.
+    pub(crate) change_cache: super::gate::ChangeCache,
 }
 
 /// The repository settings in force.
@@ -415,6 +419,7 @@ impl DepsHub {
             clock,
             cfg,
             scans: Arc::new(Scans::default()),
+            change_cache: super::gate::ChangeCache::default(),
         })
     }
 
@@ -975,6 +980,47 @@ impl DepsHub {
         ))
     }
 
+    /// [`Self::status`], or, when `change` names the head changeset of a change, what that change adds to
+    /// trunk: the findings of the package versions it adds (with the moves that replace them), trunk's own
+    /// status when it writes no dependency file, and UNKNOWN when its additions could not all be judged.
+    /// The changeset is resolved like a revision, so one that is not in this repository is not found.
+    pub async fn status_for(
+        &self,
+        ctx: &CallCtx,
+        change: &[u8],
+    ) -> Result<super::status::RepoStatus, Status> {
+        if change.is_empty() {
+            return self.status(ctx).await;
+        }
+        if !CHANGE_ID_BYTES.contains(&change.len()) {
+            return Err(Status::invalid_argument(
+                "change must be a changeset id of 20 or 32 bytes",
+            ));
+        }
+        let entry = self.entry(ctx).await?;
+        let ids = self.codec(ctx, &entry);
+        let unknown = || Status::not_found("unknown change");
+        let head = ids
+            .resolve(&hex(change), &entry.default_branch, |e| {
+                if e.is_missing() {
+                    unknown()
+                } else {
+                    internal("history", &e)
+                }
+            })
+            .await?
+            .ok_or_else(unknown)?;
+        // A changeset of another repository resolves by its id but is not in this one.
+        match entry.backend.engine().get_changeset(head).await {
+            Ok(_) => {}
+            Err(asc_engine::commit::Error::MissingChangeset(_)) => return Err(unknown()),
+            Err(e) => return Err(internal("change", &e)),
+        }
+        let trunk = self.trunk(&entry).await?;
+        let report = self.report_cached(&entry, head, trunk).await?;
+        Ok(changed_status(self.status(ctx).await?, &report))
+    }
+
     pub async fn dismiss(
         &self,
         ctx: &CallCtx,
@@ -1019,9 +1065,58 @@ impl DepsHub {
         .await
         .map_err(sql)?
         .ok_or_else(|| Status::not_found("no such finding"))?;
+        // Reports of changes were made with the old dismissals.
+        self.change_cache.dismissals_changed();
         Ok(wire::DismissDepFindingResponse {
             finding: Some(finding_wire(&row, &self.intel_view())),
         })
+    }
+}
+
+/// The summary of the advisories `found` (of the versions a change adds): counts per severity, every
+/// severity with a key, and the package moves that close them.
+pub(super) fn summarize(found: &[NewFinding], incomplete: bool) -> super::gate::ChangeReport {
+    let rows: Vec<FindingRow> = found.iter().map(|f| unrecorded(f, 0)).collect();
+    let mut open_by_severity: std::collections::BTreeMap<String, u32> =
+        ["critical", "high", "moderate", "low", "unknown"]
+            .into_iter()
+            .map(|k| (k.to_owned(), 0))
+            .collect();
+    for f in found {
+        let key = f.advisory.severity.map_or("unknown", DepSeverity::name);
+        let n = open_by_severity.entry(key.to_owned()).or_default();
+        *n = n.saturating_add(1);
+    }
+    super::gate::ChangeReport {
+        touches_deps: true,
+        open_by_severity,
+        moves: super::status::moves(&rows),
+        incomplete,
+    }
+}
+
+/// The status of a change from trunk's `trunk` and the `report` of what the change adds. The change's
+/// own answer needs no scan of its own: it is the advisories of the versions it adds.
+fn changed_status(
+    trunk: super::status::RepoStatus,
+    report: &super::gate::ChangeReport,
+) -> super::status::RepoStatus {
+    use super::status::{Reason, RepoStatus, Verdict};
+    if !report.touches_deps {
+        return trunk;
+    }
+    let (verdict, reason) = match (report.has_findings(), report.incomplete) {
+        (true, _) => (Verdict::Findings, Reason::None),
+        (false, true) => (Verdict::Unknown, Reason::LookupPartial),
+        (false, false) => (Verdict::Clean, Reason::None),
+    };
+    RepoStatus {
+        verdict,
+        reason,
+        open_by_severity: report.open_by_severity.clone(),
+        moves: report.moves.clone(),
+        scanned_at: trunk.scanned_at,
+        scanned: trunk.scanned,
     }
 }
 
