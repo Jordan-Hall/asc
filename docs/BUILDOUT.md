@@ -47,6 +47,9 @@ lower-case hex HMAC-SHA256 of `asc-forwarded-v1
 <ts>`. The subject is exactly the name the server
 stores, never folded: `owner/name` for a repository (the `RepoRef` name of the request), `org:<name>` and `user:<login>` (lower
 case, as `OwnerRef` names are stored), and `instance`. `asc_rpc::forwarded` and `authz/claim.rs` (`subject::*`) define it once.
+A fifth entry, `x-asc-forwarded-email`, is optional: the person's verified email address. When the hub sends it, `\n<email>` is
+appended to the MAC input above, so the email cannot be changed or added in transit. A server-signed web edit (SPEC 8.7) needs
+it: the commit's author email must equal the claim's email (ASCII case-insensitive), or the edit is refused.
 
 Rules, all fail closed:
 
