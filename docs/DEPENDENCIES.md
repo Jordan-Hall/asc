@@ -339,6 +339,7 @@ asc deps findings [--state S]... [--severity S] [--package NAME] [--sort newest|
                   [--limit N] [--page TOKEN]
 asc deps sbom [--rev REV] [--ecosystem E]... [--out FILE [--force]]
 asc deps updates [--rev REV] [--security] [--ignored]
+asc deps status [--change ID]                                # exit 0: clean, 1: findings, 2: unknown
 asc deps propose [--security] [--max-kind K] [--max-groups N] [--dry-run] [ecosystem:name]...
 asc deps dismiss <id> --reason not-used|tolerable|inaccurate|fix-started [--note TEXT]
 asc deps reopen <id>
@@ -379,7 +380,56 @@ ecosystem, name and version.
 With `change` set to the head changeset of a change, the status is what that change adds to trunk. It is `FINDINGS`
 with `moves` when the change adds a vulnerable package version, and trunk's own status when the change touches no
 dependency file. The answer for a change is kept in memory for ten minutes and nothing is recorded. The code is in
-`crates/asc-serve/src/deps/status.rs`. There is no `asc deps` subcommand for it.
+`crates/asc-serve/src/deps/status.rs`.
+
+### Unknown
+
+`UNKNOWN` is never clean. A caller must treat it as not safe to rely on. The response carries a `reason` when the
+status is `UNKNOWN`:
+
+| Reason | Meaning |
+|---|---|
+| `not scanned` | Trunk has no recorded scan. |
+| `lookup partial` | A scan or a change could not be judged in full: a lookup failed, a file could not be read, or there were more packages or files than the limits allow. |
+| `stale` | The last trunk scan is older than twice the rescan interval. |
+
+For a change, the server reads the dependency files of the changesets between trunk and the change head (at most 500
+changesets) and looks up the package versions the change adds. If the work passes the gate's timeout, the answer is
+`lookup partial`. A change answer that could not judge everything is kept for 30 seconds, not ten minutes. A
+dismissal or a reopen drops the kept answers.
+
+### Moves
+
+A move is `{ecosystem, name, from, to}`. `to` is the version that closes the findings of `from`. `to` is empty when
+there is no fixed version yet.
+
+### `asc deps status`
+
+```text
+asc deps status [--change ID] [--remote R] [--json]
+```
+
+With no `--change` it shows the status of trunk. `--change` takes the hex id (40 or 64 digits) of the head changeset
+of a change, or a revision of the workspace. The human text gives a `status:` line, the open findings per severity
+(only severities with a count), and the moves. A move with no fixed version reads "no fixed version yet". When there
+is a reason, an `incomplete: REASON` line follows.
+
+| Exit | Meaning |
+|---|---|
+| 0 | `CLEAN` |
+| 1 | `FINDINGS` |
+| 2 | `UNKNOWN`, incomplete, or unspecified |
+
+A `CLEAN` answer that carries a reason also exits 2. Usage and transport errors keep the asc error codes (128 and
+129), so they never collide with these.
+
+`--json` prints one document with the fields `status` (`clean`, `findings` or `unknown`), `incomplete`, `reason`,
+`exit`, `open_by_severity`, `moves`, `scanned_at` and `scanned`.
+
+### Where it shows in the hub
+
+The hub shows trunk's status as a banner on the dependency page and the status of a change as the "Security" row of
+the pull checks. See "Hub dependency page" below and `docs/WEB-UI.md`.
 
 ## Own dependencies
 
@@ -405,6 +455,11 @@ The hub shows the dependency findings at `/{owner}/{repo}/asc/deps`, with "findi
 A finding on the KEV list shows a KEV mark. Each finding also shows an EPSS percentage pill. An EPSS score of 0 shows no pill.
 
 When the KEV or EPSS mirror is older than its freshness limit, the page shows a stale-feed notice.
+
+A banner above the views shows the status of trunk (`DepsService/Status`). It reads "No known vulnerabilities in the
+dependencies", "Known vulnerabilities in the dependencies" or "The security status is not known. It is not clean." When
+the call fails, it reads "The security status could not be read. Nothing here means the dependencies are clean." A
+reason shows as "Incomplete: REASON". The banner lists the open findings per severity and the moves that close them.
 
 The "SBOM" button downloads the CycloneDX 1.6 bill of materials of trunk from `/{owner}/{repo}/asc/deps/sbom`. It calls the `DepsService/Sbom` RPC. The hub serves two downloads at a time; another gets 429 with `Retry-After`. A document over the hub's size limit gets 502. A partial document is named `...-sbom-partial.cdx.json` and carries the header `X-Asc-Sbom-Partial`. The route supports HEAD requests. With the dependency or exploit-feed features off on the server, the route returns 404.
 
