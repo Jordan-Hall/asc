@@ -227,6 +227,194 @@ pub struct ServerMutations {
     web_signing: std::sync::OnceLock<Arc<crate::signing::rpc::Signing>>,
 }
 
+/// What the audit event of a signed web edit says about it.
+struct WebEdit<'a> {
+    /// `commit`, `apply` or `merge`.
+    op: &'static str,
+    update_ref: &'a str,
+    author: &'a Signature,
+}
+
+/// What the audit events of a signed web edit say, owned so that a spawned task can hold it.
+#[derive(Clone)]
+struct SignedEdit {
+    repo_id: i64,
+    repo: String,
+    /// The principal of the call (the host service).
+    principal: String,
+    /// The op id of the call, or a fresh one when it carried none (the pending signature is keyed
+    /// by it; without a real one the ref log cannot be searched for a repair).
+    op_id: uuid::Uuid,
+    op_known: bool,
+    id: ChangesetId,
+    user: String,
+    /// Hex of the first 16 bytes of the BLAKE3 hash of the lower-cased claim email; never the
+    /// email.
+    email_hash: String,
+    update_ref: String,
+    op: &'static str,
+    author: String,
+}
+
+impl SignedEdit {
+    fn of(
+        ctx: &CallCtx,
+        repo_id: i64,
+        id: ChangesetId,
+        op: &'static str,
+        update_ref: &str,
+        author: String,
+    ) -> Self {
+        let claim = ctx.admin.forwarded_claim();
+        Self {
+            repo_id,
+            repo: ctx.repo.to_string(),
+            principal: ctx.principal.id.clone(),
+            op_id: ctx.op_id.unwrap_or_else(uuid::Uuid::new_v4),
+            op_known: ctx.op_id.is_some(),
+            id,
+            user: claim.map_or_else(String::new, |c| c.user.clone()),
+            email_hash: claim.map_or_else(String::new, |c| claim_email_hash(&c.email)),
+            update_ref: update_ref.to_owned(),
+            op,
+            author,
+        }
+    }
+
+    fn event(&self, action: &str) -> crate::audit::NewEvent {
+        crate::audit::NewEvent::new(action, crate::audit::actor::actor_of(&self.principal))
+            .repo(&self.repo)
+            .target(&self.id.to_string())
+            .detail("change", self.id.to_string())
+            .detail("user", self.user.clone())
+            .detail("claim_email_hash", self.email_hash.clone())
+            .detail("ref", self.update_ref.clone())
+            .detail("op", self.op)
+            .detail("author", self.author.clone())
+    }
+}
+
+/// The audit form of a claim email: the first 16 bytes of the BLAKE3 hash of the lower-cased
+/// address, in hex. Empty for no address.
+fn claim_email_hash(email: &str) -> String {
+    if email.is_empty() {
+        return String::new();
+    }
+    let hash = blake3::hash(email.to_lowercase().as_bytes());
+    hash.as_bytes()[..16]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// Stores `pending` and audits the edit. A signature that could not be stored is audited as
+/// `signing.web_edit.store_failed` and returned as the error; a failed audit write of a stored one
+/// is tried once more and then logged, since the edit is published and signed.
+async fn finish_signed(
+    verifier: &crate::signing::verify::Verifier,
+    edit: &SignedEdit,
+    pending: &crate::signing::verify::PendingSignature,
+    repaired: bool,
+) -> Result<(), sqlx::Error> {
+    let stored = match verifier.store_web_edit(pending).await {
+        Ok(stored) => stored,
+        Err(e) => {
+            tracing::error!(error = %e, change = %edit.id, "a published web edit could not be signed");
+            let event = edit
+                .event("signing.web_edit.store_failed")
+                .detail("fingerprint", pending.fingerprint.clone())
+                .detail("reason", "the signature could not be stored");
+            if let Err(a) = verifier.record_web_edit(&event).await {
+                tracing::error!(error = %a, change = %edit.id, "the audit event of a failed web edit signature was not written");
+            }
+            return Err(e);
+        }
+    };
+    let mut event = edit
+        .event("signing.web_edit.signed")
+        .detail("fingerprint", pending.fingerprint.clone());
+    if !stored {
+        event = event.detail("signature", "existing");
+    }
+    if repaired {
+        event = event.detail("repaired", "true");
+    }
+    for attempt in 0..2 {
+        match verifier.record_web_edit(&event).await {
+            Ok(()) => break,
+            Err(e) if attempt == 1 => {
+                tracing::error!(error = %e, change = %edit.id, "the audit event of a signed web edit was not written");
+            }
+            Err(_) => {}
+        }
+    }
+    Ok(())
+}
+
+/// Signs a published web edit that has no stored signature. Only when this op id moved a ref
+/// for the host service (the ref log says so) and the changeset has no signature at all, so a
+/// person's signature, good or bad, is never touched. `true` when it signed.
+async fn repair_signed(
+    verifier: &crate::signing::verify::Verifier,
+    pool: &sqlx::AnyPool,
+    edit: &SignedEdit,
+) -> Result<bool, sqlx::Error> {
+    if !edit.op_known {
+        return Ok(false);
+    }
+    let actors: Vec<String> =
+        sqlx::query_scalar("SELECT actor FROM ref_log WHERE repo_id = $1 AND op_id = $2")
+            .bind(edit.repo_id)
+            .bind(edit.op_id.as_bytes().to_vec())
+            .fetch_all(pool)
+            .await?;
+    if !actors
+        .iter()
+        .any(|a| crate::authz::identity::is_host_service(a))
+    {
+        return Ok(false);
+    }
+    if crate::signing::store::get_signature(pool, edit.repo_id, &edit.id)
+        .await?
+        .is_some()
+    {
+        return Ok(false);
+    }
+    let Some(pending) =
+        verifier.begin_web_edit(edit.repo_id, edit.op_id, &edit.id, crate::review::now())
+    else {
+        return Ok(false);
+    };
+    finish_signed(verifier, edit, &pending, true).await?;
+    Ok(true)
+}
+
+/// Held while a web edit is published: dropped armed (the call was cancelled, so the ref may have
+/// moved with nothing signed), it spawns `repair_signed`.
+struct RepairOnCancel {
+    armed: bool,
+    verifier: crate::signing::verify::Verifier,
+    pool: sqlx::AnyPool,
+    edit: SignedEdit,
+}
+
+impl Drop for RepairOnCancel {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let (verifier, pool, edit) = (self.verifier.clone(), self.pool.clone(), self.edit.clone());
+        runtime.spawn(async move {
+            if let Err(e) = repair_signed(&verifier, &pool, &edit).await {
+                tracing::error!(error = %e, change = %edit.id, "a cancelled web edit could not be repaired");
+            }
+        });
+    }
+}
+
 /// One repository opened for one call.
 struct Opened {
     entry: Arc<RepoEntry>,
@@ -263,8 +451,8 @@ impl ServerMutations {
     }
 
     /// What a request with `sign` needs: the host service credential (a person's own credential
-    /// cannot ask the server to vouch for an edit) and a server that signs web edits. `None` when
-    /// `sign` is not set.
+    /// cannot ask the server to vouch for an edit), the person it forwarded a verified claim for,
+    /// and a server that signs web edits. `None` when `sign` is not set.
     pub(crate) fn web_signer(
         &self,
         ctx: &CallCtx,
@@ -276,6 +464,11 @@ impl ServerMutations {
         if !crate::authz::identity::is_host_service(&ctx.principal.id) {
             return Err(Status::permission_denied(
                 "signing a web edit needs the host service credential",
+            ));
+        }
+        if ctx.admin.forwarded_claim().is_none() {
+            return Err(Status::permission_denied(
+                "signing a web edit needs the person the host service acts for",
             ));
         }
         match self.web_signing.get() {
@@ -298,84 +491,162 @@ impl ServerMutations {
         Ok(())
     }
 
-    /// A replayed web edit (same op id) stays signed or is refused: the first attempt either made
-    /// the server's signature or never moved the ref, so a replay finds the server signature or
-    /// the call would answer with an unsigned changeset.
-    async fn replay_signed(
+    /// The author of a web edit the server signs: given explicitly (never taken from a source
+    /// changeset), and its email is the verified email in the claim the host service forwarded for
+    /// the person, equal byte for byte but for ASCII case. The name is free: it is a display
+    /// string, not an identity. A claim without a login or without an email signs nothing.
+    pub(crate) fn signed_author(
+        ctx: &CallCtx,
+        author: Option<&wire::Signature>,
+    ) -> Result<(), Status> {
+        let Some(author) = author else {
+            return Err(invalid("sign needs an explicit author"));
+        };
+        let claim = ctx
+            .admin
+            .forwarded_claim()
+            .filter(|c| !c.login().is_empty())
+            .ok_or_else(|| {
+                Status::permission_denied(
+                    "signing a web edit needs the person the host service acts for",
+                )
+            })?;
+        if claim.email.is_empty() {
+            return Err(Status::permission_denied(
+                "signing a web edit needs the verified email of the person the host service acts for",
+            ));
+        }
+        if !author.email.eq_ignore_ascii_case(claim.email.as_bytes()) {
+            return Err(Status::permission_denied(
+                "the author email of a signed web edit must be the verified email of the person the host service acts for",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Refuses with `UNSIGNED_CHANGE` unless every changeset in `sources` has a valid signature:
+    /// the server's signature on a changeset made from them would pass a branch that requires signed
+    /// changes for changesets that were not.
+    async fn sources_valid(
         &self,
         o: &Opened,
         signer: &Option<Arc<crate::signing::rpc::Signing>>,
-        id: ChangesetId,
+        sources: &[ChangesetId],
     ) -> Result<(), Status> {
         let Some(signing) = signer else { return Ok(()) };
-        let v = signing
-            .verifier()
+        for source in sources {
+            let v = signing
+                .verifier()
+                .verdict(o.entry.key.0, o.entry.ns.as_bytes(), source)
+                .await
+                .map_err(|e| internal("signing", &e))?;
+            if !v.is_valid() {
+                return Err(rpc(RpcError::UnsignedChange(info(vec![format!(
+                    "{source} is not validly signed, so the server will not sign a change made from it"
+                )]))));
+            }
+        }
+        Ok(())
+    }
+
+    /// A replayed web edit (same op id) whose ref moved: it stays signed or is repaired. When the edit is published but no signature
+    /// is stored (the server stopped, or the request was cancelled, between the ref move and the
+    /// signature), and the ref log shows that this op id moved the ref for the host service, the
+    /// server signs it now, audits the repair, and the replay succeeds. Anything else that is not
+    /// validly signed is refused as before.
+    async fn replay_signed_for(
+        &self,
+        o: &Opened,
+        ctx: &CallCtx,
+        signer: &Option<Arc<crate::signing::rpc::Signing>>,
+        id: ChangesetId,
+        op: &'static str,
+        update_ref: &str,
+    ) -> Result<(), Status> {
+        let Some(signing) = signer else { return Ok(()) };
+        let verifier = signing.verifier();
+        let v = verifier
             .verdict(o.entry.key.0, o.entry.ns.as_bytes(), &id)
             .await
             .map_err(|e| internal("signing", &e))?;
-        if v.is_valid() && v.key_id == crate::signing::SERVER_KEY_ID {
+        if v.is_valid() {
             return Ok(());
         }
-        Err(rpc(RpcError::UnsignedChange(info(vec![
-            "this change was not signed by the server".into(),
-        ]))))
+        if v.status == wire::VerificationStatus::Unsigned {
+            let author = match o.engine.get_changeset(id).await {
+                Ok(cs) => String::from_utf8_lossy(cs.author.name()).into_owned(),
+                Err(_) => String::new(),
+            };
+            let edit = SignedEdit::of(ctx, o.entry.key.0, id, op, update_ref, author);
+            let repaired = repair_signed(verifier, self.registry.pool(), &edit)
+                .await
+                .map_err(|e| internal("signing", &e))?;
+            if repaired {
+                return Ok(());
+            }
+        }
+        Err(Status::failed_precondition(
+            "applied, but the changeset is no longer signed",
+        ))
     }
 
-    /// Runs `publish` for the new changeset `id`, with the server's signature in place while it runs so
-    /// that a branch that requires signed changes sees it. A refused publish takes the signature back
-    /// (one a person already had stays), and a published one is recorded in the audit log with the
-    /// person the host service forwarded the call for.
+    /// Runs `publish` for the new changeset `id` (made by `op`, authored by `author`), with the
+    /// server's signature visible to the gate while it runs (and only to the gate of the ref
+    /// update that carries this call's op id) so that a branch that requires signed changes sees
+    /// it. Nothing is stored until the ref has moved, so a refused or lost publication leaves
+    /// nothing another request could rely on or lose. Then the signature is stored (an existing
+    /// one stays) and the edit is recorded in the audit log with the person the host service
+    /// forwarded the call for, in a spawned task that finishes even when the caller goes away. A
+    /// call that is cancelled while the ref may be moving spawns a repair (see `repair_signed`),
+    /// and a replay of the same op id repairs what that did not.
     async fn publish_signed<T>(
         &self,
         ctx: &CallCtx,
         signer: &Option<Arc<crate::signing::rpc::Signing>>,
         o: &Opened,
         id: ChangesetId,
-        update_ref: &str,
+        edit: WebEdit<'_>,
         publish: impl std::future::Future<Output = Result<T, Status>>,
     ) -> Result<T, Status> {
         let Some(signing) = signer else {
             return publish.await;
         };
+        let WebEdit {
+            op,
+            update_ref,
+            author,
+        } = edit;
         let repo_id = o.entry.key.0;
-        let stored = signing
-            .verifier()
-            .attest_web_edit(repo_id, &id, crate::review::now())
-            .await
-            .map_err(|e| internal("signing", &e))?
+        let verifier = signing.verifier().clone();
+        let edit = SignedEdit::of(
+            ctx,
+            repo_id,
+            id,
+            op,
+            update_ref,
+            String::from_utf8_lossy(author.name()).into_owned(),
+        );
+        let pending = verifier
+            .begin_web_edit(repo_id, edit.op_id, &id, crate::review::now())
             .ok_or_else(|| internal("signing", &"the server key could not sign"))?;
-        let done = publish.await;
-        if done.is_err() {
-            if stored {
-                signing
-                    .verifier()
-                    .withdraw_web_edit(repo_id, &id)
-                    .await
-                    .map_err(|e| internal("signing", &e))?;
-            }
-            return done;
+        let mut guard = RepairOnCancel {
+            armed: true,
+            verifier: verifier.clone(),
+            pool: self.registry.pool().clone(),
+            edit: edit.clone(),
+        };
+        let done = crate::signing::verify::Verifier::scope_op(edit.op_id, publish).await;
+        guard.armed = false;
+        let done = done?;
+        let finished =
+            tokio::spawn(async move { finish_signed(&verifier, &edit, &pending, false).await })
+                .await;
+        match finished {
+            Ok(Ok(())) => Ok(done),
+            _ => Err(Status::failed_precondition(
+                "applied, but the changeset could not be signed",
+            )),
         }
-        if stored {
-            let user = ctx
-                .admin
-                .forwarded_claim()
-                .map_or_else(String::new, |c| c.user.clone());
-            let event = crate::audit::NewEvent::new(
-                "signing.web_edit.signed",
-                crate::audit::actor::actor_of(&ctx.principal.id),
-            )
-            .repo(&ctx.repo.to_string())
-            .target(&id.to_string())
-            .detail("change", id.to_string())
-            .detail("user", user)
-            .detail("ref", update_ref);
-            signing
-                .verifier()
-                .record_web_edit(&event)
-                .await
-                .map_err(|e| internal("signing", &e))?;
-        }
-        done
     }
 
     /// The repository a call names. Only `id_mode = ASC` is served (as in `UpdateRefs`), and a
@@ -890,6 +1161,9 @@ impl ServerMutations {
         // SPEC §8.5 step 5: the server signs a web edit with its own key, for the host only.
         let web_signer = self.web_signer(ctx, req.sign)?;
         Self::sign_needs_ref(&web_signer, &req.update_ref)?;
+        if web_signer.is_some() {
+            Self::signed_author(ctx, req.author.as_ref())?;
+        }
         if req.ops.len() > MAX_OPS {
             return Err(invalid("too many operations"));
         }
@@ -908,7 +1182,8 @@ impl ServerMutations {
             asc_core::path::RefName::new(req.update_ref.as_bytes())
                 .map_err(|e| invalid(e.to_string()))?;
             if let Some(id) = self.replay(&o, ctx, &req.update_ref).await? {
-                self.replay_signed(&o, &web_signer, id).await?;
+                self.replay_signed_for(&o, ctx, &web_signer, id, "commit", &req.update_ref)
+                    .await?;
                 return self.commit_response(&o, id).await;
             }
         }
@@ -933,7 +1208,7 @@ impl ServerMutations {
         let id = o
             .create(NewChangeset {
                 parents,
-                author,
+                author: author.clone(),
                 committer,
                 message: req.message.to_vec(),
                 extra: Vec::new(),
@@ -954,8 +1229,19 @@ impl ServerMutations {
             }
             self.publish(&o, ctx, id, &req.update_ref, expect).await
         };
-        self.publish_signed(ctx, &web_signer, &o, id, &req.update_ref, publish)
-            .await?;
+        self.publish_signed(
+            ctx,
+            &web_signer,
+            &o,
+            id,
+            WebEdit {
+                op: "commit",
+                update_ref: &req.update_ref,
+                author: &author,
+            },
+            publish,
+        )
+        .await?;
         self.commit_response(&o, id).await
     }
 }
@@ -1131,6 +1417,9 @@ impl ServerMutations {
         // SPEC §8.5 step 5: the server signs a web edit with its own key, for the host only.
         let web_signer = self.web_signer(ctx, req.sign)?;
         Self::sign_needs_ref(&web_signer, &req.update_ref)?;
+        if web_signer.is_some() {
+            Self::signed_author(ctx, req.author.as_ref())?;
+        }
         let mode =
             wire::ApplyMode::try_from(req.mode).map_err(|_| invalid("unknown apply mode"))?;
         match mode {
@@ -1152,7 +1441,8 @@ impl ServerMutations {
             asc_core::path::RefName::new(req.update_ref.as_bytes())
                 .map_err(|e| invalid(e.to_string()))?;
             if let Some(id) = self.replay(&o, ctx, &req.update_ref).await? {
-                self.replay_signed(&o, &web_signer, id).await?;
+                self.replay_signed_for(&o, ctx, &web_signer, id, "apply", &req.update_ref)
+                    .await?;
                 return Ok(wire::ApplyResponse {
                     result: Bytes::copy_from_slice(id.as_bytes()),
                     ..wire::ApplyResponse::default()
@@ -1178,6 +1468,11 @@ impl ServerMutations {
             }
             wire::ApplyMode::CherryPick | wire::ApplyMode::Revert => {
                 let source = self.rev(&o, &req.changeset).await?;
+                if mode == wire::ApplyMode::CherryPick {
+                    // A pick copies the content of its source: the server's signature on the copy
+                    // would make an unsigned change pass a branch that requires signed ones.
+                    self.sources_valid(&o, &web_signer, &[source]).await?;
+                }
                 let original = o
                     .engine
                     .get_changeset(source)
@@ -1235,7 +1530,7 @@ impl ServerMutations {
         let id = o
             .create(NewChangeset {
                 parents: vec![onto],
-                author,
+                author: author.clone(),
                 committer,
                 message,
                 extra: Vec::new(),
@@ -1250,8 +1545,19 @@ impl ServerMutations {
             self.ref_expectation(&o, ctx, &req.update_ref, onto).await?
         };
         let publish = self.publish(&o, ctx, id, &req.update_ref, expect);
-        self.publish_signed(ctx, &web_signer, &o, id, &req.update_ref, publish)
-            .await?;
+        self.publish_signed(
+            ctx,
+            &web_signer,
+            &o,
+            id,
+            WebEdit {
+                op: "apply",
+                update_ref: &req.update_ref,
+                author: &author,
+            },
+            publish,
+        )
+        .await?;
         Ok(wire::ApplyResponse {
             result: Bytes::copy_from_slice(id.as_bytes()),
             ..wire::ApplyResponse::default()
@@ -1679,6 +1985,23 @@ mod fx {
             op_id: Some(Uuid::new_v4()),
             ..ctx()
         }
+    }
+
+    /// A call by the host service for the person `7:al` (a verified claim), with a fresh op id.
+    pub fn host_ctx() -> CallCtx {
+        host_ctx_for("7:al", "al@x")
+    }
+
+    /// A call by the host service for `user` (`<id>:<login>`) whose verified email is `email`.
+    pub fn host_ctx_for(user: &str, email: &str) -> CallCtx {
+        let mut c = ctx_as(crate::authz::identity::HOST_SERVICE_PRINCIPAL);
+        c.admin =
+            asc_rpc::auth::AdminProof::default().with_forwarded(Some(asc_rpc::forwarded::Claim {
+                user: user.into(),
+                role: asc_rpc::forwarded::Role::Write,
+                email: email.into(),
+            }));
+        c
     }
 
     /// Makes the repository branchless: a user's `refs/heads/<n>` is stored under `refs/users/`.
@@ -3152,10 +3475,10 @@ mod web_sign {
 
     use super::fx::*;
     use super::*;
-    use crate::authz::identity::HOST_SERVICE_PRINCIPAL;
     use crate::signing::rpc::Signing;
     use crate::signing::tests::{ALICE_BODY, server_signer};
     use crate::signing::{Config, SERVER_KEY_ID, SERVER_SIGNER, ServerSigner, WebEdits};
+    use uuid::Uuid;
 
     fn commit_req(sign: bool) -> wire::CommitRequest {
         wire::CommitRequest {
@@ -3225,7 +3548,7 @@ mod web_sign {
         let server = server_signer(&dir, "server_key", ALICE_BODY);
         let signing = hub(&f, WebEdits::Server, Some(server.clone()));
         f.m.set_web_signing(signing.clone());
-        let host = ctx_as(HOST_SERVICE_PRINCIPAL);
+        let host = host_ctx();
         let ns = f.entry.ns.as_bytes().to_vec();
 
         let signed = f.m.commit_inner(&host, commit_req(true)).await.unwrap();
@@ -3264,7 +3587,7 @@ mod web_sign {
     async fn a_server_that_does_not_sign_web_edits_refuses_with_unsigned_change() {
         let dir = tempfile::tempdir().unwrap();
         let server = server_signer(&dir, "server_key", ALICE_BODY);
-        let host = ctx_as(HOST_SERVICE_PRINCIPAL);
+        let host = host_ctx();
         // `refuse` with a key, `server` without one, and no signing set up at all.
         for (what, setup) in [
             ("refuse", Some((WebEdits::Refuse, Some(server)))),
@@ -3310,7 +3633,7 @@ mod web_sign {
         let server = server_signer(&dir, "server_key", ALICE_BODY);
         let signing = hub(&f, WebEdits::Server, Some(server));
         f.m.set_web_signing(signing.clone());
-        let host = ctx_as(HOST_SERVICE_PRINCIPAL);
+        let host = host_ctx();
         let ns = f.entry.ns.as_bytes().to_vec();
 
         let signed =
@@ -3353,7 +3676,7 @@ mod web_sign {
         f.m.set_web_signing(hub(&f, WebEdits::Refuse, Some(server)));
         let req = apply_req(&f, true, "refs/heads/web").await;
         let rows = graph_rows(&f).await;
-        let host = ctx_as(HOST_SERVICE_PRINCIPAL);
+        let host = host_ctx();
         let e = f.m.apply_inner(&host, req).await.unwrap_err();
         assert_eq!(code(&e), "UNSIGNED_CHANGE", "{e:?}");
         assert_eq!(e.code(), tonic::Code::FailedPrecondition);
@@ -3385,7 +3708,7 @@ mod web_sign {
         let server = server_signer(&dir, "server_key", ALICE_BODY);
         let f = fx().await;
         f.m.set_web_signing(hub(&f, WebEdits::Server, Some(server)));
-        let host = ctx_as(HOST_SERVICE_PRINCIPAL);
+        let host = host_ctx();
         let mut c = commit_req(true);
         c.update_ref.clear();
         let e = f.m.commit_inner(&host, c).await.unwrap_err();
@@ -3403,7 +3726,7 @@ mod web_sign {
         let server = server_signer(&dir, "server_key", ALICE_BODY);
         let f = fx().await;
         f.m.set_web_signing(hub(&f, WebEdits::Server, Some(server)));
-        let host = ctx_as(HOST_SERVICE_PRINCIPAL);
+        let host = host_ctx();
         f.m.commit_inner(&host, commit_req(true)).await.unwrap();
         let audited = "SELECT COUNT(*) FROM audit_events WHERE action = 'signing.web_edit.signed'";
         assert_eq!(count(&f, "SELECT COUNT(*) FROM change_signatures").await, 1);
@@ -3412,10 +3735,7 @@ mod web_sign {
         // The ref exists now, and a commit that expects it absent is refused.
         let mut again = commit_req(true);
         again.ops = vec![put("b", b"2")];
-        let e =
-            f.m.commit_inner(&ctx_as(HOST_SERVICE_PRINCIPAL), again)
-                .await
-                .unwrap_err();
+        let e = f.m.commit_inner(&host_ctx(), again).await.unwrap_err();
         assert_ne!(e.code(), tonic::Code::Ok);
         assert_eq!(count(&f, "SELECT COUNT(*) FROM change_signatures").await, 1);
         assert_eq!(count(&f, audited).await, events);
@@ -3436,31 +3756,448 @@ mod web_sign {
             status: 0,
             signed_at: 5,
         };
-        store::put_signature(f.registry.pool(), f.entry.key.0, &cs, &row, None)
-            .await
-            .unwrap();
-        let stored = signing
+        assert!(
+            store::put_signature_if_absent(f.registry.pool(), f.entry.key.0, &cs, &row)
+                .await
+                .unwrap()
+        );
+        let pending = signing
             .verifier()
-            .attest_web_edit(f.entry.key.0, &cs, 9)
-            .await
+            .begin_web_edit(f.entry.key.0, Uuid::new_v4(), &cs, 9)
             .unwrap();
-        assert_eq!(stored, Some(false));
+        let stored = signing.verifier().store_web_edit(&pending).await.unwrap();
+        assert!(!stored);
+        drop(pending);
         let kept = store::get_signature(f.registry.pool(), f.entry.key.0, &cs)
             .await
             .unwrap()
             .unwrap();
         assert_eq!((kept.key_id.as_str(), kept.signed_at), ("k1", 5));
-        // A withdrawn server signature never takes a person's with it.
-        signing
-            .verifier()
-            .withdraw_web_edit(f.entry.key.0, &cs)
+    }
+
+    #[tokio::test]
+    async fn a_gate_attestation_never_replaces_a_stored_signature() {
+        use crate::signing::store::{self, SigRow};
+        let dir = tempfile::tempdir().unwrap();
+        let server = server_signer(&dir, "server_key", ALICE_BODY);
+        let f = fx().await;
+        let signing = hub(&f, WebEdits::Server, Some(server));
+        let cs = id(&f
+            .m
+            .commit_inner(&ctx(), commit_req(false))
             .await
-            .unwrap();
+            .unwrap()
+            .id);
+        let row = SigRow {
+            signature: "person".into(),
+            key_id: "k1".into(),
+            status: 0,
+            signed_at: 5,
+        };
         assert!(
-            store::get_signature(f.registry.pool(), f.entry.key.0, &cs)
+            store::put_signature_if_absent(f.registry.pool(), f.entry.key.0, &cs, &row)
                 .await
                 .unwrap()
-                .is_some()
         );
+        let attested = signing
+            .verifier()
+            .attest(f.entry.key.0, &cs, 9)
+            .await
+            .unwrap();
+        assert_eq!(attested, None);
+        let kept = store::get_signature(f.registry.pool(), f.entry.key.0, &cs)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(kept, row);
+        // Where there is none, it attests.
+        let other = id(&f
+            .m
+            .commit_inner(&ctx(), {
+                let mut c = commit_req(false);
+                c.ops = vec![put("z", b"2")];
+                c
+            })
+            .await
+            .unwrap()
+            .id);
+        let attested = signing
+            .verifier()
+            .attest(f.entry.key.0, &other, 9)
+            .await
+            .unwrap();
+        assert_eq!(attested, Some(()));
+    }
+
+    #[tokio::test]
+    async fn a_pending_signature_counts_only_while_it_is_held_and_stores_nothing() {
+        use crate::signing::verify::Verifier;
+        let dir = tempfile::tempdir().unwrap();
+        let server = server_signer(&dir, "server_key", ALICE_BODY);
+        let f = fx().await;
+        let signing = hub(&f, WebEdits::Server, Some(server));
+        let cs = id(&f
+            .m
+            .commit_inner(&ctx(), commit_req(false))
+            .await
+            .unwrap()
+            .id);
+        let ns = f.entry.ns.as_bytes().to_vec();
+        let op = Uuid::new_v4();
+        // The verdict as the gate of the `update_refs` call carrying `scope` sees it.
+        let verdict_in = |scope: Option<Uuid>| {
+            let (signing, ns) = (signing.clone(), ns.clone());
+            let repo = f.entry.key.0;
+            async move {
+                let v = signing.verifier();
+                let ask = v.verdict(repo, &ns, &cs);
+                let verdict = match scope {
+                    Some(op) => Verifier::scope_op(op, ask).await,
+                    None => ask.await,
+                };
+                verdict.unwrap().status
+            }
+        };
+        assert_eq!(verdict_in(Some(op)).await, V::Unsigned);
+        let first = signing
+            .verifier()
+            .begin_web_edit(f.entry.key.0, op, &cs, 9)
+            .unwrap();
+        let second = signing
+            .verifier()
+            .begin_web_edit(f.entry.key.0, op, &cs, 9)
+            .unwrap();
+        assert_eq!(verdict_in(Some(op)).await, V::Valid);
+        // Any other op id, and a reader that is no ref update at all, see nothing.
+        assert_eq!(verdict_in(Some(Uuid::new_v4())).await, V::Unsigned);
+        assert_eq!(verdict_in(None).await, V::Unsigned);
+        assert_eq!(count(&f, "SELECT COUNT(*) FROM change_signatures").await, 0);
+        // One of two identical publications lost: the other still has its signature.
+        drop(first);
+        assert_eq!(verdict_in(Some(op)).await, V::Valid);
+        drop(second);
+        assert_eq!(verdict_in(Some(op)).await, V::Unsigned);
+    }
+
+    #[tokio::test]
+    async fn a_signed_edit_needs_the_claimed_person_as_its_explicit_author() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = server_signer(&dir, "server_key", ALICE_BODY);
+        let f = fx().await;
+        f.m.set_web_signing(hub(&f, WebEdits::Server, Some(server)));
+        let apply = apply_req(&f, true, "refs/heads/web").await;
+        let rows = graph_rows(&f).await;
+        let stranger = || {
+            Some(wire::Signature {
+                name: Bytes::from_static(b"Mallory"),
+                email: Bytes::from_static(b"mallory@x"),
+                ..sig()
+            })
+        };
+        // The host service without a verified claim for a person.
+        let bare = ctx_as(crate::authz::identity::HOST_SERVICE_PRINCIPAL);
+        let e = f.m.commit_inner(&bare, commit_req(true)).await.unwrap_err();
+        assert_eq!(e.code(), tonic::Code::PermissionDenied, "{e:?}");
+        let e = f.m.apply_inner(&bare, apply.clone()).await.unwrap_err();
+        assert_eq!(e.code(), tonic::Code::PermissionDenied, "{e:?}");
+        // No author is given, or the author is not the person of the claim.
+        let mut c = commit_req(true);
+        c.author = None;
+        let e = f.m.commit_inner(&host_ctx(), c).await.unwrap_err();
+        assert_eq!(e.code(), tonic::Code::InvalidArgument, "{e:?}");
+        let mut c = commit_req(true);
+        c.author = stranger();
+        let e = f.m.commit_inner(&host_ctx(), c).await.unwrap_err();
+        assert_eq!(e.code(), tonic::Code::PermissionDenied, "{e:?}");
+        let mut a = apply.clone();
+        a.author = None;
+        let e = f.m.apply_inner(&host_ctx(), a).await.unwrap_err();
+        assert_eq!(e.code(), tonic::Code::InvalidArgument, "{e:?}");
+        let mut a = apply;
+        a.author = stranger();
+        let e = f.m.apply_inner(&host_ctx(), a).await.unwrap_err();
+        assert_eq!(e.code(), tonic::Code::PermissionDenied, "{e:?}");
+        assert_eq!(graph_rows(&f).await, rows);
+        assert_eq!(count(&f, "SELECT COUNT(*) FROM change_signatures").await, 0);
+    }
+
+    #[tokio::test]
+    async fn a_signed_edit_needs_the_author_email_to_be_the_verified_claim_email() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = server_signer(&dir, "server_key", ALICE_BODY);
+        let f = fx().await;
+        f.m.set_web_signing(hub(&f, WebEdits::Server, Some(server)));
+        let by = |name: &'static [u8], email: &'static [u8]| {
+            Some(wire::Signature {
+                name: Bytes::from_static(name),
+                email: Bytes::from_static(email),
+                ..sig()
+            })
+        };
+        let try_sign = |n: usize, ctx: CallCtx, author: Option<wire::Signature>| {
+            let f = &f;
+            async move {
+                let mut c = commit_req(true);
+                c.author = author;
+                c.update_ref = format!("refs/heads/web{n}");
+                f.m.commit_inner(&ctx, c).await
+            }
+        };
+        // Exact match, ASCII case aside, and the name is not compared.
+        try_sign(0, host_ctx_for("7:al", "al@x"), by(b"Al", b"al@x"))
+            .await
+            .unwrap();
+        try_sign(1, host_ctx_for("7:al", "Al@X"), by(b"Al", b"aL@x"))
+            .await
+            .unwrap();
+        try_sign(
+            2,
+            host_ctx_for("7:al", "al@x"),
+            by(b"Somebody Else", b"al@x"),
+        )
+        .await
+        .unwrap();
+        let signed = count(&f, "SELECT COUNT(*) FROM change_signatures").await;
+        assert_eq!(signed, 3, "each author made its own changeset");
+        // A different domain or local part, a prefix, and an email with trailing text.
+        for (n, email) in [
+            (3, &b"al@evil.example"[..]),
+            (4, b"mallory@x"),
+            (5, b"al@"),
+            (6, b"al@x "),
+            (7, b""),
+        ] {
+            let e = try_sign(n, host_ctx_for("7:al", "al@x"), by(b"Al", email))
+                .await
+                .unwrap_err();
+            assert_eq!(e.code(), tonic::Code::PermissionDenied, "{email:?}: {e:?}");
+        }
+        // The claim has no email (an old hub), an empty login, or neither: nothing is signed, even
+        // when the author's email is empty too.
+        for (n, user, email, author_email) in [
+            (8, "7:al", "", &b"al@x"[..]),
+            (9, "7:al", "", b""),
+            (10, "7:", "al@x", b"al@x"),
+            (11, "", "al@x", b"al@x"),
+        ] {
+            let e = try_sign(n, host_ctx_for(user, email), by(b"Al", author_email))
+                .await
+                .unwrap_err();
+            assert_eq!(
+                e.code(),
+                tonic::Code::PermissionDenied,
+                "{user:?} {email:?}: {e:?}"
+            );
+        }
+        assert_eq!(
+            count(&f, "SELECT COUNT(*) FROM change_signatures").await,
+            signed
+        );
+    }
+
+    #[tokio::test]
+    async fn a_signed_cherry_pick_needs_a_validly_signed_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = server_signer(&dir, "server_key", ALICE_BODY);
+        let f = fx().await;
+        let signing = hub(&f, WebEdits::Server, Some(server));
+        f.m.set_web_signing(signing.clone());
+        let host = host_ctx();
+        let mut c = commit_req(false);
+        c.ops = vec![put("a", b"1")];
+        let base = id(&f.m.commit_inner(&ctx(), c).await.unwrap().id);
+        let child = |name: &str, sign: bool, update_ref: &str| {
+            let mut c = commit_req(sign);
+            c.ops = vec![put(name, b"x")];
+            c.parent = base.to_string();
+            c.update_ref = update_ref.into();
+            c
+        };
+        let onto = id(&f
+            .m
+            .commit_inner(&ctx(), child("c", false, ""))
+            .await
+            .unwrap()
+            .id);
+        let unsigned = id(&f
+            .m
+            .commit_inner(&ctx(), child("b", false, ""))
+            .await
+            .unwrap()
+            .id);
+        let pick = |source: ChangesetId, update_ref: &str| wire::ApplyRequest {
+            repo: repo_ref(),
+            onto: onto.to_string(),
+            changeset: source.to_string(),
+            mode: wire::ApplyMode::CherryPick as i32,
+            author: Some(sig()),
+            committer: Some(sig()),
+            update_ref: update_ref.into(),
+            sign: true,
+            ..wire::ApplyRequest::default()
+        };
+        // An unsigned change is not made signed by a copy of it.
+        let rows = graph_rows(&f).await;
+        let e =
+            f.m.apply_inner(&host, pick(unsigned, "refs/heads/web"))
+                .await
+                .unwrap_err();
+        assert_eq!(code(&e), "UNSIGNED_CHANGE", "{e:?}");
+        assert_eq!(graph_rows(&f).await, rows);
+        assert_eq!(count(&f, "SELECT COUNT(*) FROM change_signatures").await, 0);
+        // A signed one can be picked, and the copy is signed.
+        let signed = id(&f
+            .m
+            .commit_inner(&host_ctx(), child("d", true, "refs/heads/src"))
+            .await
+            .unwrap()
+            .id);
+        let picked =
+            f.m.apply_inner(&host_ctx(), pick(signed, "refs/heads/web"))
+                .await
+                .unwrap();
+        let v = signing
+            .verifier()
+            .verdict(f.entry.key.0, f.entry.ns.as_bytes(), &id(&picked.result))
+            .await
+            .unwrap();
+        assert_eq!(v.status, V::Valid, "{}", v.reason);
+        // The author of the pick is the person, not the author of the source.
+        let stored = f
+            .entry
+            .backend
+            .engine()
+            .get_changeset(id(&picked.result))
+            .await
+            .unwrap();
+        assert_eq!(stored.author.name(), b"Al");
+    }
+
+    #[tokio::test]
+    async fn a_replay_of_a_published_web_edit_repairs_a_lost_signature_of_the_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = server_signer(&dir, "server_key", ALICE_BODY);
+        let f = fx().await;
+        let signing = hub(&f, WebEdits::Server, Some(server));
+        f.m.set_web_signing(signing.clone());
+        let host = host_ctx();
+        let first = f.m.commit_inner(&host, commit_req(true)).await.unwrap();
+        let again = f.m.commit_inner(&host, commit_req(true)).await.unwrap();
+        assert_eq!(first.id, again.id);
+        let signed = "SELECT COUNT(*) FROM change_signatures";
+        let repaired = "SELECT COUNT(*) FROM audit_events WHERE action = 'signing.web_edit.signed' \
+                        AND details_json LIKE '%repaired%'";
+        // The signature was lost after the ref moved: the retry signs it and succeeds.
+        sqlx::query("DELETE FROM change_signatures")
+            .execute(f.registry.pool())
+            .await
+            .unwrap();
+        let healed = f.m.commit_inner(&host, commit_req(true)).await.unwrap();
+        assert_eq!(first.id, healed.id);
+        assert_eq!(count(&f, signed).await, 1);
+        assert_eq!(count(&f, repaired).await, 1);
+        let cs = id(&first.id);
+        let v = signing
+            .verifier()
+            .verdict(f.entry.key.0, f.entry.ns.as_bytes(), &cs)
+            .await
+            .unwrap();
+        assert_eq!(v.status, V::Valid, "{}", v.reason);
+        // A ref moved by anyone but the host service is never repaired.
+        sqlx::query("DELETE FROM change_signatures")
+            .execute(f.registry.pool())
+            .await
+            .unwrap();
+        sqlx::query("UPDATE ref_log SET actor = 'alice'")
+            .execute(f.registry.pool())
+            .await
+            .unwrap();
+        let e = f.m.commit_inner(&host, commit_req(true)).await.unwrap_err();
+        assert_eq!(e.code(), tonic::Code::FailedPrecondition, "{e:?}");
+        assert!(e.message().contains("no longer signed"), "{e:?}");
+        assert_eq!(count(&f, signed).await, 0);
+    }
+
+    #[tokio::test]
+    async fn a_call_cancelled_before_the_signature_is_repaired_from_the_ref_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = server_signer(&dir, "server_key", ALICE_BODY);
+        let f = fx().await;
+        let signing = hub(&f, WebEdits::Server, Some(server));
+        f.m.set_web_signing(signing.clone());
+        let host = host_ctx();
+        let first = f.m.commit_inner(&host, commit_req(true)).await.unwrap();
+        sqlx::query("DELETE FROM change_signatures")
+            .execute(f.registry.pool())
+            .await
+            .unwrap();
+        let guard = |armed: bool| RepairOnCancel {
+            armed,
+            verifier: signing.verifier().clone(),
+            pool: f.registry.pool().clone(),
+            edit: SignedEdit::of(
+                &host,
+                f.entry.key.0,
+                id(&first.id),
+                "commit",
+                "refs/heads/web",
+                "Al".into(),
+            ),
+        };
+        // A disarmed guard does nothing.
+        drop(guard(false));
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert_eq!(count(&f, "SELECT COUNT(*) FROM change_signatures").await, 0);
+        // The state of a handler dropped after the ref moved: the guard repairs on drop.
+        drop(guard(true));
+        let mut signed = 0;
+        for _ in 0..100 {
+            signed = count(&f, "SELECT COUNT(*) FROM change_signatures").await;
+            if signed == 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(signed, 1);
+    }
+
+    #[tokio::test]
+    async fn the_audit_event_names_the_edit_and_notes_a_signature_that_existed() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = server_signer(&dir, "server_key", ALICE_BODY);
+        let f = fx().await;
+        f.m.set_web_signing(hub(&f, WebEdits::Server, Some(server.clone())));
+        let details = || async {
+            sqlx::query_scalar::<_, String>(
+                "SELECT details_json FROM audit_events WHERE action = 'signing.web_edit.signed' \
+                 AND scope_kind = 'repo' ORDER BY seq",
+            )
+            .fetch_all(f.registry.pool())
+            .await
+            .unwrap()
+        };
+        // Two refs publish the same changeset: the second finds the signature of the first.
+        f.m.commit_inner(&host_ctx(), commit_req(true))
+            .await
+            .unwrap();
+        let mut again = commit_req(true);
+        again.update_ref = "refs/heads/web2".into();
+        f.m.commit_inner(&host_ctx(), again).await.unwrap();
+        let rows = details().await;
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        let fingerprint = server.public_key().fingerprint();
+        for (i, row) in rows.iter().enumerate() {
+            let d: serde_json::Value = serde_json::from_str(row).unwrap();
+            assert_eq!(d["op"], "commit", "{row}");
+            assert_eq!(d["author"], "Al", "{row}");
+            assert_eq!(d["user"], "7:al", "{row}");
+            // The email is never recorded, only a hash of it.
+            assert_eq!(d["claim_email_hash"], claim_email_hash("AL@x"), "{row}");
+            assert_eq!(d["claim_email_hash"].as_str().unwrap().len(), 32, "{row}");
+            assert!(!row.contains("al@x"), "{row}");
+            assert_eq!(d["fingerprint"], fingerprint, "{row}");
+            assert_eq!(d.get("signature").is_some(), i == 1, "{row}");
+        }
+        assert!(rows[1].contains("existing"), "{rows:?}");
     }
 }

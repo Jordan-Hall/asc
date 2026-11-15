@@ -232,8 +232,32 @@ pub const CATALOGUE: &[ActionInfo] = &[
     ),
     a(
         "signing.web_edit.signed",
-        "The server signed a web edit (a commit, an apply or a merge) with its own key, for the person whose forwarded claim the host service presented.",
-        &["change", "user", "ref"],
+        "The server signed a web edit (a commit, an apply or a merge) with its own key, for the person whose forwarded claim the host service presented. `claim_email_hash` is the first 16 bytes (hex) of the BLAKE3 hash of the lower-cased claim email, never the email. `signature` is `existing` when the changeset already had a signature, which the server kept. `repaired` is `true` when a retry of the same op id signed an edit that was published without a signature.",
+        &[
+            "change",
+            "user",
+            "claim_email_hash",
+            "ref",
+            "op",
+            "author",
+            "fingerprint",
+            "signature",
+            "repaired",
+        ],
+    ),
+    a(
+        "signing.web_edit.store_failed",
+        "A web edit was published (its ref moved) but the server could not store its signature, so the changeset is unsigned until the same op id is retried. `reason` says what failed, in fixed words.",
+        &[
+            "change",
+            "user",
+            "claim_email_hash",
+            "ref",
+            "op",
+            "author",
+            "fingerprint",
+            "reason",
+        ],
     ),
     a(
         "signing.signature.submitted",
@@ -847,6 +871,64 @@ mod tests {
     }
 
     #[test]
+    fn a_signed_web_edit_keeps_who_what_and_with_which_key() {
+        let details = sanitize_details(
+            "signing.web_edit.signed",
+            &[
+                kv("change", "abc"),
+                kv("user", "7:al"),
+                kv("ref", "refs/heads/web"),
+                kv("op", "apply"),
+                kv("author", "Al"),
+                kv(
+                    "fingerprint",
+                    "SHA256:nThbg6kXUpJWGl7E1IGOCspRomTxdCARLviKw6E5SY8",
+                ),
+                kv("signature", "existing"),
+                kv("secret", "dropped"),
+            ],
+        );
+        let keys: Vec<&str> = details.keys().map(String::as_str).collect();
+        assert_eq!(
+            keys,
+            [
+                "author",
+                "change",
+                "fingerprint",
+                "op",
+                "ref",
+                "signature",
+                "user"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_web_edit_event_keeps_the_email_hash_and_never_an_email() {
+        let hash = "0123456789abcdef0123456789abcdef";
+        for action in ["signing.web_edit.signed", "signing.web_edit.store_failed"] {
+            let details = sanitize_details(
+                action,
+                &[
+                    kv("change", "abc"),
+                    kv("claim_email_hash", hash),
+                    kv("fingerprint", "SHA256:x"),
+                    kv("reason", "the signature could not be stored"),
+                    kv("repaired", "true"),
+                    kv("email", "al@x"),
+                ],
+            );
+            assert_eq!(
+                details.get("claim_email_hash").map(String::as_str),
+                Some(hash),
+                "{action}"
+            );
+            assert!(!details.contains_key("email"), "{action}");
+        }
+        assert!(info("signing.web_edit.store_failed").is_some());
+    }
+
+    #[test]
     fn the_buildout_actions_are_all_present() {
         for name in [
             "policy.proposed",
@@ -864,6 +946,7 @@ mod tests {
             "signing.defaults.set",
             "signing.signature.submitted",
             "signing.web_edit.signed",
+            "signing.web_edit.store_failed",
             "storage.target.created",
             "storage.target.updated",
             "storage.target.verified",

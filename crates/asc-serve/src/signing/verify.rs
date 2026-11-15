@@ -4,12 +4,14 @@
 //! submitted and the author of the changeset decide it every time it is asked. The stored `status`
 //! column is the verdict at submission, kept for people reading the table.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use asc_core::id::ChangesetId;
 use asc_core::sshsig::{self, Signature};
 use asc_rpc::server::wire::VerificationStatus as Status;
 use sqlx::AnyPool;
+use uuid::Uuid;
 
 use super::store::{self, KeyRow, SigRow};
 use super::{SERVER_KEY_ID, SERVER_SIGNER, ServerSigner};
@@ -168,15 +170,60 @@ pub fn judge_server(
     v
 }
 
-/// Reads and judges signatures from the database.
+/// The server signatures of web edits that are being published and are not stored yet, keyed by
+/// repository, op id and changeset: how many publications hold each, and the row.
+type Pending = Arc<Mutex<HashMap<(i64, Uuid, ChangesetId), (usize, SigRow)>>>;
+
+tokio::task_local! {
+    /// The op id of the `update_refs` call whose gate is running (see [`Verifier::scope_op`]).
+    static ACTIVE_OP: Uuid;
+}
+
+/// The server's signature of a web edit while the edit is published. The gate that judges the ref
+/// update of the same op id sees it (see [`Verifier::verdict`]) although nothing is in the database
+/// yet, so a refused or lost publication leaves nothing behind that another request could rely on.
+/// Dropping it ends the visibility; [`Verifier::store_web_edit`] makes it permanent.
+pub struct PendingSignature {
+    pending: Pending,
+    repo_id: i64,
+    op: Uuid,
+    changeset: ChangesetId,
+    row: SigRow,
+    /// The fingerprint of the server key that made it.
+    pub fingerprint: String,
+}
+
+impl Drop for PendingSignature {
+    fn drop(&mut self) {
+        let mut map = self
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let key = (self.repo_id, self.op, self.changeset);
+        if let Some((holders, _)) = map.get_mut(&key) {
+            *holders -= 1;
+            if *holders == 0 {
+                map.remove(&key);
+            }
+        }
+    }
+}
+
+/// Reads and judges signatures from the database. Clones share the pending signatures.
+#[derive(Clone)]
 pub struct Verifier {
     pool: AnyPool,
     server: Option<Arc<ServerSigner>>,
+    pending: Pending,
 }
 
 impl Verifier {
     pub fn new(pool: AnyPool, server: Option<Arc<ServerSigner>>) -> Self {
-        Self { pool, server }
+        Self {
+            pool,
+            server,
+            pending: Pending::default(),
+        }
     }
 
     pub fn server(&self) -> Option<&Arc<ServerSigner>> {
@@ -191,9 +238,32 @@ impl Verifier {
         changeset: &ChangesetId,
     ) -> Result<Verdict, sqlx::Error> {
         let Some(row) = store::get_signature(&self.pool, repo_id, changeset).await? else {
-            return Ok(Verdict::unsigned());
+            // The server's signature of a web edit that is being published counts, and only
+            // while it is, and only to the gate of the ref update that carries its op id (see
+            // `scope_op`): it is not in the database until the ref has moved, and no other
+            // reader may rely on it.
+            let pending = match ACTIVE_OP.try_with(|op| *op) {
+                Ok(op) => self
+                    .pending
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get(&(repo_id, op, *changeset))
+                    .map(|(_, row)| row.clone()),
+                Err(_) => None,
+            };
+            return match pending {
+                Some(row) => self.judge_row(ns, changeset, &row).await,
+                None => Ok(Verdict::unsigned()),
+            };
         };
         self.judge_row(ns, changeset, &row).await
+    }
+
+    /// Runs `f` (the publication of a web edit, whose `update_refs` gate calls [`Self::verdict`])
+    /// so that the pending signatures of op id `op` are visible to those verdicts and to nothing
+    /// else.
+    pub async fn scope_op<F: std::future::Future>(op: Uuid, f: F) -> F::Output {
+        ACTIVE_OP.scope(op, f).await
     }
 
     async fn judge_row(
@@ -241,39 +311,52 @@ impl Verifier {
         Ok((judge(&sig, changeset, at, key.as_ref(), &author), key))
     }
 
-    /// Signs `changeset` with the server key for a web edit. An existing signature is never replaced.
-    /// `Some(true)` when the server's signature was stored, `Some(false)` when the changeset already
-    /// had one; `None` when the server has no key.
-    pub async fn attest_web_edit(
+    /// Signs `changeset` with the server key for a web edit being published under op id `op`.
+    /// Nothing is stored: the signature is visible to [`Self::verdict`] inside [`Self::scope_op`] of
+    /// the same `op` (the gate of that ref update) until the returned value is dropped. A later [`Self::store_web_edit`] keeps it. `None` when the server
+    /// has no key.
+    pub fn begin_web_edit(
         &self,
         repo_id: i64,
+        op: Uuid,
         changeset: &ChangesetId,
         at: i64,
-    ) -> Result<Option<bool>, sqlx::Error> {
-        let Some(server) = &self.server else {
-            return Ok(None);
-        };
-        let Ok(armored) = server.sign(changeset) else {
-            return Ok(None);
-        };
+    ) -> Option<PendingSignature> {
+        let server = self.server.as_ref()?;
+        let armored = server.sign(changeset).ok()?;
         let row = SigRow {
             signature: armored,
             key_id: SERVER_KEY_ID.into(),
             status: i64::from(Status::Valid as i32),
             signed_at: at,
         };
-        store::put_signature_if_absent(&self.pool, repo_id, changeset, &row)
-            .await
-            .map(Some)
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry((repo_id, op, *changeset))
+            .and_modify(|(holders, _)| *holders += 1)
+            .or_insert_with(|| (1, row.clone()));
+        Some(PendingSignature {
+            pending: self.pending.clone(),
+            repo_id,
+            op,
+            changeset: *changeset,
+            row,
+            fingerprint: server.public_key().fingerprint().to_owned(),
+        })
     }
 
-    /// Takes back the server signature of a web edit whose publication failed.
-    pub async fn withdraw_web_edit(
-        &self,
-        repo_id: i64,
-        changeset: &ChangesetId,
-    ) -> Result<(), sqlx::Error> {
-        store::delete_server_signature(&self.pool, repo_id, changeset).await
+    /// Stores the pending signature of a web edit whose ref has moved. An existing signature (a
+    /// person's, or the server's from an identical edit) is never replaced: `true` when this one
+    /// was stored, `false` when the changeset already had one.
+    pub async fn store_web_edit(&self, pending: &PendingSignature) -> Result<bool, sqlx::Error> {
+        store::put_signature_if_absent(
+            &self.pool,
+            pending.repo_id,
+            &pending.changeset,
+            &pending.row,
+        )
+        .await
     }
 
     /// Records in the audit log that the server signed a web edit.
@@ -281,8 +364,9 @@ impl Verifier {
         store::append_event(&self.pool, event).await
     }
 
-    /// Signs `changeset` with the server key and stores the signature. `None` when the server has
-    /// no key.
+    /// Signs `changeset` with the server key and stores the signature, unless the changeset already
+    /// has one: a stored signature is never replaced, so the answer is `None` then too (nothing was
+    /// attested), as when the server has no key.
     pub async fn attest(
         &self,
         repo_id: i64,
@@ -301,7 +385,7 @@ impl Verifier {
             status: i64::from(Status::Valid as i32),
             signed_at: at,
         };
-        store::put_signature(&self.pool, repo_id, changeset, &row, None).await?;
-        Ok(Some(()))
+        let stored = store::put_signature_if_absent(&self.pool, repo_id, changeset, &row).await?;
+        Ok(stored.then_some(()))
     }
 }

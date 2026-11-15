@@ -168,7 +168,8 @@ impl ServerMutations {
                 if web_signer.is_some() {
                     let done_id =
                         ChangesetId::from_slice(&done.result).map_err(|e| internal("merge", &e))?;
-                    self.replay_signed(&o, &web_signer, done_id).await?;
+                    self.replay_signed_for(&o, ctx, &web_signer, done_id, "merge", &req.update_ref)
+                        .await?;
                 }
                 return Ok(done);
             }
@@ -234,6 +235,9 @@ impl ServerMutations {
             wire::MergeStyle::Merge | wire::MergeStyle::Squash | wire::MergeStyle::RebaseMerge
         );
         let signed = if writes && makes_changeset {
+            if web_signer.is_some() {
+                Self::signed_author(ctx, req.author.as_ref())?;
+            }
             let default_author =
                 (style == wire::MergeStyle::Squash).then(|| head_cs.author.clone());
             Some(signatures(
@@ -318,7 +322,7 @@ impl ServerMutations {
                 let id = o
                     .create(NewChangeset {
                         parents,
-                        author,
+                        author: author.clone(),
                         committer,
                         message,
                         extra: Vec::new(),
@@ -328,8 +332,19 @@ impl ServerMutations {
                     .await?;
                 let pairs = rewritten.pairs(id);
                 let publish = self.publish_merge(&o, ctx, &req, base, id, &pairs, op);
-                self.publish_signed(ctx, &web_signer, &o, id, &req.update_ref, publish)
-                    .await?;
+                self.publish_signed(
+                    ctx,
+                    &web_signer,
+                    &o,
+                    id,
+                    crate::mutations::WebEdit {
+                        op: "merge",
+                        update_ref: &req.update_ref,
+                        author: &author,
+                    },
+                    publish,
+                )
+                .await?;
                 Ok(wire::MergeResponse {
                     result: Bytes::copy_from_slice(id.as_bytes()),
                     rewritten: wire_pairs(&pairs),
@@ -337,29 +352,6 @@ impl ServerMutations {
                 })
             }
         }
-    }
-
-    /// Refuses with `UNSIGNED_CHANGE` unless every changeset in `sources` has a valid signature.
-    async fn sources_valid(
-        &self,
-        o: &Opened,
-        signer: &Option<Arc<crate::signing::rpc::Signing>>,
-        sources: &[ChangesetId],
-    ) -> Result<(), Status> {
-        let Some(signing) = signer else { return Ok(()) };
-        for source in sources {
-            let v = signing
-                .verifier()
-                .verdict(o.entry.key.0, o.entry.ns.as_bytes(), source)
-                .await
-                .map_err(|e| internal("signing", &e))?;
-            if !v.is_valid() {
-                return Err(rpc(RpcError::UnsignedChange(info(vec![format!(
-                    "{source} is not validly signed, so the server will not sign a merge of it"
-                )]))));
-            }
-        }
-        Ok(())
     }
 
     /// The changeset `head` names. A head in another repository is resolved there, then its
@@ -1732,14 +1724,13 @@ mod tests {
 
     #[tokio::test]
     async fn the_host_gets_a_server_signed_merge_and_a_refusal_when_the_server_does_not_sign() {
-        use crate::authz::identity::HOST_SERVICE_PRINCIPAL;
         use crate::signing::rpc::Signing;
         use crate::signing::tests::{ALICE_BODY, server_signer};
         use crate::signing::{Config, SERVER_KEY_ID, SERVER_SIGNER, WebEdits};
 
         let dir = tempfile::tempdir().unwrap();
         let server = server_signer(&dir, "server_key", ALICE_BODY);
-        let host = ctx_as(HOST_SERVICE_PRINCIPAL);
+        let host = host_ctx();
         let signed_req = |ours, t1| wire::MergeRequest {
             sign: true,
             update_ref: "refs/heads/merged".into(),
@@ -1820,14 +1811,13 @@ mod tests {
 
     #[tokio::test]
     async fn a_signed_squash_needs_every_source_valid_and_a_fast_forward_cannot_be_signed() {
-        use crate::authz::identity::HOST_SERVICE_PRINCIPAL;
         use crate::signing::rpc::Signing;
         use crate::signing::tests::{ALICE_BODY, server_signer};
         use crate::signing::{Config, WebEdits};
 
         let dir = tempfile::tempdir().unwrap();
         let server = server_signer(&dir, "server_key", ALICE_BODY);
-        let host = || ctx_as(HOST_SERVICE_PRINCIPAL);
+        let host = host_ctx;
         let f = fx().await;
         let cfg = Config {
             web_edits: WebEdits::Server,

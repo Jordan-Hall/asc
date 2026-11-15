@@ -29,10 +29,16 @@
 //! # Web edits
 //!
 //! `[signing] web_edits = "server"` (the default) lets the host application ask for `sign` on
-//! `Commit` and `Merge`: the server then signs the new changeset with its key (`key_id = server`),
-//! stores that signature beside the changeset and names itself as the committer. The author stays
-//! the person the host forwarded; the signature says only that this server made the edit. Only the
-//! host service credential may ask. `"refuse"` answers such a request `UNSIGNED_CHANGE`. The
+//! `Commit`, `Apply` and `Merge`: the server then signs the new changeset with its key
+//! (`key_id = server`), stores that signature beside the changeset and names itself as the
+//! committer. The author is given explicitly and is the person the host forwarded a verified claim
+//! for; the signature says only that this server made the edit. Only the host service credential
+//! may ask. The signature is stored only after the ref has moved; while the ref update runs the
+//! gate of that update (and no other reader) sees it in memory, keyed by op id and changeset id
+//! (see `verify::PendingSignature`), so a refused or lost update leaves nothing behind. A retry
+//! of the same op id signs an edit that was published without a stored signature when the ref
+//! log shows the host service moved the ref (SPEC §8.7). A pick or a merge made from other changesets is signed only when each of them
+//! is validly signed. `"refuse"` answers such a request `UNSIGNED_CHANGE`. The
 //! server advertises [`WEB_EDIT_FEATURE`] exactly when it would sign.
 
 pub mod rpc;

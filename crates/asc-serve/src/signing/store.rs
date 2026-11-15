@@ -367,23 +367,6 @@ pub async fn put_signature_if_absent(
     Ok(done.rows_affected() > 0)
 }
 
-/// Removes the server's signature of `changeset`, if that is the one stored. A person's signature stays.
-pub async fn delete_server_signature(
-    pool: &AnyPool,
-    repo_id: i64,
-    changeset: &ChangesetId,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "DELETE FROM change_signatures WHERE repo_id = $1 AND changeset = $2 AND key_id = $3",
-    )
-    .bind(repo_id)
-    .bind(changeset.as_bytes().to_vec())
-    .bind(super::SERVER_KEY_ID)
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
 /// Appends `event` to the audit log.
 pub async fn append_event(pool: &AnyPool, event: &NewEvent) -> Result<(), sqlx::Error> {
     let mut tx = pool.begin().await?;

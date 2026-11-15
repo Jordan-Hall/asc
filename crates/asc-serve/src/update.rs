@@ -1625,6 +1625,7 @@ mod tests {
                 asc_rpc::forwarded::Claim {
                     user: user.into(),
                     role,
+                    email: String::new(),
                 },
             )),
             ..ctx(Uuid::new_v4())

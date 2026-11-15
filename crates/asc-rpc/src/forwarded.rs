@@ -3,9 +3,13 @@
 //! The hub calls `asc serve` with its own service credential for work no user token covers. When
 //! that work is a repair only a repository administrator may make, the hub also sends who the
 //! signed-in person is and what its own permission model decided that person may do on the
-//! subject of the call. The claim is four metadata entries:
+//! subject of the call. The claim is four metadata entries and one optional entry:
 //!
 //! * `x-asc-forwarded-user`: the person, as `<user id>:<login>`;
+//! * `x-asc-forwarded-email` (optional): the person's verified email address. Present, it is part
+//!   of the MAC (appended to the MAC input after the timestamp, behind a newline), so it cannot be added, changed or dropped
+//!   in transit; absent, the MAC is the one below, so a hub that does not send it still verifies.
+//!   The server signs a web edit only for a claim that has it;
 //! * `x-asc-forwarded-role`: `read`, `write` or `admin`;
 //! * `x-asc-forwarded-ts`: Unix seconds when the hub made it;
 //! * `x-asc-forwarded-mac`: lower-case hex HMAC-SHA256, under a key only the hub and the server
@@ -25,6 +29,7 @@ use tonic::metadata::MetadataMap;
 pub const USER: &str = "x-asc-forwarded-user";
 pub const ROLE: &str = "x-asc-forwarded-role";
 pub const TS: &str = "x-asc-forwarded-ts";
+pub const EMAIL: &str = "x-asc-forwarded-email";
 pub const MAC: &str = "x-asc-forwarded-mac";
 /// The principal of a caller that presented the host application's own service credential, and
 /// the name it had before it was made neutral. Only these may act on a forwarded claim.
@@ -40,7 +45,9 @@ pub fn is_host_principal(principal_id: &str) -> bool {
 /// Whether `meta` carries any entry of a forwarded claim.
 #[must_use]
 pub fn carries_claim(meta: &MetadataMap) -> bool {
-    [USER, ROLE, TS, MAC].iter().any(|k| meta.contains_key(*k))
+    [USER, ROLE, TS, MAC, EMAIL]
+        .iter()
+        .any(|k| meta.contains_key(*k))
 }
 
 /// What the hub decided a person may do on a subject. Ordered: `Admin` includes `Write`, which
@@ -81,6 +88,8 @@ pub struct Claim {
     /// `<user id>:<login>`.
     pub user: String,
     pub role: Role,
+    /// The person's verified email address; empty when the hub sent none.
+    pub email: String,
 }
 
 impl Claim {
@@ -131,8 +140,13 @@ fn hmac_sha256(key: &[u8], msg: &[u8]) -> [u8; 32] {
     outer.finalize().into()
 }
 
-fn payload(user: &str, role: &str, subject: &str, ts: &str) -> Vec<u8> {
-    format!("{CONTEXT}\n{user}\n{role}\n{subject}\n{ts}").into_bytes()
+fn payload(user: &str, role: &str, subject: &str, ts: &str, email: Option<&str>) -> Vec<u8> {
+    let mut p = format!("{CONTEXT}\n{user}\n{role}\n{subject}\n{ts}");
+    if let Some(email) = email {
+        p.push('\n');
+        p.push_str(email);
+    }
+    p.into_bytes()
 }
 
 fn hex(b: &[u8]) -> String {
@@ -168,16 +182,32 @@ impl ForwardedVerifier {
         subject: &str,
         ts: i64,
     ) -> Vec<(&'static str, String)> {
+        self.sign_with_email(user, None, role, subject, ts)
+    }
+
+    /// As [`Self::sign`], with the person's verified `email` in the claim and under the MAC.
+    pub fn sign_with_email(
+        &self,
+        user: &str,
+        email: Option<&str>,
+        role: Role,
+        subject: &str,
+        ts: i64,
+    ) -> Vec<(&'static str, String)> {
         let mac = hmac_sha256(
             &self.key,
-            &payload(user, role.as_str(), subject, &ts.to_string()),
+            &payload(user, role.as_str(), subject, &ts.to_string(), email),
         );
-        vec![
+        let mut entries = vec![
             (USER, user.to_owned()),
             (ROLE, role.as_str().to_owned()),
             (TS, ts.to_string()),
-            (MAC, hex(&mac)),
-        ]
+        ];
+        if let Some(email) = email {
+            entries.push((EMAIL, email.to_owned()));
+        }
+        entries.push((MAC, hex(&mac)));
+        entries
     }
 
     /// The claim in `meta` for `subject`. `None` when it is absent, incomplete or repeated, signed
@@ -193,9 +223,19 @@ impl ForwardedVerifier {
         if user.is_empty() || user.len() > 300 || user.contains(['\n', '\r']) {
             return None;
         }
+        // Optional, but never repeated or unreadable, and never empty when given.
+        let email = if meta.contains_key(EMAIL) {
+            let e = one(EMAIL)?;
+            if e.is_empty() || e.len() > 320 || e.contains(['\n', '\r']) {
+                return None;
+            }
+            Some(e)
+        } else {
+            None
+        };
         let given = unhex(mac)?;
         // The MAC is checked before anything else of the claim is read.
-        let want = hmac_sha256(&self.key, &payload(user, role, subject, ts));
+        let want = hmac_sha256(&self.key, &payload(user, role, subject, ts, email));
         if !same(&given, &want) {
             return None;
         }
@@ -206,6 +246,7 @@ impl ForwardedVerifier {
         Some(Claim {
             user: user.to_owned(),
             role: Role::parse(role)?,
+            email: email.unwrap_or_default().to_owned(),
         })
     }
 }
@@ -255,10 +296,47 @@ mod tests {
     }
 
     #[test]
+    fn the_email_of_a_claim_is_optional_and_under_the_mac_when_given() {
+        let v = verifier();
+        let with = v.sign_with_email(
+            "7:alice",
+            Some("alice@x.org"),
+            Role::Write,
+            "acme/app",
+            1_000,
+        );
+        let c = v.verify(&meta(&with), "acme/app", 1_000).unwrap();
+        assert_eq!(c.email, "alice@x.org");
+        // A hub that sends none still verifies, with an empty email.
+        let without = v.sign("7:alice", Role::Write, "acme/app", 1_000);
+        assert_eq!(
+            v.verify(&meta(&without), "acme/app", 1_000).unwrap().email,
+            ""
+        );
+        // Changed, added to a claim signed without it, dropped from one signed with it, repeated.
+        let mut changed = with.clone();
+        changed[3].1 = "mallory@x.org".into();
+        assert!(v.verify(&meta(&changed), "acme/app", 1_000).is_none());
+        let mut added = without.clone();
+        added.push((EMAIL, "alice@x.org".to_owned()));
+        assert!(v.verify(&meta(&added), "acme/app", 1_000).is_none());
+        let dropped: Vec<_> = with.iter().filter(|(k, _)| *k != EMAIL).cloned().collect();
+        assert!(v.verify(&meta(&dropped), "acme/app", 1_000).is_none());
+        let mut twice = with.clone();
+        twice.push((EMAIL, "alice@x.org".to_owned()));
+        assert!(v.verify(&meta(&twice), "acme/app", 1_000).is_none());
+        // An empty email, even signed.
+        let empty = v.sign_with_email("7:alice", Some(""), Role::Write, "acme/app", 1_000);
+        assert!(v.verify(&meta(&empty), "acme/app", 1_000).is_none());
+        assert!(carries_claim(&meta(&[(EMAIL, "a@b".to_owned())])));
+    }
+
+    #[test]
     fn a_claim_never_covers_more_than_its_role() {
         let read = Claim {
             user: "7:alice".into(),
             role: Role::Read,
+            email: String::new(),
         };
         assert!(read.allows(Role::Read) && !read.allows(Role::Write) && !read.allows(Role::Admin));
         let write = Claim {
@@ -308,7 +386,7 @@ mod tests {
         assert!(theirs.verify(&meta(&good), "acme/app", 1_000).is_none());
         // A role the contract does not have, signed correctly, is still no claim.
         let key = vec![7u8; 32];
-        let mac = hmac_sha256(&key, &payload("7:alice", "owner", "acme/app", "1000"));
+        let mac = hmac_sha256(&key, &payload("7:alice", "owner", "acme/app", "1000", None));
         let odd = [
             (USER, "7:alice".to_owned()),
             (ROLE, "owner".to_owned()),
@@ -318,7 +396,10 @@ mod tests {
         assert!(v.verify(&meta(&odd), "acme/app", 1_000).is_none());
         // A time spelled any way but the canonical decimal, even under a valid MAC.
         for spelled in ["01000", "+1000", "1000.0", " 1000"] {
-            let mac = hmac_sha256(&key, &payload("7:alice", "write", "acme/app", spelled));
+            let mac = hmac_sha256(
+                &key,
+                &payload("7:alice", "write", "acme/app", spelled, None),
+            );
             let m = meta(&[
                 (USER, "7:alice".to_owned()),
                 (ROLE, "write".to_owned()),
