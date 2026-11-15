@@ -388,6 +388,25 @@ jobs:
       - name: asc unit tests
         run: cargo nextest run --locked --profile ci -p asc --bins
 
+  # The rest of the workspace on macOS (row 72), in its own job so it runs beside the VFS tests.
+  macos-workspace:
+    runs-on: macos-15
+    timeout-minutes: 120
+    env:
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Toolchain (from rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-nextest
+      - name: Workspace tests
+        run: cargo nextest run --locked --profile ci --workspace --exclude asc-vfs
+
   # Clippy for the macOS-only code, beside the macos tests rather than before them (it took four
   # of their thirteen minutes).
   macos-lint:
