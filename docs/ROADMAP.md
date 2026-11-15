@@ -147,7 +147,7 @@ From a review of the hub's asc pages on 2026-11-13 (routes, templates and styles
 |---|---|---|---|---|
 | 42 | Cache and storage insights | CI time saved by the cache, cache hit rate, and storage used and saved, on the Insights page | S | done 2026-11-14: server counts hits, misses, puts, bytes served and time saved per day and per change (CiInsights.CacheSummary); hub Insights shows a Build cache section. Bytes saved by dedup are not measured, so not shown |
 | 43 | Agent proposals inbox and live map | One queue of agent proposals to approve or reject, and a live view of which agent works on what | S | done |
-| 44 | Worktrees view | A page listing the live virtual worktrees of a repository and who holds them | D | open |
+| 44 | Worktrees view | A page listing the live virtual worktrees of a repository and who holds them | D | in progress: Cloud ReportWorktrees and ListWorktrees done (44a); daemon report (44b), hub regen (44c) and page (44d) next |
 | 45 | Commit-cloud view | All branchless work by user and agent, with restore | D | done |
 | 46 | Affected projects and cache hits on a change | Shown inline with the checks of a change | S | done 2026-11-14: affected projects card plus a Build cache card on pull request checks |
 | 50 | Repository templates | Templates in the create flow | D | done |
