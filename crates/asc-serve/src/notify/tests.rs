@@ -198,7 +198,8 @@ fn every_event_name_round_trips_and_is_the_hubs() {
             "merge_queue",
             "policy_changed",
             "review_requested",
-            "mentioned"
+            "mentioned",
+            "security_status"
         ]
     );
     for k in Kind::ALL {
@@ -599,6 +600,7 @@ mod hub {
             title: "Checks failed".into(),
             detail: String::new(),
             path: "/acme/api/changes/ab".into(),
+            watchers: false,
         }
     }
 
