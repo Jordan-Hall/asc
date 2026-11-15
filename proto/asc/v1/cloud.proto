@@ -1,6 +1,7 @@
 syntax = "proto3";
 package asc.v1;
 
+import "asc/v1/options.proto";
 import "asc/v1/repo.proto";
 
 // Commit cloud (SPEC §21.3.5): per-user workspaces of draft heads on the server. Same port as Repo.
@@ -10,6 +11,8 @@ service Cloud {
   rpc ListWorkspaces(ListWorkspacesRequest) returns (ListWorkspacesResponse);    // cheap, paged
   rpc Purge(PurgeRequest) returns (PurgeResponse);                               // owner (own unsubmitted drafts) or admin
   rpc ReportDevice(ReportDeviceRequest) returns (ReportDeviceResponse);          // owner; replaces the device's report
+  rpc ReportWorktrees(ReportWorktreesRequest) returns (ReportWorktreesResponse); // owner; replaces the device's worktree set
+  rpc ListWorktrees(ListWorktreesRequest) returns (ListWorktreesResponse);       // cheap, paged; own rows read, others write
 }
 
 // `change` is response only: the server derives it from the `m/` object of `cs` and ignores the client value.
@@ -57,3 +60,23 @@ message LocalDraft { bytes cs = 1; bytes change = 2; int64 added = 3; LocalDraft
 // `device` is [A-Za-z0-9._-]{1,64}; `drafts` at most 1,000 (the newest). Needs the cloud flag of the repository.
 message ReportDeviceRequest { RepoRef repo = 1; string name = 2; string device = 3; repeated LocalDraft drafts = 4; }
 message ReportDeviceResponse { uint32 kept = 1; }
+
+// Where a person's worktrees are (SPEC §21.3.9): one device tells the server what its worktrees of a repository
+// hold, so the hub can show them. Metadata only: `ws_hash` is an opaque hash the device derives from the worktree
+// (exactly 32 bytes); no local path, file name or content crosses the wire or is stored. `head_ref` is empty or a ref name by the
+// rules of `git check-ref-format`, at most 256 bytes, `head` the native changeset id (32 bytes) or empty, `mode` at most 32 bytes,
+// `in_progress` at most 64 bytes ("rebase", "merge", or empty). `ephemeral_until` is unix seconds, 0 for a
+// worktree that stays. Rows are dropped 7 days after the last report of their device.
+message WorktreeReport { bytes ws_hash = 1 [(asc.v1.json) = JSON_KIND_HEX]; string head_ref = 2;
+  bytes head = 3 [(asc.v1.json) = JSON_KIND_HEX]; string mode = 4; bool dirty = 5; uint32 ahead = 6;
+  uint32 behind = 7; int64 ephemeral_until = 8; string in_progress = 9; }
+// `device` is [A-Za-z0-9._-]{1,64}; `worktrees` at most 256, and the report replaces every row of the caller's
+// device. Needs the cloud flag of the repository.
+message ReportWorktreesRequest { RepoRef repo = 1; string device = 2; repeated WorktreeReport worktrees = 3; }
+message ReportWorktreesResponse { uint32 kept = 1; }
+
+// `owner` empty means the caller. Another user's rows (a decimal user id), and `*` for the rows of every user,
+// need repo write. Ordered by owner, device and `ws_hash`; `next_page_token` is empty on the last page.
+message CloudWorktreeRow { string owner = 1; string device = 2; WorktreeReport worktree = 3; int64 reported_at = 4; }
+message ListWorktreesRequest { RepoRef repo = 1; string owner = 2; string page_token = 3; }
+message ListWorktreesResponse { repeated CloudWorktreeRow rows = 1; string next_page_token = 2; }

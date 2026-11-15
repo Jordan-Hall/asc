@@ -247,11 +247,20 @@ const TABLE: &[(&str, Class, &[&str])] = &[
             "AmendChange",
         ],
     ),
-    ("Cloud", Class::Cheap, &["GetWorkspace", "ListWorkspaces"]),
+    (
+        "Cloud",
+        Class::Cheap,
+        &["GetWorkspace", "ListWorkspaces", "ListWorktrees"],
+    ),
     (
         "Cloud",
         Class::Background,
-        &["Purge", "ReportDevice", "UpdateWorkspace"],
+        &[
+            "Purge",
+            "ReportDevice",
+            "ReportWorktrees",
+            "UpdateWorkspace",
+        ],
     ),
     (
         "Insights",

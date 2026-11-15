@@ -22,6 +22,8 @@
 //!   identity; the added heads must already be indexed (ingested with a valid `m/` object). The
 //!   server stamps `added`; the client's `added`, `hidden_at` and `change` are ignored.
 //! * `cloud_ws` has one column beyond SPEC §21.2.3, `heads`, the count of its head rows.
+//! * `ReportWorktrees` and `ListWorktrees` (SPEC §21.3.9) are in [`super::worktrees`]; `owner` `*` in a
+//!   `ListWorktrees` reads every user's rows and needs repo write, like another user's.
 //! * `ReportDevice` (SPEC §21.3.9) replaces every `cloud_device_drafts` row of one device in one
 //!   transaction, so a retry is the same report and needs no op id. It keeps [`MAX_DEVICES`] devices
 //!   per workspace (the least recently reported goes) and drops reports older than
@@ -58,6 +60,7 @@ use super::Limits;
 use super::expiry::CloudRoots;
 use super::purge::{CacheEvict, CacheTiers, Purger, Who};
 use super::quota::Quota;
+use super::worktrees;
 use crate::authz::UserIdentity;
 use crate::changes::index;
 use crate::commit_graph_rpc::{internal, registry_status};
@@ -630,6 +633,53 @@ impl CloudRpc {
         })
     }
 
+    /// Replaces the worktree set of one device (SPEC §21.3.9); returns the worktrees kept.
+    pub async fn report_worktrees(
+        &self,
+        ctx: &CallCtx,
+        owner: i64,
+        req: wire::ReportWorktreesRequest,
+    ) -> Result<wire::ReportWorktreesResponse, Status> {
+        let device = device_name(&req.device)?;
+        let rows = worktrees::validate(&req.worktrees)?;
+        let (entry, _) = self.open(ctx).await?;
+        if !self.cloud_enabled(&entry).await? {
+            return Err(Status::failed_precondition(
+                "the commit cloud is off for this repository",
+            ));
+        }
+        worktrees::replace(
+            self.registry.pool(),
+            entry.ns.as_bytes(),
+            owner,
+            device,
+            &rows,
+            now(),
+        )
+        .await?;
+        Ok(wire::ReportWorktreesResponse {
+            kept: u32::try_from(rows.len()).unwrap_or(u32::MAX),
+        })
+    }
+
+    /// One page of worktree rows; `owner` `None` reads every user's.
+    pub async fn list_worktrees(
+        &self,
+        ctx: &CallCtx,
+        owner: Option<i64>,
+        req: wire::ListWorktreesRequest,
+    ) -> Result<wire::ListWorktreesResponse, Status> {
+        let (entry, _) = self.open(ctx).await?;
+        worktrees::list(
+            self.registry.pool(),
+            entry.ns.as_bytes(),
+            owner,
+            &req.page_token,
+            now(),
+        )
+        .await
+    }
+
     pub async fn list_workspaces(
         &self,
         ctx: &CallCtx,
@@ -1175,6 +1225,48 @@ impl Cloud for CloudService {
             .ok_or_else(|| Status::permission_denied("the commit cloud needs a user identity"))?;
         self.rpc
             .report_device(&ctx, owner, msg)
+            .await
+            .map(Response::new)
+    }
+
+    async fn report_worktrees(
+        &self,
+        request: Request<wire::ReportWorktreesRequest>,
+    ) -> Result<Response<wire::ReportWorktreesResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        let ctx = self
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
+            .await?;
+        // Only the owner reports their devices, and only a verified user identity is an owner.
+        let owner = refpolicy::owner_of(&ctx.principal)
+            .ok_or_else(|| Status::permission_denied("the commit cloud needs a user identity"))?;
+        self.rpc
+            .report_worktrees(&ctx, owner, msg)
+            .await
+            .map(Response::new)
+    }
+
+    async fn list_worktrees(
+        &self,
+        request: Request<wire::ListWorktreesRequest>,
+    ) -> Result<Response<wire::ListWorktreesResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        let ctx = self
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
+            .await?;
+        // `*` is every user's rows: repo write, like another user's.
+        let owner = if msg.owner == "*" {
+            if !self.has(&ext, &ctx, Access::Write).await {
+                return Err(Status::permission_denied(
+                    "reading every user's worktrees needs write access",
+                ));
+            }
+            None
+        } else {
+            Some(self.read_owner(&ctx, &ext, &msg.owner).await?)
+        };
+        self.rpc
+            .list_worktrees(&ctx, owner, msg)
             .await
             .map(Response::new)
     }

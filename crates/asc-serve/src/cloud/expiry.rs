@@ -12,6 +12,8 @@
 //! Replicas may run at once: every statement re-checks its row's state, so the loser of a race
 //! changes nothing.
 //!
+//! Each run also drops the `cloud_worktrees` rows past [`crate::cloud::worktrees::WORKTREE_TTL_S`].
+//!
 //! [`CloudRoots`] is the [`GcRootSource`] O01 asks: every `cloud_heads.cs`, visible or hidden
 //! within the grace period (expired rows are gone), and the keys of `gc_purge`.
 //!
@@ -92,6 +94,8 @@ pub struct ExpiryReport {
     pub kept: usize,
     /// `gc_purge` rows pruned.
     pub pruned: u64,
+    /// Worktree report rows dropped after their TTL.
+    pub worktrees: u64,
 }
 
 /// The worker.
@@ -117,7 +121,8 @@ impl CloudExpirer {
                         deleted = r.deleted,
                         hidden = r.hidden,
                         kept = r.kept,
-                        pruned = r.pruned
+                        pruned = r.pruned,
+                        worktrees = r.worktrees
                     ),
                     Err(e) => tracing::warn!(event = "cloud.expiry", error = %e, "run failed"),
                 }
@@ -172,6 +177,7 @@ impl CloudExpirer {
         report.pruned +=
             crate::cloud::purge::prune(&self.pool, ns, at.saturating_sub(PURGE_RETAIN_DAYS * DAY))
                 .await?;
+        report.worktrees += crate::cloud::worktrees::prune_expired(&self.pool, ns, at).await?;
         Ok(())
     }
 

@@ -1,6 +1,8 @@
 //! The commit cloud on the server (SPEC §21.3, PLAN B09): per-user workspaces of draft heads,
 //! the `Cloud` RPCs, and the quota ledger that ingest and `PutObjects` charge.
 //!
+//! `worktrees` holds the worktree reports of a person's devices (`ReportWorktrees`, `ListWorktrees`).
+//!
 //! `expiry` is the hourly worker and the GC roots of cloud heads, `purge` is `Cloud.Purge` and
 //! cache eviction (PLAN B10).
 
@@ -8,6 +10,7 @@ pub mod expiry;
 pub mod purge;
 pub mod quota;
 pub mod rpc;
+pub mod worktrees;
 
 /// The server-side bounds of SPEC §21.3.2 (`[cloud]`). The defaults are the SPEC values;
 /// `max_user_bytes` has no SPEC default, so it is 10 GiB per user per repository.
