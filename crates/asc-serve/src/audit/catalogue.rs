@@ -201,7 +201,7 @@ pub const CATALOGUE: &[ActionInfo] = &[
     ),
     a(
         "secret.scan.incomplete",
-        "A history import was accepted although its secret scan stopped at a limit before it read every file.",
+        "A history import was accepted although its secret scan stopped at a limit before it read every file; a background scan of the whole ref follows (secret.scan.run).",
         &[
             "ref",
             "changesets",
@@ -212,8 +212,8 @@ pub const CATALOGUE: &[ActionInfo] = &[
     ),
     a(
         "secret.scan.run",
-        "A repository administrator scanned a revision for secrets.",
-        &["files", "findings", "truncated"],
+        "A repository administrator scanned a revision for secrets, or the server scanned the whole history of a ref after a history import that its gate could scan only in part.",
+        &["files", "findings", "truncated", "ref", "changesets"],
     ),
     a(
         "signing.key.added",

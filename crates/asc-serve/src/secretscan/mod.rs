@@ -12,9 +12,12 @@
 //! binds it.
 //!
 //! * [`scan`]: the bounded loop over files.
+//! * [`history`]: the background scan of a whole history, queued when the gate's scan of a history
+//!   import stopped at [`MAX_CHANGESETS`].
 //! * [`store`]: findings and the per-repository fingerprint key.
 //! * [`rpc`]: the `SecretScan` service.
 
+pub mod history;
 pub mod rpc;
 pub mod scan;
 pub mod store;
@@ -41,8 +44,12 @@ pub const MAX_NOTE: usize = 1024;
 pub const DEFAULT_PAGE: usize = 50;
 /// Findings in one `ListFindings` page, at most.
 pub const MAX_PAGE: usize = 200;
-/// Most changesets one scan reads the files of; a larger update is scanned over its newest ones.
+/// Most changesets one scan reads the files of; a larger update is scanned over its newest ones
+/// (highest generation first, a graph property a timestamp cannot move).
 pub const MAX_CHANGESETS: usize = 20_000;
+/// Changesets whose file lists are held at once while a scan runs: the scan reads its files in
+/// batches of this many, so memory does not grow with the length of the history.
+pub const BATCH: usize = 256;
 
 /// `[secrets]` of the server config.
 #[derive(Clone, Debug, Deserialize)]
@@ -90,6 +97,12 @@ impl Config {
 pub struct Scanner {
     pub(crate) registry: Arc<Registry>,
     pub(crate) cfg: Config,
+    /// Changesets one scan reads (see [`MAX_CHANGESETS`]); a test lowers it.
+    max_changesets: usize,
+    /// Held by the one background history scan that runs at a time.
+    background: tokio::sync::Semaphore,
+    /// The `(repository, tip)` of history scans queued or running, so one is queued once.
+    queued: std::sync::Mutex<std::collections::HashSet<(i64, ChangesetId)>>,
 }
 
 /// The place the server's single [`Scanner`] is registered, once.
@@ -108,7 +121,26 @@ impl ScannerSlot {
 
 impl Scanner {
     pub fn new(registry: Arc<Registry>, cfg: Config) -> Self {
-        Self { registry, cfg }
+        Self {
+            registry,
+            cfg,
+            max_changesets: MAX_CHANGESETS,
+            background: tokio::sync::Semaphore::new(1),
+            queued: std::sync::Mutex::default(),
+        }
+    }
+
+    /// The scanner with a lower changeset cap, so a test needs no 20,000 commits.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_max_changesets(mut self, n: usize) -> Self {
+        self.max_changesets = n;
+        self
+    }
+
+    /// Most changesets one scan reads the files of.
+    pub fn max_changesets(&self) -> usize {
+        self.max_changesets
     }
 
     pub fn config(&self) -> &Config {
@@ -134,11 +166,19 @@ impl Scanner {
         let key = store::repo_key(self.registry.pool(), repo_id, crate::review::now())
             .await
             .map_err(crate::review::sql)?;
-        let added = added_files(engine, changesets).await?;
-        let mut report =
-            scan::scan_files(engine, &rules, policy, &self.cfg, &key, added.files).await?;
+        // The first `max_changesets` of the list are read, `BATCH` at a time under one set of
+        // limits; the rest is left out and the scan says so.
+        let take = changesets.len().min(self.max_changesets);
+        let mut scan = scan::Scan::new(engine, &rules, policy, &self.cfg, &key);
+        for batch in changesets[..take].chunks(BATCH) {
+            if scan.stopped() {
+                break;
+            }
+            scan.feed(added_files(engine, batch).await?.files).await?;
+        }
+        let mut report = scan.finish();
         // Changesets left out of the listing were never read: the scan did not cover the update.
-        report.truncated |= added.truncated;
+        report.truncated |= changesets.len() > take;
         Ok(report)
     }
 

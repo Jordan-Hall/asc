@@ -43,8 +43,8 @@ use crate::audit::actor::actor_of;
 use crate::audit::{NewEvent, Outcome};
 use crate::registry::{Registry, RepoEntry};
 use crate::review::{internal, now, sql};
+use crate::secretscan::Scanner;
 use crate::secretscan::scan::Report;
-use crate::secretscan::{MAX_CHANGESETS, Scanner};
 use crate::signing::rpc::Signing;
 use crate::update::{info, rpc};
 
@@ -138,6 +138,9 @@ pub struct ServerGate {
     read_only: Arc<crate::maintenance::ReadOnly>,
     /// The repository path rules: an update writes only where its sender may (SPEC §15.5.1).
     pathrules: Arc<crate::pathrules::PathRulesSlot>,
+    /// Changeset bodies `added` has read, for the tests that show when none is.
+    #[cfg(test)]
+    pub(crate) body_loads: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 /// The refusal of a rewrite of trunk that the organisation's merge policy forbids.
@@ -244,25 +247,45 @@ fn invalid_policy(d: &Diagnostic) -> Status {
     )])))
 }
 
+/// Most bytes of distinct path names the gate holds for one update; more is refused, so a history
+/// of huge changesets cannot grow the gate's memory without bound.
+const MAX_PATH_BYTES: usize = 64 * 1024 * 1024;
+/// Changeset bodies read at once while the paths of an update are collected.
+const BODY_READAHEAD: usize = 16;
+
 /// What the gate needs of the changesets an update adds.
 struct Added {
     ids: Vec<ChangesetId>,
-    bodies: Vec<Arc<Changeset>>,
+    /// Every path the changesets write or delete, in path order. Empty unless the caller asked for
+    /// the paths: nothing else of a changeset body is kept.
+    paths: BTreeSet<Vec<u8>>,
+    wanted: bool,
 }
 
 impl Added {
-    /// Every path the changesets write or delete, in path order.
-    fn paths(&self) -> BTreeSet<Vec<u8>> {
-        self.bodies
-            .iter()
-            .flat_map(|b| {
-                b.changes
-                    .as_slice()
-                    .iter()
-                    .map(|(p, _)| p.as_bytes().to_vec())
-            })
-            .collect()
+    /// Every path the changesets write or delete. Only for an `Added` made with `paths`.
+    fn paths(&self) -> &BTreeSet<Vec<u8>> {
+        debug_assert!(
+            self.wanted || self.ids.is_empty(),
+            "the paths of this update were not collected"
+        );
+        &self.paths
     }
+}
+
+/// The bodies of `ids`, read a few at a time and in order.
+fn bodies<'a>(
+    engine: &'a crate::idmode::Eng,
+    ids: &'a [ChangesetId],
+) -> impl futures::Stream<Item = Result<Arc<Changeset>, Status>> + 'a {
+    futures::stream::iter(ids.iter().copied())
+        .map(move |id| async move {
+            engine
+                .get_changeset(id)
+                .await
+                .map_err(|e| internal("gate: changeset", &e))
+        })
+        .buffered(BODY_READAHEAD)
 }
 
 /// What a landing needs, borrowed.
@@ -297,6 +320,8 @@ impl ServerGate {
             org: Arc::default(),
             read_only: Arc::default(),
             pathrules: Arc::default(),
+            #[cfg(test)]
+            body_loads: Arc::default(),
         }
     }
 
@@ -332,8 +357,9 @@ impl ServerGate {
                 Some(RefTarget::Changeset(o)) => Some(o),
                 _ => None,
             };
-            let added = self.added(req.entry, old, new, MAX_ADDED).await?;
-            for body in &added.bodies {
+            let ids = self.added_ids(req.entry, old, new, MAX_ADDED).await?;
+            let mut bodies = std::pin::pin!(bodies(engine, &ids));
+            while let Some(body) = bodies.try_next().await? {
                 let sides = merge_sides(engine, &body.parents).await?;
                 for (path, change) in body.changes.as_slice() {
                     let p = path.as_bytes();
@@ -420,7 +446,7 @@ impl ServerGate {
         policy: asc_core::policy::DepsPolicy,
     ) -> Result<(), Status> {
         let touched = added.paths();
-        if crate::deps::gate::dependency_files(&touched).is_empty() {
+        if crate::deps::gate::dependency_files(touched).is_empty() {
             return Ok(());
         }
         let Some(check) = self.deps.get() else {
@@ -434,7 +460,7 @@ impl ServerGate {
                 entry,
                 new,
                 base,
-                touched: &touched,
+                touched,
                 policy,
             })
             .await?;
@@ -493,13 +519,15 @@ impl ServerGate {
         }))
     }
 
-    async fn added(
+    /// The changesets that `new` has beyond `old`, newest first (by generation, a property of the
+    /// graph that no timestamp moves).
+    async fn added_ids(
         &self,
         entry: &RepoEntry,
         old: Option<ChangesetId>,
         new: ChangesetId,
         limit: usize,
-    ) -> Result<Added, Status> {
+    ) -> Result<Vec<ChangesetId>, Status> {
         let graph = graph_of(&self.registry, entry);
         let ids: Vec<ChangesetId> = graph
             .log(LogQuery {
@@ -516,14 +544,47 @@ impl ServerGate {
                 "this update adds more than {limit} changesets and cannot be checked; push it in parts"
             )));
         }
-        let engine = entry.backend.engine();
-        let bodies: Vec<Arc<Changeset>> = futures::stream::iter(ids.iter().copied())
-            .map(|id| async move { engine.get_changeset(id).await })
-            .buffered(16)
-            .try_collect()
-            .await
-            .map_err(|e| internal("gate: changeset", &e))?;
-        Ok(Added { ids, bodies })
+        Ok(ids)
+    }
+
+    /// What the update `old..new` adds. The bodies are read, and counted by `body_loads`, only when
+    /// `with_paths` is set (a path rule, an agent scope or the dependency gate needs the paths);
+    /// then they are read a few at a time and only the paths are kept, so neither the number nor
+    /// the size of the changesets decides the memory held.
+    async fn added(
+        &self,
+        entry: &RepoEntry,
+        old: Option<ChangesetId>,
+        new: ChangesetId,
+        limit: usize,
+        with_paths: bool,
+    ) -> Result<Added, Status> {
+        let ids = self.added_ids(entry, old, new, limit).await?;
+        let mut paths = BTreeSet::new();
+        if with_paths {
+            let mut held = 0usize;
+            let mut bodies = std::pin::pin!(bodies(entry.backend.engine(), &ids));
+            while let Some(body) = bodies.try_next().await? {
+                #[cfg(test)]
+                self.body_loads
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                for (p, _) in body.changes.as_slice() {
+                    if paths.insert(p.as_bytes().to_vec()) {
+                        held += p.as_bytes().len();
+                        if held > MAX_PATH_BYTES {
+                            return Err(Status::failed_precondition(
+                                "this update changes too many distinct paths to be checked; push it in parts",
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(Added {
+            ids,
+            paths,
+            wanted: with_paths,
+        })
     }
 
     async fn audit_denied(&self, ctx: &CallCtx, name: &str, reason: &str, path: &str) {
@@ -581,7 +642,7 @@ impl ServerGate {
         };
         // A new draft adds what it has beyond trunk, not trunk's whole history.
         let added = self
-            .added(req.entry, old.or(in_force.source), new, MAX_ADDED)
+            .added(req.entry, old.or(in_force.source), new, MAX_ADDED, true)
             .await?;
         let paths = added.paths();
         if let Some(globs) = scope.as_ref().filter(|g| !g.is_empty()) {
@@ -609,7 +670,7 @@ impl ServerGate {
         };
         let mut refused = Vec::new();
         let mut first: Option<Denial> = None;
-        for p in &paths {
+        for p in paths {
             if let Err(d) = policy.check_write(who, p) {
                 refused.push(d.path.clone());
                 first.get_or_insert(d);
@@ -726,14 +787,22 @@ impl ServerGate {
             self.scanner.config().max_files.clamp(1, MAX_ADDED)
         };
         if sp.enabled {
-            limit = limit.min(MAX_CHANGESETS);
+            limit = limit.min(self.scanner.max_changesets());
         }
-        let added = self.added(entry, in_force.source, new, limit).await?;
+        let added = self
+            .added(
+                entry,
+                in_force.source,
+                new,
+                limit,
+                in_force.policy().is_some(),
+            )
+            .await?;
         if let Some(p) = in_force.policy() {
             let mut refused = Vec::new();
             let mut first: Option<Denial> = None;
             for path in added.paths() {
-                if let Err(d) = p.check_write(who, &path) {
+                if let Err(d) = p.check_write(who, path) {
                     refused.push(d.path.clone());
                     first.get_or_insert(d);
                 }
@@ -867,8 +936,9 @@ impl ServerGate {
         // at its own limit. The scan reads no more than MAX_CHANGESETS changesets, so an update
         // with more is refused here rather than half scanned. A history import is the exception:
         // a whole mirror or moved repository arrives in one update per ref, so it is let through
-        // with the newest MAX_CHANGESETS changesets scanned and the gap put on the record. Only
-        // MAX_ADDED bounds it (the changeset bodies are held in memory for the path rules).
+        // with the newest MAX_CHANGESETS changesets scanned, the gap put on the record and a
+        // background scan of the whole ref queued. Only MAX_ADDED bounds it, and the changeset
+        // bodies are read (a few at a time) only when a path rule needs them.
         let history = matches!(req.mode, GateMode::History);
         let mut limit = if effective.is_some() || history {
             MAX_ADDED
@@ -876,10 +946,18 @@ impl ServerGate {
             self.scanner.config().max_files.clamp(1, MAX_ADDED)
         };
         if sp.enabled && !history {
-            limit = limit.min(MAX_CHANGESETS);
+            limit = limit.min(self.scanner.max_changesets());
         }
+        // Only a path rule, the repair of a broken policy or the dependency gate reads the paths
+        // (so the bodies); a history import with no policy in force loads none.
         let added = self
-            .added(entry, old.or(in_force.source), new, limit)
+            .added(
+                entry,
+                old.or(in_force.source),
+                new,
+                limit,
+                effective.is_some() || broken.is_some(),
+            )
             .await?;
 
         // Each landed changeset and the pushed ones it was made from: one for a rebase, the whole
@@ -913,7 +991,7 @@ impl ServerGate {
             let mut refused = Vec::new();
             let mut first: Option<Denial> = None;
             for path in added.paths() {
-                if let Err(d) = p.check_write(who, &path) {
+                if let Err(d) = p.check_write(who, path) {
                     refused.push(d.path.clone());
                     first.get_or_insert(d);
                 }
@@ -937,6 +1015,9 @@ impl ServerGate {
             }
         }
 
+        // Set when the scan above left changesets out: the whole ref is scanned in the background
+        // once every other check has passed.
+        let mut queue_scan = false;
         if sp.enabled {
             let report = self
                 .scanner
@@ -956,7 +1037,8 @@ impl ServerGate {
                 return Err(status);
             }
             // The import goes through on a partial scan, so the gap is put on the record: an
-            // audit event says that files of this ref were never read for secrets.
+            // audit event says that files of this ref were never read for secrets. A scan gap
+            // never goes unrecorded: when the event cannot be written the import fails.
             if history && report.truncated {
                 let event =
                     NewEvent::new("secret.scan.incomplete", actor_of(&req.ctx.principal.id))
@@ -968,11 +1050,18 @@ impl ServerGate {
                         // An upper bound when the file or byte limit cut the scan earlier.
                         .detail(
                             "changesets_scanned",
-                            added.ids.len().min(MAX_CHANGESETS).to_string(),
+                            added
+                                .ids
+                                .len()
+                                .min(self.scanner.max_changesets())
+                                .to_string(),
                         )
                         .detail("files_scanned", report.files_scanned.to_string())
                         .detail("found", report.found.len().to_string());
-                crate::audit::store::record_best_effort(self.registry.pool(), &event).await;
+                crate::audit::store::record(self.registry.pool(), &event)
+                    .await
+                    .map_err(|e| internal("gate: secret.scan.incomplete event", &e))?;
+                queue_scan = true;
             }
         }
         if let Some(p) = &effective
@@ -980,6 +1069,16 @@ impl ServerGate {
         {
             self.check_deps(entry, old.or(in_force.source), new, &added, p.deps)
                 .await?;
+        }
+        if queue_scan {
+            // The findings are kept the normal way (`secret.scan.run` marks the end).
+            self.scanner.queue_history_scan(
+                req.ctx.repo.clone(),
+                entry.key.0,
+                new,
+                u.name.clone(),
+                sp,
+            );
         }
         Ok(())
     }

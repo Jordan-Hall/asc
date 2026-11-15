@@ -2930,20 +2930,35 @@ mod tests {
         }
 
         async fn gated_scanning(scan: crate::secretscan::Config) -> Rpc {
+            gated_capped(scan, crate::secretscan::MAX_CHANGESETS)
+                .await
+                .0
+        }
+
+        /// As [`gated_scanning`] with the scan's changeset cap lowered to `cap`, and the count of
+        /// changeset bodies the gate has read.
+        async fn gated_capped(
+            scan: crate::secretscan::Config,
+            cap: usize,
+        ) -> (Rpc, Arc<std::sync::atomic::AtomicUsize>) {
             let f = fx().await;
             let registry = f.registry.clone();
             let gate = ServerGate::new(
                 registry.clone(),
                 Arc::new(crate::policy::PolicyStore::new(registry.clone())),
-                Arc::new(crate::secretscan::Scanner::new(registry.clone(), scan)),
+                Arc::new(
+                    crate::secretscan::Scanner::new(registry.clone(), scan)
+                        .with_max_changesets(cap),
+                ),
                 Arc::new(crate::signing::rpc::Signing::new(
                     registry,
                     crate::signing::Config::default(),
                     None,
                 )),
             );
+            let loads = gate.body_loads.clone();
             assert!(f.pipeline.set_gate(Arc::new(gate)).is_ok());
-            rpc_of(f, true, true)
+            (rpc_of(f, true, true), loads)
         }
 
         fn host() -> CallCtx {
@@ -3416,6 +3431,136 @@ data {}
                 )),
                 "{details}"
             );
+        }
+
+        /// A chain of `n` commits on master whose oldest one holds a secret; returns the tip.
+        fn chain_with_secret_at_the_bottom(f: &Fx, n: usize) -> String {
+            let mut tip = f
+                .forge
+                .commit(None, &[("secret.txt", &crate::policy::tests::token())]);
+            for i in 1..n {
+                tip = f.forge.commit(Some(&tip), &[("f", &i.to_string())]);
+            }
+            tip
+        }
+
+        const RUN_EVENTS: &str = "SELECT COUNT(*) FROM audit_events WHERE action = 'secret.scan.run' AND scope_kind = 'repo'";
+
+        /// Waits until `sql` counts `want` rows, at most ten seconds; returns the last count.
+        async fn until_count(r: &Rpc, sql: &str, want: i64) -> i64 {
+            let mut n = r.f.count(sql).await;
+            for _ in 0..200 {
+                if n == want {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                n = r.f.count(sql).await;
+            }
+            n
+        }
+
+        #[tokio::test]
+        async fn a_history_import_with_no_policy_in_force_loads_no_changeset_bodies() {
+            use std::sync::atomic::Ordering::Relaxed;
+            let (r, loads) = gated_capped(
+                crate::secretscan::Config::default(),
+                crate::secretscan::MAX_CHANGESETS,
+            )
+            .await;
+            let c1 = r.f.forge.commit(None, &[("a", "1")]);
+            let c2 = r.f.forge.commit(Some(&c1), &[("a", "2")]);
+            r.send(true, &[(M, "", &c2)]).await.unwrap();
+            assert_eq!(r.f.git_of(M).await, c2);
+            assert_eq!(
+                loads.load(Relaxed),
+                0,
+                "no policy needs the changeset bodies"
+            );
+            // With a policy on trunk a path rule needs them: the next import reads them.
+            let policy = crate::policy::tests::policy_text("");
+            let p1 =
+                r.f.forge
+                    .commit(None, &[(".asc/policy.toml", &policy), ("a", "1")]);
+            let p2 =
+                r.f.forge
+                    .commit(Some(&p1), &[(".asc/policy.toml", &policy), ("a", "2")]);
+            r.send(true, &[(M, &c2, &p1)]).await.unwrap();
+            r.send(true, &[(M, &p1, &p2)]).await.unwrap();
+            assert!(
+                loads.load(Relaxed) > 0,
+                "a policy in force reads the bodies"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_scan_gap_queues_a_background_scan_of_the_whole_ref_that_finds_the_oldest_secret()
+        {
+            let (r, _) = gated_capped(crate::secretscan::Config::default(), 3).await;
+            let tip = chain_with_secret_at_the_bottom(&r.f, 8);
+            let incomplete = "SELECT COUNT(*) FROM audit_events WHERE action = 'secret.scan.incomplete' AND scope_kind = 'repo'";
+            r.send(true, &[(M, "", &tip)]).await.unwrap();
+            assert_eq!(r.f.git_of(M).await, tip);
+            assert_eq!(r.f.count(incomplete).await, 1);
+            // The newest three changesets hold no secret; the background scan reads the rest.
+            assert_eq!(
+                until_count(&r, RUN_EVENTS, 1).await,
+                1,
+                "the background scan ends"
+            );
+            assert_eq!(r.f.count("SELECT COUNT(*) FROM secret_findings").await, 1);
+            let details: String = sqlx::query_scalar(
+                "SELECT details_json FROM audit_events WHERE action = 'secret.scan.run' AND scope_kind = 'repo'",
+            )
+            .fetch_one(r.f.registry.pool())
+            .await
+            .unwrap();
+            assert!(details.contains("\"changesets\":\"8\""), "{details}");
+            assert!(
+                details.contains("\"ref\":\"refs/heads/master\""),
+                "{details}"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_scan_without_a_gap_queues_no_background_scan() {
+            let (r, _) = gated_capped(crate::secretscan::Config::default(), 10).await;
+            let tip = chain_with_secret_at_the_bottom(&r.f, 4);
+            r.send(true, &[(M, "", &tip)]).await.unwrap();
+            // The gate's own scan found the secret; nothing was queued behind it.
+            assert_eq!(r.f.count("SELECT COUNT(*) FROM secret_findings").await, 1);
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            assert_eq!(r.f.count(RUN_EVENTS).await, 0);
+        }
+
+        #[tokio::test]
+        async fn an_import_whose_scan_gap_cannot_be_recorded_fails() {
+            let (r, _) = gated_capped(crate::secretscan::Config::default(), 3).await;
+            let tip = chain_with_secret_at_the_bottom(&r.f, 6);
+            // Only this event is refused by the log; the rest of the import writes as usual.
+            sqlx::query(
+                "CREATE TRIGGER refuse_incomplete BEFORE INSERT ON audit_events \
+                 WHEN NEW.action = 'secret.scan.incomplete' \
+                 BEGIN SELECT RAISE(ABORT, 'audit log refuses'); END",
+            )
+            .execute(r.f.registry.pool())
+            .await
+            .unwrap();
+            let s = r.send(true, &[(M, "", &tip)]).await.unwrap_err();
+            assert_eq!(s.code(), tonic::Code::Internal, "{s:?}");
+            assert!(r.f.target(M).await.is_none(), "the ref did not move");
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            assert_eq!(
+                r.f.count(RUN_EVENTS).await,
+                0,
+                "no scan was queued for a refused import"
+            );
+            // Once the log takes the event the same import goes through.
+            sqlx::query("DROP TRIGGER refuse_incomplete")
+                .execute(r.f.registry.pool())
+                .await
+                .unwrap();
+            r.send(true, &[(M, "", &tip)]).await.unwrap();
+            assert_eq!(r.f.git_of(M).await, tip);
         }
 
         #[tokio::test]

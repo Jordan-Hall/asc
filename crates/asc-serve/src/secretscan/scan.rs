@@ -72,79 +72,135 @@ pub async fn scan_files(
     key: &[u8; 32],
     files: Vec<FileRef>,
 ) -> Result<Report, Status> {
-    let mut report = Report::default();
-    // Per distinct content: the hits as (rule index, severity, line, column, fingerprint, preview).
-    let mut by_content: HashMap<FileId, Vec<Hit>> = HashMap::new();
-    let mut bytes_read: u64 = 0;
-    for f in files {
-        if policy.allows(&f.path) {
-            continue;
-        }
-        let hits = if let Some(h) = by_content.get(&f.file) {
-            h.clone()
-        } else {
-            if f.size > cfg.max_file_bytes.0 {
-                report.skipped_large += 1;
-                continue;
-            }
-            if report.files_scanned as usize >= cfg.max_files
-                || bytes_read.saturating_add(f.size) > cfg.max_scan_bytes.0
-            {
-                report.truncated = true;
-                break;
-            }
-            let data = engine
-                .read_file(f.file, f.size)
-                .await
-                .map_err(|e| crate::review::internal("secret scan read", &e))?;
-            bytes_read = bytes_read.saturating_add(f.size);
-            let scanned = rules.scan(&data);
-            let hits = match scanned.skipped {
-                Some(Skipped::Binary) => {
-                    report.skipped_binary += 1;
-                    Vec::new()
-                }
-                Some(Skipped::TooLarge) => {
-                    report.skipped_large += 1;
-                    Vec::new()
-                }
-                None => {
-                    report.files_scanned += 1;
-                    scanned
-                        .hits
-                        .iter()
-                        .map(|h| {
-                            let info = &rules.infos()[h.rule];
-                            let value = &data[h.value.clone()];
-                            Hit {
-                                rule_id: info.id.clone(),
-                                severity: h.severity,
-                                line: h.line,
-                                column: h.column,
-                                fingerprint: super::store::fingerprint(key, &info.id, value),
-                                preview: secrets::preview(value),
-                            }
-                        })
-                        .collect()
-                }
-            };
-            by_content.insert(f.file, hits.clone());
-            hits
-        };
-        for h in hits {
-            report.found.push(Found {
-                path: f.path.clone(),
-                rule_id: h.rule_id,
-                severity: h.severity,
-                line: h.line,
-                column: h.column,
-                fingerprint: h.fingerprint,
-                preview: h.preview,
-                changeset: f.changeset,
-            });
+    let mut scan = Scan::new(engine, rules, policy, cfg, key);
+    scan.feed(files).await?;
+    Ok(scan.finish())
+}
+
+/// A scan fed in batches: the limits, the identical-content cache and the report are carried from
+/// one [`feed`](Self::feed) to the next, so the files of many changesets are read without all of
+/// their references being held at once, and the result is the one a single [`scan_files`] gives.
+pub struct Scan<'a> {
+    engine: &'a Eng,
+    rules: &'a RuleSet,
+    policy: &'a SecretsPolicy,
+    cfg: &'a Config,
+    key: &'a [u8; 32],
+    report: Report,
+    /// Per distinct content: the hits.
+    by_content: HashMap<FileId, Vec<Hit>>,
+    bytes_read: u64,
+}
+
+impl<'a> Scan<'a> {
+    pub fn new(
+        engine: &'a Eng,
+        rules: &'a RuleSet,
+        policy: &'a SecretsPolicy,
+        cfg: &'a Config,
+        key: &'a [u8; 32],
+    ) -> Self {
+        Self {
+            engine,
+            rules,
+            policy,
+            cfg,
+            key,
+            report: Report::default(),
+            by_content: HashMap::new(),
+            bytes_read: 0,
         }
     }
-    Ok(report)
+
+    /// Whether a limit stopped the scan: further files are not read.
+    pub fn stopped(&self) -> bool {
+        self.report.truncated
+    }
+
+    /// Scans `files` after the ones fed before.
+    pub async fn feed(&mut self, files: Vec<FileRef>) -> Result<(), Status> {
+        let (rules, cfg) = (self.rules, self.cfg);
+        for f in files {
+            if self.report.truncated {
+                break;
+            }
+            if self.policy.allows(&f.path) {
+                continue;
+            }
+            let hits = if let Some(h) = self.by_content.get(&f.file) {
+                h.clone()
+            } else {
+                if f.size > cfg.max_file_bytes.0 {
+                    self.report.skipped_large += 1;
+                    continue;
+                }
+                if self.report.files_scanned as usize >= cfg.max_files
+                    || self.bytes_read.saturating_add(f.size) > cfg.max_scan_bytes.0
+                {
+                    self.report.truncated = true;
+                    break;
+                }
+                let data = self
+                    .engine
+                    .read_file(f.file, f.size)
+                    .await
+                    .map_err(|e| crate::review::internal("secret scan read", &e))?;
+                self.bytes_read = self.bytes_read.saturating_add(f.size);
+                let scanned = rules.scan(&data);
+                let hits = match scanned.skipped {
+                    Some(Skipped::Binary) => {
+                        self.report.skipped_binary += 1;
+                        Vec::new()
+                    }
+                    Some(Skipped::TooLarge) => {
+                        self.report.skipped_large += 1;
+                        Vec::new()
+                    }
+                    None => {
+                        self.report.files_scanned += 1;
+                        scanned
+                            .hits
+                            .iter()
+                            .map(|h| {
+                                let info = &rules.infos()[h.rule];
+                                let value = &data[h.value.clone()];
+                                Hit {
+                                    rule_id: info.id.clone(),
+                                    severity: h.severity,
+                                    line: h.line,
+                                    column: h.column,
+                                    fingerprint: super::store::fingerprint(
+                                        self.key, &info.id, value,
+                                    ),
+                                    preview: secrets::preview(value),
+                                }
+                            })
+                            .collect()
+                    }
+                };
+                self.by_content.insert(f.file, hits.clone());
+                hits
+            };
+            for h in hits {
+                self.report.found.push(Found {
+                    path: f.path.clone(),
+                    rule_id: h.rule_id,
+                    severity: h.severity,
+                    line: h.line,
+                    column: h.column,
+                    fingerprint: h.fingerprint,
+                    preview: h.preview,
+                    changeset: f.changeset,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// The report so far.
+    pub fn finish(self) -> Report {
+        self.report
+    }
 }
 
 #[derive(Clone)]
