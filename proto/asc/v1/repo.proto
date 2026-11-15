@@ -191,8 +191,13 @@ message ForkOp { RepoRef from = 1; }
 message RepoAdminResponse { uint64 logical_size = 1; uint64 unique_size = 2; string report = 3; }
 
 message GitRefUpdate { string name = 1; bytes old_git = 2 [(asc.v1.json) = JSON_KIND_HEX]; bytes new_git = 3 [(asc.v1.json) = JSON_KIND_HEX]; }
+// `history` (host credential only, like the whole call): the update copies another git repository's history into this
+// one, as a mirror sync or an in-place move does, so the push rules for a person's push do not apply. The import path
+// rule is used; a non-fast-forward, a moved tag and a deletion are applied as forced updates (a land branch, trunk and
+// `allow_force` do not stop them); a secret on trunk is recorded as a finding and does not refuse the update. Path
+// rules, size limits and quota still apply. The ref log records `history-import`.
 message ImportGitPushRequest { RepoRef repo = 1; string git_dir = 2; string object_dir = 3;
-  repeated string alternate_dirs = 4; repeated GitRefUpdate updates = 5; int64 pusher_id = 6; }
+  repeated string alternate_dirs = 4; repeated GitRefUpdate updates = 5; int64 pusher_id = 6; bool history = 7; }
 message ImportGitPushResponse { repeated RefResult results = 1; }
 // The import of the repository that is running now, if any: the commits it has turned into changesets so far and when
 // it started (unix seconds). Commits asc already held are not counted. Nothing running: running false, the rest zero.

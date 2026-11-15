@@ -106,6 +106,11 @@ pub struct ImportOptions {
     /// `repos.git_import_grade`: apply the import path rule (SPEC §2.8) instead of the native
     /// one. The first push to an empty repository gets the import rule as well.
     pub import_grade: bool,
+    /// A history import (a mirror sync or an in-place move, host credential only): the import
+    /// path rule, every ref move applied as a force (a non-fast-forward, a moved tag, a deletion,
+    /// also on a land branch and on trunk), secrets recorded and not refused, and the ref log
+    /// `via` is [`HISTORY_VIA`]. Path rules, limits and quota apply as always.
+    pub history: bool,
     /// The `via` of the ref log row (`git-push` for the git protocol layer); `None` is the RPC's
     /// `asc-push`.
     pub via: Option<&'static str>,
@@ -246,12 +251,28 @@ impl ImportPush {
                 "hooks cannot be skipped by this caller",
             ));
         }
+        // A history import forces refs past the push rules: only where the hooks are skipped
+        // (the host service credential), and always under its own `via`, which is what the gate
+        // keys on. No caller can name `HISTORY_VIA` for an ordinary push.
+        if opts.history && !opts.skip_pre {
+            return Err(Status::permission_denied(
+                "a history import needs the host service credential",
+            ));
+        }
+        let via = if opts.history {
+            Some(HISTORY_VIA)
+        } else if opts.via == Some(HISTORY_VIA) {
+            return Err(internal("import", &"history-import is for history imports"));
+        } else {
+            opts.via
+        };
         let entry = self.registry.open(&ctx.repo).await.map_err(|e| match e {
             crate::registry::RegistryError::NotFound(_) => Status::not_found("no such repository"),
             e => internal("registry", &e),
         })?;
-        // A mirror takes no pushes (SPEC §8.3 step 3): refuse before reading a byte.
-        if entry.mode == RepoMode::Mirror {
+        // A mirror takes no pushes (SPEC §8.3 step 3): refuse before reading a byte. A history
+        // import is how a mirror is kept in sync with its source, so only it may write.
+        if entry.mode == RepoMode::Mirror && !opts.history {
             return Err(rpc(RpcError::MirrorMode(info(vec![ctx.repo.to_string()]))));
         }
         // A retry of a push that committed returns what it returned.
@@ -271,7 +292,7 @@ impl ImportPush {
         // A push whose answer was lost (the git child was killed or the client went away after
         // asc committed) is sent again under a new op id: it is the same push when every ref
         // already holds what the commands ask for because this principal's push stored it.
-        if let Some(via) = opts.via
+        if let Some(via) = via
             && let Some(results) = self
                 .already_applied(&entry, ctx, via, &map, &policy, commands)
                 .await?
@@ -320,7 +341,7 @@ impl ImportPush {
         }
 
         let windows_safe = self.refs.windows_safe(&entry).await?;
-        let native = !opts.import_grade && self.has_refs(&entry).await?;
+        let native = !(opts.import_grade || opts.history) && self.has_refs(&entry).await?;
         // Part 2: the import records the changesets in the graph itself, each with a ledger row
         // naming the pusher, so `UpdateRefs` below finds them known and adds none; it charges the
         // owner for what the refs newly reach, in the transaction that moves them. If it refuses,
@@ -363,7 +384,7 @@ impl ImportPush {
                 id_mode: 0,
             }),
             updates,
-            mode: self.update_mode(&entry, &moves).await? as i32,
+            mode: self.update_mode(&entry, &moves, opts.history).await? as i32,
             push_options: opts.push_options.clone(),
             hooks: if opts.skip_pre {
                 wire::HookMode::SkipPre as i32
@@ -375,7 +396,7 @@ impl ImportPush {
         };
         let mut asc_ctx = ctx.clone();
         asc_ctx.id_mode = IdMode::Asc;
-        let result = match opts.via {
+        let result = match via {
             Some(via) => self.refs.update_via(&asc_ctx, req, via).await,
             None => self.refs.update_refs(&asc_ctx, req).await,
         };
@@ -395,11 +416,19 @@ impl ImportPush {
     /// needs `allow_force`, protected refs need a maintainer). A land branch is the exception: git
     /// cannot be told about the rewrites a land makes, so a non-fast-forward there stays git's
     /// `(fetch first)`. A moved tag stays refused too, and so does the whole push with it.
+    ///
+    /// A history import copies a repository that moved on its own: every update is a force,
+    /// land branches and tags included. The CAS on each `old` is the lease, and the gate in
+    /// `GateMode::History` (not `allow_force`) decides what a forced trunk may do.
     async fn update_mode(
         &self,
         entry: &RepoEntry,
         moves: &[(&str, Option<RefTarget>, Option<RefTarget>)],
+        history: bool,
     ) -> Result<wire::UpdateMode, Status> {
+        if history {
+            return Ok(wire::UpdateMode::Force);
+        }
         let graph = Graph::new(SqlGraph::new(
             self.registry.pool().clone(),
             entry.ns,
@@ -1136,6 +1165,9 @@ async fn check_windows_paths(entry: &RepoEntry, cs: &Changeset) -> Result<(), St
 /// `bridge_promote` effect leaves these rows alone (a promotion that won the race would make
 /// git's compare-and-set on the same ref fail).
 pub const HOST_PUSH_VIA: &str = "host-git-push";
+/// The ref log `via` of a host history import (`ImportGitPushRequest.history`). `update.rs` runs
+/// the gate in `GateMode::History` for it, so only [`ImportPush::import_git_push`] may pass it.
+pub const HISTORY_VIA: &str = "history-import";
 
 /// The `import_push` handler group: `Ingest` (U48a) and `ImportGitPush`.
 pub struct ImportPushService {
@@ -1229,6 +1261,7 @@ impl ImportPushHandler for ImportPushService {
             .collect::<Result<Vec<_>, _>>()?;
         let opts = ImportOptions {
             skip_pre: true,
+            history: req.history,
             via: Some(HOST_PUSH_VIA),
             ..ImportOptions::default()
         };
@@ -2422,7 +2455,10 @@ mod tests {
     }
 
     async fn rpc_fx(repo_root: bool, forgejo: bool) -> Rpc {
-        let f = fx().await;
+        rpc_of(fx().await, repo_root, forgejo)
+    }
+
+    fn rpc_of(f: Fx, repo_root: bool, forgejo: bool) -> Rpc {
         let pipeline = if forgejo {
             f.pipeline.clone()
         } else {
@@ -2465,6 +2501,7 @@ mod tests {
                 new_git: raw(new).into(),
             }],
             pusher_id: 7,
+            history: false,
         }
     }
 
@@ -2878,5 +2915,500 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(s.code(), tonic::Code::PermissionDenied);
+    }
+
+    // -------------------------------------------------------------------------- history mode
+
+    /// `ImportGitPushRequest.history`: what a mirror sync or an in-place move sends.
+    mod history {
+        use super::*;
+        use crate::policy::gate::ServerGate;
+
+        /// The host RPC with the policy gate on the pipeline, as the server runs it.
+        async fn gated() -> Rpc {
+            gated_scanning(crate::secretscan::Config::default()).await
+        }
+
+        async fn gated_scanning(scan: crate::secretscan::Config) -> Rpc {
+            let f = fx().await;
+            let registry = f.registry.clone();
+            let gate = ServerGate::new(
+                registry.clone(),
+                Arc::new(crate::policy::PolicyStore::new(registry.clone())),
+                Arc::new(crate::secretscan::Scanner::new(registry.clone(), scan)),
+                Arc::new(crate::signing::rpc::Signing::new(
+                    registry,
+                    crate::signing::Config::default(),
+                    None,
+                )),
+            );
+            assert!(f.pipeline.set_gate(Arc::new(gate)).is_ok());
+            rpc_of(f, true, true)
+        }
+
+        fn host() -> CallCtx {
+            ctx_of(HOST_SERVICE_PRINCIPAL)
+        }
+
+        /// A request carrying `ups` as `(ref, old, new)`; an empty id is "no ref".
+        fn hreq(f: &Fx, history: bool, ups: &[(&str, &str, &str)]) -> wire::ImportGitPushRequest {
+            let raw = |s: &str| {
+                if s.is_empty() {
+                    Vec::new()
+                } else {
+                    oid(s).as_bytes().to_vec()
+                }
+            };
+            let mut r = request(f, "", "");
+            r.updates = ups
+                .iter()
+                .map(|(name, old, new)| wire::GitRefUpdate {
+                    name: (*name).into(),
+                    old_git: raw(old).into(),
+                    new_git: raw(new).into(),
+                })
+                .collect();
+            r.history = history;
+            r
+        }
+
+        impl Rpc {
+            async fn send(
+                &self,
+                history: bool,
+                ups: &[(&str, &str, &str)],
+            ) -> Result<wire::ImportGitPushResponse, Status> {
+                self.service
+                    .import_git_push(&host(), hreq(&self.f, history, ups))
+                    .await
+            }
+
+            async fn via_of(&self, name: &str) -> String {
+                let log = self
+                    .f
+                    .registry
+                    .refs()
+                    .log(self.f.entry.key, &RefName::new(name.as_bytes()).unwrap(), 1)
+                    .await
+                    .unwrap();
+                log[0].actor.via.clone()
+            }
+
+            async fn set_land_branches(&self, json: &str) {
+                sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "UPDATE repos SET land_branches = '{json}'"
+                )))
+                .execute(self.f.registry.pool())
+                .await
+                .unwrap();
+            }
+        }
+
+        const M: &str = "refs/heads/master";
+
+        #[tokio::test]
+        async fn create_fast_forward_rewrite_tag_move_and_delete_in_successive_calls() {
+            let r = gated().await;
+            let g = &r.f.forge;
+            r.set_land_branches("[\"master\"]").await;
+            let c1 = g.commit(None, &[("a", "1")]);
+            let c2 = g.commit(Some(&c1), &[("a", "2")]);
+            let c2x = g.commit(Some(&c1), &[("a", "2x")]);
+            let lone = g.commit(None, &[("b", "lone")]);
+
+            // Create.
+            r.send(true, &[(M, "", &c1), ("refs/heads/topic", "", &c1)])
+                .await
+                .unwrap();
+            assert_eq!(r.f.git_of(M).await, c1);
+            assert_eq!(r.via_of(M).await, HISTORY_VIA);
+            // Fast-forward.
+            r.send(true, &[(M, &c1, &c2)]).await.unwrap();
+            assert_eq!(r.f.git_of(M).await, c2);
+            // Rewrite of the trunk, which is also a land branch, and of a plain branch.
+            r.send(true, &[(M, &c2, &c2x), ("refs/heads/topic", &c1, &c2)])
+                .await
+                .unwrap();
+            assert_eq!(r.f.git_of(M).await, c2x);
+            assert_eq!(r.f.git_of("refs/heads/topic").await, c2);
+            // A lightweight tag created and moved to a commit that is no descendant.
+            r.send(true, &[("refs/tags/v1", "", &c2x)]).await.unwrap();
+            r.send(true, &[("refs/tags/v1", &c2x, &lone)])
+                .await
+                .unwrap();
+            assert_eq!(r.f.git_of("refs/tags/v1").await, lone);
+            // An annotated tag, moved to another tag object.
+            g.git(&["tag", "-a", "-m", "one", "ta", &c1], b"");
+            g.git(&["tag", "-a", "-m", "two", "tb", &c2], b"");
+            let (ta, tb) = (
+                g.git(&["rev-parse", "refs/tags/ta"], b""),
+                g.git(&["rev-parse", "refs/tags/tb"], b""),
+            );
+            r.send(true, &[("refs/tags/rel", "", &ta)]).await.unwrap();
+            let first = r.f.target("refs/tags/rel").await;
+            r.send(true, &[("refs/tags/rel", &ta, &tb)]).await.unwrap();
+            let moved = r.f.target("refs/tags/rel").await;
+            assert!(matches!(moved, Some(RefTarget::Tag(_))));
+            assert_ne!(first, moved);
+            // Deletes, trunk included.
+            r.send(
+                true,
+                &[
+                    ("refs/heads/topic", &c2, ""),
+                    ("refs/tags/v1", &lone, ""),
+                    ("refs/tags/rel", &tb, ""),
+                ],
+            )
+            .await
+            .unwrap();
+            assert!(r.f.target("refs/heads/topic").await.is_none());
+            assert!(r.f.target("refs/tags/v1").await.is_none());
+            assert!(r.f.target("refs/tags/rel").await.is_none());
+            r.send(true, &[(M, &c2x, "")]).await.unwrap();
+            assert!(r.f.target(M).await.is_none());
+            assert_eq!(r.f.hooks.pre_receive.load(Ordering::SeqCst), 0);
+        }
+
+        #[tokio::test]
+        async fn the_same_op_id_twice_is_one_result_and_one_log_row() {
+            let r = gated().await;
+            let c1 = r.f.forge.commit(None, &[("a", "1")]);
+            let c2 = r.f.forge.commit(Some(&c1), &[("a", "2")]);
+            let c2x = r.f.forge.commit(Some(&c1), &[("a", "2x")]);
+            r.send(true, &[(M, "", &c2)]).await.unwrap();
+            let ctx = host();
+            let req = hreq(&r.f, true, &[(M, &c2, &c2x)]);
+            let first = r.service.import_git_push(&ctx, req.clone()).await.unwrap();
+            // The `old` is stale now, yet the retry answers what the first call answered.
+            let second = r.service.import_git_push(&ctx, req).await.unwrap();
+            assert_eq!(first, second);
+            assert_eq!(r.f.git_of(M).await, c2x);
+            let log =
+                r.f.registry
+                    .refs()
+                    .log(r.f.entry.key, &RefName::new(M.as_bytes()).unwrap(), 10)
+                    .await
+                    .unwrap();
+            assert_eq!(log.len(), 2, "create and rewrite, once each");
+        }
+
+        #[tokio::test]
+        async fn a_stale_old_is_a_ref_conflict_and_changes_nothing() {
+            let r = gated().await;
+            let c1 = r.f.forge.commit(None, &[("a", "1")]);
+            let c2 = r.f.forge.commit(Some(&c1), &[("a", "2")]);
+            let c3 = r.f.forge.commit(Some(&c1), &[("a", "3")]);
+            r.send(true, &[(M, "", &c2)]).await.unwrap();
+            let s = r.send(true, &[(M, &c1, &c3)]).await.unwrap_err();
+            assert_eq!(code(&s), "REF_CONFLICT");
+            assert_eq!(r.f.git_of(M).await, c2);
+            // A create over a ref that exists is a conflict as well.
+            let s = r.send(true, &[(M, "", &c3)]).await.unwrap_err();
+            assert_eq!(code(&s), "REF_CONFLICT");
+            assert_eq!(r.f.git_of(M).await, c2);
+        }
+
+        #[tokio::test]
+        async fn a_land_branch_rewrite_and_a_moved_annotated_tag_pass_only_with_history() {
+            let r = gated().await;
+            let g = &r.f.forge;
+            r.set_land_branches("[\"release\"]").await;
+            let c1 = g.commit(None, &[("a", "1")]);
+            let c2 = g.commit(Some(&c1), &[("a", "2")]);
+            let side = g.commit(Some(&c1), &[("a", "side")]);
+            r.send(false, &[(M, "", &c1)]).await.unwrap();
+            r.send(false, &[("refs/heads/release", "", &c2)])
+                .await
+                .unwrap();
+            let s = r
+                .send(false, &[("refs/heads/release", &c2, &side)])
+                .await
+                .unwrap_err();
+            assert_eq!(code(&s), "NOT_FAST_FORWARD");
+            assert_eq!(r.f.git_of("refs/heads/release").await, c2);
+            r.send(true, &[("refs/heads/release", &c2, &side)])
+                .await
+                .unwrap();
+            assert_eq!(r.f.git_of("refs/heads/release").await, side);
+            assert_eq!(r.via_of("refs/heads/release").await, HISTORY_VIA);
+
+            g.git(&["tag", "-a", "-m", "one", "ta", &c1], b"");
+            g.git(&["tag", "-a", "-m", "two", "tb", &c2], b"");
+            let (ta, tb) = (
+                g.git(&["rev-parse", "refs/tags/ta"], b""),
+                g.git(&["rev-parse", "refs/tags/tb"], b""),
+            );
+            r.send(false, &[("refs/tags/rel", "", &ta)]).await.unwrap();
+            let s = r
+                .send(false, &[("refs/tags/rel", &ta, &tb)])
+                .await
+                .unwrap_err();
+            assert_eq!(code(&s), "NOT_FAST_FORWARD");
+            r.send(true, &[("refs/tags/rel", &ta, &tb)]).await.unwrap();
+        }
+
+        /// A commit that carries the policy file (`allow_force` is off by default).
+        fn policy_commit(f: &Fx, parent: Option<&str>, more: &[(&str, &str)]) -> String {
+            let text = crate::policy::tests::policy_text("");
+            let mut files = vec![(asc_core::policy::POLICY_PATH, text.as_str())];
+            files.extend_from_slice(more);
+            f.forge.commit(parent, &files)
+        }
+
+        fn names_allow_force(s: &Status) -> bool {
+            status_rpc_error(s)
+                .is_some_and(|e| e.info().paths.iter().any(|p| p.contains("allow_force")))
+        }
+
+        #[tokio::test]
+        async fn a_trunk_rewrite_and_delete_pass_only_with_history() {
+            let r = gated().await;
+            r.set_land_branches("[\"other\"]").await;
+            let c1 = policy_commit(&r.f, None, &[("a", "1")]);
+            let c2 = policy_commit(&r.f, Some(&c1), &[("a", "2")]);
+            let c2x = policy_commit(&r.f, Some(&c1), &[("a", "2x")]);
+            r.send(false, &[(M, "", &c1)]).await.unwrap();
+            r.send(false, &[(M, &c1, &c2)]).await.unwrap();
+            // A person's rewrite or deletion of trunk needs `allow_force`.
+            let s = r.send(false, &[(M, &c2, &c2x)]).await.unwrap_err();
+            assert!(names_allow_force(&s), "{s:?}");
+            let s = r.send(false, &[(M, &c2, "")]).await.unwrap_err();
+            assert!(names_allow_force(&s), "{s:?}");
+            assert_eq!(r.f.git_of(M).await, c2);
+            // The history import of the same moves goes through.
+            r.send(true, &[(M, &c2, &c2x)]).await.unwrap();
+            assert_eq!(r.f.git_of(M).await, c2x);
+            assert_eq!(r.via_of(M).await, HISTORY_VIA);
+            r.send(true, &[(M, &c2x, "")]).await.unwrap();
+            assert!(r.f.target(M).await.is_none());
+        }
+
+        #[tokio::test]
+        async fn a_secret_on_trunk_is_recorded_and_does_not_refuse_the_import() {
+            let r = gated().await;
+            let leak = format!("t = \"{}\"\n", crate::policy::tests::token());
+            let c1 = r.f.forge.commit(None, &[("a", "1")]);
+            let c2 =
+                r.f.forge
+                    .commit(Some(&c1), &[("a", "1"), ("x.toml", &leak)]);
+            r.send(false, &[(M, "", &c1)]).await.unwrap();
+            let s = r.send(false, &[(M, &c1, &c2)]).await.unwrap_err();
+            assert_eq!(code(&s), "SECRET_DETECTED");
+            assert_eq!(r.f.count("SELECT COUNT(*) FROM secret_findings").await, 0);
+            assert_eq!(r.f.git_of(M).await, c1);
+            r.send(true, &[(M, &c1, &c2)]).await.unwrap();
+            assert_eq!(r.f.git_of(M).await, c2);
+            assert_eq!(r.f.count("SELECT COUNT(*) FROM secret_findings").await, 1);
+        }
+
+        #[tokio::test]
+        async fn the_import_path_rule_applies_and_a_forbidden_path_still_refuses() {
+            let r = gated().await;
+            let g = &r.f.forge;
+            let c1 = g.commit(None, &[("aux.txt", "legacy")]);
+            let c2 = g.commit(Some(&c1), &[("aux.txt", "legacy"), ("nul.txt", "x")]);
+            let evil = g.commit(Some(&c1), &[("aux.txt", "legacy"), ("GIT~1/config", "x")]);
+            r.send(true, &[(M, "", &c1)]).await.unwrap();
+            // The native rule refuses a Windows-invalid name after the first push, the import
+            // rule of a history import does not.
+            let s = r.send(false, &[(M, &c1, &c2)]).await.unwrap_err();
+            assert_eq!(code(&s), "PATH_POLICY");
+            r.send(true, &[(M, &c1, &c2)]).await.unwrap();
+            assert_eq!(r.f.git_of(M).await, c2);
+            // A path that is never safe to check out is refused in history mode too.
+            let s = r.send(true, &[(M, &c2, &evil)]).await.unwrap_err();
+            assert_eq!(code(&s), "PATH_POLICY");
+            assert_eq!(r.f.git_of(M).await, c2);
+        }
+
+        #[tokio::test]
+        async fn pull_request_heads_are_accepted_and_moved_in_history_mode() {
+            let r = gated().await;
+            let c1 = r.f.forge.commit(None, &[("a", "1")]);
+            let c2 = r.f.forge.commit(Some(&c1), &[("a", "2")]);
+            let side = r.f.forge.commit(Some(&c1), &[("a", "side")]);
+            r.send(true, &[(M, "", &c1)]).await.unwrap();
+            let pull = "refs/pull/7/head";
+            r.send(true, &[(pull, "", &c2)]).await.unwrap();
+            assert_eq!(r.f.git_of(pull).await, c2);
+            r.send(true, &[(pull, &c2, &side)]).await.unwrap();
+            assert_eq!(r.f.git_of(pull).await, side);
+            assert_eq!(r.via_of(pull).await, HISTORY_VIA);
+        }
+
+        /// A mirror repository next to the fixture's `o/r`, and a host context aimed at it.
+        async fn mirror_of(r: &Rpc) -> (CallCtx, RepoName) {
+            let name = RepoName::parse("o/m").unwrap();
+            r.f.registry
+                .create(
+                    &name,
+                    &NewRepo {
+                        mode: RepoMode::Mirror,
+                        ..NewRepo::default()
+                    },
+                )
+                .await
+                .unwrap();
+            let mut ctx = host();
+            ctx.repo = name.clone();
+            (ctx, name)
+        }
+
+        #[tokio::test]
+        async fn a_mirror_takes_a_history_import_and_still_refuses_every_other_write() {
+            let r = gated().await;
+            let c1 = r.f.forge.commit(None, &[("a", "1")]);
+            let c2 = r.f.forge.commit(Some(&c1), &[("a", "2")]);
+            let (ctx, name) = mirror_of(&r).await;
+            let history = ImportOptions {
+                skip_pre: true,
+                history: true,
+                ..ImportOptions::default()
+            };
+            let host_push = ImportOptions {
+                skip_pre: true,
+                via: Some(HOST_PUSH_VIA),
+                ..ImportOptions::default()
+            };
+            // A plain host push, a plain user push and a user's history request: nothing is
+            // written to the mirror.
+            let s =
+                r.f.push_as(&ctx, &[cmd(M, None, Some(&c1))], &host_push)
+                    .await
+                    .unwrap_err();
+            assert_eq!(code(&s), "MIRROR_MODE");
+            let mut alice = ctx_of("alice");
+            alice.repo = name.clone();
+            let s =
+                r.f.push_as(
+                    &alice,
+                    &[cmd(M, None, Some(&c1))],
+                    &ImportOptions::default(),
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(code(&s), "MIRROR_MODE");
+            let s =
+                r.f.push_as(&alice, &[cmd(M, None, Some(&c1))], &history)
+                    .await
+                    .unwrap_err();
+            assert_eq!(s.code(), tonic::Code::PermissionDenied);
+            assert_eq!(r.f.count("SELECT COUNT(*) FROM git_map").await, 0);
+            // The history import creates and moves refs of the mirror.
+            r.f.push_as(&ctx, &[cmd(M, None, Some(&c1))], &history)
+                .await
+                .unwrap();
+            // A new call: the same op id would answer from the first.
+            let mut ctx = ctx;
+            ctx.op_id = Some(Uuid::new_v4());
+            r.f.push_as(&ctx, &[cmd(M, Some(&c1), Some(&c2))], &history)
+                .await
+                .unwrap();
+            let entry = r.f.registry.open(&name).await.unwrap();
+            let name_ref = RefName::new(M.as_bytes()).unwrap();
+            let log =
+                r.f.registry
+                    .refs()
+                    .log(entry.key, &name_ref, 2)
+                    .await
+                    .unwrap();
+            assert!(!log.is_empty() && log.iter().all(|e| e.actor.via == HISTORY_VIA));
+            let moved = r.f.registry.refs().get(entry.key, &name_ref).await.unwrap();
+            let Some(RefTarget::Changeset(tip)) = moved.map(|e| e.target) else {
+                panic!("the mirror has its branch");
+            };
+            let git = entry.backend.engine().git_commit_of(tip).await.unwrap();
+            assert_eq!(git.to_string(), c2);
+            // And a later plain push is refused again.
+            ctx.op_id = Some(Uuid::new_v4());
+            let s =
+                r.f.push_as(&ctx, &[cmd(M, Some(&c2), Some(&c1))], &host_push)
+                    .await
+                    .unwrap_err();
+            assert_eq!(code(&s), "MIRROR_MODE");
+        }
+
+        #[tokio::test]
+        async fn a_history_import_cut_short_by_the_scan_limit_goes_through_and_leaves_an_event() {
+            let scan = crate::secretscan::Config {
+                max_files: 1,
+                ..crate::secretscan::Config::default()
+            };
+            let r = gated_scanning(scan).await;
+            let c1 =
+                r.f.forge
+                    .commit(None, &[("a", "1"), ("b", "2"), ("c", "3")]);
+            let events = "SELECT COUNT(*) FROM audit_events WHERE action = 'secret.scan.incomplete' AND scope_kind = 'repo'";
+            // A plain push over the limit is refused when the policy blocks on push; a history
+            // import is let through, and the gap is on the record.
+            r.send(true, &[(M, "", &c1)]).await.unwrap();
+            assert_eq!(r.f.git_of(M).await, c1);
+            assert_eq!(r.f.count(events).await, 1);
+            // A scan that reads everything leaves no such event.
+            let r = gated().await;
+            let c1 = r.f.forge.commit(None, &[("a", "1"), ("b", "2")]);
+            r.send(true, &[(M, "", &c1)]).await.unwrap();
+            assert_eq!(r.f.count(events).await, 0);
+        }
+
+        #[tokio::test]
+        async fn review_and_signatures_are_not_asked_of_imported_history() {
+            let r = gated().await;
+            let policy = crate::policy::tests::policy_text(
+                "[trunk]\nrequire_approvals = 1\n[signing]\nrequire_signed = true\n",
+            );
+            let c1 =
+                r.f.forge
+                    .commit(None, &[(".asc/policy.toml", &policy), ("a", "1")]);
+            let c2 =
+                r.f.forge
+                    .commit(Some(&c1), &[(".asc/policy.toml", &policy), ("a", "2")]);
+            r.send(true, &[(M, "", &c1)]).await.unwrap();
+            // The same update, not as a history import, needs the approval and the signature.
+            r.set_land_branches("[\"other\"]").await;
+            r.send(false, &[(M, &c1, &c2)]).await.unwrap_err();
+            assert_eq!(r.f.git_of(M).await, c1);
+            r.send(true, &[(M, &c1, &c2)]).await.unwrap();
+            assert_eq!(r.f.git_of(M).await, c2);
+        }
+
+        #[tokio::test]
+        async fn history_needs_the_host_credential_and_a_plain_push_keeps_its_via() {
+            let r = gated().await;
+            let c1 = r.f.forge.commit(None, &[("a", "1")]);
+            for who in ["alice", "7:alice", "admin"] {
+                let s = r
+                    .service
+                    .import_git_push(&ctx_of(who), hreq(&r.f, true, &[(M, "", &c1)]))
+                    .await
+                    .unwrap_err();
+                assert_eq!(s.code(), tonic::Code::PermissionDenied, "{who}");
+            }
+            assert!(r.f.target(M).await.is_none());
+            // Below the RPC: history without skipped hooks, and the history `via` on a plain push.
+            let history = ImportOptions {
+                history: true,
+                ..ImportOptions::default()
+            };
+            let s =
+                r.f.push_as(&ctx_of("alice"), &[cmd(M, None, Some(&c1))], &history)
+                    .await
+                    .unwrap_err();
+            assert_eq!(s.code(), tonic::Code::PermissionDenied);
+            let forged = ImportOptions {
+                skip_pre: true,
+                via: Some(HISTORY_VIA),
+                ..ImportOptions::default()
+            };
+            let s =
+                r.f.push_as(&host(), &[cmd(M, None, Some(&c1))], &forged)
+                    .await
+                    .unwrap_err();
+            assert_eq!(s.code(), tonic::Code::Internal);
+            assert!(r.f.target(M).await.is_none());
+            // The host's plain push is still `host-git-push`.
+            r.send(false, &[(M, "", &c1)]).await.unwrap();
+            assert_eq!(r.via_of(M).await, HOST_PUSH_VIA);
+        }
     }
 }

@@ -691,8 +691,9 @@ impl ServerRefs {
         if let Some(done) = self.stored(&entry, op_id).await? {
             return Ok(done);
         }
-        // Step 3: a mirror takes no pushes.
-        if entry.mode == RepoMode::Mirror {
+        // Step 3: a mirror takes no pushes. Only a host history import (the one caller that sets
+        // `via = HISTORY_VIA`, and only with the host credential) may write to keep it in sync.
+        if entry.mode == RepoMode::Mirror && via != crate::import_push::HISTORY_VIA {
             return Err(rpc(RpcError::MirrorMode(info(vec![ctx.repo.to_string()]))));
         }
 
@@ -788,8 +789,12 @@ impl ServerRefs {
                 ctx,
                 entry: &entry,
                 updates: &gate_updates,
-                mode: GateMode::Push {
-                    force: mode == wire::UpdateMode::Force,
+                mode: if via == crate::import_push::HISTORY_VIA {
+                    GateMode::History
+                } else {
+                    GateMode::Push {
+                        force: mode == wire::UpdateMode::Force,
+                    }
                 },
             })
             .await?;

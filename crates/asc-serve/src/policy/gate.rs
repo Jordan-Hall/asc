@@ -74,6 +74,13 @@ pub struct GateUpdate {
 pub enum GateMode {
     /// `UpdateRefs` in fast-forward or force mode.
     Push { force: bool },
+    /// `ImportGitPush` with `history`: the host copies another repository's history in (a mirror
+    /// sync, an in-place move). The update is forced, so trunk may be rewritten or deleted without
+    /// `allow_force` and whatever the organisation says about force pushes; a secret is recorded
+    /// as a finding instead of refusing the update. Path rules, `[refs]` rules, review and
+    /// signature rules, the scan limits and the dependency gate are the same as for a push. Only
+    /// `ImportPush` sends it, and only for the host service credential.
+    History,
     /// A land. `rewrites` are the `(pushed, landed)` pairs of the server's rebase; the landed
     /// changesets are already ingested.
     Land {
@@ -777,10 +784,15 @@ impl ServerGate {
         let Some(new) = u.new else {
             // Deleting trunk needs allow_force; deleting any other protected ref is a maintainer
             // matter the forge decides.
-            if is_trunk && let Some(p) = in_force.policy() {
+            // A history import deletes trunk when the source did; `allow_force` is for people.
+            let history = matches!(req.mode, GateMode::History);
+            if is_trunk
+                && !history
+                && let Some(p) = in_force.policy()
+            {
                 p.check_force().map_err(|d| from_denial(&d, &[]))?;
             }
-            if is_trunk && self.org_forbids_force(entry).await {
+            if is_trunk && !history && self.org_forbids_force(entry).await {
                 return Err(org_force_refused());
             }
             if is_trunk && let Some(d) = in_force.error() {
@@ -890,6 +902,9 @@ impl ServerGate {
                 .await?;
         }
 
+        // A history import carries history that other people already reviewed and signed
+        // elsewhere. Neither can be asked of it, so both checks are skipped in that mode.
+        let history = matches!(req.mode, GateMode::History);
         if let Some(p) = &effective {
             // Path rules and the agent scope, for the pusher.
             let mut refused = Vec::new();
@@ -903,7 +918,9 @@ impl ServerGate {
             if let Some(d) = first {
                 return Err(from_denial(&d, &refused));
             }
-            if is_trunk {
+            if history {
+                // Review and signatures are not asked of imported history (see above).
+            } else if is_trunk {
                 self.check_review(entry, p, &added, &rewrites).await?;
                 let org_signed = match self.org.get() {
                     Some(h) => h.requires_signed(entry.name.as_str()).await,
@@ -922,16 +939,31 @@ impl ServerGate {
                 .scanner
                 .scan_changesets(engine, entry.key.0, &sp, &added.ids)
                 .await?;
+            // History that is already public elsewhere is recorded, never refused: refusing it
+            // would stall a mirror or a move for good.
             if !report.found.is_empty() {
-                if sp.block_on_push {
+                if sp.block_on_push && !history {
                     return Err(self.secret_refusal(req.ctx, &u.name, &report).await);
                 }
                 self.record_findings(entry, &report).await?;
             }
             // A scan that stopped at a limit proves nothing about the files it did not read, so a
             // blocking policy cannot let the update through on it.
-            if let Some(status) = truncated_refusal(&sp, &report) {
+            if !history && let Some(status) = truncated_refusal(&sp, &report) {
                 return Err(status);
+            }
+            // The import goes through on a partial scan, so the gap is put on the record: an
+            // audit event says that files of this ref were never read for secrets.
+            if history && report.truncated {
+                let event =
+                    NewEvent::new("secret.scan.incomplete", actor_of(&req.ctx.principal.id))
+                        .repo(req.ctx.repo.as_str())
+                        .outcome(Outcome::Success)
+                        .target(&u.name)
+                        .detail("ref", &u.name)
+                        .detail("changesets", added.ids.len().to_string())
+                        .detail("found", report.found.len().to_string());
+                crate::audit::store::record_best_effort(self.registry.pool(), &event).await;
             }
         }
         if let Some(p) = &effective
@@ -1230,7 +1262,7 @@ impl ServerGate {
             }
             return Ok(Some(rules.iter().any(|r| r.signed)));
         };
-        if let (GateMode::Push { .. }, Some(old)) = (&req.mode, u.old)
+        if let (GateMode::Push { .. } | GateMode::History, Some(old)) = (&req.mode, u.old)
             && old != new
             && let Some(r) = rules.iter().find(|r| !r.force)
         {

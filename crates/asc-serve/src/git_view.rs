@@ -719,7 +719,7 @@ fn promoted_names(doc: &serde_json::Value) -> Result<Vec<String>, EffectError> {
 /// error: the row is retried with backoff until the host makes the directory right.
 ///
 /// The `ImportGitPush` rows are not promoted at once: the host's git moves its refs itself when its
-/// hook returns ([`crate::import_push::HOST_PUSH_VIA`]). The row checks that it did, waits for a git
+/// hook returns ([`crate::import_push::HOST_PUSH_VIA`], or [`crate::import_push::HISTORY_VIA`] for a history import). The row checks that it did, waits for a git
 /// that is still finishing, and promotes by itself when the push never reached the directory (the
 /// host's git was killed after its hook, or the host restarted).
 pub struct BridgePromoteEffect {
@@ -754,7 +754,12 @@ impl BridgePromoteEffect {
             .fetch_optional(self.registry.pool())
             .await?;
         match row {
-            Some(r) => Ok(r.try_get::<String, _>("via")? == crate::import_push::HOST_PUSH_VIA),
+            Some(r) => {
+                // A host history import (`HISTORY_VIA`) moves the host's git refs the same way.
+                let via = r.try_get::<String, _>("via")?;
+                Ok(via == crate::import_push::HOST_PUSH_VIA
+                    || via == crate::import_push::HISTORY_VIA)
+            }
             None => Ok(false),
         }
     }

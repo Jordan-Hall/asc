@@ -878,6 +878,7 @@ impl Inner {
             push_options: options.all,
             ttl_seconds: options.ttl_seconds,
             import_grade: false,
+            history: false,
             via: Some(VIA),
         };
         // A push that may store a ref as a user ref brings objects no shared ref reaches into the
