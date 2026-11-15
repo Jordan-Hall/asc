@@ -124,7 +124,7 @@ The dependency service (`crates/asc-serve/src/deps/`, `docs/DEPENDENCIES.md`) re
 | 32 | SBOM per revision | CycloneDX or SPDX for any changeset. The SBOM RPC and `asc deps sbom` have landed | S | done |
 | 33 | Advisories against asc itself | The server and the CLI tell the operator when the running version has an advisory | S | open |
 | 34 | Cache and artifact marking | Build-cache entries and CI artifacts built with a dependency that later got an advisory are flagged | D | open |
-| 36 | One security status | Each repository and each change has one status (clean, findings, unknown) with the versions to move to | S | open |
+| 36 | One security status | Each repository and each change has one status (clean, findings, unknown) with the versions to move to | S | in progress: Status RPC done (36a, 36b); CLI `asc deps status` next (36c), then hub banner and checks row (36d) |
 | 37 | Security page across repositories | One page per owner or organisation listing every repository's status and findings, with export | S | open |
 | 38 | Notifications | A notice to the repository's watchers when its status changes | S | open |
 | 39 | Agent tools | MCP tools that read findings and manage scanning | S | open |
