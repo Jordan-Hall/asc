@@ -124,7 +124,7 @@ The dependency service (`crates/asc-serve/src/deps/`, `docs/DEPENDENCIES.md`) re
 | 32 | SBOM per revision | CycloneDX or SPDX for any changeset. The SBOM RPC and `asc deps sbom` have landed | S | done |
 | 33 | Advisories against asc itself | The server and the CLI tell the operator when the running version has an advisory | S | open |
 | 34 | Cache and artifact marking | Build-cache entries and CI artifacts built with a dependency that later got an advisory are flagged | D | open |
-| 36 | One security status | Each repository and each change has one status (clean, findings, unknown) with the versions to move to | S | in progress: Status RPC done (36a, 36b); CLI `asc deps status` next (36c), then hub banner and checks row (36d) |
+| 36 | One security status | Each repository and each change has one status (clean, findings, unknown) with the versions to move to | S | in progress: Status RPC and `asc deps status` done (36a-36c); hub banner and checks row next (36d), then docs (36e) |
 | 37 | Security page across repositories | One page per owner or organisation listing every repository's status and findings, with export | S | open |
 | 38 | Notifications | A notice to the repository's watchers when its status changes | S | open |
 | 39 | Agent tools | MCP tools that read findings and manage scanning | S | open |
@@ -147,7 +147,7 @@ From a review of the hub's asc pages on 2026-11-13 (routes, templates and styles
 |---|---|---|---|---|
 | 42 | Cache and storage insights | CI time saved by the cache, cache hit rate, and storage used and saved, on the Insights page | S | done 2026-11-14: server counts hits, misses, puts, bytes served and time saved per day and per change (CiInsights.CacheSummary); hub Insights shows a Build cache section. Bytes saved by dedup are not measured, so not shown |
 | 43 | Agent proposals inbox and live map | One queue of agent proposals to approve or reject, and a live view of which agent works on what | S | done |
-| 44 | Worktrees view | A page listing the live virtual worktrees of a repository and who holds them | D | in progress: Cloud ReportWorktrees and ListWorktrees done (44a); daemon report (44b), hub regen (44c) and page (44d) next |
+| 44 | Worktrees view | A page listing the live virtual worktrees of a repository and who holds them | D | in progress: Cloud ReportWorktrees, ListWorktrees and the daemon report done (44a, 44b); hub regen (44c) and page (44d) next |
 | 45 | Commit-cloud view | All branchless work by user and agent, with restore | D | done |
 | 46 | Affected projects and cache hits on a change | Shown inline with the checks of a change | S | done 2026-11-14: affected projects card plus a Build cache card on pull request checks |
 | 50 | Repository templates | Templates in the create flow | D | done |
