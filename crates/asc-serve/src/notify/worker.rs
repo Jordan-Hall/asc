@@ -41,6 +41,9 @@ pub struct Outgoing {
     pub title: String,
     pub detail: String,
     pub path: String,
+    /// Sent only when set: the hub expands the watchers of the repository (`users` is then empty).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub watchers: bool,
 }
 
 /// Why a post failed.
@@ -182,7 +185,7 @@ impl Dispatcher {
         };
         let rows = sqlx::query(
             "SELECT n.ns AS ns, CAST(n.id AS BIGINT) AS id, r.name AS repo, n.event AS event, \
-                    n.users_json AS users_json, n.title AS title, n.detail AS detail, n.path AS path, \
+                    n.users_json AS users_json, n.title AS title, n.detail AS detail, n.path AS path, \n                    CAST(n.watchers AS BIGINT) AS watchers, \
                     CAST(n.attempts AS BIGINT) AS attempts, CAST(n.next_at AS BIGINT) AS next_at, \
                     CAST(n.created_at AS BIGINT) AS created_at \
              FROM notify_events n JOIN repos r ON r.ns = n.ns \
@@ -223,6 +226,7 @@ impl Dispatcher {
                 title: r.try_get("title")?,
                 detail: r.try_get("detail")?,
                 path: r.try_get("path")?,
+                watchers: r.try_get::<i64, _>("watchers")? != 0,
             };
             let name = format!("{}-{id}", hex(&ns));
             let result = match tokio::time::timeout(POST_TIMEOUT, sink.deliver(&name, &out)).await {

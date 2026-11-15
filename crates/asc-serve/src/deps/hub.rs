@@ -639,6 +639,10 @@ impl DepsHub {
         };
         let pool = self.registry.pool();
         let rows: Vec<FindingRow> = if persist {
+            let high_before = match store::open_by_severity(pool, entry.key.0).await {
+                Ok(m) => m["critical"].saturating_add(m["high"]),
+                Err(_) => u32::MAX, // unknown: no "new findings" notice from this scan
+            };
             let rows = store::record_scan(
                 pool,
                 entry.key.0,
@@ -667,6 +671,21 @@ impl DepsHub {
             .await
             .map_err(sql)?;
             let _ = store::prune(pool, now).await;
+            // The scan is recorded: tell the watchers if the status moved (best effort).
+            match self.status_in(&entry, &loaded).await {
+                Ok(status) => {
+                    let grew = super::notice::high_of(&status.open_by_severity) > high_before;
+                    super::notice::status_changed(
+                        pool,
+                        entry.name.as_str(),
+                        entry.key.0,
+                        &status,
+                        grew,
+                    )
+                    .await;
+                }
+                Err(e) => tracing::warn!(event = "deps.notice", error = %e, "status not read"),
+            }
             rows
         } else {
             found.iter().map(|f| unrecorded(f, now)).collect()
@@ -957,6 +976,14 @@ impl DepsHub {
         let entry = self.entry(ctx).await?;
         let trunk = self.trunk(&entry).await?;
         let loaded = self.repo_config(&entry, trunk).await?;
+        self.status_in(&entry, &loaded).await
+    }
+
+    async fn status_in(
+        &self,
+        entry: &RepoEntry,
+        loaded: &Loaded,
+    ) -> Result<super::status::RepoStatus, Status> {
         let pool = self.registry.pool();
         let filter = store::Filter {
             states: vec![State::Open],

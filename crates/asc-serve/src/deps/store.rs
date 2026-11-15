@@ -644,3 +644,34 @@ pub async fn last_scan(pool: &AnyPool, repo_id: i64) -> Result<Option<ScanRow>, 
     })
     .transpose()
 }
+
+/// The status last told about (or taken as the baseline) and the consecutive unknown scans since:
+/// `(status, unknown_runs)`; `(0, 0)` when no scan is recorded (docs/DEPENDENCIES.md "Notifications").
+pub async fn notified(pool: &AnyPool, repo_id: i64) -> Result<(i64, i64), sqlx::Error> {
+    let r = sqlx::query(
+        "SELECT CAST(status AS BIGINT) AS status, CAST(unknown_runs AS BIGINT) AS runs \
+         FROM deps_scans WHERE repo_id = $1",
+    )
+    .bind(repo_id)
+    .fetch_optional(pool)
+    .await?;
+    r.map(|r| Ok((r.try_get("status")?, r.try_get("runs")?)))
+        .transpose()
+        .map(Option::unwrap_or_default)
+}
+
+/// Records what [`notified`] reads; a repository without a recorded scan has nothing to hold it.
+pub async fn set_notified(
+    pool: &AnyPool,
+    repo_id: i64,
+    status: i64,
+    unknown_runs: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE deps_scans SET status = $2, unknown_runs = $3 WHERE repo_id = $1")
+        .bind(repo_id)
+        .bind(status)
+        .bind(unknown_runs)
+        .execute(pool)
+        .await?;
+    Ok(())
+}

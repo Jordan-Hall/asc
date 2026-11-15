@@ -57,10 +57,11 @@ pub enum Kind {
     PolicyChanged,
     ReviewRequested,
     Mentioned,
+    SecurityStatus,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 8] = [
+    pub const ALL: [Kind; 9] = [
         Kind::AgentQuestion,
         Kind::AgentFinished,
         Kind::ChecksFailed,
@@ -69,6 +70,7 @@ impl Kind {
         Kind::PolicyChanged,
         Kind::ReviewRequested,
         Kind::Mentioned,
+        Kind::SecurityStatus,
     ];
 
     pub fn name(self) -> &'static str {
@@ -81,6 +83,7 @@ impl Kind {
             Kind::PolicyChanged => "policy_changed",
             Kind::ReviewRequested => "review_requested",
             Kind::Mentioned => "mentioned",
+            Kind::SecurityStatus => "security_status",
         }
     }
 
@@ -101,6 +104,8 @@ pub struct Event {
     /// A key that is unique per repository: an event with a key that was emitted before is dropped.
     /// Empty: always written.
     pub dedup: String,
+    /// For the watchers of the repository: the hub expands them, so `users` stays empty.
+    pub watchers: bool,
 }
 
 impl Event {
@@ -112,6 +117,7 @@ impl Event {
             detail: String::new(),
             path: String::new(),
             dedup: String::new(),
+            watchers: false,
         }
     }
 
@@ -145,6 +151,13 @@ impl Event {
         self
     }
 
+    /// Sends the event to the watchers of the repository (the hub knows them), not to named people.
+    #[must_use]
+    pub fn watchers(mut self) -> Self {
+        self.watchers = true;
+        self
+    }
+
     /// Leaves out `who` (the person who did it needs no notice).
     #[must_use]
     pub fn except(mut self, who: &str) -> Self {
@@ -170,6 +183,7 @@ pub struct NotifyConfig {
     pub run_path: String,
     pub queue_path: String,
     pub policy_path: String,
+    pub deps_path: String,
 }
 
 impl Default for NotifyConfig {
@@ -181,6 +195,7 @@ impl Default for NotifyConfig {
             run_path: "/{repo}/agents/runs/{run}".into(),
             queue_path: "/{repo}/merge-queue".into(),
             policy_path: "/{repo}/settings/policy".into(),
+            deps_path: "/{repo}/asc/deps".into(),
         }
     }
 }
@@ -203,6 +218,7 @@ impl NotifyConfig {
             ("run_path", &self.run_path),
             ("queue_path", &self.queue_path),
             ("policy_path", &self.policy_path),
+            ("deps_path", &self.deps_path),
         ] {
             let bare = t
                 .replace("{repo}", "")
@@ -280,6 +296,12 @@ pub mod paths {
         let c = settings();
         c.render(&c.policy_path, repo, "", "")
     }
+
+    /// The dependencies page of a repository (the hub route `/{owner}/{repo}/asc/deps`).
+    pub fn deps(repo: &str) -> String {
+        let c = settings();
+        c.render(&c.deps_path, repo, "", "")
+    }
 }
 
 /// One line of at most `max` bytes (cut on a character boundary): line breaks, tabs and other
@@ -341,6 +363,7 @@ pub struct Cleaned {
     pub detail: String,
     pub path: String,
     pub dedup: String,
+    pub watchers: bool,
 }
 
 /// Cleans `ev`; `None` when nothing could be sent (no title, no valid login).
@@ -350,12 +373,14 @@ pub fn clean(ev: Event) -> Option<Cleaned> {
         return None;
     }
     let mut users: Vec<String> = Vec::new();
-    for u in ev.users {
-        if valid_handle(&u) && !users.contains(&u) {
-            users.push(u);
+    if !ev.watchers {
+        for u in ev.users {
+            if valid_handle(&u) && !users.contains(&u) {
+                users.push(u);
+            }
         }
     }
-    if users.is_empty() {
+    if users.is_empty() && !ev.watchers {
         return None;
     }
     Some(Cleaned {
@@ -365,6 +390,7 @@ pub fn clean(ev: Event) -> Option<Cleaned> {
         detail: one_line(&ev.detail, MAX_DETAIL),
         path: clean_path(&ev.path),
         dedup: one_line(&ev.dedup, 200),
+        watchers: ev.watchers,
     })
 }
 
@@ -404,7 +430,13 @@ pub async fn record(pool: &AnyPool, repo: &str, ev: Event) -> Result<usize, sqlx
         return Ok(0);
     }
     let mut written = 0;
-    for (i, chunk) in c.users.chunks(MAX_USERS).take(MAX_CHUNKS).enumerate() {
+    // A watchers event has no logins: one row, with an empty list.
+    let lists: Vec<&[String]> = if c.watchers {
+        vec![&[]]
+    } else {
+        c.users.chunks(MAX_USERS).collect()
+    };
+    for (i, chunk) in lists.into_iter().take(MAX_CHUNKS).enumerate() {
         let dedup = match (c.dedup.is_empty(), i) {
             (true, _) => String::new(),
             (false, 0) => c.dedup.clone(),
@@ -484,8 +516,8 @@ async fn insert(
         .await?;
         let done = sqlx::query(
             "INSERT INTO notify_events \
-             (ns, id, event, users_json, title, detail, path, dedup, created_at, next_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)",
+             (ns, id, event, users_json, title, detail, path, dedup, created_at, next_at, watchers) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $10)",
         )
         .bind(ns.to_vec())
         .bind(max + 1)
@@ -496,6 +528,7 @@ async fn insert(
         .bind(c.path.clone())
         .bind(dedup)
         .bind(at)
+        .bind(i64::from(c.watchers))
         .execute(pool)
         .await;
         match done {

@@ -34,6 +34,7 @@ pub mod listing;
 pub mod lock;
 pub mod model;
 pub mod names;
+pub mod notice;
 pub mod ordered;
 pub mod osv;
 pub mod parse;
