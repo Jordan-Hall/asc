@@ -3114,6 +3114,8 @@ service Cloud {
   rpc ListWorkspaces(ListWorkspacesRequest) returns (ListWorkspacesResponse);    // cheap, paged
   rpc Purge(PurgeRequest) returns (PurgeResponse);                               // admin only
   rpc ReportDevice(ReportDeviceRequest) returns (ReportDeviceResponse);          // background, owner only (§21.3.9)
+  rpc ReportWorktrees(ReportWorktreesRequest) returns (ReportWorktreesResponse); // background, owner only (§21.3.10)
+  rpc ListWorktrees(ListWorktreesRequest) returns (ListWorktreesResponse);       // cheap, paged (§21.3.10)
 }
 message CloudHead { bytes cs = 1; bytes change = 2; /* response only; the server derives it from m/ and ignores the client value */
   repeated string labels = 3; /* <= 8, each <= 64 bytes, [A-Za-z0-9._/-], else INVALID_ARGUMENT */ int64 added = 4; int64 hidden_at = 5;
@@ -3206,6 +3208,26 @@ message ReportDeviceResponse { uint32 kept = 1; }
 **Read.** `GetWorkspace` with `include_devices` fills `CloudHead.devices` from live reports (newer than 30 days) and returns `local`: reported drafts whose `cs` is not a head of the workspace (visible or hidden), with `cs` empty. `since_version` is ignored so the locations are always whole; `local` comes on the first page only. Without the flag the response is unchanged. Reading another owner's locations needs the same access as their workspace (§21.2.5).
 
 **Bounds and privacy.** At most 8 devices × 1,000 drafts per workspace. A report under a name that is not yet a workspace (a device whose drafts have not uploaded) is allowed while the owner reports under fewer such names than `max_workspaces_per_user`, else `RESOURCE_EXHAUSTED` with `CLOUD_WORKSPACES_LIMIT`; a workspace that exists is counted by the workspace quota (§21.3.7). Device names and change ids are the only client strings stored; the hub re-validates both and drops a bad one. Deleting the namespace removes the rows. A purged draft (§21.3.7) that a device still holds reads "removed from the hub" until that device drops it.
+
+#### 21.3.10 Where a worktree is (worktree reports; decision 2026-11-13)
+
+The hub worktrees page lists the live worktrees of a repository and who holds them. The server cannot see local worktrees, so each device reports them, metadata only.
+
+```proto
+rpc ReportWorktrees(ReportWorktreesRequest) returns (ReportWorktreesResponse); // class background; owner only
+rpc ListWorktrees(ListWorktreesRequest) returns (ListWorktreesResponse);       // class cheap; paged
+message WorktreeReport { bytes ws_hash = 1; string head_ref = 2; bytes head = 3; string mode = 4; bool dirty = 5;
+  uint32 ahead = 6; uint32 behind = 7; int64 ephemeral_until = 8; string in_progress = 9; }
+message ReportWorktreesRequest { RepoRef repo = 1; string device = 2; repeated WorktreeReport worktrees = 3; }
+message ReportWorktreesResponse { uint32 kept = 1; }
+message CloudWorktreeRow { string owner = 1; string device = 2; WorktreeReport worktree = 3; int64 reported_at = 4; }
+message ListWorktreesRequest { RepoRef repo = 1; string owner = 2; string page_token = 3; }
+message ListWorktreesResponse { repeated CloudWorktreeRow rows = 1; string next_page_token = 2; }
+```
+
+**No paths.** `ws_hash` is an opaque 32-byte hash the device derives from the worktree; no local path, file name or content crosses the wire or is stored. `head_ref` is empty or a ref name by `git check-ref-format` (at most 256 bytes), `head` a native changeset id (32 bytes) or empty, `mode` at most 32 bytes, `in_progress` at most 64 bytes (`rebase`, `merge` or empty), `ephemeral_until` unix seconds or 0.
+
+**Server.** The caller must be the owner (a user identity) and the repo needs its `cloud` flag (else `FAILED_PRECONDITION`). A bad device name (`[A-Za-z0-9._-]{1,64}`), more than 256 worktrees or a field out of bounds is `INVALID_ARGUMENT`; a repeated `ws_hash` counts once (first wins). One transaction replaces every row of that (repo, owner, device), keeps the 8 most recently reported devices of the owner, and rows expire 7 days after their device's last report; reads ignore expired rows and the hourly expiry worker deletes them. `ListWorktrees` pages 200 rows ordered by owner, device and `ws_hash`. `owner` empty means the caller and needs repo read; another owner (decimal user id) or `*` (every owner) needs repo write.
 
 ### 21.4 Git DX mapping
 
