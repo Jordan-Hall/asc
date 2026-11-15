@@ -48,6 +48,8 @@ pub const MAX_NOTE: usize = 1024;
 pub const MAX_SORTED: usize = 10_000;
 /// Most file notes in one `Sbom` answer.
 pub const MAX_SBOM_NOTES: usize = 20;
+/// Most repositories one `Statuses` call asks about.
+pub const MAX_STATUSES: usize = 100;
 /// The sizes of a changeset id `Status` takes, in bytes: a git id is 20, an asc id 32.
 const CHANGE_ID_BYTES: [usize; 2] = [20, 32];
 /// Most dependency files one landing check reads.
@@ -1019,6 +1021,26 @@ impl DepsHub {
         let trunk = self.trunk(&entry).await?;
         let report = self.report_cached(&entry, head, trunk).await?;
         Ok(changed_status(self.status(ctx).await?, &report))
+    }
+
+    /// The repository status of each of `repos` (each paired with the context its read access was
+    /// granted on), in order. A repository that is gone is left out like one the caller cannot read.
+    pub async fn statuses(
+        &self,
+        repos: Vec<(wire::RepoRef, CallCtx)>,
+    ) -> Result<Vec<(wire::RepoRef, super::status::RepoStatus)>, Status> {
+        if repos.len() > MAX_STATUSES {
+            return Err(Status::invalid_argument("too many repositories"));
+        }
+        let mut out = Vec::with_capacity(repos.len());
+        for (repo, ctx) in repos {
+            match self.status(&ctx).await {
+                Ok(s) => out.push((repo, s)),
+                Err(e) if e.code() == tonic::Code::NotFound => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(out)
     }
 
     pub async fn dismiss(

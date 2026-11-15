@@ -26,6 +26,7 @@ service DepsService {
   rpc ScanStatus(DepScanStatusRequest) returns (DepScanStatusResponse);          // repo read; what a running Scan has done
   rpc Sbom(SbomRequest) returns (SbomResponse);                                  // repo read; a CycloneDX bill of materials of a revision
   rpc Status(DepStatusRequest) returns (DepStatusResponse);                      // repo read; one security status of the repository or of a change
+  rpc Statuses(DepStatusesRequest) returns (DepStatusesResponse);                // repo read per repo; the repository status of up to 100 repositories
 }
 
 enum DepSeverity {
@@ -402,6 +403,24 @@ message DepStatusResponse {
   int64 scanned_at = 4;                               // unix seconds of the trunk scan; 0 when none
   bytes scanned = 5 [(asc.v1.json) = JSON_KIND_HEX];  // the changeset that scan read
   string reason = 6;                                  // why UNKNOWN: "not scanned", "lookup partial" or "stale"
+}
+// The repository status of several repositories at once, each as `Status` gives it for trunk. Read access is
+// checked per repository. A repository the caller cannot read, or that does not exist, is left out (no error, and
+// the two cannot be told apart). The answer follows the order of the request. At most 100 repositories; more is
+// INVALID_ARGUMENT.
+message DepStatusesRequest {
+  repeated RepoRef repos = 1;
+}
+message DepStatusesResponse {
+  repeated DepRepoStatus statuses = 1;
+}
+message DepRepoStatus {
+  RepoRef repo = 1;
+  DepStatus status = 2;
+  map<string, uint32> open_by_severity = 3;
+  int64 scanned_at = 4;
+  bytes scanned = 5 [(asc.v1.json) = JSON_KIND_HEX];
+  string reason = 6;
 }
 message DepMove {
   string ecosystem = 1;                               // the OSV ecosystem name

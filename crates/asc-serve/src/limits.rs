@@ -503,7 +503,14 @@ const TABLE: &[(&str, Class, &[&str])] = &[
     (
         "DepsService",
         Class::Expensive,
-        &["ListUpdates", "ProposeUpdate", "Sbom", "Scan", "Status"],
+        &[
+            "ListUpdates",
+            "ProposeUpdate",
+            "Sbom",
+            "Scan",
+            "Status",
+            "Statuses",
+        ],
     ),
     ("Policy", Class::Cheap, &["GetSource"]),
     (

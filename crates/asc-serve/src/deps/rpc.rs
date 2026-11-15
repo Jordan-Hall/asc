@@ -5,7 +5,7 @@
 //!
 //! | call | needs |
 //! |---|---|
-//! | `ListFindings`, `ListUpdates`, `GetConfig`, `ScanStatus`, `Sbom`, `Status` | read |
+//! | `ListFindings`, `ListUpdates`, `GetConfig`, `ScanStatus`, `Sbom`, `Status`, `Statuses` | read |
 //! | `Scan`, `ProposeUpdate`, `SetConfig`, `Dismiss` | write, and a maintainer of the policy or repository admin |
 //!
 //! An agent credential reaches none of them (`agents::authz` closes every service it does not name).
@@ -18,9 +18,9 @@ use asc_rpc::auth::{Access, AuthInterceptor, Authorizer};
 use asc_rpc::server::{CallCtx, MAX_MESSAGE, ServerInfo, wire};
 use asc_rpc::services::deps_service_server::{DepsService, DepsServiceServer};
 use tonic::service::interceptor::InterceptedService;
-use tonic::{Request, Response, Status};
+use tonic::{Code, Request, Response, Status};
 
-use super::hub::DepsHub;
+use super::hub::{DepsHub, MAX_STATUSES};
 use super::status::{RepoStatus, Verdict};
 use crate::agents::repo::PolicyState;
 use crate::review::{Env, handle_of};
@@ -147,6 +147,47 @@ impl DepsService for DepsRpc {
             .status_for(&ctx, &msg.change)
             .await
             .map(|s| Response::new(status_wire(s)))
+    }
+
+    async fn statuses(
+        &self,
+        request: Request<wire::DepStatusesRequest>,
+    ) -> Result<Response<wire::DepStatusesResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        if msg.repos.len() > MAX_STATUSES {
+            return Err(Status::invalid_argument("too many repositories"));
+        }
+        let mut allowed = Vec::with_capacity(msg.repos.len());
+        for repo in msg.repos {
+            match self
+                .env
+                .context(&meta, &ext, Some(&repo), Access::Read, false)
+                .await
+            {
+                Ok(ctx) => allowed.push((repo, ctx)),
+                // Not readable and not there look alike: the repository is left out.
+                Err(e) if matches!(e.code(), Code::PermissionDenied | Code::NotFound) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        let statuses = self
+            .hub
+            .statuses(allowed)
+            .await?
+            .into_iter()
+            .map(|(repo, s)| {
+                let w = status_wire(s);
+                wire::DepRepoStatus {
+                    repo: Some(repo),
+                    status: w.status,
+                    open_by_severity: w.open_by_severity,
+                    scanned_at: w.scanned_at,
+                    scanned: w.scanned,
+                    reason: w.reason,
+                }
+            })
+            .collect();
+        Ok(Response::new(wire::DepStatusesResponse { statuses }))
     }
 
     async fn list_findings(

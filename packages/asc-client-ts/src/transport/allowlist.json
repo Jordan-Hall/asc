@@ -261,6 +261,7 @@
       "asc.v1.DepsService/ScanStatus",
       "asc.v1.DepsService/Sbom",
       "asc.v1.DepsService/Status",
+      "asc.v1.DepsService/Statuses",
       "asc.v1.MergeQueue/Preview",
       "asc.v1.MergeQueue/ReportEntry",
       "asc.v1.Review/GetBrief",
