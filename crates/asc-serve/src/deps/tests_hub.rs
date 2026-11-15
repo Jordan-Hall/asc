@@ -3435,3 +3435,181 @@ mod status_tests {
         );
     }
 }
+
+// ------------------------------------------------------------------------------ the statuses of many repositories
+
+mod statuses_tests {
+    use asc_rpc::auth::{AuthError, Authorizer, Principal};
+    use async_trait::async_trait;
+
+    use super::*;
+    use crate::deps::status::Verdict;
+    use asc_rpc::server::RepoName;
+
+    /// `reader` reads every repository but `o/hidden`, which no token reads.
+    struct Hidden;
+
+    #[async_trait]
+    impl Authorizer for Hidden {
+        async fn authorize(
+            &self,
+            token: Option<&BearerToken>,
+            repo: &str,
+            access: Access,
+        ) -> Result<Principal, AuthError> {
+            let token = token.ok_or(AuthError::Unauthenticated)?;
+            if token.expose() != "reader" {
+                return Err(AuthError::Unauthenticated);
+            }
+            if repo == "o/hidden" || access > Access::Read {
+                return Err(AuthError::Forbidden);
+            }
+            Ok(Principal { id: BOB.into() })
+        }
+    }
+
+    fn refs(names: &[&str]) -> Vec<wire::RepoRef> {
+        names
+            .iter()
+            .map(|n| wire::RepoRef {
+                name: (*n).into(),
+                id_mode: IdMode::Asc.to_wire(),
+            })
+            .collect()
+    }
+
+    fn in_repo(name: &str, who: &str) -> CallCtx {
+        let mut c = ctx(who);
+        c.repo = RepoName::parse(name).unwrap();
+        c
+    }
+
+    /// A repository `name` whose trunk has `pkgs` in its lockfile; scanned when `scan`.
+    async fn extra(h: &H, name: &str, pkgs: &[(&str, &str)], scan: bool) {
+        let n = RepoName::parse(name).unwrap();
+        let entry = h.f.reg.create(&n, &Default::default()).await.unwrap();
+        let cs = commit(&entry, &[], &[("Cargo.lock", lock(pkgs).as_bytes())]).await;
+        let req = update_req(
+            "refs/heads/master",
+            wire::ref_update::Expect::Any(true),
+            cs,
+            wire::UpdateMode::Force,
+        );
+        h.f.plain
+            .update_refs(&in_repo(name, ALICE), req)
+            .await
+            .unwrap();
+        if scan {
+            h.hub
+                .scan(
+                    &in_repo(name, ALICE),
+                    wire::ScanDepsRequest {
+                        repo: refs(&[name]).pop(),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+        }
+    }
+
+    async fn world() -> (H, DepsRpc) {
+        let h = setup().await;
+        h.mock.vuln(
+            Ecosystem::CratesIo,
+            "serde",
+            "1.0.100",
+            "RUSTSEC-1",
+            "1.0.200",
+            "HIGH",
+        );
+        crates_route(
+            &h.mock,
+            "serde",
+            &[("1.0.100", SUM_OLD), ("1.0.200", SUM_NEW)],
+        );
+        // o/r: findings; o/clean: clean; o/new: never scanned (unknown); o/hidden: exists, unreadable.
+        h.trunk(&[("Cargo.lock", lock(&[("serde", "1.0.100")]).as_bytes())])
+            .await;
+        h.scan("", false).await;
+        extra(&h, "o/clean", &[("regex", "1.5.0")], true).await;
+        extra(&h, "o/new", &[("regex", "1.5.0")], false).await;
+        extra(&h, "o/hidden", &[("serde", "1.0.100")], true).await;
+        let svc = DepsRpc::new(h.hub.clone(), Arc::new(Hidden), ServerInfo::default());
+        (h, svc)
+    }
+
+    async fn ask(
+        svc: &DepsRpc,
+        names: &[&str],
+    ) -> Result<wire::DepStatusesResponse, tonic::Status> {
+        let req = wire::DepStatusesRequest { repos: refs(names) };
+        svc.statuses(call(req, "reader", false))
+            .await
+            .map(tonic::Response::into_inner)
+    }
+
+    fn verdict(s: &wire::DepRepoStatus) -> wire::DepStatus {
+        wire::DepStatus::try_from(s.status).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_mix_of_findings_clean_and_unknown_repositories_keeps_the_request_order() {
+        let (_h, svc) = world().await;
+        let r = ask(&svc, &["o/new", "o/r", "o/clean"]).await.unwrap();
+        let got: Vec<_> = r
+            .statuses
+            .iter()
+            .map(|s| (s.repo.as_ref().unwrap().name.as_str(), verdict(s)))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("o/new", wire::DepStatus::Unknown),
+                ("o/r", wire::DepStatus::Findings),
+                ("o/clean", wire::DepStatus::Clean),
+            ]
+        );
+        assert_eq!(r.statuses[0].reason, "not scanned");
+        assert_eq!(r.statuses[1].open_by_severity["high"], 1);
+        assert!(r.statuses[1].scanned_at > 0 && !r.statuses[1].scanned.is_empty());
+        assert_eq!(r.statuses[2].reason, "");
+        // The same set the other way round comes back the other way round.
+        let r = ask(&svc, &["o/clean", "o/r"]).await.unwrap();
+        assert_eq!(r.statuses[0].repo.as_ref().unwrap().name, "o/clean");
+        assert_eq!(r.statuses[1].repo.as_ref().unwrap().name, "o/r");
+        assert!(ask(&svc, &[]).await.unwrap().statuses.is_empty());
+        let _ = Verdict::Clean;
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_repository_is_left_out_and_looks_like_one_that_does_not_exist() {
+        let (_h, svc) = world().await;
+        let hidden = ask(&svc, &["o/r", "o/hidden", "o/clean"]).await.unwrap();
+        let absent = ask(&svc, &["o/r", "o/nowhere", "o/clean"]).await.unwrap();
+        assert_eq!(hidden, absent);
+        let names: Vec<_> = hidden
+            .statuses
+            .iter()
+            .map(|s| s.repo.as_ref().unwrap().name.as_str())
+            .collect();
+        assert_eq!(names, ["o/r", "o/clean"]);
+        // Only unreadable ones: an empty answer, not an error.
+        assert!(ask(&svc, &["o/hidden"]).await.unwrap().statuses.is_empty());
+    }
+
+    #[tokio::test]
+    async fn more_than_a_hundred_repositories_are_refused() {
+        let (h, svc) = world().await;
+        let many = vec!["o/r"; 101];
+        let e = ask(&svc, &many).await.unwrap_err();
+        assert_eq!(e.code(), Code::InvalidArgument);
+        assert_eq!(ask(&svc, &many[..100]).await.unwrap().statuses.len(), 100);
+        // The hub refuses too.
+        let ctxs = (0..101)
+            .map(|_| (refs(&["o/r"]).remove(0), in_repo("o/r", BOB)))
+            .collect();
+        let e = h.hub.statuses(ctxs).await.unwrap_err();
+        assert_eq!(e.code(), Code::InvalidArgument);
+    }
+}

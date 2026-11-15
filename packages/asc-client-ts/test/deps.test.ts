@@ -17,6 +17,7 @@ const METHODS = [
   "Dismiss",
   "Sbom",
   "Status",
+  "Statuses",
 ];
 
 describe("DepsService", () => {
