@@ -135,6 +135,39 @@ async fn old_gc_purge_rows_are_pruned() {
 }
 
 #[tokio::test]
+async fn worktree_rows_past_their_ttl_are_swept() {
+    use crate::cloud::worktrees::WORKTREE_TTL_S;
+    let f = fx().await;
+    let at = 1_000 * D;
+    let ns = f.e.ns.as_bytes().to_vec();
+    for (device, when) in [
+        ("old", at - WORKTREE_TTL_S - 1),
+        ("edge", at - WORKTREE_TTL_S),
+        ("new", at - D),
+    ] {
+        sqlx::query(
+            "INSERT INTO cloud_worktrees (ns, owner, device, ws_hash, head_ref, head, mode, dirty,              ahead, behind, ephemeral_until, in_progress, reported_at)              VALUES ($1, 42, $2, $3, '', $4, '', 0, 0, 0, 0, '', $5)",
+        )
+        .bind(ns.clone())
+        .bind(device)
+        .bind(vec![7u8; 32])
+        .bind(Vec::<u8>::new())
+        .bind(when)
+        .execute(f.reg.pool())
+        .await
+        .unwrap();
+    }
+    assert_eq!(expirer(&f).run_once(at).await.unwrap().worktrees, 1);
+    let left: Vec<String> =
+        sqlx::query_scalar("SELECT device FROM cloud_worktrees ORDER BY device")
+            .fetch_all(f.reg.pool())
+            .await
+            .unwrap();
+    assert_eq!(left, ["edge", "new"]);
+    assert_eq!(expirer(&f).run_once(at).await.unwrap().worktrees, 0);
+}
+
+#[tokio::test]
 async fn the_roots_are_every_head_in_grace_and_the_purged_keys() {
     let f = fx().await;
     add_head(&f, 42, "w", f.css[0], 5, None).await;
