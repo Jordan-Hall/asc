@@ -137,6 +137,7 @@ named!(RepoSvc, "asc.v1.Repo");
 named!(ChangesSvc, "asc.v1.Changes");
 named!(ProjectsSvc, "asc.v1.Projects");
 named!(WorkspaceSvc, "asc.v1.Workspace");
+named!(AgentsSvc, "asc.v1.Agents");
 
 struct Harness {
     server: Channel,
@@ -171,6 +172,7 @@ async fn harness(script: Script, endless: Option<Value>) -> Harness {
                 .add_service(RepoSvc(f.clone()))
                 .add_service(ChangesSvc(f.clone()))
                 .add_service(ProjectsSvc(f.clone()))
+                .add_service(AgentsSvc(f.clone()))
                 .add_service(WorkspaceSvc(f))
                 .serve_with_incoming(incoming)
                 .await;
@@ -226,6 +228,7 @@ async fn collect(reply: Reply) -> Vec<Value> {
 fn args_for(tool: &str) -> Value {
     match tool {
         "read_file" => json!({ "rev": "main", "path": "src/lib.rs" }),
+        "get_person" => json!({ "login": "ann" }),
         _ => json!({}),
     }
 }
@@ -572,4 +575,92 @@ fn plain_http_to_a_remote_host_is_refused() {
         Some(credential()),
     );
     assert!(r.is_err());
+}
+
+#[tokio::test]
+async fn get_person_returns_only_the_shared_fields() {
+    let script: Script = Arc::new(|_, _| {
+        Ok(vec![json!({
+            "allowed": true, "login": "ann", "full_name": "Ann Bee", "description": "",
+            "location": "Leeds", "website": "", "pronouns": "she/her"
+        })])
+    });
+    let h = harness(script, None).await;
+    let b = backend(&h, Surface::Http);
+    let msgs = collect(
+        b.call(
+            "get_person",
+            &json!({ "repo": REPO, "login": "ann" }),
+            &ctx(1 << 20),
+        )
+        .await
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        msgs,
+        [
+            json!({ "login": "ann", "full_name": "Ann Bee", "location": "Leeds", "pronouns": "she/her" })
+        ]
+    );
+    let seen = h.seen.lock().unwrap().clone();
+    assert_eq!(seen[0].path, "/asc.v1.Agents/GetPerson");
+    assert_eq!(seen[0].request["login"], "ann");
+}
+
+#[tokio::test]
+async fn get_person_says_so_when_nothing_is_shared() {
+    let script: Script = Arc::new(|_, _| Ok(vec![json!({ "allowed": false, "login": "bob" })]));
+    let h = harness(script, None).await;
+    let msgs = collect(
+        backend(&h, Surface::Http)
+            .call(
+                "get_person",
+                &json!({ "repo": REPO, "login": "bob" }),
+                &ctx(1 << 20),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        msgs,
+        [json!({ "message": "this person does not share a profile with agents" })]
+    );
+}
+
+#[tokio::test]
+async fn get_person_checks_the_login_before_asking() {
+    let h = harness(empty_script(), None).await;
+    let b = backend(&h, Surface::Http);
+    for login in [json!(""), json!("x".repeat(65)), json!(7)] {
+        let e = b
+            .call(
+                "get_person",
+                &json!({ "repo": REPO, "login": login }),
+                &ctx(1 << 20),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(e.code, "INVALID_ARGUMENT");
+    }
+    assert!(h.seen.lock().unwrap().is_empty());
+    let ok = json!({ "repo": REPO, "login": "x".repeat(64) });
+    assert!(b.call("get_person", &ok, &ctx(1 << 20)).await.is_ok());
+}
+
+#[tokio::test]
+async fn get_person_maps_the_run_limit_to_a_clear_message() {
+    let script: Script = Arc::new(|_, _| Err(Status::resource_exhausted("20 per run")));
+    let h = harness(script, None).await;
+    let e = backend(&h, Surface::Http)
+        .call(
+            "get_person",
+            &json!({ "repo": REPO, "login": "ann" }),
+            &ctx(1 << 20),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, "RATE_LIMITED");
+    assert_eq!(e.message, "lookup limit reached for this run");
 }
