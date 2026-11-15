@@ -909,7 +909,11 @@ impl AgentService {
             .env
             .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
             .await?;
-        let run = self.hub.run_of_principal(&ctx.principal.id).await;
+        let run = self
+            .hub
+            .run_of_principal(&ctx.principal.id)
+            .await
+            .map_err(|e| crate::update::internal("agent run", &e))?;
         let profile = super::super::profile::read_profile(
             &self.hub,
             &ctx.principal.id,

@@ -110,16 +110,21 @@ impl AgentsHub {
 
     /// The run an agent principal (`agent:<name>:<owner>:<token>`) is the token of, when it is a
     /// run's token; `None` for anyone else.
-    pub(crate) async fn run_of_principal(&self, principal: &str) -> Option<u64> {
-        let p = super::tokens::parse_principal(principal)?;
+    /// The run a token principal acts for. A store error is an error, never "not a run", so a run
+    /// cannot slip past its allowance while the store is busy.
+    pub(crate) async fn run_of_principal(
+        &self,
+        principal: &str,
+    ) -> Result<Option<u64>, sqlx::Error> {
+        let Some(p) = super::tokens::parse_principal(principal) else {
+            return Ok(None);
+        };
         let id: Option<i64> =
             sqlx::query_scalar("SELECT id FROM agent_runs WHERE token_id = $1 LIMIT 1")
                 .bind(p.token_id)
                 .fetch_optional(&self.core.pool)
-                .await
-                .ok()
-                .flatten();
-        id.and_then(|n| u64::try_from(n).ok())
+                .await?;
+        Ok(id.and_then(|n| u64::try_from(n).ok()))
     }
 }
 
@@ -383,8 +388,11 @@ mod tests {
             .unwrap()
             .unwrap();
         w.hub.core.tokens.attach_to_run(id, &t.id).await.unwrap();
-        assert_eq!(w.hub.run_of_principal(&t.principal()).await, Some(id));
-        assert_eq!(w.hub.run_of_principal("7:alice").await, None);
+        assert_eq!(
+            w.hub.run_of_principal(&t.principal()).await.unwrap(),
+            Some(id)
+        );
+        assert_eq!(w.hub.run_of_principal("7:alice").await.unwrap(), None);
         let ask = |token: String| {
             let r = w.request(
                 wire::GetAgentPersonRequest {
