@@ -2,7 +2,7 @@
 # then reads the files as clean, and commit -a, restore and diff read them back the same way.
 # The index is dated after the files before each commit -a, so git has no racily clean entry to
 # read again (and warn about) and the output does not depend on timing.
-settle() { if [ -d .git ]; then touch -c -d @2000000000 .git/index; fi; }
+settle() { if [ -d .git ]; then TZ=UTC touch -c -t 203305180333.20 .git/index; fi; }
 g init
 printf '* text=auto\n*.bin -text\nunix.sh text eol=lf\nwin.bat eol=crlf\n' > .gitattributes
 printf 'a\nb\n' > notes.txt

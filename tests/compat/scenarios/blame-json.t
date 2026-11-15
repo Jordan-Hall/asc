@@ -6,7 +6,7 @@ asc add a.txt
 asc commit -m first || fail "commit"
 printf 'one\nTWO\nthree\nnew\n' > a.txt
 asc blame --json a.txt > out.json || fail "blame --json"
-[ "$(wc -l < out.json)" = 1 ] || fail "one line expected: $(cat out.json)"
+[ "$(wc -l < out.json | tr -d ' ')" = 1 ] || fail "one line expected: $(cat out.json)"
 grep -q '"hunks"' out.json || fail "hunks missing: $(cat out.json)"
 grep -q '"commits"' out.json || fail "commits missing: $(cat out.json)"
 grep -q '"orig_path"' out.json || fail "orig_path missing: $(cat out.json)"

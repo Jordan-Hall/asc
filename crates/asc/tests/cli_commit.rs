@@ -125,6 +125,17 @@ fn slashed(p: &Path) -> String {
     p.display().to_string().replace('\\', "/")
 }
 
+/// `p` with its links resolved on Unix, where a hook sees the resolved directory (macOS's
+/// temporary directory is under the link `/var`); unchanged on Windows, where resolving adds a
+/// verbatim prefix.
+fn real_path(p: PathBuf) -> PathBuf {
+    if cfg!(unix) {
+        p.canonicalize().unwrap_or(p)
+    } else {
+        p
+    }
+}
+
 fn hooks_dir(f: &Fixture) -> PathBuf {
     Projection::open(&f.root)
         .unwrap()
@@ -374,7 +385,7 @@ async fn signing_stores_the_signature_in_git_gpgsig() {
     let program = f.sandbox.tmp.path().join("fakegpg");
     fs::write(
         &program,
-        "#!/bin/sh\ncat >/dev/null\nprintf -- '-----BEGIN PGP SIGNATURE-----\\n\\nabc\\n-----END PGP SIGNATURE-----\\n'\necho '[GNUPG:] SIG_CREATED' >&2\n",
+        "#!/bin/sh\ncat >/dev/null\nprintf -- '-----BEGIN PGP SIGNATURE-----\\n\\nabc\\n-----END PGP SIGNATURE-----\\n'\necho '[GNUPG:] SIG_CREATED D 22 8 00 1700000000 0123456789ABCDEF' >&2\n",
     )
     .unwrap();
     #[cfg(unix)]
@@ -658,7 +669,7 @@ mod hooks {
             .args(["commit", "-m", "x"]);
         let r = finish(cmd.output().unwrap());
         assert_eq!(r.code, 0, "{}", r.err);
-        let dir = slashed(&gitdir(&f)).to_lowercase();
+        let dir = slashed(&real_path(gitdir(&f))).to_lowercase();
         let line = read_log(&f).to_lowercase();
         let parts: Vec<&str> = line.trim_end().split('|').collect();
         assert_eq!(parts[0].replace('\\', "/"), format!("{dir}/index"));

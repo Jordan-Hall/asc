@@ -620,7 +620,6 @@ async fn grep_matches_git() {
         &["grep", "-n", "foo", "--", "src/lib", "a.txt"],
         &["grep", "-n", "foo", "--", "*.rs"],
         &["grep", "-n", "foo", "--", "nonexistent"],
-        &["grep", "-nE", "fn\\s+\\w+"],
         &["grep", "-q", "foo"],
         &["grep", "-q", "zzzz-not-there"],
         &["grep", "zzzz-not-there"],
@@ -633,6 +632,10 @@ async fn grep_matches_git() {
     ];
     for args in cases {
         r.same("", args, b"", false);
+    }
+    // macOS libc has no `\s` or `\w` in an ERE, so git there matches nothing; asc follows glibc.
+    if !cfg!(target_os = "macos") {
+        r.same("", &["grep", "-nE", "fn\\s+\\w+"], b"", false);
     }
     // In a subdirectory: only that directory is searched, names are relative.
     r.same("src", &["grep", "-n", "foo"], b"", false);
@@ -653,12 +656,15 @@ async fn grep_misuse_and_limits() {
         assert!(c.stderr.starts_with("fatal: "), "{args:?}: {}", c.stderr);
     }
     // Back-references run as in git.
-    for args in [
-        &["grep", "-n", "-E", "(o)\\1"][..],
-        &["grep", "-c", "\\(o\\)\\1"],
-        &["grep", "-E", "(o)\\2"],
-    ] {
-        r.same("", args, b"", false);
+    r.same("", &["grep", "-c", "\\(o\\)\\1"], b"", false);
+    // ERE back-references are glibc's; macOS libc (and so git there) does not support them.
+    if !cfg!(target_os = "macos") {
+        for args in [
+            &["grep", "-n", "-E", "(o)\\1"][..],
+            &["grep", "-E", "(o)\\2"],
+        ] {
+            r.same("", args, b"", false);
+        }
     }
     // A pattern that blows the expression size limit is an error, not a hang.
     let big = "a{1000}{1000}{1000}";

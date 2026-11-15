@@ -277,7 +277,14 @@ async fn workspace_checks_report_ignore_shadows_and_include_if_drift() {
     fs::write(f.root.join("same/.gitignore"), "x\n").unwrap();
     fs::write(f.root.join("same/.ascignore"), "x\n").unwrap();
     fs::write(f.root.join(".gitattributes"), "*.txt eol=crlf\n*.c ident\n").unwrap();
-    let root = f.root.display().to_string().replace('\\', "/");
+    // Git matches `gitdir:` against the resolved location, so the condition names that: macOS's
+    // temporary directory is under the link `/var`. (Resolving on Windows adds a verbatim prefix.)
+    let resolved = if cfg!(unix) {
+        f.root.canonicalize().unwrap_or_else(|_| f.root.clone())
+    } else {
+        f.root.clone()
+    };
+    let root = resolved.display().to_string().replace('\\', "/");
     fs::write(
         f.sandbox.user.join(".gitconfig"),
         format!("[core]\n\tautocrlf = true\n[includeIf \"gitdir/i:{root}/\"]\n\tpath = other\n"),

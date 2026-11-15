@@ -109,6 +109,8 @@ pub struct Tools {
     pub sh: PathBuf,
     /// A directory holding `git` and `asc` links to the asc binary.
     pub shim_dir: PathBuf,
+    /// Where BSD `sed` gets a GNU-style `-i` (macOS only; scenarios write `sed -i 's/a/b/' f`).
+    pub portable_dir: Option<PathBuf>,
     /// `tests/compat`.
     pub suite: PathBuf,
     /// The preflight verdicts, probed on first use (a case failed, or a self-check asked).
@@ -290,6 +292,28 @@ fn check_strict(git: &Path, repo: &Path) -> Result<(), String> {
     check_oracle(git, &reported, &pins, cfg!(windows))
 }
 
+/// On macOS, a `sed` that accepts GNU's `-i` without a suffix (BSD `sed -i` takes the next word as
+/// the backup suffix), in `<shim_dir>/portable`. Elsewhere there is nothing to do.
+fn portable_tools(shim_dir: &Path) -> Result<Option<PathBuf>, String> {
+    if !cfg!(target_os = "macos") {
+        return Ok(None);
+    }
+    let dir = shim_dir.join("portable");
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let sed = dir.join("sed");
+    let script = "#!/bin/sh
+if [ \"$1\" = -i ]; then shift; exec /usr/bin/sed -i '' \"$@\"; fi
+exec /usr/bin/sed \"$@\"
+";
+    fs::write(&sed, script).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&sed, fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+    }
+    Ok(Some(dir))
+}
+
 impl Tools {
     /// The tools for this test process; `asc` is the built binary.
     pub fn get(asc: &'static str) -> &'static Result<Tools, String> {
@@ -307,12 +331,14 @@ impl Tools {
             fs::create_dir_all(&shim_dir).map_err(|e| e.to_string())?;
             link_binary(&asc, &shim_dir.join(GIT_EXE))?;
             link_binary(&asc, &shim_dir.join(ASC_EXE))?;
+            let portable_dir = portable_tools(&shim_dir)?;
             let suite = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/compat");
             Ok(Tools {
                 asc,
                 real_git,
                 sh,
                 shim_dir,
+                portable_dir,
                 suite,
                 preflight: OnceLock::new(),
             })
@@ -507,6 +533,7 @@ impl Tools {
                     .unwrap_or_default(),
             ),
         }
+        path_dirs.extend(self.portable_dir.clone());
         if let Some(sh_dir) = self.sh.parent() {
             path_dirs.push(sh_dir.to_owned());
         }
@@ -917,6 +944,12 @@ impl Normaliser {
                 (b[0] as char).to_ascii_lowercase(),
                 &slash[2..]
             ));
+        }
+        // Where a temp directory is reached through a symlink (`/var` is `/private/var` on
+        // macOS), programs print either spelling; both are the root.
+        #[cfg(unix)]
+        if let Ok(real) = fs::canonicalize(root) {
+            forms.push(real.to_string_lossy().into_owned());
         }
         forms.sort_by_key(|f| std::cmp::Reverse(f.len()));
         forms.dedup();

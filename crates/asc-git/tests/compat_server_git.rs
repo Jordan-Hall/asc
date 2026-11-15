@@ -363,7 +363,12 @@ fn an_old_or_unknown_git_is_refused() {
         PathBuf::from(std::env::var_os("COMSPEC").expect("COMSPEC"))
     } else {
         // Not `sh`: dash rejects `--version`, which is an error, not "no version".
-        PathBuf::from("/bin/true")
+        // macOS has no `/bin/true`.
+        ["/usr/bin/true", "/bin/true"]
+            .iter()
+            .map(PathBuf::from)
+            .find(|p| p.is_file())
+            .expect("a `true` binary")
     };
     let mut r = Resolver::from_process(None, None);
     r.env_override = Some(fake);

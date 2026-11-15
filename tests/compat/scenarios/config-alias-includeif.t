@@ -6,6 +6,8 @@ g config alias.last "log -1 --format=%s"
 g config --get alias.st
 g config --local --get alias.lg
 g config --get-regexp '^alias\.'
+# git on macOS adds core.precomposeunicode at init; asc has no such key to compare.
+git config --unset core.precomposeunicode >/dev/null 2>&1; true
 g config --list --local
 echo a > a.txt
 g st

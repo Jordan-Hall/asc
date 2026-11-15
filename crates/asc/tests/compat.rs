@@ -22,8 +22,8 @@ fn scenario(name: &str) {
 /// One test per scenario, so `cargo test -p asc --test compat -- <name>` selects it. Add a line
 /// here with each new `scenarios/<name>.t`; `every_scenario_has_a_test` fails otherwise.
 macro_rules! scenarios {
-    ($($test:ident = $file:literal),* $(,)?) => {
-        $( #[test] fn $test() { scenario($file); } )*
+    ($($(#[$attr:meta])* $test:ident = $file:literal),* $(,)?) => {
+        $( $(#[$attr])* #[test] fn $test() { scenario($file); } )*
         const REGISTERED: &[&str] = &[$($file),*];
     };
 }
@@ -105,6 +105,10 @@ scenarios! {
     log_graph_paths = "log-graph-paths",
     log_graph_follow = "log-graph-follow",
     grep_backref = "grep-backref",
+    // macOS libc has no ERE back-references (and no `\1` message like glibc), so git there
+    // answers differently from the pinned Linux git; asc follows glibc.
+    #[cfg(not(target_os = "macos"))]
+    grep_backref_ere = "grep-backref-ere",
     fetch_agent_refs = "fetch-agent-refs",
     git_remote_roundtrip = "git-remote-roundtrip",
     apply_basic = "apply-basic",

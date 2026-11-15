@@ -274,10 +274,20 @@ async fn split_and_edit_stage_what_git_stages() {
         ("s\ny\nn\n", ""),
         ("s\nn\ny\n", ""),
         ("s\nj\ny\nq\n", ""),
-        ("e\nn\n", "sed -i 's/^+new4$/+EDITED/' \"$1\"\n"),
-        ("s\ne\ny\n", "sed -i 's/^+new8$/+EDITED\\n+MORE/' \"$1\"\n"),
+        // Portable `sed` (no `-i`, no `\n` in the replacement): BSD and GNU differ on both.
+        (
+            "e\nn\n",
+            "sed 's/^+new4$/+EDITED/' \"$1\" > \"$1.new\" && mv \"$1.new\" \"$1\"\n",
+        ),
+        (
+            "s\ne\ny\n",
+            "sed 's/^+new8$/+EDITED\\\n+MORE/' \"$1\" > \"$1.new\" && mv \"$1.new\" \"$1\"\n",
+        ),
         // The edit's context is not in the file: asked again, then discarded.
-        ("e\nn\ny\n", "sed -i 's/^ 3$/ three/' \"$1\"\n"),
+        (
+            "e\nn\ny\n",
+            "sed 's/^ 3$/ three/' \"$1\" > \"$1.new\" && mv \"$1.new\" \"$1\"\n",
+        ),
     ];
     for (answers, script) in cases {
         let r = Rig::new().await;
