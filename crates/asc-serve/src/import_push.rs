@@ -3351,6 +3351,73 @@ mod tests {
             assert_eq!(r.f.count(events).await, 0);
         }
 
+        /// `n` commits in a chain on one branch of the fixture's git repository, made in one
+        /// `git fast-import` run; returns the tip.
+        fn chain(f: &Fx, n: usize) -> String {
+            let mut script = String::new();
+            for i in 1..=n {
+                let from = if i == 1 {
+                    String::new()
+                } else {
+                    format!(
+                        "from :{}
+",
+                        i - 1
+                    )
+                };
+                script.push_str(&format!(
+                    "commit refs/heads/big
+mark :{i}
+committer a <a@x> {} +0000
+data 2
+m
+{from}M 100644 inline f
+data {}
+{i}
+
+",
+                    1_700_000_000 + i,
+                    i.to_string().len() + 1,
+                ));
+            }
+            f.forge.git(&["fast-import", "--quiet"], script.as_bytes());
+            f.forge.git(&["rev-parse", "refs/heads/big"], b"")
+        }
+
+        #[tokio::test]
+        async fn a_history_import_over_the_scan_changeset_cap_goes_through_a_plain_push_does_not() {
+            let r = gated().await;
+            let n = crate::secretscan::MAX_CHANGESETS + 5;
+            let tip = chain(&r.f, n);
+            let events = "SELECT COUNT(*) FROM audit_events WHERE action = 'secret.scan.incomplete' AND scope_kind = 'repo'";
+            // As a plain push the update is refused, as before, and nothing is written.
+            let s = r.send(false, &[(M, "", &tip)]).await.unwrap_err();
+            assert_eq!(s.code(), tonic::Code::FailedPrecondition, "{s:?}");
+            assert!(r.f.target(M).await.is_none());
+            assert_eq!(r.f.count(events).await, 0);
+            // As a history import it goes through, and the gap is on the record once.
+            r.send(true, &[(M, "", &tip)]).await.unwrap();
+            assert_eq!(r.f.git_of(M).await, tip);
+            assert_eq!(r.f.count(events).await, 1);
+            let details: String = sqlx::query_scalar(
+                "SELECT details_json FROM audit_events WHERE action = 'secret.scan.incomplete' AND scope_kind = 'repo'",
+            )
+            .fetch_one(r.f.registry.pool())
+            .await
+            .unwrap();
+            assert!(
+                details.contains(&format!("\"changesets\":\"{n}\"")),
+                "{details}"
+            );
+            assert!(
+                details.contains(&format!(
+                    "\"changesets_scanned\":\"{}\"",
+                    crate::secretscan::MAX_CHANGESETS
+                )),
+                "{details}"
+            );
+        }
+
         #[tokio::test]
         async fn review_and_signatures_are_not_asked_of_imported_history() {
             let r = gated().await;
