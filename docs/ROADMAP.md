@@ -151,7 +151,7 @@ From a review of the hub's asc pages on 2026-11-13 (routes, templates and styles
 | 45 | Commit-cloud view | All branchless work by user and agent, with restore | D | done |
 | 46 | Affected projects and cache hits on a change | Shown inline with the checks of a change | S | done 2026-11-14: affected projects card plus a Build cache card on pull request checks |
 | 50 | Repository templates | Templates in the create flow | D | done |
-| 51 | Own pages for repo home, diff and issues | Rebuilt in the asc design system, with the loose `asc-*.css` files folded in, so no page is the upstream forge's template with a new skin | D | open |
+| 51 | Own pages for repo home, diff and issues | Rebuilt in the asc design system, with the loose `asc-*.css` files folded in, so no page is the upstream forge's template with a new skin | D | done: repo home, diff, issue list and issue view rebuilt; repo and review page styles load from index.css; unused loose rules and asc-inbox.css removed |
 | 52 | SBOM download | On the dependency page (the server side is row 32) | S | done |
 | 75 | Hub integration matrix over both storage backends | The hub's integration tests run with git storage and with asc storage (plan unit K15, `FORGEJO_TEST_STORAGE_BACKEND`). **Check first** | S | open |
 | 80 | Pull mirrors stored in asc | Pull mirrors and wiki pull mirrors write into an asc repository; today the mirror service has no asc path. Owner confirmed in scope 2026-11-14; a mirror follows the instance rule for new repositories | S | open |
