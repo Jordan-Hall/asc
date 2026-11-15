@@ -125,7 +125,7 @@ The dependency service (`crates/asc-serve/src/deps/`, `docs/DEPENDENCIES.md`) re
 | 33 | Advisories against asc itself | The server and the CLI tell the operator when the running version has an advisory | S | open |
 | 34 | Cache and artifact marking | Build-cache entries and CI artifacts built with a dependency that later got an advisory are flagged | D | open |
 | 36 | One security status | Each repository and each change has one status (clean, findings, unknown) with the versions to move to | S | done: Status RPC, `asc deps status`, hub deps banner, Security row in pull checks, docs |
-| 37 | Security page across repositories | One page per owner or organisation listing every repository's status and findings, with export | S | open |
+| 37 | Security page across repositories | One page per owner or organisation listing every repository's status and findings, with export | S | in progress: Statuses batch RPC done (37a); hub service (37b), page and CSV (37c), docs (37d) next |
 | 38 | Notifications | A notice to the repository's watchers when its status changes | S | open |
 | 39 | Agent tools | MCP tools that read findings and manage scanning | S | open |
 | 40 | Scanner limits | A total time limit and a CPU limit per scan. File, byte, package and concurrency limits exist | S | open |
