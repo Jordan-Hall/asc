@@ -232,6 +232,7 @@ All take `--json` and `--remote <name\|url>`. The scope is `--rev <rev>`, `--cha
 | `deps scan` | Reads the dependency files of a revision, looks the packages up and records the findings. `--rev`, `--ecosystem`, `--refresh`. | `asc deps scan --ecosystem cargo` |
 | `deps findings` | Lists the findings. `--state`, `--ecosystem`, `--severity`, `--package`, `--sort newest\|exploited`, `--exploited` (only findings on the KEV list), `--limit`, `--page`. | `asc deps findings --sort exploited` |
 | `deps sbom` | Writes the CycloneDX 1.6 bill of materials of a revision to standard output, or to `--out FILE` (`--force` replaces it). `--rev`, `--ecosystem`. | `asc deps sbom --out sbom.cdx.json` |
+| `deps status` | Shows the security status of trunk, or with `--change ID` (hex id of the head changeset, or a revision in a workspace) what a change adds. `--json`. Exit 0 clean, 1 findings, 2 unknown or incomplete. | `asc deps status --change HEAD` |
 | `deps updates` | Lists the updates that are available. `--security` only security fixes, `--ignored` also ignored ones. | `asc deps updates --security` |
 | `deps propose` | Records updates as changes on `agent/deps` refs. `--max-kind patch\|minor\|major`, `--max-groups`, `--dry-run`. | `asc deps propose --security --dry-run` |
 | `deps dismiss`, `reopen` | Dismisses a finding with a reason (`not-used`, `tolerable`, `inaccurate`, `fix-started`), or reopens it. | `asc deps dismiss 12 --reason not-used` |
