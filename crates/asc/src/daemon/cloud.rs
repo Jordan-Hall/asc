@@ -538,6 +538,25 @@ pub struct CloudSync<S: CloudStore> {
     ws_name: String,
     clock: Arc<dyn Clock>,
     reporter: Option<(String, Arc<dyn DeviceReporter>)>,
+    worktrees: Option<WorktreeReports>,
+}
+
+/// What the worktree report needs (SPEC §21.3.10).
+struct WorktreeReports {
+    device: String,
+    salt: [u8; 32],
+    reporter: Arc<dyn worktrees::WorktreeReporter>,
+}
+
+/// Whether this is the first refusal (`FAILED_PRECONDITION`) of worktree reports for `repo`.
+fn refused_once(repo: RepoKey) -> bool {
+    static SEEN: Mutex<Vec<i64>> = Mutex::new(Vec::new());
+    let mut seen = lock(&SEEN);
+    if seen.contains(&repo.0) {
+        return false;
+    }
+    seen.push(repo.0);
+    true
 }
 
 impl<S: CloudStore> CloudSync<S> {
@@ -548,6 +567,7 @@ impl<S: CloudStore> CloudSync<S> {
             ws_name,
             clock,
             reporter: None,
+            worktrees: None,
         }
     }
 
@@ -556,6 +576,44 @@ impl<S: CloudStore> CloudSync<S> {
     pub fn with_reporter(mut self, device: String, reporter: Arc<dyn DeviceReporter>) -> Self {
         self.reporter = Some((device, reporter));
         self
+    }
+
+    /// After each sync, report the worktrees of this machine as `device` (SPEC §21.3.10).
+    #[must_use]
+    pub fn with_worktrees(
+        mut self,
+        device: String,
+        salt: [u8; 32],
+        reporter: Arc<dyn worktrees::WorktreeReporter>,
+    ) -> Self {
+        self.worktrees = Some(WorktreeReports {
+            device,
+            salt,
+            reporter,
+        });
+        self
+    }
+
+    /// Sends the worktree report; a failure is logged and never fails the sync, and a server
+    /// that refuses (no `cloud` flag) is logged once and not asked again by this sync.
+    async fn report_worktrees(&self, w: &WorktreeReports) {
+        let repo = self.rows.repo;
+        let rows = match worktrees::local_rows(&self.rows.db, repo).await {
+            Ok(r) => r,
+            Err(e) => return tracing_note(repo, &format!("worktree report: {e}")),
+        };
+        let req = worktrees::build(&w.salt, &w.device, &rows);
+        match w.reporter.report(&req).await {
+            Ok(()) => {}
+            Err(worktrees::SendError::Precondition(e)) => {
+                if refused_once(repo) {
+                    tracing_note(repo, &format!("worktree report refused: {e}"));
+                }
+            }
+            Err(worktrees::SendError::Other(e)) => {
+                tracing_note(repo, &format!("worktree report: {e}"));
+            }
+        }
     }
 
     /// The report of this machine: each visible draft and why it is or is not in the workspace.
@@ -683,6 +741,9 @@ impl<S: CloudStore> CloudSync<S> {
             if let Err(e) = sent {
                 tracing_note(self.rows.repo, &format!("device report: {e}"));
             }
+        }
+        if let Some(w) = &self.worktrees {
+            self.report_worktrees(w).await;
         }
         Ok(out.version)
     }
@@ -1178,6 +1239,7 @@ async fn repos_of(db: &StateDb) -> Result<Vec<RepoKey>, String> {
 }
 
 pub(crate) mod prod;
+pub mod worktrees;
 
 #[cfg(test)]
 mod tests;

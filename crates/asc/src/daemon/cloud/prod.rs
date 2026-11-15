@@ -284,16 +284,25 @@ impl Inner {
         let settings = self.fresh_settings()?;
         let name = workspace_name(&settings.workspace);
         let wire = self.remote.session().wire.clone();
-        Ok(CloudSync::new(
+        let device = device_name(settings.device.as_deref());
+        let sync = CloudSync::new(
             rows,
             RpcCloudStore::new(wire.clone(), name.clone()),
             name.clone(),
             self.clock.clone(),
         )
         .with_reporter(
-            device_name(settings.device.as_deref()),
-            Arc::new(RpcCloudStore::new(wire, name)),
-        ))
+            device.clone(),
+            Arc::new(RpcCloudStore::new(wire.clone(), name.clone())),
+        );
+        // Without a salt there is no worktree report; the sync is the same.
+        Ok(match super::worktrees::salt(self.ws()?.home.root()) {
+            Ok(salt) => sync.with_worktrees(device, salt, Arc::new(RpcCloudStore::new(wire, name))),
+            Err(e) => {
+                eprintln!("asc daemon: cloud: worktree salt: {e}");
+                sync
+            }
+        })
     }
 
     fn guard(&self) -> Result<Guard, String> {
