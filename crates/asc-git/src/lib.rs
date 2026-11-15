@@ -12,3 +12,4 @@ pub mod odb;
 pub mod projection;
 pub mod realgit;
 pub mod tree_override;
+pub mod view;
