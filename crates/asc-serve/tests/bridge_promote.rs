@@ -510,6 +510,44 @@ async fn a_repeated_delivery_changes_nothing_and_a_row_of_the_hosts_own_git_wait
     assert_eq!(env.bridge_ref("refs/heads/master").await, Some(c3));
 }
 
+/// A host history import (`history-import` in the ref log) is finished by the host's git like a
+/// `host-git-push`: the effect waits for it and does not race its compare-and-set.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_row_of_a_host_history_import_waits_for_the_hosts_git_too() {
+    let env = Env::start().await;
+    let git = &env.git;
+    let a = git.repo("a", &env.url()).await;
+    let c1 = git
+        .commit(
+            &a, "f", "one
+", "one",
+        )
+        .await;
+    assert!(git.run(&a, &["push", "origin", "master"]).await.ok);
+    env.deliver().await;
+    assert_eq!(env.bridge_ref("refs/heads/master").await, Some(c1.clone()));
+
+    git.commit(
+        &a, "f", "two
+", "two",
+    )
+    .await;
+    assert!(git.run(&a, &["push", "origin", "master"]).await.ok);
+    sqlx::query(
+        "UPDATE ref_log SET via = 'history-import' WHERE seq = (SELECT MAX(seq) FROM ref_log)",
+    )
+    .execute(env.registry.pool())
+    .await
+    .unwrap();
+    assert_eq!(env.outbox.deliver_due(now()).await.unwrap(), 1);
+    assert_eq!(env.bridge_ref("refs/heads/master").await, Some(c1));
+    assert_eq!(
+        env.undelivered().await,
+        1,
+        "the row waits for the host's git"
+    );
+}
+
 /// The state of the bug seen on staging: a ref of the host's directory names a commit the directory does not
 /// hold (or a ref asc has is missing). Nothing was queued for it, so only a look at the directory finds it.
 #[tokio::test(flavor = "multi_thread")]
