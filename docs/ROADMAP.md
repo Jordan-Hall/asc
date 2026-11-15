@@ -97,7 +97,7 @@ In flight: rows 42 and 46 (the cache statistics store and recorder have landed; 
 | 17 | Structural merge driver | A tree-sitter merge for the five indexed languages | S | open |
 | 18 | `WatchRefs` | A pushed notice when a ref moves, in place of polling. **Check first**: the RPC is built (`crates/asc-serve/src/watch_refs.rs`) and the daemon uses it; the row covers the callers that still poll (CI, the IDE plugins, the hub) | S | open |
 | 76 | Pause at the AI cap | `stop_at_cap` pauses an agent run at its cap so it can resume; today the run ends with `AI_CAP_REACHED` (`agents/runtime.rs`) | S | open |
-| 79 | Person profile tool for agents | The sandbox tool list and the MCP toolset get a tool that reads a person's profile (`Agents.GetPerson` exists) | S | in progress: sandbox tool `get_person` done 2026-11-14 (79a); MCP toolset next (79b) |
+| 79 | Person profile tool for agents | The sandbox tool list and the MCP toolset get a tool that reads a person's profile (`Agents.GetPerson` exists) | S | done 2026-11-15: sandbox tool (79a) and MCP `get_person` in the `agents` toolset (79b) |
 
 ### CI and build tools
 
