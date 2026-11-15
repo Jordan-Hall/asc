@@ -152,6 +152,9 @@ impl ServerMutations {
         check_message(&req.message)?;
         // SPEC §8.5 step 5: the server signs what it merges with its own key, for the host only.
         let web_signer = self.web_signer(ctx, req.sign)?;
+        if !req.dry_run {
+            Self::sign_needs_ref(&web_signer, &req.update_ref)?;
+        }
         if req.head.is_empty() || req.head.len() > MAX_STRING || req.base.len() > MAX_STRING {
             return Err(invalid("a merge names a base and a head"));
         }
@@ -162,6 +165,11 @@ impl ServerMutations {
             asc_core::path::RefName::new(req.update_ref.as_bytes())
                 .map_err(|e| invalid(e.to_string()))?;
             if let Some(done) = self.replayed_merge(&o, ctx, &req.update_ref).await? {
+                if web_signer.is_some() {
+                    let done_id =
+                        ChangesetId::from_slice(&done.result).map_err(|e| internal("merge", &e))?;
+                    self.replay_signed(&o, &web_signer, done_id).await?;
+                }
                 return Ok(done);
             }
         }
@@ -255,6 +263,11 @@ impl ServerMutations {
                 ..wire::MergeResponse::default()
             })),
             _ if !writes => Ok(answer(wire::MergeResponse::default())),
+            Computed::Existing(_) | Computed::Tip(..) if web_signer.is_some() => {
+                Err(rpc(RpcError::UnsignedChange(info(vec![
+                    "this merge makes no new changeset to sign".into(),
+                ]))))
+            }
             Computed::Existing(id) => {
                 self.publish_merge(&o, ctx, &req, base, id, &[], RewriteOp::Rebase)
                     .await?;
@@ -281,6 +294,17 @@ impl ServerMutations {
             } => {
                 let (author, committer) =
                     signed.ok_or_else(|| internal("merge", &"a new changeset has no signature"))?;
+                // A squash or a rebase merge makes a changeset that holds the head's content, and
+                // the server's signature on it would pass a branch that requires signed changes
+                // for changesets that were not: every source must be valid first.
+                if web_signer.is_some() {
+                    let sources: Vec<ChangesetId> = match &rewritten {
+                        Rewritten::None => Vec::new(),
+                        Rewritten::Squashed(ids) => ids.clone(),
+                        Rewritten::Rebased(pairs) => pairs.iter().map(|(old, _)| *old).collect(),
+                    };
+                    self.sources_valid(&o, &web_signer, &sources).await?;
+                }
                 let committer = if web_signer.is_some() {
                     crate::mutations::server_committer(&committer)
                 } else {
@@ -302,11 +326,9 @@ impl ServerMutations {
                         copies: Vec::new(),
                     })
                     .await?;
-                if let Some(signing) = &web_signer {
-                    self.sign_web_edit(signing, o.entry.key.0, id).await?;
-                }
                 let pairs = rewritten.pairs(id);
-                self.publish_merge(&o, ctx, &req, base, id, &pairs, op)
+                let publish = self.publish_merge(&o, ctx, &req, base, id, &pairs, op);
+                self.publish_signed(ctx, &web_signer, &o, id, &req.update_ref, publish)
                     .await?;
                 Ok(wire::MergeResponse {
                     result: Bytes::copy_from_slice(id.as_bytes()),
@@ -315,6 +337,29 @@ impl ServerMutations {
                 })
             }
         }
+    }
+
+    /// Refuses with `UNSIGNED_CHANGE` unless every changeset in `sources` has a valid signature.
+    async fn sources_valid(
+        &self,
+        o: &Opened,
+        signer: &Option<Arc<crate::signing::rpc::Signing>>,
+        sources: &[ChangesetId],
+    ) -> Result<(), Status> {
+        let Some(signing) = signer else { return Ok(()) };
+        for source in sources {
+            let v = signing
+                .verifier()
+                .verdict(o.entry.key.0, o.entry.ns.as_bytes(), source)
+                .await
+                .map_err(|e| internal("signing", &e))?;
+            if !v.is_valid() {
+                return Err(rpc(RpcError::UnsignedChange(info(vec![format!(
+                    "{source} is not validly signed, so the server will not sign a merge of it"
+                )]))));
+            }
+        }
+        Ok(())
     }
 
     /// The changeset `head` names. A head in another repository is resolved there, then its
@@ -1697,6 +1742,7 @@ mod tests {
         let host = ctx_as(HOST_SERVICE_PRINCIPAL);
         let signed_req = |ours, t1| wire::MergeRequest {
             sign: true,
+            update_ref: "refs/heads/merged".into(),
             ..req(ours, t1, wire::MergeStyle::Merge)
         };
         let hub = |f: &Fx, web_edits| {
@@ -1770,6 +1816,81 @@ mod tests {
         assert_eq!(e.code(), tonic::Code::FailedPrecondition);
         assert_eq!(graph_rows(&g).await, rows);
         assert_eq!(count(&g, "SELECT COUNT(*) FROM change_signatures").await, 0);
+    }
+
+    #[tokio::test]
+    async fn a_signed_squash_needs_every_source_valid_and_a_fast_forward_cannot_be_signed() {
+        use crate::authz::identity::HOST_SERVICE_PRINCIPAL;
+        use crate::signing::rpc::Signing;
+        use crate::signing::tests::{ALICE_BODY, server_signer};
+        use crate::signing::{Config, WebEdits};
+
+        let dir = tempfile::tempdir().unwrap();
+        let server = server_signer(&dir, "server_key", ALICE_BODY);
+        let host = || ctx_as(HOST_SERVICE_PRINCIPAL);
+        let f = fx().await;
+        let cfg = Config {
+            web_edits: WebEdits::Server,
+            ..Config::default()
+        };
+        let signing = Arc::new(Signing::new(f.registry.clone(), cfg, Some(server)));
+        f.m.set_web_signing(signing.clone());
+        let r = root(&f).await;
+        let ours = make(&f, &[r], "ours", &[("f.txt", Some(&with_line(1, "ONE")))]).await;
+        let t1 = make(
+            &f,
+            &[r],
+            "t1",
+            &[(
+                "g.txt",
+                Some(
+                    "G
+",
+                ),
+            )],
+        )
+        .await;
+        let squash = |name: &str| wire::MergeRequest {
+            sign: true,
+            update_ref: name.into(),
+            ..req(ours, t1, wire::MergeStyle::Squash)
+        };
+        let rows = "SELECT COUNT(*) FROM change_signatures";
+
+        // The head is unsigned: the squash would launder it, so it is refused.
+        let e =
+            f.m.merge_inner(&host(), squash("refs/heads/s1"))
+                .await
+                .unwrap_err();
+        assert_eq!(code(&e), "UNSIGNED_CHANGE", "{e:?}");
+        assert_eq!(count(&f, rows).await, 0);
+
+        // With a valid signature on the source the squash is signed too.
+        signing
+            .verifier()
+            .attest(f.entry.key.0, &t1, 1)
+            .await
+            .unwrap();
+        let done =
+            f.m.merge_inner(&host(), squash("refs/heads/s2"))
+                .await
+                .unwrap();
+        let v = signing
+            .verifier()
+            .verdict(f.entry.key.0, f.entry.ns.as_bytes(), &result_of(&done))
+            .await
+            .unwrap();
+        assert!(v.is_valid(), "{}", v.reason);
+
+        // A fast-forward makes no changeset, so nothing can carry the server's signature.
+        let ff = wire::MergeRequest {
+            sign: true,
+            update_ref: "refs/heads/ff".into(),
+            ..req(r, t1, wire::MergeStyle::FastForwardOnly)
+        };
+        let e = f.m.merge_inner(&host(), ff).await.unwrap_err();
+        assert_eq!(code(&e), "UNSIGNED_CHANGE", "{e:?}");
+        assert_eq!(e.code(), tonic::Code::FailedPrecondition);
     }
 
     #[tokio::test]

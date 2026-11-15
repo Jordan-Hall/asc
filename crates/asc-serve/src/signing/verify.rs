@@ -241,6 +241,46 @@ impl Verifier {
         Ok((judge(&sig, changeset, at, key.as_ref(), &author), key))
     }
 
+    /// Signs `changeset` with the server key for a web edit. An existing signature is never replaced.
+    /// `Some(true)` when the server's signature was stored, `Some(false)` when the changeset already
+    /// had one; `None` when the server has no key.
+    pub async fn attest_web_edit(
+        &self,
+        repo_id: i64,
+        changeset: &ChangesetId,
+        at: i64,
+    ) -> Result<Option<bool>, sqlx::Error> {
+        let Some(server) = &self.server else {
+            return Ok(None);
+        };
+        let Ok(armored) = server.sign(changeset) else {
+            return Ok(None);
+        };
+        let row = SigRow {
+            signature: armored,
+            key_id: SERVER_KEY_ID.into(),
+            status: i64::from(Status::Valid as i32),
+            signed_at: at,
+        };
+        store::put_signature_if_absent(&self.pool, repo_id, changeset, &row)
+            .await
+            .map(Some)
+    }
+
+    /// Takes back the server signature of a web edit whose publication failed.
+    pub async fn withdraw_web_edit(
+        &self,
+        repo_id: i64,
+        changeset: &ChangesetId,
+    ) -> Result<(), sqlx::Error> {
+        store::delete_server_signature(&self.pool, repo_id, changeset).await
+    }
+
+    /// Records in the audit log that the server signed a web edit.
+    pub async fn record_web_edit(&self, event: &crate::audit::NewEvent) -> Result<(), sqlx::Error> {
+        store::append_event(&self.pool, event).await
+    }
+
     /// Signs `changeset` with the server key and stores the signature. `None` when the server has
     /// no key.
     pub async fn attest(

@@ -345,6 +345,52 @@ pub async fn put_signature(
     tx.commit().await
 }
 
+/// Stores `sig` as the signature of `changeset` unless it has one. `true` when it was stored; an
+/// existing signature (a person's, or an earlier server one) is never replaced.
+pub async fn put_signature_if_absent(
+    pool: &AnyPool,
+    repo_id: i64,
+    changeset: &ChangesetId,
+    sig: &SigRow,
+) -> Result<bool, sqlx::Error> {
+    let done = sqlx::query(
+        "INSERT INTO change_signatures (repo_id, changeset, signature, key_id, status, signed_at)          VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (repo_id, changeset) DO NOTHING",
+    )
+    .bind(repo_id)
+    .bind(changeset.as_bytes().to_vec())
+    .bind(&sig.signature)
+    .bind(&sig.key_id)
+    .bind(sig.status)
+    .bind(sig.signed_at)
+    .execute(pool)
+    .await?;
+    Ok(done.rows_affected() > 0)
+}
+
+/// Removes the server's signature of `changeset`, if that is the one stored. A person's signature stays.
+pub async fn delete_server_signature(
+    pool: &AnyPool,
+    repo_id: i64,
+    changeset: &ChangesetId,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "DELETE FROM change_signatures WHERE repo_id = $1 AND changeset = $2 AND key_id = $3",
+    )
+    .bind(repo_id)
+    .bind(changeset.as_bytes().to_vec())
+    .bind(super::SERVER_KEY_ID)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Appends `event` to the audit log.
+pub async fn append_event(pool: &AnyPool, event: &NewEvent) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    audit_in_tx(&mut tx, Some(event)).await?;
+    tx.commit().await
+}
+
 pub async fn get_signature(
     pool: &AnyPool,
     repo_id: i64,

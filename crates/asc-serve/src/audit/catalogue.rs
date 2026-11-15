@@ -231,6 +231,11 @@ pub const CATALOGUE: &[ActionInfo] = &[
         &["sign_by_default"],
     ),
     a(
+        "signing.web_edit.signed",
+        "The server signed a web edit (a commit, an apply or a merge) with its own key, for the person whose forwarded claim the host service presented.",
+        &["change", "user", "ref"],
+    ),
+    a(
         "signing.signature.submitted",
         "A signature was submitted for a change.",
         &["change", "version", "fingerprint"],
@@ -858,6 +863,7 @@ mod tests {
             "signing.key.revoked",
             "signing.defaults.set",
             "signing.signature.submitted",
+            "signing.web_edit.signed",
             "storage.target.created",
             "storage.target.updated",
             "storage.target.verified",
