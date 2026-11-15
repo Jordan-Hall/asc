@@ -905,7 +905,8 @@ message MergeResponse { bytes result = 1; repeated bytes conflicts = 2; repeated
   bool is_empty = 4; repeated Rewrite rewritten = 5; repeated Conflict conflict_details = 6; }
 enum ApplyMode { APPLY_MODE_CHERRY_PICK = 0; APPLY_MODE_REVERT = 1; APPLY_MODE_PATCH = 2; }
 message ApplyRequest { RepoRef repo = 1; string onto = 2; string changeset = 3; bytes patch = 4; ApplyMode mode = 5;
-  bytes message = 6; Signature author = 7; Signature committer = 8; string update_ref = 9; }
+  bytes message = 6; Signature author = 7; Signature committer = 8; string update_ref = 9;
+  bool sign = 10; }
 message ApplyResponse { bytes result = 1; repeated bytes conflicts = 2; repeated Conflict conflict_details = 3; }
 message CopyClosureRequest { RepoRef from = 1; RepoRef to = 2; repeated bytes changesets = 3; }
 message CopyClosureResponse { uint64 copied = 1; }
