@@ -112,6 +112,8 @@ struct Inner {
     uploads: bool,
     /// `search`, when `origin` is a server to ask (unit I21).
     search: Option<SearchTool<ServerSearch>>,
+    /// `get_person`, asked of the same server.
+    person: Option<ServerSearch>,
 }
 
 /// The `McpBackend` for a workspace on this machine.
@@ -154,6 +156,7 @@ impl LocalBackend {
                 write: WriteLevel::None,
                 uploads: false,
                 search: None,
+                person: None,
             }),
         })
     }
@@ -176,6 +179,7 @@ impl LocalBackend {
     #[must_use]
     pub fn with_search(mut self, client: Option<ServerSearch>) -> Self {
         if let Some(inner) = Arc::get_mut(&mut self.inner) {
+            inner.person.clone_from(&client);
             inner.search = client.map(SearchTool::new);
         }
         self
@@ -1367,6 +1371,14 @@ impl McpBackend for LocalBackend {
         }
         if tool == "search" {
             return inner.search(args, ctx).await;
+        }
+        if tool == "get_person" {
+            let Some(client) = &inner.person else {
+                return Err(ToolError::not_available(
+                    "get_person needs an asc server: this repository has no origin",
+                ));
+            };
+            return client.person(args, ctx).await.map(Reply::Messages);
         }
         let target = inner.target(args).await?;
         check_paths(&target.gate, tool, args)?;

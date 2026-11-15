@@ -158,6 +158,7 @@ pub fn parse_toolsets(v: &str) -> BTreeSet<Toolset> {
                 Toolset::Stack,
                 Toolset::Projects,
                 Toolset::Search,
+                Toolset::Agents,
             ]);
         } else if let Some(t) = Toolset::parse(part)
             && t != Toolset::Write
@@ -395,7 +396,7 @@ mod tests {
 
     #[test]
     fn toolsets_parse_all_and_ignore_unknown() {
-        assert_eq!(parse_toolsets("all").len(), 5);
+        assert_eq!(parse_toolsets("all").len(), 6);
         assert_eq!(
             parse_toolsets("core, nope ,write"),
             BTreeSet::from([Toolset::Core])

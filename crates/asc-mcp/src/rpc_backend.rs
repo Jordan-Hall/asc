@@ -401,6 +401,94 @@ fn map_status(s: &Status) -> ToolError {
     }
 }
 
+/// The tool that reads the profile a person lets agents read (`Agents.GetPerson`).
+pub const PERSON_TOOL: &str = "get_person";
+/// What the model reads when the person does not share a profile (or does not exist).
+pub const PERSON_NOT_SHARED: &str = "this person does not share a profile with agents";
+/// What the model reads when the run has made all the lookups it may.
+const PERSON_LIMIT: &str = "lookup limit reached for this run";
+/// Longest login.
+const MAX_LOGIN: usize = 64;
+/// The profile fields `get_person` returns, in order.
+const PERSON_FIELDS: [&str; 6] = [
+    "login",
+    "full_name",
+    "description",
+    "location",
+    "website",
+    "pronouns",
+];
+
+/// Checks the `login` argument of `get_person`: 1 to 64 characters.
+///
+/// # Errors
+/// `INVALID_ARGUMENT` when the login is missing, empty or too long.
+pub fn check_person_login(args: &Value) -> Result<(), ToolError> {
+    let n = args
+        .get("login")
+        .and_then(Value::as_str)
+        .map_or(0, |l| l.chars().count());
+    if (1..=MAX_LOGIN).contains(&n) {
+        Ok(())
+    } else {
+        Err(ToolError::new(
+            "INVALID_ARGUMENT",
+            "a login is 1 to 64 characters",
+        ))
+    }
+}
+
+/// The `Agents.GetPerson` request for `login` in `repo`, for the method `method`.
+///
+/// # Errors
+/// `INVALID_ARGUMENT` when the request cannot be built.
+pub fn person_request(
+    method: &MethodDescriptor,
+    repo: &str,
+    login: &str,
+) -> Result<DynamicMessage, ToolError> {
+    let mut msg = json::decode(&method.input(), &serde_json::json!({ "login": login }))
+        .map_err(|e| ToolError::new("INVALID_ARGUMENT", format!("{PERSON_TOOL}: {e}")))?;
+    set_repo(&mut msg, repo);
+    Ok(msg)
+}
+
+/// A refusal for the lookup allowance of a run reads as such; any other error is unchanged.
+#[must_use]
+pub fn person_error(e: ToolError) -> ToolError {
+    if e.code == code::RATE_LIMITED {
+        ToolError::new(code::RATE_LIMITED, PERSON_LIMIT)
+    } else {
+        e
+    }
+}
+
+/// Reduces each `GetPerson` answer to the shared fields (empty ones left out), or to a message
+/// when the person shares nothing. Nothing else of the answer passes, so no field can pass for
+/// another.
+#[must_use]
+pub fn person_stream(
+    s: BoxStream<'static, Result<Value, ToolError>>,
+) -> BoxStream<'static, Result<Value, ToolError>> {
+    s.map(|r| r.map(|v| person_view(&v)).map_err(person_error))
+        .boxed()
+}
+
+fn person_view(v: &Value) -> Value {
+    if v.get("allowed").and_then(Value::as_bool) != Some(true) {
+        return serde_json::json!({ "message": PERSON_NOT_SHARED });
+    }
+    let mut out = Map::new();
+    for k in PERSON_FIELDS {
+        if let Some(t) = v.get(k).and_then(Value::as_str)
+            && !t.is_empty()
+        {
+            out.insert(k.to_owned(), Value::String(t.to_owned()));
+        }
+    }
+    Value::Object(out)
+}
+
 fn clean(s: &str) -> String {
     s.chars()
         .filter(|c| !c.is_control())
@@ -500,9 +588,18 @@ impl McpBackend for RpcBackend {
             .resolve(def.rpc)
             .ok_or_else(|| ToolError::not_available(format!("{tool} is not served over RPC")))?;
         let (channel, credential) = self.route(method.parent_service().name())?;
+        if tool == PERSON_TOOL {
+            check_person_login(args)?;
+        }
         let request = self.build(def, &method, args, ctx)?;
 
         let req = Self::request(request, credential);
+        if tool == PERSON_TOOL {
+            let messages = stream_call(&method, channel, req, ctx)
+                .await
+                .map_err(person_error)?;
+            return Ok(Reply::Messages(person_stream(messages)));
+        }
         let messages = stream_call(&method, channel, req, ctx).await?;
         Ok(Reply::Messages(messages))
     }

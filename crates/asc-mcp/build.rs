@@ -24,7 +24,9 @@ use schema::{Added, InputSpec, Limit, Surface};
 
 type Failure = Box<dyn std::error::Error>;
 
-const TOOLSETS: &[&str] = &["core", "history", "stack", "projects", "search", "write"];
+const TOOLSETS: &[&str] = &[
+    "core", "history", "stack", "projects", "search", "agents", "write",
+];
 const ANNOTATIONS: &[&str] = &["read_only", "idempotent", "destructive", "open_world"];
 const NEEDS: &[(&str, &str)] = &[
     ("none", "None"),

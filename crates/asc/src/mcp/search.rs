@@ -20,7 +20,7 @@ use std::time::Duration;
 use asc_git::realgit::RealGit;
 use asc_mcp::backend::CallContext;
 use asc_mcp::errors::{ToolError, code};
-use asc_mcp::rpc_backend::stream_call;
+use asc_mcp::rpc_backend::{self as person, stream_call};
 use asc_mcp::search::{self, CodeIntelClient, Plan};
 use asc_rpc::IdMode;
 use asc_state::StateDb;
@@ -117,37 +117,31 @@ impl ServerSearch {
     }
 }
 
-#[async_trait::async_trait]
-impl CodeIntelClient for ServerSearch {
-    async fn call(
+impl ServerSearch {
+    /// Runs `method` on the server: `build` makes the request for the repository the connection
+    /// names, and `repo` (when given) must be that repository. A credential refused is asked for
+    /// once more.
+    async fn rpc(
         &self,
-        plan: Plan,
+        method: &prost_reflect::MethodDescriptor,
+        repo: Option<&str>,
+        build: &(dyn Fn(&str) -> Result<prost_reflect::DynamicMessage, ToolError> + Sync),
         ctx: &CallContext,
     ) -> Result<BoxStream<'static, Result<Value, ToolError>>, ToolError> {
         let remote = self.remote().await?;
-        let method = self
-            .0
-            .pool
-            .get_service_by_name("asc.v1.CodeIntel")
-            .and_then(|s| s.methods().find(|m| m.name() == plan.rpc.method()))
-            .ok_or_else(|| ToolError::internal("CodeIntel is missing from the descriptor set"))?;
         let mut asked_again = false;
         loop {
             let session = remote.session();
-            if plan
-                .repo
-                .as_deref()
-                .is_some_and(|want| want != session.wire.repo)
-            {
+            if repo.is_some_and(|want| want != session.wire.repo) {
                 return Err(ToolError::new(
                     code::PATH_POLICY,
                     "the repository is fixed by the connection",
                 ));
             }
-            let msg = search::wire_request(&plan, &method, &session.wire.repo, IdMode::Asc)?;
+            let msg = build(&session.wire.repo)?;
             let mut req = session.wire.request(msg, Some(uuid::Uuid::now_v7()));
             req.set_timeout(CALL_TIMEOUT);
-            match stream_call(&method, session.wire.channel.clone(), req, ctx).await {
+            match stream_call(method, session.wire.channel.clone(), req, ctx).await {
                 Ok(stream) => {
                     credential::report_result(&session.resolved, true);
                     return Ok(stream);
@@ -167,6 +161,62 @@ impl CodeIntelClient for ServerSearch {
                 }
             }
         }
+    }
+
+    /// `get_person`: the profile a person lets agents read, from the server (`Agents.GetPerson`).
+    ///
+    /// # Errors
+    /// A bad login, or the server's refusal.
+    pub async fn person(
+        &self,
+        args: &Value,
+        ctx: &CallContext,
+    ) -> Result<BoxStream<'static, Result<Value, ToolError>>, ToolError> {
+        person::check_person_login(args)?;
+        let login = args
+            .get("login")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let method = self
+            .0
+            .pool
+            .get_service_by_name("asc.v1.Agents")
+            .and_then(|s| s.methods().find(|m| m.name() == "GetPerson"))
+            .ok_or_else(|| ToolError::internal("Agents is missing from the descriptor set"))?;
+        let repo = args.get("repo").and_then(Value::as_str);
+        let stream = self
+            .rpc(
+                &method,
+                repo,
+                &|r| person::person_request(&method, r, login),
+                ctx,
+            )
+            .await
+            .map_err(person::person_error)?;
+        Ok(person::person_stream(stream))
+    }
+}
+
+#[async_trait::async_trait]
+impl CodeIntelClient for ServerSearch {
+    async fn call(
+        &self,
+        plan: Plan,
+        ctx: &CallContext,
+    ) -> Result<BoxStream<'static, Result<Value, ToolError>>, ToolError> {
+        let method = self
+            .0
+            .pool
+            .get_service_by_name("asc.v1.CodeIntel")
+            .and_then(|s| s.methods().find(|m| m.name() == plan.rpc.method()))
+            .ok_or_else(|| ToolError::internal("CodeIntel is missing from the descriptor set"))?;
+        self.rpc(
+            &method,
+            plan.repo.as_deref(),
+            &|repo| search::wire_request(&plan, &method, repo, IdMode::Asc),
+            ctx,
+        )
+        .await
     }
 }
 

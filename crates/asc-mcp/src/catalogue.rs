@@ -26,6 +26,8 @@ pub enum Toolset {
     Projects,
     /// `search`, listed when `search.v1` is advertised (M15).
     Search,
+    /// `get_person`: the profile a person lets agents read.
+    Agents,
     /// Tools that change state; listed only when writing is enabled.
     Write,
 }
@@ -40,6 +42,7 @@ impl Toolset {
             Self::Stack => "stack",
             Self::Projects => "projects",
             Self::Search => "search",
+            Self::Agents => "agents",
             Self::Write => "write",
         }
     }
@@ -51,12 +54,13 @@ impl Toolset {
     }
 
     /// Every toolset, in listing order.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Core,
         Self::History,
         Self::Stack,
         Self::Projects,
         Self::Search,
+        Self::Agents,
         Self::Write,
     ];
 }
@@ -231,6 +235,7 @@ impl Context {
             Toolset::Stack,
             Toolset::Projects,
             Toolset::Search,
+            Toolset::Agents,
         ]
         .into_iter()
         .collect();
