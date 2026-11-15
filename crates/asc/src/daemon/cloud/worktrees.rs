@@ -87,16 +87,23 @@ impl WorktreeReporter for RpcCloudStore {
     }
 }
 
-/// The per-device salt, made on first use.
+/// The per-device salt, made on first use. The content is written to a temp file in the same
+/// directory, synced, then linked to the final name without overwriting, so a crash leaves no
+/// short file and racing writers agree on one salt. A file of the wrong length is replaced once.
 pub fn salt(root: &Path) -> Result<[u8; SALT_LEN], String> {
     let file = root.join(SALT_FILE);
     let read = |f: &Path| -> Option<[u8; SALT_LEN]> { std::fs::read(f).ok()?.try_into().ok() };
     if let Some(s) = read(&file) {
         return Ok(s);
     }
+    if file.exists() {
+        eprintln!("asc daemon: cloud: worktree salt has the wrong length; replacing it");
+        std::fs::remove_file(&file).map_err(|e| note(&e.to_string()))?;
+    }
     let mut fresh = [0u8; SALT_LEN];
     fresh[..16].copy_from_slice(Uuid::new_v4().as_bytes());
     fresh[16..].copy_from_slice(Uuid::new_v4().as_bytes());
+    let tmp = root.join(format!("{SALT_FILE}.{}.tmp", Uuid::new_v4().simple()));
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create_new(true);
     #[cfg(unix)]
@@ -104,18 +111,29 @@ pub fn salt(root: &Path) -> Result<[u8; SALT_LEN], String> {
         use std::os::unix::fs::OpenOptionsExt;
         opts.mode(0o600);
     }
-    match opts.open(&file) {
-        Ok(mut f) => {
-            use std::io::Write;
-            f.write_all(&fresh).map_err(|e| note(&e.to_string()))?;
-            Ok(fresh)
-        }
-        // Another run made it first.
+    let written = (|| {
+        use std::io::Write;
+        let mut f = opts.open(&tmp)?;
+        f.write_all(&fresh)?;
+        f.sync_all()
+    })();
+    let linked = written.and_then(|()| std::fs::hard_link(&tmp, &file));
+    let _ = std::fs::remove_file(&tmp);
+    match linked {
+        Ok(()) => Ok(fresh),
+        // Another run made it first: its salt is the one.
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
             read(&file).ok_or_else(|| "worktree salt unreadable".to_owned())
         }
         Err(e) => Err(note(&e.to_string())),
     }
+}
+
+/// The newest `MAX_WORKTREES` of `items` by last use (ties keep their order).
+fn newest<T>(mut items: Vec<T>, last_use: impl Fn(&T) -> i64) -> Vec<T> {
+    items.sort_by_key(|i| std::cmp::Reverse(last_use(i)));
+    items.truncate(MAX_WORKTREES);
+    items
 }
 
 /// The opaque id of a worktree on this device.
@@ -198,8 +216,9 @@ pub async fn local_rows(db: &StateDb, repo: RepoKey) -> Result<Vec<LocalWorktree
     let list = workspaces::list(db, Some(repo))
         .await
         .map_err(|e| note(&e.to_string()))?;
-    let mut out = Vec::with_capacity(list.len().min(MAX_WORKTREES * 2));
-    for r in list.into_iter().take(MAX_WORKTREES * 2) {
+    let list = newest(list, |r| r.epoch_time);
+    let mut out = Vec::with_capacity(list.len());
+    for r in list {
         let dirty: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM journal WHERE ws_id = ?")
             .bind(r.ws.id.to_string())
             .fetch_one(db.pool())
@@ -314,6 +333,39 @@ mod tests {
             r.worktrees[0].ws_hash.to_vec(),
             ws_hash(&[0u8; 32], "/w/299").to_vec()
         );
+    }
+
+    #[test]
+    fn a_truncated_salt_is_replaced_once_and_racers_agree() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(SALT_FILE), b"short").unwrap();
+        let a = salt(dir.path()).unwrap();
+        assert_eq!(a, salt(dir.path()).unwrap());
+        assert_eq!(std::fs::read(dir.path().join(SALT_FILE)).unwrap().len(), 32);
+
+        let race = tempfile::tempdir().unwrap();
+        let root = race.path().to_path_buf();
+        let got: Vec<[u8; 32]> = (0..8)
+            .map(|_| {
+                let r = root.clone();
+                std::thread::spawn(move || salt(&r).unwrap())
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .collect();
+        assert!(got.iter().all(|s| *s == got[0]));
+        let left: Vec<_> = std::fs::read_dir(&root).unwrap().collect();
+        assert_eq!(left.len(), 1, "no temp file stays");
+    }
+
+    #[test]
+    fn the_newest_survive_more_than_512_rows() {
+        let rows: Vec<i64> = (0..600).collect();
+        let kept = newest(rows, |&t| t);
+        assert_eq!(kept.len(), 256);
+        assert_eq!(kept[0], 599);
+        assert_eq!(*kept.last().unwrap(), 344);
     }
 
     #[test]
