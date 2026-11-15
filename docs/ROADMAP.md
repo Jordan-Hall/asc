@@ -125,8 +125,8 @@ The dependency service (`crates/asc-serve/src/deps/`, `docs/DEPENDENCIES.md`) re
 | 33 | Advisories against asc itself | The server and the CLI tell the operator when the running version has an advisory | S | open |
 | 34 | Cache and artifact marking | Build-cache entries and CI artifacts built with a dependency that later got an advisory are flagged | D | open |
 | 36 | One security status | Each repository and each change has one status (clean, findings, unknown) with the versions to move to | S | done: Status RPC, `asc deps status`, hub deps banner, Security row in pull checks, docs |
-| 37 | Security page across repositories | One page per owner or organisation listing every repository's status and findings, with export | S | in progress: Statuses batch RPC done (37a); hub service (37b), page and CSV (37c), docs (37d) next |
-| 38 | Notifications | A notice to the repository's watchers when its status changes | S | open |
+| 37 | Security page across repositories | One page per owner or organisation listing every repository's status and findings, with export | S | done 2026-11-15: Statuses batch RPC, hub owner page `/{owner}/-/security` with CSV export, docs |
+| 38 | Notifications | A notice to the repository's watchers when its status changes | S | done 2026-11-15: `security_status` event with a watchers flag, hub fan-out with per-person prefs, migration 0615, docs |
 | 39 | Agent tools | MCP tools that read findings and manage scanning | S | open |
 | 40 | Scanner limits | A total time limit and a CPU limit per scan. File, byte, package and concurrency limits exist | S | open |
 | 86 | Scan progress shared between processes | Scan progress is kept in the database, so a restart or a load balancer does not lose it. Today it is held in the memory of the scanning process (`docs/DEPENDENCIES.md`, "Progress") | S | open |
@@ -200,7 +200,7 @@ From a review of the hub's asc pages on 2026-11-13 (routes, templates and styles
 2. Disk: 10, 14, 15.
 3. Agents: 11, then 16, 17, 18, then 76 and 79.
 4. CI reach: 19, 20, 23, 25, then 85.
-5. Vulnerability awareness: 29, 31, 33, 36 to 40, then 30 and 34, then 86.
+5. Vulnerability awareness: 29, 31, 33, 39 and 40, then 30 and 34, then 86.
 6. Later: 4, 8, 9, 12, 13, 21, 22, 26.
 7. The hub: 46, 47, 48, 42, 43, 49, 52, then 44, 45, 50, 51, then 75, 80, 84.
 8. Virtual file systems: 53, then 41.
