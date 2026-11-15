@@ -1709,6 +1709,11 @@ mod tests {
 
     #[test]
     fn the_memory_limit_stops_a_child_that_outgrows_it() {
+        // Darwin accepts `setrlimit(RLIMIT_AS)` and never enforces it, so the cap binds on Linux only.
+        if cfg!(target_os = "macos") {
+            eprintln!("skipped: RLIMIT_AS is not enforced on macOS");
+            return;
+        }
         let _gate = spawn_gate();
         // `git hash-object --stdin` holds the whole blob in memory.
         let git = RealGit::resolve(None, None).expect("real git");

@@ -707,7 +707,11 @@ async fn worktree(ctx: &Ctx, sub: &str, rest: &[OsString], ran: &Run) -> Result<
             };
             let want = norm(&slashes(&absolute(cwd, p)));
             let rows = wt_rows(ctx).await?;
-            let Some(r) = rows.iter().find(|r| norm(&r.path) == want) else {
+            let Some(r) = rows.iter().find(|r| {
+                // The registry keeps the path as typed; `want` has its links resolved (macOS's
+                // `/var` and `/tmp` are links into `/private`), so the row is resolved too.
+                norm(&r.path) == want || norm(&slashes(&absolute(cwd, &r.path))) == want
+            }) else {
                 return Err(fatal("the new worktree is not registered"));
             };
             (

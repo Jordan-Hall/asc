@@ -26,7 +26,7 @@
 use std::collections::{BTreeSet, HashSet, VecDeque};
 use std::ffi::OsString;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -551,6 +551,25 @@ async fn warm(ctx: &Ctx, o: &Opts) -> Result<ExitCode> {
 
 // ---------------------------------------------------------------------------- learning
 
+/// `p` with its links resolved as far as it exists: the whole path, else its nearest existing
+/// ancestor resolved and the rest appended. `p` itself when nothing resolves.
+fn resolve_spelling(p: &Path) -> PathBuf {
+    let mut rest = Vec::new();
+    let mut cur = p;
+    loop {
+        if let Ok(real) = cur.canonicalize() {
+            return rest.iter().rev().fold(real, |acc, c| acc.join(c));
+        }
+        match (cur.parent(), cur.file_name()) {
+            (Some(up), Some(name)) => {
+                rest.push(name);
+                cur = up;
+            }
+            _ => return p.to_owned(),
+        }
+    }
+}
+
 /// `line` as a repository path: absolute inside one of `roots`, else repository-relative.
 /// `None` for a path outside the work tree, into `.git`, or not a usable path.
 fn to_repo_path(roots: &[&Path], line: &str) -> Option<RepoPath> {
@@ -560,9 +579,13 @@ fn to_repo_path(roots: &[&Path], line: &str) -> Option<RepoPath> {
     }
     let rel = if Path::new(line).is_absolute() {
         let p = Path::new(line);
+        // The path may go through a link the root does not (macOS's `/var` and `/tmp` are links
+        // into `/private`): its resolved form is tried when the spelling matches no root.
+        let resolved = resolve_spelling(p);
         roots
             .iter()
             .find_map(|r| p.strip_prefix(r).ok())
+            .or_else(|| roots.iter().find_map(|r| resolved.strip_prefix(r).ok()))
             .or_else(|| {
                 // Windows paths compare without case; a build tool may spell the drive lower.
                 let low = line.replace('\\', "/").to_lowercase();

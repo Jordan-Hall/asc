@@ -108,6 +108,36 @@ pub enum PushSetupError {
     Socket(String),
 }
 
+/// The longest socket path bound without trouble: a Unix socket address holds 104 bytes on macOS
+/// (108 on Linux), less the NUL, and a data directory under macOS's `/var/folders/...` or a long
+/// home passes that. Beyond it the socket moves to a short private directory (below).
+#[cfg(unix)]
+const MAX_SOCKET_PATH: usize = 100;
+
+/// Where the hook socket of this server is bound: `<run_dir>/hook-<id>.sock`, or when that path is
+/// too long for a socket address, `asc-hook-<euid>/h-<id>.sock` under the temporary directory,
+/// else under `/tmp`. `IpcListener::bind` creates that directory 0700 and refuses one that is not
+/// this user's; every socket is also reachable only by this user's uid.
+#[cfg(unix)]
+fn hook_socket_path(run_dir: &Path, id: &str) -> PathBuf {
+    let primary = run_dir.join(format!("hook-{id}.sock"));
+    if primary.as_os_str().len() <= MAX_SOCKET_PATH {
+        return primary;
+    }
+    let dir = format!("asc-hook-{}", rustix::process::geteuid().as_raw());
+    let short = |base: PathBuf| base.join(&dir).join(format!("h-{id}.sock"));
+    let candidate = short(std::env::temp_dir());
+    if candidate.as_os_str().len() <= MAX_SOCKET_PATH {
+        return candidate;
+    }
+    short(PathBuf::from("/tmp"))
+}
+
+#[cfg(not(unix))]
+fn hook_socket_path(run_dir: &Path, id: &str) -> PathBuf {
+    run_dir.join(format!("hook-{id}.sock"))
+}
+
 fn io_err(what: &'static str) -> impl FnOnce(io::Error) -> PushSetupError {
     move |source| PushSetupError::Io { what, source }
 }
@@ -506,8 +536,7 @@ impl GitPush {
             IpcEndpoint::from_raw(format!("asc-git-hook-{id}"))
         } else {
             IpcEndpoint::from_raw(
-                run_dir
-                    .join(format!("hook-{}.sock", &id[..16]))
+                hook_socket_path(&run_dir, &id[..16])
                     .to_string_lossy()
                     .into_owned(),
             )

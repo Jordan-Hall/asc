@@ -343,13 +343,31 @@ fn swap(gate: &SafeRoot, at: &RepoPath, tmp: &Path, dest: &Path, replace: Replac
         },
         Replace::EmptyOnly => remove_empty(dest, at),
     };
-    let done = removed.and_then(|()| fs::rename(tmp, dest).map_err(io_at(dest)));
+    let done = removed.and_then(|()| rename_locked_dir(tmp, dest).map_err(io_at(dest)));
     if let Err(e) = done {
         let _ = remove_tree(tmp);
         return Err(e);
     }
     gate.forget(at);
     Ok(())
+}
+
+/// Renames the finished (read-only) directory `tmp` to `dest`. macOS refuses to rename a
+/// directory the caller cannot write (`EACCES`, even within one parent), where Linux does not;
+/// then the directory is made writable for the rename and locked again at its new name.
+fn rename_locked_dir(tmp: &Path, dest: &Path) -> io::Result<()> {
+    match fs::rename(tmp, dest) {
+        #[cfg(unix)]
+        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(tmp, fs::Permissions::from_mode(0o755))?;
+            let renamed = fs::rename(tmp, dest);
+            // Locked again where it now is, or where it stayed.
+            let lock = lock_dir(if renamed.is_ok() { dest } else { tmp });
+            renamed.and(lock)
+        }
+        other => other,
+    }
 }
 
 /// Removes a projection (or an empty placeholder) at `at`; true when something was removed.

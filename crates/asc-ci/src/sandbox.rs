@@ -592,6 +592,10 @@ mod tests {
         let env_line = o.output.lines().find(|l| l.starts_with("ENV:")).unwrap();
         for k in env_line.trim_start_matches("ENV:").split(',') {
             let k = k.to_ascii_uppercase();
+            // macOS's libSystem adds this to every process; the sandbox does not pass it.
+            if cfg!(target_os = "macos") && k == "__CF_USER_TEXT_ENCODING" {
+                continue;
+            }
             assert!(
                 [
                     "PATH",

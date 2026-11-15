@@ -239,8 +239,8 @@ async fn go(ctx: &Ctx, l: &Local<'_>, a: &Args, picked: &[ChangesetId], wt: &Pat
                     asc_child(
                         ctx,
                         &[
-                            &"worktree".into(), &"add".into(), &"--detach".into(), &"--ephemeral".into(),
-                            &"--ttl".into(), &"1h".into(), &path, &sha,
+                            &"worktree".into(), &"add".into(), &"--mode".into(), &"plain".into(),
+                            &"--detach".into(), &"--ephemeral".into(), &"--ttl".into(), &"1h".into(), &path, &sha,
                         ],
                         None,
                     )?;
