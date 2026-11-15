@@ -296,6 +296,12 @@ fn write_key(sb: &Sandbox) -> String {
         ),
     )
     .unwrap();
+    // ssh-keygen refuses a private key that others can read.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
     path.display().to_string().replace('\\', "/")
 }
 
@@ -379,4 +385,121 @@ fn signing_test_with_an_unusable_key_exits_1() {
     let t: serde_json::Value = serde_json::from_str(&text(&out.stdout)).unwrap();
     assert_eq!(t["ok"], false);
     assert!(t["error"].as_str().unwrap().contains("cannot be read"));
+}
+
+/// The commit object text of `HEAD` split into the signature (armor lines, unfolded) and the payload.
+fn split_signed(raw: &str) -> (String, String) {
+    let mut sig = String::new();
+    let mut payload = String::new();
+    let mut in_sig = false;
+    for line in raw.split_inclusive('\n') {
+        if let Some(first) = line.strip_prefix("gpgsig ") {
+            in_sig = true;
+            sig.push_str(first);
+        } else if in_sig && line.starts_with(' ') {
+            sig.push_str(&line[1..]);
+        } else {
+            in_sig = false;
+            payload.push_str(line);
+        }
+    }
+    (sig, payload)
+}
+
+fn have_ssh_keygen() -> bool {
+    std::process::Command::new("ssh-keygen")
+        .arg("-?")
+        .output()
+        .is_ok()
+}
+
+#[test]
+fn a_commit_signs_with_gpg_format_ssh_and_a_key_file() {
+    if !have_ssh_keygen() {
+        return;
+    }
+    use std::io::Write as _;
+    let sb = Sandbox::new();
+    let cwd = sb.dir("w");
+    let key = write_key(&sb);
+    set_global(&sb, &cwd, "user.signingkey", &key);
+    set_global(&sb, &cwd, "gpg.format", "ssh");
+    set_global(&sb, &cwd, "user.name", "T");
+    set_global(&sb, &cwd, "user.email", "t@example.com");
+    // A `gpg` that always fails: the commit must not reach it.
+    set_global(&sb, &cwd, "gpg.program", "false");
+    let step = |args: &[&str]| {
+        let out = sb.run(&cwd, args);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{args:?}: {}",
+            text(&out.stderr)
+        );
+        text(&out.stdout)
+    };
+    step(&["init", "-q"]);
+    std::fs::write(cwd.join("f.txt"), "one\n").unwrap();
+    step(&["add", "f.txt"]);
+    step(&["commit", "-q", "-S", "-m", "signed"]);
+    let (sig, payload) = split_signed(&step(&["cat-file", "-p", "HEAD"]));
+    assert!(sig.starts_with("-----BEGIN SSH SIGNATURE-----"), "{sig}");
+    let sigf = sb.user.join("commit.sig");
+    std::fs::write(&sigf, &sig).unwrap();
+    let mut check = std::process::Command::new("ssh-keygen")
+        .args(["-Y", "check-novalidate", "-n", "git", "-s"])
+        .arg(&sigf)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    check
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(payload.as_bytes())
+        .unwrap();
+    let out = check.wait_with_output().unwrap();
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let fp = signing(&sb, &cwd, &["status", "--json"]).stdout;
+    let v: serde_json::Value = serde_json::from_str(&text(&fp)).unwrap();
+    assert!(text(&out.stdout).contains(v["key"]["fingerprint"].as_str().unwrap()));
+    // A tag signs the same way.
+    step(&["tag", "-s", "-m", "t", "v1"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn signing_refuses_a_fifo_a_device_a_directory_and_an_oversized_key_file() {
+    let sb = Sandbox::new();
+    let cwd = sb.dir("w");
+    set_global(&sb, &cwd, "gpg.format", "ssh");
+    let big = sb.user.join("big");
+    std::fs::write(&big, vec![b'a'; 64 * 1024 + 1]).unwrap();
+    let fifo = sb.user.join("fifo");
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let dir = sb.dir("keydir");
+    for p in [
+        "/dev/zero".to_owned(),
+        big.display().to_string(),
+        fifo.display().to_string(),
+        dir.display().to_string(),
+    ] {
+        set_global(&sb, &cwd, "user.signingkey", &p);
+        let out = signing(&sb, &cwd, &["test", "--json"]);
+        assert_eq!(out.status.code(), Some(1), "{p}");
+        let t: serde_json::Value = serde_json::from_str(&text(&out.stdout)).unwrap();
+        let e = t["error"].as_str().unwrap();
+        assert!(
+            e.contains("not a regular file") || e.contains("larger than 64 KiB"),
+            "{p}: {e}"
+        );
+    }
 }
